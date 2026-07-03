@@ -1,5 +1,9 @@
 # Engram — JetBrains plugin
 
+[![Build](https://github.com/techtheist/engram/actions/workflows/jetbrains.yml/badge.svg)](https://github.com/techtheist/engram/actions/workflows/jetbrains.yml)
+[![Version](https://img.shields.io/jetbrains/plugin/v/32654-engram.svg)](https://plugins.jetbrains.com/plugin/32654-engram)
+[![Downloads](https://img.shields.io/jetbrains/plugin/d/32654-engram.svg)](https://plugins.jetbrains.com/plugin/32654-engram)
+
 Embeds the [Engram](https://github.com/techtheist/engram) graph pane in a
 JetBrains IDE tool window. Engram is a durable, graph-based long-term memory for
 AI coding assistants — the *reasoning/decision* layer (why we chose this, what

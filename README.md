@@ -1,5 +1,11 @@
 # Engram
 
+[![Backend](https://github.com/techtheist/engram/actions/workflows/backend.yml/badge.svg)](https://github.com/techtheist/engram/actions/workflows/backend.yml)
+[![Frontend](https://github.com/techtheist/engram/actions/workflows/frontend.yml/badge.svg)](https://github.com/techtheist/engram/actions/workflows/frontend.yml)
+[![JetBrains plugin](https://github.com/techtheist/engram/actions/workflows/jetbrains.yml/badge.svg)](https://github.com/techtheist/engram/actions/workflows/jetbrains.yml)
+[![VSCode extension](https://github.com/techtheist/engram/actions/workflows/vscode.yml/badge.svg)](https://github.com/techtheist/engram/actions/workflows/vscode.yml)
+[![JetBrains Marketplace](https://img.shields.io/jetbrains/plugin/v/32654-engram.svg)](https://plugins.jetbrains.com/plugin/32654-engram)
+
 > Durable, inspectable long-term project memory for AI coding assistants. Local-first, user-owned, graph-first.
 
 Engram gives your AI coding assistant a memory that survives across sessions: a structured graph of your project's **principles, decisions, cautions, problems, resolutions, insights, and intents** — that the assistant reads from and writes to, and that **you can see, edit, and own**.

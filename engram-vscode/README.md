@@ -1,5 +1,7 @@
 # Engram — VS Code extension
 
+[![Build](https://github.com/techtheist/engram/actions/workflows/vscode.yml/badge.svg)](https://github.com/techtheist/engram/actions/workflows/vscode.yml)
+
 Embeds the [Engram](https://github.com/techtheist/engram) graph pane in VS Code.
 Engram is a durable, graph-based long-term memory for AI coding assistants — the
 *reasoning/decision* layer (why we chose this, what bit us, what's still open),
