@@ -18,8 +18,16 @@ problems, and insights surface and update live as you work.
 
 ## Requirements
 
-- **The Engram backend.** Install the `engram` binary (GitHub Releases) and run
-  `engram serve` in your repository. The pane and status bar connect to it at
+- **The Engram backend.** From your project's root:
+
+  ```sh
+  curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh | sh
+  ```
+
+  This installs the `engram` binary (checksum-verified, into `~/.local/bin`),
+  writes the workspace `.mcp.json` for Claude Code, and installs the capture
+  skill. On Windows, run the same command inside WSL2 — it installs the native
+  `engram.exe`. The pane and status bar connect to the daemon at
   `http://127.0.0.1:8787` (configurable via `engram.daemonUrl`).
 
 ## Use
@@ -32,8 +40,10 @@ problems, and insights surface and update live as you work.
 
 ### MCP for Claude Code
 
-Run **Engram: Configure MCP for Claude Code** to add an `engram` server to the
-workspace `.mcp.json` (it merges, never clobbers other servers):
+The install script above already writes `.mcp.json`. If you skipped it (or
+installed the binary another way), run **Engram: Configure MCP for Claude Code**
+to add an `engram` server to the workspace `.mcp.json` (it merges, never
+clobbers other servers):
 
 ```json
 { "mcpServers": { "engram": { "command": "engram", "args": ["mcp", "--db", ".engram/graph.db"] } } }

@@ -25,8 +25,14 @@ insights surface and update live as you work.
 
 ## Install
 
-1. **Install the backend.** Get the `engram` binary from GitHub Releases and run
-   it in your repository:
+1. **Install the backend.** From your project's root:
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh | sh
+   ```
+   This installs the `engram` binary (checksum-verified, into `~/.local/bin`)
+   and wires the repo for Claude Code (`.mcp.json` + the capture skill). On
+   Windows, run the same command inside WSL2 — it installs the native
+   `engram.exe`. Then start the daemon:
    ```sh
    engram serve
    ```
