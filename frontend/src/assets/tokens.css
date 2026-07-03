@@ -1,0 +1,22 @@
+/*
+ * Layer 1 — raw values, theme-independent.
+ *
+ * Node-type accents live here (not in the per-theme blocks) on purpose: a
+ * Decision is "blue" in every theme so the graph stays readable when you switch
+ * skins. Only the surfaces/text/borders are re-skinned per theme (themes.css).
+ */
+:root {
+    /* node-type accents — one hue per Engram node type */
+    --node-principle: #8b5cf6; /* violet  */
+    --node-decision: #3b82f6; /* blue    */
+    --node-caution: #f59e0b; /* amber   */
+    --node-problem: #ef4444; /* red     */
+    --node-resolution: #22c55e; /* green   */
+    --node-insight: #d946ef; /* fuchsia */
+    --node-intent: #0ea5e9; /* sky     */
+    --node-anchor: #64748b; /* slate   */
+
+    /* provisional vs trusted (confidence) accents */
+    --trust-provisional: #f59e0b;
+    --trust-trusted: #22c55e;
+}

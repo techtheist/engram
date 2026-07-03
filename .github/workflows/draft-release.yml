@@ -1,0 +1,43 @@
+name: Draft release
+
+# Manual step 1 of the release flow: run the full test suite, and only if
+# everything is green, create a draft GitHub Release pinned to this commit.
+# Publishing the draft (step 2, manual approval in the GitHub UI) creates the
+# v<version> tag and triggers release.yml, which builds and attaches binaries,
+# the JetBrains plugin, and the VSIX, and publishes to marketplaces.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, e.g. 0.1.0 (tag becomes v0.1.0 on publish)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  backend:
+    uses: ./.github/workflows/backend.yml
+  frontend:
+    uses: ./.github/workflows/frontend.yml
+  jetbrains:
+    uses: ./.github/workflows/jetbrains.yml
+  vscode:
+    uses: ./.github/workflows/vscode.yml
+
+  draft:
+    name: Create release draft
+    needs: [backend, frontend, jetbrains, vscode]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ inputs.version }}" \
+            --draft \
+            --generate-notes \
+            --title "v${{ inputs.version }}" \
+            --target "$GITHUB_SHA"

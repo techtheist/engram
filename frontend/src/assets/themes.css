@@ -1,0 +1,186 @@
+/*
+ * Layer 2 — semantic tokens, re-skinned per theme. Components only ever read
+ * these (or the Tailwind utilities mapped from them in app.css), never the
+ * raw values, so adding a theme = adding one block here.
+ *
+ * Glass/blur is a per-theme opt-in via --glass-backdrop + --surface-glass:
+ * only `engram-purple` turns it on (the brand look); every other theme keeps
+ * panels opaque per the request.
+ */
+
+/* ── Engram purple — the brand theme (dark, glassy, blurred) ──────────── */
+[data-theme="engram-purple"] {
+    --surface-base: #0a0a14;
+    --surface-elevated: #16162a;
+    --surface-sunken: #08080f;
+    --surface-muted: #1f1f33;
+    --surface-overlay: rgb(2 6 23 / 70%);
+
+    --text-primary: #f1f5f9;
+    --text-secondary: #cbd5e1;
+    --text-tertiary: #6b7280;
+    --text-inverse: #0a0a14;
+
+    --border-subtle: rgb(99 102 241 / 12%);
+    --border-default: rgb(139 92 246 / 22%);
+    --border-strong: rgb(167 139 250 / 45%);
+
+    --interactive-primary: #8b5cf6;
+    --interactive-primary-hover: #a78bfa;
+    --interactive-ghost-hover: rgb(167 139 250 / 12%);
+
+    --focus-ring: #a78bfa;
+    --focus-ring-offset: var(--surface-base);
+
+    --canvas-bg: #0a0a14;
+    --canvas-glow-1: rgb(99 102 241 / 12%);
+    --canvas-glow-2: rgb(139 92 246 / 10%);
+    --canvas-dots: #2a2a44;
+
+    --node-hover-surface: rgb(36 36 60 / 55%);
+
+    /* glass ON */
+    --surface-glass: rgb(22 22 42 / 70%);
+    --glass-backdrop: blur(14px) saturate(180%) contrast(105%);
+}
+
+/* ── JetBrains dark (New UI / Darcula) ───────────────────────────────── */
+[data-theme="jetbrains-dark"] {
+    --surface-base: #191a1c;
+    --surface-elevated: #26282c;
+    --surface-sunken: #141517;
+    --surface-muted: #303338;
+    --surface-overlay: rgb(0 0 0 / 55%);
+
+    --text-primary: #bcbec3;
+    --text-secondary: #9ba0a8;
+    --text-tertiary: #6f737a;
+    --text-inverse: #191a1c;
+
+    --border-subtle: #2b2d31;
+    --border-default: #37393e;
+    --border-strong: #4e5157;
+
+    --interactive-primary: #548af7;
+    --interactive-primary-hover: #6ea0ff;
+    --interactive-ghost-hover: rgb(84 138 247 / 14%);
+
+    --focus-ring: #548af7;
+    --focus-ring-offset: var(--surface-base);
+
+    --canvas-bg: #191a1c;
+    --canvas-glow-1: transparent;
+    --canvas-glow-2: transparent;
+    --canvas-dots: #33363b;
+
+    --node-hover-surface: #2d3035;
+
+    /* glass OFF */
+    --surface-glass: var(--surface-elevated);
+    --glass-backdrop: none;
+}
+
+/* ── JetBrains light ─────────────────────────────────────────────────── */
+[data-theme="jetbrains-light"] {
+    --surface-base: #fff;
+    --surface-elevated: #fff;
+    --surface-sunken: #f7f8fa;
+    --surface-muted: #ebecf0;
+    --surface-overlay: rgb(0 0 0 / 30%);
+
+    --text-primary: #1d1f23;
+    --text-secondary: #4b4f57;
+    --text-tertiary: #818594;
+    --text-inverse: #fff;
+
+    --border-subtle: #ebecf0;
+    --border-default: #d3d5db;
+    --border-strong: #b9bcc4;
+
+    --interactive-primary: #3574f0;
+    --interactive-primary-hover: #2f65d6;
+    --interactive-ghost-hover: rgb(53 116 240 / 10%);
+
+    --focus-ring: #3574f0;
+    --focus-ring-offset: var(--surface-base);
+
+    --canvas-bg: #f7f8fa;
+    --canvas-glow-1: transparent;
+    --canvas-glow-2: transparent;
+    --canvas-dots: #d3d5db;
+
+    --node-hover-surface: #f2f3f7;
+
+    --surface-glass: var(--surface-elevated);
+    --glass-backdrop: none;
+}
+
+/* ── VS Code dark ────────────────────────────────────────────────────── */
+[data-theme="vscode-dark"] {
+    --surface-base: #191a1b;
+    --surface-elevated: #232527;
+    --surface-sunken: #121314;
+    --surface-muted: #2c2e30;
+    --surface-overlay: rgb(0 0 0 / 55%);
+
+    --text-primary: #cbd1d8;
+    --text-secondary: #a8aeb6;
+    --text-tertiary: #82878d;
+    --text-inverse: #191a1b;
+
+    --border-subtle: #26282a;
+    --border-default: #333537;
+    --border-strong: #4b4e52;
+
+    --interactive-primary: #3794ff;
+    --interactive-primary-hover: #4ba0ff;
+    --interactive-ghost-hover: rgb(55 148 255 / 14%);
+
+    --focus-ring: #007fd4;
+    --focus-ring-offset: var(--surface-base);
+
+    --canvas-bg: #191a1b;
+    --canvas-glow-1: transparent;
+    --canvas-glow-2: transparent;
+    --canvas-dots: #2c2e30;
+
+    --node-hover-surface: #292b2e;
+
+    --surface-glass: var(--surface-elevated);
+    --glass-backdrop: none;
+}
+
+/* ── VS Code light ───────────────────────────────────────────────────── */
+[data-theme="vscode-light"] {
+    --surface-base: #fff;
+    --surface-elevated: #fff;
+    --surface-sunken: #f3f3f3;
+    --surface-muted: #ececec;
+    --surface-overlay: rgb(0 0 0 / 30%);
+
+    --text-primary: #1f1f1f;
+    --text-secondary: #3b3b3b;
+    --text-tertiary: #717171;
+    --text-inverse: #fff;
+
+    --border-subtle: #e5e5e5;
+    --border-default: #d4d4d4;
+    --border-strong: #bbb;
+
+    --interactive-primary: #005fb8;
+    --interactive-primary-hover: #0258a8;
+    --interactive-ghost-hover: rgb(0 95 184 / 8%);
+
+    --focus-ring: #005fb8;
+    --focus-ring-offset: var(--surface-base);
+
+    --canvas-bg: #fff;
+    --canvas-glow-1: transparent;
+    --canvas-glow-2: transparent;
+    --canvas-dots: #e0e0e0;
+
+    --node-hover-surface: #f3f3f3;
+
+    --surface-glass: var(--surface-elevated);
+    --glass-backdrop: none;
+}

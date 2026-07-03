@@ -1,0 +1,20 @@
+<svg width="40" height="40" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g transform="translate(0 7.3779)" fill="url(#engram_g)" fill-rule="evenodd">
+<path d="m32.35 47h25.631l-7.3906-12.801-3.2305 5.6016 0.91992 1.5996h-19.17z"/>
+<path d="m23.338 47h6.4727c-2.4613-4.2679-4.9273-8.5341-7.3906-12.801l-3.2402 5.6016z"/>
+<path d="m18.84 24.801-12.82 22.199h14.781l-3.2305-5.5996h-1.8496l9.5801-16.6z"/>
+<path d="m49.379 31.893-3.252-5.5645-7.4277 12.871h6.4609z"/>
+<path d="m23.531 17-3.2715 5.5996h14.631l-3.2402-5.5996z"/>
+<path d="m32.122 2.2442-7.3906 12.801h6.4707l0.91992-1.6016 9.5801 16.602 3.2402-5.6016z"/>
+<rect x="26" y="24.8" width="12" height="4"/>
+<rect x="26" y="30" width="12" height="4"/>
+<rect x="26" y="35.2" width="12" height="4"/>
+</g>
+<defs>
+<linearGradient id="engram_g" x1="5" y1="8" x2="60" y2="63" gradientUnits="userSpaceOnUse">
+<stop offset="0.15937" stop-color="#3BEA62"/>
+<stop offset="0.5404" stop-color="#3C99CC"/>
+<stop offset="0.93739" stop-color="#6B57FF"/>
+</linearGradient>
+</defs>
+</svg>

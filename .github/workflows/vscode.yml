@@ -1,0 +1,53 @@
+name: VSCode extension
+
+on:
+  push:
+    branches: [main]
+    paths: ['engram-vscode/**', 'frontend/**', '.github/workflows/vscode.yml']
+  pull_request:
+    branches: [main]
+    paths: ['engram-vscode/**', 'frontend/**', '.github/workflows/vscode.yml']
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Lint, type-check, package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # The extension bundles the repo's frontend build.
+      - name: Build pane
+        run: bun install --frozen-lockfile && bun run build-only
+        working-directory: frontend
+
+      - name: Install extension deps
+        run: npm ci
+        working-directory: engram-vscode
+
+      - name: Lint
+        run: npm run lint
+        working-directory: engram-vscode
+
+      - name: Type-check
+        run: npm run check
+        working-directory: engram-vscode
+
+      - name: Package VSIX
+        run: npm run build && npm run package
+        working-directory: engram-vscode
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engram-vsix
+          path: engram-vscode/*.vsix

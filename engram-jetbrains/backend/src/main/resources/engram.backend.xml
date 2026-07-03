@@ -1,0 +1,12 @@
+<idea-plugin>
+    <!--
+      The backend module is intentionally empty for now. Engram's data lives in
+      the external `engram serve` daemon, so there is no project-scoped backend
+      logic yet. This module is the future home for backend-side features
+      (e.g. managing the daemon lifecycle) that must run on the backend IDE in
+      split mode.
+    -->
+    <dependencies>
+        <module name="intellij.platform.backend"/>
+    </dependencies>
+</idea-plugin>

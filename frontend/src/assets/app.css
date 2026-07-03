@@ -1,0 +1,97 @@
+@import "tailwindcss";
+@import "./tokens.css";
+@import "./themes.css";
+@import "./base.css";
+
+/* Semantic tokens → Tailwind utilities (bg-surface-base, text-text-primary, …). */
+@theme inline {
+    --color-surface-base: var(--surface-base);
+    --color-surface-elevated: var(--surface-elevated);
+    --color-surface-sunken: var(--surface-sunken);
+    --color-surface-muted: var(--surface-muted);
+    --color-surface-glass: var(--surface-glass);
+
+    --color-text-primary: var(--text-primary);
+    --color-text-secondary: var(--text-secondary);
+    --color-text-tertiary: var(--text-tertiary);
+    --color-text-inverse: var(--text-inverse);
+
+    --color-border-subtle: var(--border-subtle);
+    --color-border-default: var(--border-default);
+    --color-border-strong: var(--border-strong);
+
+    --color-interactive-primary: var(--interactive-primary);
+    --color-interactive-primary-hover: var(--interactive-primary-hover);
+
+    --color-focus-ring: var(--focus-ring);
+}
+
+/* Scale tokens — shared across every theme. */
+@theme {
+    --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+
+    --text-caption: 1.1rem;
+    --text-label: 1.2rem;
+    --text-body-sm: 1.3rem;
+    --text-body: 1.5rem;
+    --text-h3: 1.7rem;
+    --text-h2: 2rem;
+    --text-h1: 2.4rem;
+
+    --leading-tight: 1.25;
+    --leading-normal: 1.5;
+
+    --radius-sm: 0.4rem;
+    --radius-md: 0.8rem;
+    --radius-lg: 1.2rem;
+    --radius-xl: 1.6rem;
+    --radius-full: 9999px;
+
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / 25%);
+    --shadow-md: 0 8px 24px rgb(0 0 0 / 28%), 0 2px 8px rgb(0 0 0 / 18%);
+    --shadow-lg: 0 16px 40px rgb(0 0 0 / 35%), 0 4px 16px rgb(0 0 0 / 22%);
+
+    --ease-default: cubic-bezier(0.4, 0, 0.2, 1);
+    --ease-enter: cubic-bezier(0, 0, 0.2, 1);
+    --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+    --duration-fast: 100ms;
+    --duration-normal: 200ms;
+    --duration-slow: 350ms;
+
+    --animate-node-appear: node-appear 320ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes node-appear {
+    0% {
+        opacity: 0;
+        transform: scale(0.9) translateY(0.6rem);
+    }
+
+    100% {
+        opacity: 1;
+        transform: scale(1) translateY(0);
+    }
+}
+
+@layer components {
+    /*
+     * Frosted panel. Translucency + blur only resolve to something in the
+     * engram-purple theme (which sets --surface-glass translucent and
+     * --glass-backdrop to a blur); every other theme leaves them opaque /
+     * `none`, so the same class is glassy in one theme and flat in the rest.
+     */
+    .glass-panel {
+        background-color: var(--surface-glass);
+        backdrop-filter: var(--glass-backdrop);
+        border: 1px solid var(--border-default);
+    }
+}
+
+@layer utilities {
+    .node-appear {
+        animation: var(--animate-node-appear);
+        will-change: transform, opacity;
+    }
+}

@@ -1,0 +1,47 @@
+name: JetBrains plugin
+
+on:
+  push:
+    branches: [main]
+    paths: ['engram-jetbrains/**', '.github/workflows/jetbrains.yml']
+  pull_request:
+    branches: [main]
+    paths: ['engram-jetbrains/**', '.github/workflows/jetbrains.yml']
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build & verify
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: engram-jetbrains
+    steps:
+      - uses: actions/checkout@v4
+
+      # JDK 21 is the toolchain the IntelliJ Platform 2026.1 build requires;
+      # installing it directly avoids the foojay auto-download at build time.
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build plugin
+        run: ./gradlew buildPlugin
+
+      - name: Verify plugin structure
+        run: ./gradlew verifyPlugin
+
+      - name: Upload distributable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: engram-plugin
+          path: engram-jetbrains/build/distributions/*.zip

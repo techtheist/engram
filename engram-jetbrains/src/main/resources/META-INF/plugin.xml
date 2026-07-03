@@ -1,0 +1,25 @@
+<idea-plugin>
+    <id>dev.techtheist.engram</id>
+    <name>Engram</name>
+    <vendor url="https://github.com/techtheist/engram">Engram</vendor>
+
+    <description><![CDATA[
+        <p><b>Engram</b> is a durable, graph-based long-term memory for AI coding assistants —
+        the reasoning/decision layer (<em>why we chose this, what bit us, what's still open</em>),
+        shown as a graph you can see, edit, and own.</p>
+        <p>This plugin embeds the Engram graph pane in a tool window. It connects to the local
+        <code>engram serve</code> daemon — the same one your AI assistant reads from and writes to
+        over MCP — so decisions, cautions, problems, and insights surface and update live as you work.</p>
+        <p><b>Requires the Engram backend.</b> Install it and run <code>engram serve</code> in your
+        repository; the pane connects automatically once the daemon is up.</p>
+        <p>Pairs naturally with projects that keep their canon in <code>PLAN.md</code> and
+        compile decision logs to <code>DECISIONS.md</code> — Engram is the living graph those
+        documents are rendered from.</p>
+    ]]></description>
+
+    <content>
+        <module name="engram.shared" loading="required"/>
+        <module name="engram.frontend"/>
+        <module name="engram.backend"/>
+    </content>
+</idea-plugin>

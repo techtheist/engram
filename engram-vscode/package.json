@@ -1,0 +1,91 @@
+{
+  "name": "engram",
+  "displayName": "Engram",
+  "description": "Durable, graph-based long-term memory for AI coding assistants — the reasoning/decision layer, as an editable graph.",
+  "version": "0.1.0",
+  "publisher": "techtheist",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/techtheist/engram"
+  },
+  "engines": {
+    "vscode": "^1.106.0"
+  },
+  "icon": "media/logo.png",
+  "categories": [
+    "Other",
+    "AI",
+    "Visualization"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "engram",
+          "title": "Engram",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "engram": [
+        {
+          "type": "webview",
+          "id": "engram.pane",
+          "name": "Graph"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "engram.openInEditor",
+        "title": "Open Graph in Editor",
+        "category": "Engram"
+      },
+      {
+        "command": "engram.configureMcp",
+        "title": "Configure MCP for Claude Code",
+        "category": "Engram"
+      },
+      {
+        "command": "engram.reload",
+        "title": "Reload Pane",
+        "category": "Engram"
+      }
+    ],
+    "configuration": {
+      "title": "Engram",
+      "properties": {
+        "engram.daemonUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8787",
+          "description": "Fallback URL of the local `engram serve` daemon. Normally the pane discovers the actual port from the workspace's .engram/daemon.json (the daemon auto-increments its port when the default is taken); this setting applies only when that file is absent."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build:pane": "cd ../frontend && bun run build-only",
+    "build": "node esbuild.js",
+    "check": "tsc --noEmit",
+    "vscode:prepublish": "npm run build:pane && npm run build",
+    "package": "vsce package --no-dependencies",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.84.0",
+    "@vscode/vsce": "^3.2.0",
+    "esbuild": "^0.24.0",
+    "eslint": "^10.6.0",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.62.1"
+  }
+}

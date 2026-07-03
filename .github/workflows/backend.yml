@@ -1,0 +1,44 @@
+name: Backend
+
+on:
+  push:
+    branches: [main]
+    paths: ['crates/**', 'frontend/**', 'Cargo.*', '.github/workflows/backend.yml']
+  pull_request:
+    branches: [main]
+    paths: ['crates/**', 'frontend/**', 'Cargo.*', '.github/workflows/backend.yml']
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Format, lint, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      # engram-http embeds frontend/dist at compile time (rust-embed),
+      # so the pane must be built before any cargo command.
+      - name: Build pane
+        run: bun install --frozen-lockfile && bun run build-only
+        working-directory: frontend
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: rustfmt
+        run: cargo fmt --all --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: tests
+        run: cargo test --workspace

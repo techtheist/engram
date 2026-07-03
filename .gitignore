@@ -1,0 +1,36 @@
+# OS
+.DS_Store
+**/.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDEs
+.idea/
+*.iws
+*.iml
+*.ipr
+out/
+.vscode/
+
+# Environment & machine-local config
+.env
+.mcp.json
+
+# Engram local graph (per-repo, personal)
+.engram/
+
+# Rust
+/target
+
+# Node / Bun
+node_modules/
+
+# Build outputs
+build/
+frontend/dist/
+engram-vscode/dist/
+engram-vscode/media/pane/
+*.vsix

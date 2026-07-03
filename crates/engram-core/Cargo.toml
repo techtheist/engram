@@ -1,0 +1,19 @@
+[package]
+name = "engram-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rusqlite = { version = "0.37", features = ["bundled"] }
+regex = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+getrandom = "0.4"
+sqlite-vec = "0.1.9"
+fastembed = { version = "5.17.2", optional = true }
+
+[features]
+fastembed = ["dep:fastembed"]

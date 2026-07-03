@@ -1,0 +1,124 @@
+name: Release
+
+# Step 2 of the release flow: fires when the draft created by draft-release.yml
+# is published (approved in the GitHub UI). Builds every distributable and
+# attaches it to the release; JetBrains also publishes to Marketplace.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  binaries:
+    name: Binary (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: macos-14
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      # engram-http embeds frontend/dist at compile time (rust-embed).
+      - name: Build pane
+        run: bun install --frozen-lockfile && bun run build-only
+        working-directory: frontend
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release -p engram-cli
+
+      - name: Package tarball + checksum
+        run: |
+          ASSET="engram-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
+          tar -czf "$ASSET" -C target/release engram
+          shasum -a 256 "$ASSET" > "$ASSET.sha256"
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
+
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" "$ASSET" "$ASSET.sha256" --clobber
+
+  jetbrains:
+    name: JetBrains — sign, attach, publish
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: engram-jetbrains
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # Produces build/distributions/*-signed.zip
+      - name: Build & sign plugin
+        env:
+          CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
+        run: ./gradlew signPlugin
+
+      - name: Attach signed zip to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" build/distributions/*-signed.zip --clobber
+
+      - name: Publish to JetBrains Marketplace
+        env:
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+          CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
+        run: ./gradlew publishPlugin
+
+  vscode:
+    name: VSCode — package, attach
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # The extension bundles the repo's frontend build.
+      - name: Build pane
+        run: bun install --frozen-lockfile && bun run build-only
+        working-directory: frontend
+
+      - name: Package VSIX
+        run: npm ci && npm run build && npm run package
+        working-directory: engram-vscode
+
+      - name: Attach VSIX to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" engram-vscode/*.vsix --clobber
+
+      # Marketplace publishing is deliberately deferred. When ready, add
+      # HaaLeo/publish-vscode-extension here with VSCE_PAT (VS Marketplace)
+      # and OVSX_PAT (Open VSX) secrets — it publishes the same .vsix to both.

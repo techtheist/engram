@@ -1,0 +1,35 @@
+{
+  "extends": ["stylelint-config-standard"],
+  "overrides": [
+    {
+      "files": ["**/*.vue"],
+      "customSyntax": "postcss-html"
+    }
+  ],
+  "rules": {
+    "import-notation": "string",
+    "value-keyword-case": ["lower", { "ignoreProperties": ["font-family", "--font-sans", "--font-mono"] }],
+    "selector-class-pattern": null,
+    "selector-pseudo-class-no-unknown": [true, { "ignorePseudoClasses": ["deep"] }],
+    "custom-property-empty-line-before": null,
+    "comment-empty-line-before": null,
+    "declaration-empty-line-before": null,
+    "at-rule-no-unknown": [
+      true,
+      {
+        "ignoreAtRules": [
+          "theme",
+          "utility",
+          "variant",
+          "custom-variant",
+          "apply",
+          "reference",
+          "plugin",
+          "source",
+          "config"
+        ]
+      }
+    ]
+  },
+  "ignoreFiles": ["dist/**", "node_modules/**"]
+}

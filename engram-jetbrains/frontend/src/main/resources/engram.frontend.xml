@@ -1,0 +1,23 @@
+<idea-plugin>
+    <dependencies>
+        <module name="intellij.platform.frontend"/>
+    </dependencies>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow factoryClass="dev.techtheist.engram.toolWindow.EngramToolWindowFactory"
+                    id="Engram"
+                    anchor="right"
+                    icon="dev.techtheist.engram.EngramIcons.ToolWindow"/>
+        <fileEditorProvider implementation="dev.techtheist.engram.editor.EngramFileEditorProvider"/>
+    </extensions>
+
+    <actions>
+        <action id="engram.OpenInEditor"
+                class="dev.techtheist.engram.editor.OpenEngramInEditorAction"
+                text="Open Engram in Editor"
+                description="Open the Engram graph pane as a center editor tab"
+                icon="dev.techtheist.engram.EngramIcons.ToolWindow">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+    </actions>
+</idea-plugin>

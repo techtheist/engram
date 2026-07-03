@@ -1,0 +1,257 @@
+use serde::{Deserialize, Serialize};
+
+/// Declares a string-backed enum whose wire form (serde) and storage form
+/// (`as_str`/`parse`) are the same canonical strings — the ones PLAN.md fixes.
+macro_rules! str_enum {
+    ($(#[$m:meta])* $name:ident { $($variant:ident => $s:literal),+ $(,)? }) => {
+        $(#[$m])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum $name { $($variant),+ }
+
+        impl $name {
+            pub fn as_str(self) -> &'static str {
+                match self { $(Self::$variant => $s),+ }
+            }
+            pub fn parse(s: &str) -> crate::Result<Self> {
+                match s {
+                    $($s => Ok(Self::$variant),)+
+                    _ => Err(crate::Error::Parse { kind: stringify!($name), value: s.to_string() }),
+                }
+            }
+        }
+
+        impl Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.serialize_str(self.as_str())
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                let s = String::deserialize(d)?;
+                Self::parse(&s).map_err(serde::de::Error::custom)
+            }
+        }
+    };
+}
+
+str_enum!(NodeType {
+    Principle => "Principle",
+    Decision => "Decision",
+    Caution => "Caution",
+    Problem => "Problem",
+    Resolution => "Resolution",
+    Insight => "Insight",
+    Intent => "Intent",
+    Anchor => "Anchor",
+});
+
+str_enum!(EdgeType {
+    About => "about",
+    Because => "because",
+    Answers => "answers",
+    BuildsOn => "builds-on",
+    Replaces => "replaces",
+    ConflictsWith => "conflicts-with",
+    Needs => "needs",
+});
+
+str_enum!(Durability {
+    Stable => "stable",
+    Episodic => "episodic",
+    Volatile => "volatile",
+});
+
+str_enum!(Source {
+    User => "user",
+    Claude => "claude",
+});
+
+str_enum!(NodeStatus {
+    Open => "open",
+    Resolved => "resolved",
+    Obsolete => "obsolete",
+});
+
+str_enum!(EdgeStatus {
+    Active => "active",
+    Resolved => "resolved",
+    Dismissed => "dismissed",
+});
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Node {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub node_type: NodeType,
+    pub title: String,
+    pub body: Option<String>,
+    pub durability: Durability,
+    pub source: Source,
+    pub session_id: Option<String>,
+    pub created_at: i64,
+    pub valid_from: Option<i64>,
+    pub valid_until: Option<i64>,
+    pub status: Option<NodeStatus>,
+    pub confidence: Option<f64>,
+    pub code_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewNode {
+    #[serde(rename = "type")]
+    pub node_type: NodeType,
+    pub title: String,
+    #[serde(default)]
+    pub body: Option<String>,
+    pub durability: Durability,
+    pub source: Source,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub status: Option<NodeStatus>,
+    #[serde(default)]
+    pub confidence: Option<f64>,
+    #[serde(default)]
+    pub code_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct NodePatch {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub durability: Option<Durability>,
+    #[serde(default)]
+    pub status: Option<NodeStatus>,
+    #[serde(default)]
+    pub confidence: Option<f64>,
+    #[serde(default)]
+    pub valid_until: Option<i64>,
+    #[serde(default)]
+    pub code_refs: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Edge {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub edge_type: EdgeType,
+    pub from_id: String,
+    pub to_id: String,
+    pub source: Source,
+    pub created_at: i64,
+    pub confidence: Option<f64>,
+    pub strength: Option<f64>,
+    pub note: Option<String>,
+    pub valid_from: Option<i64>,
+    pub valid_until: Option<i64>,
+    pub status: Option<EdgeStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewEdge {
+    #[serde(rename = "type")]
+    pub edge_type: EdgeType,
+    pub from_id: String,
+    pub to_id: String,
+    pub source: Source,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub confidence: Option<f64>,
+    #[serde(default)]
+    pub strength: Option<f64>,
+    #[serde(default)]
+    pub status: Option<EdgeStatus>,
+}
+
+/// Portable, diffable snapshot of the whole graph (PLAN §6B JSON export).
+/// Node/edge order is sorted by the exporter for stable git diffs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportGraph {
+    pub version: u32,
+    pub nodes: Vec<Node>,
+    pub edges: Vec<Edge>,
+}
+
+pub const EXPORT_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportSummary {
+    pub nodes: usize,
+    pub edges: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SearchHit {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub node_type: NodeType,
+    pub title: String,
+    pub snippet: String,
+    pub score: f64,
+    pub durability: Durability,
+    pub status: Option<NodeStatus>,
+    /// 1-hop subgraph around the match, `conflicts-with`/`replaces` first
+    /// (PLAN §6A retrieval), capped.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub neighbors: Vec<NeighborRef>,
+}
+
+/// One edge+endpoint of a hit's 1-hop subgraph, compact enough to inline in
+/// search results without blowing the token budget.
+#[derive(Debug, Clone, Serialize)]
+pub struct NeighborRef {
+    pub edge_id: String,
+    pub edge_type: EdgeType,
+    /// "out": the hit points at this neighbor; "in": this neighbor points at the hit.
+    pub direction: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edge_status: Option<EdgeStatus>,
+    pub id: String,
+    #[serde(rename = "type")]
+    pub node_type: NodeType,
+    pub title: String,
+    /// The neighbor is superseded/archived (`valid_until` set).
+    pub archived: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct EdgePatch {
+    #[serde(default)]
+    pub status: Option<EdgeStatus>,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub confidence: Option<f64>,
+    #[serde(default)]
+    pub strength: Option<f64>,
+}
+
+/// Attached to a write result when the new text lands near contradicted or
+/// superseded knowledge — the pull-based version of PLAN §7's conflict push.
+#[derive(Debug, Clone, Serialize)]
+pub struct WriteWarning {
+    pub id: String,
+    pub title: String,
+    /// "in-active-conflict" | "superseded"
+    pub reason: String,
+    pub similarity: f64,
+}
+
+/// What a checked (Claude-side) note write did: created a node, or
+/// short-circuited to an existing near-duplicate (PLAN Appendix A `add_note`).
+#[derive(Debug, Clone)]
+pub enum WriteOutcome {
+    Created {
+        node: Node,
+        warnings: Vec<WriteWarning>,
+    },
+    Matched {
+        node: Node,
+        similarity: f64,
+    },
+}
