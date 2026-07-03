@@ -19,6 +19,9 @@ out/
 .env
 .mcp.json
 
+# Plugin signing keys (contents live in GitHub Actions secrets)
+engram-jetbrains/.signing/
+
 # Engram local graph (per-repo, personal)
 .engram/
 

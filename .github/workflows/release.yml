@@ -3,6 +3,8 @@ name: Release
 # Step 2 of the release flow: fires when the draft created by draft-release.yml
 # is published (approved in the GitHub UI). Builds every distributable and
 # attaches it to the release; JetBrains also publishes to Marketplace.
+# Artifact versions derive from the tag (v0.1.2 -> 0.1.2), not from the files
+# checked into the repo.
 on:
   release:
     types: [published]
@@ -25,6 +27,8 @@ jobs:
             target: x86_64-apple-darwin
           - os: macos-14
             target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
 
@@ -32,6 +36,7 @@ jobs:
 
       # engram-http embeds frontend/dist at compile time (rust-embed).
       - name: Build pane
+        shell: bash
         run: bun install --frozen-lockfile && bun run build-only
         working-directory: frontend
 
@@ -40,16 +45,28 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build release binary
-        run: cargo build --release -p engram-cli
+        run: cargo build --release -p engram
 
       - name: Package tarball + checksum
+        if: runner.os != 'Windows'
         run: |
           ASSET="engram-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
           tar -czf "$ASSET" -C target/release engram
           shasum -a 256 "$ASSET" > "$ASSET.sha256"
           echo "ASSET=$ASSET" >> "$GITHUB_ENV"
 
+      - name: Package zip + checksum (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $asset = "engram-$env:GITHUB_REF_NAME-${{ matrix.target }}.zip"
+          Compress-Archive -Path target/release/engram.exe -DestinationPath $asset
+          $hash = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
+          "$hash  $asset" | Out-File -Encoding ascii "$asset.sha256"
+          "ASSET=$asset" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+
       - name: Attach to release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "$GITHUB_REF_NAME" "$ASSET" "$ASSET.sha256" --clobber
@@ -72,13 +89,23 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      # Produces build/distributions/*-signed.zip
+      # Produces build/distributions/*-signed.zip. The version (and thus the
+      # Marketplace channel) comes from the tag, overriding gradle.properties.
       - name: Build & sign plugin
         env:
           CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
           PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
-        run: ./gradlew signPlugin
+        run: ./gradlew signPlugin -PpluginVersion="${GITHUB_REF_NAME#v}"
+
+      # signPlugin silently skips when the signing secrets are absent — fail
+      # here with a clear message instead of a confusing empty-glob upload.
+      - name: Assert signed zip exists
+        run: |
+          ls build/distributions/*-signed.zip || {
+            echo "::error::No signed zip. Are CERTIFICATE_CHAIN / PRIVATE_KEY / PRIVATE_KEY_PASSWORD secrets set?"
+            exit 1
+          }
 
       - name: Attach signed zip to the release
         env:
@@ -91,7 +118,7 @@ jobs:
           CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
           PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
-        run: ./gradlew publishPlugin
+        run: ./gradlew publishPlugin -PpluginVersion="${GITHUB_REF_NAME#v}"
 
   vscode:
     name: VSCode — package, attach
@@ -110,6 +137,10 @@ jobs:
         run: bun install --frozen-lockfile && bun run build-only
         working-directory: frontend
 
+      - name: Sync extension version from tag
+        run: npm version --no-git-tag-version --allow-same-version "${GITHUB_REF_NAME#v}"
+        working-directory: engram-vscode
+
       - name: Package VSIX
         run: npm ci && npm run build && npm run package
         working-directory: engram-vscode
@@ -121,4 +152,4 @@ jobs:
 
       # Marketplace publishing is deliberately deferred. When ready, add
       # HaaLeo/publish-vscode-extension here with VSCE_PAT (VS Marketplace)
-      # and OVSX_PAT (Open VSX) secrets — it publishes the same .vsix to both.
+      # and OVSX_PAT (Open VSX) secrets — the same .vsix goes to both.
