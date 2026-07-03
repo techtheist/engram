@@ -1,6 +1,6 @@
 {
-  "name": "engram",
-  "displayName": "Engram",
+  "name": "engram-alpha",
+  "displayName": "Engram Alpha",
   "description": "Durable, graph-based long-term memory for AI coding assistants — the reasoning/decision layer, as an editable graph.",
   "version": "0.1.0",
   "publisher": "techtheist",
