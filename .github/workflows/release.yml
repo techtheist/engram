@@ -159,14 +159,26 @@ jobs:
         working-directory: engram-vscode
 
       - name: Package VSIX
-        run: npm ci && npm run build && npm run package
+        run: |
+          npm ci && npm run build && npm run package
+          echo "VSIX=$(ls "$PWD"/*.vsix)" >> "$GITHUB_ENV"
         working-directory: engram-vscode
 
       - name: Attach VSIX to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$RELEASE_TAG" engram-vscode/*.vsix --clobber
+        run: gh release upload "$RELEASE_TAG" "$VSIX" --clobber
 
-      # Marketplace publishing is deliberately deferred. When ready, add
-      # HaaLeo/publish-vscode-extension here with VSCE_PAT (VS Marketplace)
-      # and OVSX_PAT (Open VSX) secrets — the same .vsix goes to both.
+      # Both marketplaces get the exact same file that was attached above.
+      - name: Publish to Open VSX
+        uses: HaaLeo/publish-vscode-extension@v2
+        with:
+          pat: ${{ secrets.OPEN_VSX_TOKEN }}
+          extensionFile: ${{ env.VSIX }}
+
+      - name: Publish to Visual Studio Marketplace
+        uses: HaaLeo/publish-vscode-extension@v2
+        with:
+          pat: ${{ secrets.VS_MARKETPLACE_TOKEN }}
+          registryUrl: https://marketplace.visualstudio.com
+          extensionFile: ${{ env.VSIX }}
