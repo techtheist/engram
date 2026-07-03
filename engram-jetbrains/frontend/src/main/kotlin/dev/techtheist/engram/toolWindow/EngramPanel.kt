@@ -2,6 +2,7 @@ package dev.techtheist.engram.toolWindow
 
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.ui.components.JBLabel
@@ -11,10 +12,12 @@ import com.intellij.ui.jcef.JBCefBrowser
 import com.intellij.util.Alarm
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
+import dev.techtheist.engram.EngramBackend
 import dev.techtheist.engram.EngramConfig
 import java.awt.BorderLayout
 import java.awt.CardLayout
 import java.awt.Component
+import java.awt.datatransfer.StringSelection
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -40,6 +43,8 @@ internal class EngramPanel(
     private val pollAlarm = Alarm(Alarm.ThreadToUse.POOLED_THREAD, this)
     private var browser: JBCefBrowser? = null
     private var loadedUrl: String? = null
+    private var offlineComponent: JComponent? = null
+    private var offlineHasBinary: Boolean? = null
 
     @Volatile
     private var disposed = false
@@ -64,8 +69,7 @@ internal class EngramPanel(
             browser = b
 
             add(b.component, CARD_PANE)
-            add(offlineCard(), CARD_OFFLINE)
-            cards.show(this, CARD_OFFLINE)
+            showOfflineCard(hasBinary = EngramBackend.findBinary() != null)
             scheduleHealthCheck(immediate = true)
         }
     }
@@ -90,6 +94,8 @@ internal class EngramPanel(
         } catch (_: Exception) {
             false
         }
+        // Binary discovery is filesystem work — do it here, off the EDT.
+        val hasBinary = if (healthy) true else EngramBackend.findBinary() != null
 
         ApplicationManager.getApplication().invokeLater {
             if (disposed) return@invokeLater
@@ -101,7 +107,7 @@ internal class EngramPanel(
                 cards.show(this, CARD_PANE)
             } else {
                 loadedUrl = null
-                cards.show(this, CARD_OFFLINE)
+                showOfflineCard(hasBinary)
                 scheduleHealthCheck(immediate = false) // keep watching; auto-connect on return
             }
         }
@@ -113,15 +119,45 @@ internal class EngramPanel(
         scheduleHealthCheck(immediate = true)
     }
 
-    private fun offlineCard(): JComponent = centered {
+    /** Swap in the offline card matching the current state, rebuilding only on change. */
+    private fun showOfflineCard(hasBinary: Boolean) {
+        if (offlineComponent == null || offlineHasBinary != hasBinary) {
+            offlineComponent?.let { remove(it) }
+            val card = if (hasBinary) daemonDownCard() else notInstalledCard()
+            offlineComponent = card
+            offlineHasBinary = hasBinary
+            add(card, CARD_OFFLINE)
+        }
+        cards.show(this, CARD_OFFLINE)
+    }
+
+    private fun daemonDownCard(): JComponent = centered {
         heading("Engram backend isn't running")
         body("The graph pane is served by the local Engram daemon.")
-        body("Start it from your repo:")
+        gap()
+        button("Start engram serve") {
+            if (EngramBackend.startDaemon(project)) retryNow()
+        }
+        gap()
+        body("Or start it yourself from the repo root:")
         mono("engram serve")
         gap()
-        body("Don't have it yet? Install “Engram Alpha” from the")
-        body("JetBrains Marketplace, then run the daemon.")
+        button("Retry") { retryNow() }
+    }
+
+    private fun notInstalledCard(): JComponent = centered {
+        heading("Set up Engram")
+        body("The graph pane needs the local Engram backend, which isn't installed yet.")
+        body("Run this from your project's root — it installs the binary and")
+        body("wires the repo for your AI assistant (on Windows: inside WSL2):")
         gap()
+        mono(EngramBackend.INSTALL_COMMAND)
+        gap()
+        button("Copy install command") {
+            CopyPasteManager.getInstance().setContents(StringSelection(EngramBackend.INSTALL_COMMAND))
+        }
+        gap()
+        body("Then start the daemon (engram serve) — the pane connects on its own.")
         button("Retry") { retryNow() }
     }
 

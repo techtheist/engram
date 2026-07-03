@@ -53,6 +53,16 @@
         "category": "Engram"
       },
       {
+        "command": "engram.installBackend",
+        "title": "Install Backend",
+        "category": "Engram"
+      },
+      {
+        "command": "engram.startDaemon",
+        "title": "Start Daemon",
+        "category": "Engram"
+      },
+      {
         "command": "engram.reload",
         "title": "Reload Pane",
         "category": "Engram"

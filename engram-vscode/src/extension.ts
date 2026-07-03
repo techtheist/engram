@@ -1,6 +1,7 @@
 import * as vscode from 'vscode'
 import { configureMcp } from './mcp'
 import { buildPaneHtml, paneOptions } from './pane'
+import { createStatusBar, installBackend, offerSetupIfNeeded, startDaemon } from './setup'
 
 const VIEW_ID = 'engram.pane'
 let editorPanel: vscode.WebviewPanel | undefined
@@ -14,11 +15,16 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
         vscode.commands.registerCommand('engram.openInEditor', () => openInEditor(context)),
         vscode.commands.registerCommand('engram.configureMcp', configureMcp),
+        vscode.commands.registerCommand('engram.installBackend', installBackend),
+        vscode.commands.registerCommand('engram.startDaemon', startDaemon),
         vscode.commands.registerCommand('engram.reload', () => {
             provider.reload()
             if (editorPanel) editorPanel.webview.html = buildPaneHtml(editorPanel.webview, context.extensionUri)
         }),
     )
+
+    createStatusBar(context)
+    void offerSetupIfNeeded(context)
 }
 
 export function deactivate(): void {
