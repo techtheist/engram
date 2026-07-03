@@ -36,6 +36,20 @@ The payoff shows up the second time something goes wrong. When your assistant ge
 
 **Status:** early development. See [`PLAN.md`](./PLAN.md) for the full spec and roadmap.
 
+## Install
+
+From your project's root:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh | sh
+```
+
+This downloads the `engram` binary for your platform (checksum-verified, into `~/.local/bin`), wires the repo for Claude Code (`.mcp.json` + the capture skill), and git-ignores the personal `.engram/` graph. Then run `engram serve` and open `http://127.0.0.1:8787` — or use the [JetBrains plugin](https://plugins.jetbrains.com/plugin/32654-engram) / VS Code extension instead of the browser.
+
+**Windows:** run the same command inside **WSL2** — the script detects WSL and installs the native Windows binary (`engram.exe`), which WSL runs transparently. macOS (arm64/x64), Linux x64, and Windows x64 binaries are on [GitHub Releases](https://github.com/techtheist/engram/releases).
+
+Options: `--skill relaxed|normal|aggressive` (capture intensity, default relaxed), `--bin-only`, `ENGRAM_VERSION=v0.1.2` to pin.
+
 ## Capture modes
 
 How much your assistant writes to the graph is set by which **skill variant** you install — see [`skills/engram/`](./skills/engram/):

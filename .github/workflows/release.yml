@@ -9,9 +9,17 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to (re)build artifacts for, e.g. v0.1.2'
+        required: true
 
 permissions:
   contents: write
+
+env:
+  # Release event -> the tag ref; manual dispatch -> the tag input.
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   binaries:
@@ -31,6 +39,8 @@ jobs:
             target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - uses: oven-sh/setup-bun@v2
 
@@ -50,7 +60,7 @@ jobs:
       - name: Package tarball + checksum
         if: runner.os != 'Windows'
         run: |
-          ASSET="engram-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
+          ASSET="engram-${RELEASE_TAG}-${{ matrix.target }}.tar.gz"
           tar -czf "$ASSET" -C target/release engram
           shasum -a 256 "$ASSET" > "$ASSET.sha256"
           echo "ASSET=$ASSET" >> "$GITHUB_ENV"
@@ -59,7 +69,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $asset = "engram-$env:GITHUB_REF_NAME-${{ matrix.target }}.zip"
+          $asset = "engram-$env:RELEASE_TAG-${{ matrix.target }}.zip"
           Compress-Archive -Path target/release/engram.exe -DestinationPath $asset
           $hash = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
           "$hash  $asset" | Out-File -Encoding ascii "$asset.sha256"
@@ -69,16 +79,21 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$GITHUB_REF_NAME" "$ASSET" "$ASSET.sha256" --clobber
+        run: gh release upload "$RELEASE_TAG" "$ASSET" "$ASSET.sha256" --clobber
 
   jetbrains:
     name: JetBrains — sign, attach, publish
     runs-on: ubuntu-latest
+    # PUBLISH_TOKEN lives in the "engram" environment; without this line the
+    # job cannot see environment-scoped secrets.
+    environment: engram
     defaults:
       run:
         working-directory: engram-jetbrains
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -96,7 +111,7 @@ jobs:
           CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
           PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
-        run: ./gradlew signPlugin -PpluginVersion="${GITHUB_REF_NAME#v}"
+        run: ./gradlew signPlugin -PpluginVersion="${RELEASE_TAG#v}"
 
       # signPlugin silently skips when the signing secrets are absent — fail
       # here with a clear message instead of a confusing empty-glob upload.
@@ -110,7 +125,7 @@ jobs:
       - name: Attach signed zip to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$GITHUB_REF_NAME" build/distributions/*-signed.zip --clobber
+        run: gh release upload "$RELEASE_TAG" build/distributions/*-signed.zip --clobber
 
       - name: Publish to JetBrains Marketplace
         env:
@@ -118,13 +133,15 @@ jobs:
           CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
           PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
-        run: ./gradlew publishPlugin -PpluginVersion="${GITHUB_REF_NAME#v}"
+        run: ./gradlew publishPlugin -PpluginVersion="${RELEASE_TAG#v}"
 
   vscode:
     name: VSCode — package, attach
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - uses: oven-sh/setup-bun@v2
 
@@ -138,7 +155,7 @@ jobs:
         working-directory: frontend
 
       - name: Sync extension version from tag
-        run: npm version --no-git-tag-version --allow-same-version "${GITHUB_REF_NAME#v}"
+        run: npm version --no-git-tag-version --allow-same-version "${RELEASE_TAG#v}"
         working-directory: engram-vscode
 
       - name: Package VSIX
@@ -148,7 +165,7 @@ jobs:
       - name: Attach VSIX to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$GITHUB_REF_NAME" engram-vscode/*.vsix --clobber
+        run: gh release upload "$RELEASE_TAG" engram-vscode/*.vsix --clobber
 
       # Marketplace publishing is deliberately deferred. When ready, add
       # HaaLeo/publish-vscode-extension here with VSCE_PAT (VS Marketplace)
