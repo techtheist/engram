@@ -155,6 +155,7 @@ Engram $VERSION is ready. Next steps:
   2. open the pane:                   http://127.0.0.1:8787
      or install the IDE plugin:
        JetBrains:  https://plugins.jetbrains.com/plugin/32654-engram
-       VS Code:    engram-*.vsix from the GitHub release
+       VS Code:    https://marketplace.visualstudio.com/items?itemName=techtheist.engram-alpha
+       Open VSX:   https://open-vsx.org/extension/techtheist/engram-alpha
   3. restart your Claude Code session so it picks up .mcp.json + the skill.
 DONE

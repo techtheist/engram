@@ -4,7 +4,9 @@
 [![Frontend](https://github.com/techtheist/engram/actions/workflows/frontend.yml/badge.svg)](https://github.com/techtheist/engram/actions/workflows/frontend.yml)
 [![JetBrains plugin](https://github.com/techtheist/engram/actions/workflows/jetbrains.yml/badge.svg)](https://github.com/techtheist/engram/actions/workflows/jetbrains.yml)
 [![VSCode extension](https://github.com/techtheist/engram/actions/workflows/vscode.yml/badge.svg)](https://github.com/techtheist/engram/actions/workflows/vscode.yml)
-[![JetBrains Marketplace](https://img.shields.io/jetbrains/plugin/v/32654-engram.svg)](https://plugins.jetbrains.com/plugin/32654-engram)
+[![JetBrains Marketplace](https://img.shields.io/jetbrains/plugin/v/32654-engram.svg?label=JetBrains%20Marketplace)](https://plugins.jetbrains.com/plugin/32654-engram)
+[![VS Marketplace](https://img.shields.io/visual-studio-marketplace/v/techtheist.engram-alpha?label=VS%20Marketplace)](https://marketplace.visualstudio.com/items?itemName=techtheist.engram-alpha)
+[![Open VSX](https://img.shields.io/open-vsx/v/techtheist/engram-alpha?label=Open%20VSX)](https://open-vsx.org/extension/techtheist/engram-alpha)
 
 > Durable, inspectable long-term project memory for AI coding assistants. Local-first, user-owned, graph-first.
 
@@ -44,7 +46,7 @@ From your project's root:
 curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh | sh
 ```
 
-This downloads the `engram` binary for your platform (checksum-verified, into `~/.local/bin`), wires the repo for Claude Code (`.mcp.json` + the capture skill), and git-ignores the personal `.engram/` graph. Then run `engram serve` and open `http://127.0.0.1:8787` — or use the [JetBrains plugin](https://plugins.jetbrains.com/plugin/32654-engram) / VS Code extension instead of the browser.
+This downloads the `engram` binary for your platform (checksum-verified, into `~/.local/bin`), wires the repo for Claude Code (`.mcp.json` + the capture skill), and git-ignores the personal `.engram/` graph. Then run `engram serve` and open `http://127.0.0.1:8787` — or use the [JetBrains plugin](https://plugins.jetbrains.com/plugin/32654-engram) or the VS Code extension ([VS Marketplace](https://marketplace.visualstudio.com/items?itemName=techtheist.engram-alpha) · [Open VSX](https://open-vsx.org/extension/techtheist/engram-alpha) for VSCodium/Cursor/Windsurf) instead of the browser.
 
 **Windows:** run the same command inside **WSL2** — the script detects WSL and installs the native Windows binary (`engram.exe`), which WSL runs transparently. macOS arm64, Linux x64, and Windows x64 binaries are on [GitHub Releases](https://github.com/techtheist/engram/releases). Intel Macs: no prebuilt binary (onnxruntime upstream dropped Intel-mac builds) — `cargo install --path crates/engram-cli` from a checkout instead.
 
