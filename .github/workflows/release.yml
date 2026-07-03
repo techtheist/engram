@@ -27,12 +27,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      # No x86_64-apple-darwin: ort-sys ships no prebuilt ONNX Runtime for
+      # Intel macs anymore; source builds are documented in the README.
       matrix:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
           - os: macos-14
             target: aarch64-apple-darwin
           - os: windows-latest
@@ -133,7 +133,17 @@ jobs:
           CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
           PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
-        run: ./gradlew publishPlugin -PpluginVersion="${RELEASE_TAG#v}"
+        # A re-dispatch for an already-published tag must not read as failure.
+        run: |
+          set +e
+          OUT=$(./gradlew publishPlugin -PpluginVersion="${RELEASE_TAG#v}" 2>&1)
+          CODE=$?
+          echo "$OUT"
+          if [ $CODE -ne 0 ] && echo "$OUT" | grep -q "already contains version"; then
+            echo "Version already on Marketplace — treating as success."
+            exit 0
+          fi
+          exit $CODE
 
   vscode:
     name: VSCode — package, attach

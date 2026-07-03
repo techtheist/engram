@@ -46,7 +46,7 @@ curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh |
 
 This downloads the `engram` binary for your platform (checksum-verified, into `~/.local/bin`), wires the repo for Claude Code (`.mcp.json` + the capture skill), and git-ignores the personal `.engram/` graph. Then run `engram serve` and open `http://127.0.0.1:8787` — or use the [JetBrains plugin](https://plugins.jetbrains.com/plugin/32654-engram) / VS Code extension instead of the browser.
 
-**Windows:** run the same command inside **WSL2** — the script detects WSL and installs the native Windows binary (`engram.exe`), which WSL runs transparently. macOS (arm64/x64), Linux x64, and Windows x64 binaries are on [GitHub Releases](https://github.com/techtheist/engram/releases).
+**Windows:** run the same command inside **WSL2** — the script detects WSL and installs the native Windows binary (`engram.exe`), which WSL runs transparently. macOS arm64, Linux x64, and Windows x64 binaries are on [GitHub Releases](https://github.com/techtheist/engram/releases). Intel Macs: no prebuilt binary (onnxruntime upstream dropped Intel-mac builds) — `cargo install --path crates/engram-cli` from a checkout instead.
 
 Options: `--skill relaxed|normal|aggressive` (capture intensity, default relaxed), `--bin-only`, `ENGRAM_VERSION=v0.1.2` to pin.
 

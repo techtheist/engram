@@ -50,7 +50,7 @@ case "$OS" in
     Darwin)
         case "$ARCH" in
             arm64|aarch64) TARGET="aarch64-apple-darwin" ;;
-            x86_64)        TARGET="x86_64-apple-darwin" ;;
+            x86_64) die "no prebuilt binary for Intel Macs (onnxruntime upstream dropped them) — build from source: cargo install --path crates/engram-cli" ;;
             *) die "unsupported macOS arch: $ARCH" ;;
         esac ;;
     Linux)
