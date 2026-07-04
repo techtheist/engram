@@ -796,6 +796,24 @@ fn update_edge_and_delete_edge() {
 }
 
 #[test]
+fn brief_on_empty_graph_teaches_cold_start_seeding() {
+    let e = engine();
+    let brief = e.brief(12000).unwrap();
+    assert!(
+        brief.contains("cold start"),
+        "empty brief must instruct seeding: {brief}"
+    );
+
+    e.add_node(new_node(NodeType::Decision, "backend in rust", ""))
+        .unwrap();
+    let brief = e.brief(12000).unwrap();
+    assert!(
+        !brief.contains("cold start"),
+        "populated brief must not mention cold start"
+    );
+}
+
+#[test]
 fn brief_digests_the_canon_and_respects_budget() {
     let e = engine();
     let p = e

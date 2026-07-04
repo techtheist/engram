@@ -60,9 +60,18 @@ onBeforeUnmount(() => store.disconnect())
     </Transition>
 
     <Transition name="fade">
-        <p v-if="!loading && !error && nodeList.length === 0" class="overlay glass-panel">
-            No memory yet — Claude will fill this graph as you work.
-        </p>
+        <div v-if="!loading && !error && nodeList.length === 0" class="overlay glass-panel empty-state">
+            <p class="empty-title">No memory yet</p>
+            <p>
+                This graph fills as your assistant works — decisions and their reasons,
+                cautions that bit you, problems and how they were solved.
+            </p>
+            <p>
+                Fast start: ask your assistant to
+                <em>“seed the Engram graph from this project's docs and history”</em>
+                — it captures the existing canon in one pass, for you to review here.
+            </p>
+        </div>
     </Transition>
 </div>
 </template>
@@ -147,6 +156,25 @@ onBeforeUnmount(() => store.disconnect())
 
 .overlay.error {
     border-color: var(--node-problem);
+}
+
+.empty-state {
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+    max-width: 44rem;
+    text-align: left;
+}
+
+.empty-state .empty-title {
+    font-size: var(--text-h3);
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.empty-state em {
+    color: var(--text-primary);
+    font-style: italic;
 }
 
 .overlay-detail {

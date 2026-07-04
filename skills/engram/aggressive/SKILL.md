@@ -22,6 +22,17 @@ Claude Code already has memory of its own (CLAUDE.md, auto-memory). **Don't mirr
 - Use `get_node` / `traverse` to pull the reasoning around a hit (e.g. a Decision and the Principle it stands on).
 - `list_open` shows the live worklist (open Problems and Intents) — check it when picking up work.
 
+## Cold start — the graph is empty
+
+When `brief` reports a cold start (empty graph), **offer the user a one-time
+seeding pass** — this is the one capture that must not be silent. With their
+go-ahead: read the project's existing canon (README, plan/design docs, recent
+git history) and batch-capture the durable knowledge as provisional nodes —
+key Decisions with their `because` reasons, stated Principles and conventions,
+known Cautions, open Intents — attached to Anchors where several notes share a
+subject. Seed thoroughly — decisions, conventions, gotchas, open threads; trust decay will prune what never gets reused. Point the user at the pane to review the seeded graph. If
+they decline, don't ask again; capture knowledge as it emerges.
+
 ## Answering "why" — retell the reasoning chain
 
 When the user asks *"why did we decide X?"* or *"why is it like this?"*: `search` the topic, then `traverse` the hit along `because`, `replaces`, and `answers` edges and retell the chain as a short narrative — the decision, its reason, what it replaced, and what problem drove it. Include dates when the history matters. This is the core reading skill; it needs no special tool.

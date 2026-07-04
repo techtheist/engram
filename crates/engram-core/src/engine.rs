@@ -434,6 +434,12 @@ impl Engine {
             }
         }
 
+        // Cold start (PLAN §11 / the day-one problem): an empty brief teaches
+        // the assistant to offer seeding instead of reporting nothing.
+        if included.is_empty() && self.store.all_nodes()?.is_empty() {
+            out.push_str(COLD_START_BRIEF);
+        }
+
         self.store.touch(&included)?;
         Ok(out)
     }
@@ -445,6 +451,18 @@ impl Engine {
         self.store.upsert_embedding(&node.id, &vec)
     }
 }
+
+/// Appended to the brief when the graph is empty, so a cold start reads as an
+/// actionable instruction to the assistant rather than an empty digest.
+const COLD_START_BRIEF: &str = "\nThe graph is empty — this is a cold start.\n\n\
+Offer the user a one-time seeding pass (ask first; this is the one capture \
+that must not be silent): read the project's existing canon — README, \
+design/plan docs, recent git history — and batch-capture the durable \
+knowledge as provisional nodes: key Decisions with their reasons (`because` \
+edges), stated Principles and conventions, known Cautions, and open Intents, \
+attached to Anchors where several notes share a subject. Afterward, point the \
+user at the pane to review what was captured. If the user declines, don't ask \
+again — just capture knowledge as it emerges.\n";
 
 /// The text a node is embedded as — kept in one place so write-time similarity
 /// checks embed exactly what storage embeds.
