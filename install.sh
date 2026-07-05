@@ -57,12 +57,13 @@ case "$OS" in
         [ "$ARCH" = "x86_64" ] || die "unsupported Linux arch: $ARCH (x86_64 only for now)"
         if grep -qi microsoft /proc/version 2>/dev/null; then
             # WSL: use the native Windows binary so the daemon runs Windows-side.
-            TARGET="x86_64-pc-windows-msvc" EXT="zip" BIN="engram.exe"
+            # Raw .exe, not the zip — fresh WSL distros ship without unzip.
+            TARGET="x86_64-pc-windows-msvc" EXT="exe" BIN="engram.exe"
         else
             TARGET="x86_64-unknown-linux-gnu"
         fi ;;
     MINGW*|MSYS*|CYGWIN*)
-        TARGET="x86_64-pc-windows-msvc" EXT="zip" BIN="engram.exe" ;;
+        TARGET="x86_64-pc-windows-msvc" EXT="exe" BIN="engram.exe" ;;
     *) die "unsupported OS: $OS" ;;
 esac
 
@@ -93,11 +94,9 @@ say "verifying checksum"
 say "installing $BIN to $BIN_DIR"
 mkdir -p "$BIN_DIR"
 case "$EXT" in
-    tar.gz) tar -xzf "$TMP/$ASSET" -C "$TMP" ;;
-    zip)    command -v unzip >/dev/null || die "unzip is required to extract $ASSET"
-            unzip -oq "$TMP/$ASSET" -d "$TMP" ;;
+    tar.gz) tar -xzf "$TMP/$ASSET" -C "$TMP" && mv "$TMP/$BIN" "$BIN_DIR/$BIN" ;;
+    exe)    mv "$TMP/$ASSET" "$BIN_DIR/$BIN" ;;
 esac
-mv "$TMP/$BIN" "$BIN_DIR/$BIN"
 chmod +x "$BIN_DIR/$BIN"
 
 case ":$PATH:" in *":$BIN_DIR:"*) ;; *)

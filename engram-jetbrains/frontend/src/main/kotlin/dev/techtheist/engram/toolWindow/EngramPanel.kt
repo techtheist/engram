@@ -152,6 +152,11 @@ internal class EngramPanel(
         body("wires the repo for your AI assistant (on Windows: inside WSL2):")
         gap()
         mono(EngramBackend.INSTALL_COMMAND)
+        if (com.intellij.openapi.util.SystemInfo.isWindows) {
+            gap()
+            body("WSL2 is required — no WSL yet? Run “wsl --install” in an")
+            body("admin PowerShell, restart, then run the command in a WSL terminal.")
+        }
         gap()
         button("Copy install command") {
             CopyPasteManager.getInstance().setContents(StringSelection(EngramBackend.INSTALL_COMMAND))

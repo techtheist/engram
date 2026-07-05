@@ -1,3 +1,4 @@
+import { spawnSync } from 'child_process'
 import { existsSync } from 'fs'
 import { delimiter, join } from 'path'
 import * as vscode from 'vscode'
@@ -44,9 +45,28 @@ function workspaceRoot(): string | undefined {
     return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
 }
 
+/** WSL present with at least one distro? (`wsl.exe` output is UTF-16LE — strip NULs.) */
+function wslReady(): boolean {
+    const res = spawnSync('wsl.exe', ['-l', '-q'], { encoding: 'utf8', timeout: 5000 })
+    if (res.error || res.status !== 0) return false
+    return (res.stdout ?? '').split('\u0000').join('').trim().length > 0
+}
+
 /** Pre-type the install one-liner in a terminal; the user reviews and hits Enter. */
-export function installBackend(): void {
+export async function installBackend(): Promise<void> {
     const isWin = process.platform === 'win32'
+    if (isWin && !wslReady()) {
+        const pick = await vscode.window.showErrorMessage(
+            'Engram needs WSL2 on Windows. Install it from an admin PowerShell with `wsl --install`, ' +
+                'restart, then run "Engram: Install Backend" again.',
+            'Copy wsl --install',
+            'Open WSL docs',
+        )
+        if (pick === 'Copy wsl --install') await vscode.env.clipboard.writeText('wsl --install')
+        if (pick === 'Open WSL docs')
+            await vscode.env.openExternal(vscode.Uri.parse('https://learn.microsoft.com/windows/wsl/install'))
+        return
+    }
     const terminal = vscode.window.createTerminal({
         name: 'Engram setup',
         cwd: workspaceRoot(),

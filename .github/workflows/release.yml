@@ -63,23 +63,30 @@ jobs:
           ASSET="engram-${RELEASE_TAG}-${{ matrix.target }}.tar.gz"
           tar -czf "$ASSET" -C target/release engram
           shasum -a 256 "$ASSET" > "$ASSET.sha256"
-          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
+          echo "ASSETS=$ASSET $ASSET.sha256" >> "$GITHUB_ENV"
 
-      - name: Package zip + checksum (Windows)
+      # Two Windows assets: the zip for humans, and the raw .exe so install.sh
+      # needs no unzip inside WSL (fresh Ubuntu ships without it).
+      - name: Package zip + raw exe + checksums (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $asset = "engram-$env:RELEASE_TAG-${{ matrix.target }}.zip"
-          Compress-Archive -Path target/release/engram.exe -DestinationPath $asset
-          $hash = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
-          "$hash  $asset" | Out-File -Encoding ascii "$asset.sha256"
-          "ASSET=$asset" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+          $zip = "engram-$env:RELEASE_TAG-${{ matrix.target }}.zip"
+          $exe = "engram-$env:RELEASE_TAG-${{ matrix.target }}.exe"
+          Compress-Archive -Path target/release/engram.exe -DestinationPath $zip
+          Copy-Item target/release/engram.exe $exe
+          foreach ($f in @($zip, $exe)) {
+            $hash = (Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
+            "$hash  $f" | Out-File -Encoding ascii "$f.sha256"
+          }
+          "ASSETS=$zip $zip.sha256 $exe $exe.sha256" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
 
       - name: Attach to release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$RELEASE_TAG" "$ASSET" "$ASSET.sha256" --clobber
+        # Deliberately unquoted: ASSETS is a space-separated file list.
+        run: gh release upload "$RELEASE_TAG" $ASSETS --clobber
 
   jetbrains:
     name: JetBrains — sign, attach, publish

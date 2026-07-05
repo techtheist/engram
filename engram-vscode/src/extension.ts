@@ -15,7 +15,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
         vscode.commands.registerCommand('engram.openInEditor', () => openInEditor(context)),
         vscode.commands.registerCommand('engram.configureMcp', configureMcp),
-        vscode.commands.registerCommand('engram.installBackend', installBackend),
+        vscode.commands.registerCommand('engram.installBackend', () => void installBackend()),
         vscode.commands.registerCommand('engram.startDaemon', startDaemon),
         vscode.commands.registerCommand('engram.reload', () => {
             provider.reload()
