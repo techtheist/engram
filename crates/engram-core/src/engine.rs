@@ -172,7 +172,9 @@ impl Engine {
     }
 
     /// Export the whole graph as a portable, diffable snapshot. Nodes and edges
-    /// are sorted (created_at, id) so re-exports produce stable git diffs.
+    /// are sorted (created_at, id), and the computed trust fields are zeroed —
+    /// they're a function of "now", and a time-dependent export would never
+    /// produce stable git diffs. Importers recompute trust from the timestamps.
     pub fn export(&self) -> Result<ExportGraph> {
         let mut nodes = self.store.all_nodes()?;
         let mut edges = self.store.all_edges()?;
@@ -180,6 +182,10 @@ impl Engine {
         let key_e = |e: &Edge| (e.created_at, e.id.clone());
         nodes.sort_by_key(key_n);
         edges.sort_by_key(key_e);
+        for n in &mut nodes {
+            n.trust = 0.0;
+            n.stale = false;
+        }
         Ok(ExportGraph {
             version: EXPORT_VERSION,
             nodes,

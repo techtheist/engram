@@ -398,8 +398,17 @@ fn export_import_roundtrip() {
     assert_eq!(summary.nodes, 2);
     assert_eq!(summary.edges, 1);
 
-    // ids + content preserved exactly
-    assert_eq!(fresh.get_node(&a.id).unwrap().unwrap(), a);
+    // ids + content preserved exactly (trust is computed from "now" on every
+    // read, so normalize it away — the timestamps it derives from ARE compared)
+    let normalize = |mut n: Node| {
+        n.trust = 0.0;
+        n.stale = false;
+        n
+    };
+    assert_eq!(
+        normalize(fresh.get_node(&a.id).unwrap().unwrap()),
+        normalize(a.clone())
+    );
     assert_eq!(fresh.edges_out(&a.id).unwrap().len(), 1);
     // embeddings regenerated on import → search works
     assert_eq!(fresh.search("rust", &[], 5).unwrap()[0].id, a.id);
