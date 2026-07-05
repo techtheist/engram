@@ -367,20 +367,30 @@ impl Store {
     }
 
     /// What `decay` *would* archive at `now` — the dry-run / preview query.
+    /// Episodic nodes age out at the full TTL; volatile ones at half of it
+    /// (the most perishable durability class must decay fastest).
     pub fn decay_candidates(&self, ttl_secs: i64, now: i64) -> Result<Vec<String>> {
-        let cutoff = now - ttl_secs;
+        let episodic_cutoff = now - ttl_secs;
+        let volatile_cutoff = now - ttl_secs / crate::policy::VOLATILE_TTL_DIVISOR;
         let mut stmt = self.conn.prepare(
             "SELECT id FROM nodes
              WHERE valid_until IS NULL
-               AND durability = 'episodic'
                AND source = 'claude'
                AND COALESCE(confidence, 0) < ?1
-               AND COALESCE(last_confirmed, created_at) < ?2",
+               AND (
+                     (durability = 'episodic' AND COALESCE(last_confirmed, created_at) < ?2)
+                  OR (durability = 'volatile' AND COALESCE(last_confirmed, created_at) < ?3)
+               )",
         )?;
         let ids: Vec<String> = stmt
-            .query_map(params![crate::policy::TRUSTED_THRESHOLD, cutoff], |r| {
-                r.get(0)
-            })?
+            .query_map(
+                params![
+                    crate::policy::TRUSTED_THRESHOLD,
+                    episodic_cutoff,
+                    volatile_cutoff
+                ],
+                |r| r.get(0),
+            )?
             .collect::<rusqlite::Result<_>>()?;
         Ok(ids)
     }
@@ -653,7 +663,8 @@ impl Store {
             if relevance <= 0.0 {
                 continue;
             }
-            let score = relevance * (1.0 + trust_boost(&node));
+            let age = crate::now() - node.created_at;
+            let score = relevance * (1.0 + trust_boost(&node)) * recency_factor(age);
             let snippet = snippets
                 .remove(id.as_str())
                 .unwrap_or_else(|| excerpt(&node));
@@ -818,6 +829,21 @@ impl Store {
         self.conn.execute(&sql, vals.as_slice())?;
         Ok(())
     }
+}
+
+/// Newness multiplier for hybrid search, in [1.0, 1.0 + SEARCH_RECENCY_BOOST]:
+/// full bonus at age zero, halving every SEARCH_RECENCY_HALF_LIFE_SECS. Breaks
+/// near-ties toward current knowledge; embeddings carry no time signal, so the
+/// preference has to live in scoring.
+fn recency_factor(age_secs: i64) -> f64 {
+    let half_life = crate::policy::SEARCH_RECENCY_HALF_LIFE_SECS as f64;
+    let decayed = 0.5_f64.powf(age_secs.max(0) as f64 / half_life);
+    1.0 + crate::policy::SEARCH_RECENCY_BOOST * decayed
+}
+
+#[cfg(test)]
+pub(crate) fn recency_factor_for_tests(age_secs: i64) -> f64 {
+    recency_factor(age_secs)
 }
 
 fn trust_boost(node: &Node) -> f64 {

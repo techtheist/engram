@@ -34,7 +34,7 @@ enum Command {
     Export(ExportArgs),
     /// Import a JSON snapshot (upsert by id; idempotent).
     Import(ImportArgs),
-    /// Archive stale provisional episodic nodes not reconfirmed within the TTL.
+    /// Archive stale provisional nodes: episodic past the TTL, volatile past half of it.
     Decay(DecayArgs),
     /// Print the session-start brief: a compact markdown digest of the graph's
     /// canon (conflicts, open work, principles, decisions, cautions).

@@ -5,7 +5,7 @@
 [![JetBrains plugin](https://github.com/techtheist/engram/actions/workflows/jetbrains.yml/badge.svg)](https://github.com/techtheist/engram/actions/workflows/jetbrains.yml)
 [![VSCode extension](https://github.com/techtheist/engram/actions/workflows/vscode.yml/badge.svg)](https://github.com/techtheist/engram/actions/workflows/vscode.yml)
 [![JetBrains Marketplace](https://img.shields.io/jetbrains/plugin/v/32654-engram.svg?label=JetBrains%20Marketplace)](https://plugins.jetbrains.com/plugin/32654-engram)
-[![VS Marketplace](https://img.shields.io/visual-studio-marketplace/v/techtheist.engram-alpha?label=VS%20Marketplace)](https://marketplace.visualstudio.com/items?itemName=techtheist.engram-alpha)
+[![VS Marketplace](https://vsmarketplacebadges.dev/version/techtheist.engram-alpha.svg?label=VS%20Marketplace)](https://marketplace.visualstudio.com/items?itemName=techtheist.engram-alpha)
 [![Open VSX](https://img.shields.io/open-vsx/v/techtheist/engram-alpha?label=Open%20VSX)](https://open-vsx.org/extension/techtheist/engram-alpha)
 
 > Durable, inspectable long-term project memory for AI coding assistants. Local-first, user-owned, graph-first.
@@ -61,6 +61,34 @@ How much your assistant writes to the graph is set by which **skill variant** yo
 - **aggressive** — maximum capture; Engram becomes the spine of the project's decision history (stale, unused nodes decay out).
 
 Engram complements Claude Code's built-in memory rather than replacing it: it holds the project's *reasoning* — decisions, conflicts, gotchas — not session workflow or code structure.
+
+## The ontology
+
+Eight node types, each answering a different question about the project:
+
+| Type | Holds |
+|---|---|
+| **Principle** | A stable preference or convention — *"local-first, no cloud"* |
+| **Decision** | A choice made for a reason — *"Rust backend, because…"* |
+| **Caution** | A gotcha or constraint that bit (or will bite) — *"relative `--db` creates an empty graph"* |
+| **Problem** | Something that went wrong |
+| **Resolution** | How a Problem was actually solved |
+| **Insight** | A non-obvious realization worth carrying forward |
+| **Intent** | A TODO or deferred idea that should survive the session |
+| **Anchor** | A code subject other nodes attach to — *"the RAG layer"* |
+
+Edges read as English sentences: a Decision **because** a Principle, a Resolution **answers** a Problem, an Insight **builds-on** another, any node **about** an Anchor. The two that keep the graph honest are **replaces** (supersession — old knowledge stays as history) and **conflicts-with** (an explicit, visible contradiction). There is deliberately no `relates_to`: if no real verb fits, the link doesn't belong.
+
+## Trust & decay
+
+Memory tools die from noise, so the graph prunes itself:
+
+- Nodes written by the assistant start **provisional** (confidence 0.5). They earn trust by being **reconfirmed** — revisited in a later session because they were still relevant — or by your approval in the pane's review queue (only you can reach 100%).
+- Every node has a **durability**: `stable` (principles, decisions, cautions) never decays; `episodic` (problems, resolutions, insights) is archived after **14 days** without reconfirmation; `volatile` (intents, transient notes) after **7 days**. Trusted, user-created, and stable nodes are never touched.
+- The daemon runs the sweep automatically (at startup and daily). Archived nodes leave search and the pane but stay in history and exports — nothing is silently hard-deleted; that's reserved for you.
+- Search folds this in: results rank by relevance × trust, with a small recency bonus so fresher knowledge wins near-ties against stale look-alikes.
+
+The net effect: capture can be liberal, because whatever never proves useful quietly ages out.
 
 ## Stack
 Rust core (`rmcp`, `rusqlite`, `sqlite-vec`, `fastembed`) · Vue 3 + TypeScript + Vue Flow · JetBrains (JCEF) & VSCode (Webview) wrappers · MIT licensed.

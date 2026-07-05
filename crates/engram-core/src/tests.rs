@@ -564,6 +564,45 @@ fn decay_archives_only_stale_provisional_episodic() {
 }
 
 #[test]
+fn volatile_decays_at_half_ttl_episodic_at_full() {
+    let e = engine();
+    let ttl = 1000i64;
+
+    let mut v = new_node(NodeType::Intent, "temporary idea", "");
+    v.durability = Durability::Volatile;
+    let volatile = e.add_node(v).unwrap();
+    let mut ep = new_node(NodeType::Insight, "episodic hunch", "");
+    ep.durability = Durability::Episodic;
+    let episodic = e.add_node(ep).unwrap();
+
+    // Past half the TTL: volatile goes, episodic survives.
+    let half = volatile.created_at + ttl / 2 + 1;
+    let archived = e.store().decay(ttl, half).unwrap();
+    assert!(archived.contains(&volatile.id), "volatile decays at ttl/2");
+    assert!(
+        !archived.contains(&episodic.id),
+        "episodic survives at ttl/2"
+    );
+
+    // Past the full TTL: episodic goes too.
+    let full = episodic.created_at + ttl + 1;
+    let archived = e.store().decay(ttl, full).unwrap();
+    assert!(archived.contains(&episodic.id), "episodic decays at ttl");
+}
+
+#[test]
+fn recency_factor_prefers_newer() {
+    use crate::store::recency_factor_for_tests as rf;
+    let day = 24 * 60 * 60;
+    assert!(rf(0) > rf(30 * day), "newer beats older");
+    assert!(rf(0) <= 1.0 + crate::policy::SEARCH_RECENCY_BOOST + 1e-9);
+    assert!(rf(3650 * day) >= 1.0, "bonus never penalizes below 1.0");
+    // Half-life: at 30 days the bonus is half the ceiling.
+    let bonus_at_half_life = rf(crate::policy::SEARCH_RECENCY_HALF_LIFE_SECS) - 1.0;
+    assert!((bonus_at_half_life - crate::policy::SEARCH_RECENCY_BOOST / 2.0).abs() < 1e-9);
+}
+
+#[test]
 fn reaching_trusted_protects_from_decay() {
     let e = engine();
     let ttl = 1000i64;

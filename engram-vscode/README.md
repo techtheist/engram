@@ -1,8 +1,8 @@
 # Engram — VS Code extension
 
 [![Build](https://github.com/techtheist/engram/actions/workflows/vscode.yml/badge.svg)](https://github.com/techtheist/engram/actions/workflows/vscode.yml)
-[![VS Marketplace](https://img.shields.io/visual-studio-marketplace/v/techtheist.engram-alpha?label=VS%20Marketplace)](https://marketplace.visualstudio.com/items?itemName=techtheist.engram-alpha)
-[![Installs](https://img.shields.io/visual-studio-marketplace/i/techtheist.engram-alpha?label=Installs)](https://marketplace.visualstudio.com/items?itemName=techtheist.engram-alpha)
+[![VS Marketplace](https://vsmarketplacebadges.dev/version/techtheist.engram-alpha.svg?label=VS%20Marketplace)](https://marketplace.visualstudio.com/items?itemName=techtheist.engram-alpha)
+[![Installs](https://vsmarketplacebadges.dev/installs-short/techtheist.engram-alpha.svg)](https://marketplace.visualstudio.com/items?itemName=techtheist.engram-alpha)
 [![Open VSX](https://img.shields.io/open-vsx/v/techtheist/engram-alpha?label=Open%20VSX)](https://open-vsx.org/extension/techtheist/engram-alpha)
 
 Embeds the [Engram](https://github.com/techtheist/engram) graph pane in VS Code.

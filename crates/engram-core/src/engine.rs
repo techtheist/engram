@@ -107,8 +107,9 @@ impl Engine {
         self.update_node(id, NodePatch::default())
     }
 
-    /// Archive stale provisional episodic nodes (not reconfirmed within `ttl`).
-    /// Returns the archived ids. Trusted, stable, and user nodes are untouched.
+    /// Archive stale provisional nodes — episodic past `ttl`, volatile past
+    /// `ttl / 2`. Returns the archived ids. Trusted, stable, and user nodes
+    /// are untouched.
     pub fn decay(&self, ttl_secs: i64) -> Result<Vec<String>> {
         let archived = self.store.decay(ttl_secs, crate::now())?;
         for id in &archived {

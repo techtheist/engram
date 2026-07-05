@@ -13,6 +13,9 @@ pub const RECONFIRM_BUMP: f64 = 0.15;
 pub const CLAUDE_CONFIDENCE_CAP: f64 = 0.9;
 /// Default time-to-live before a stale provisional episodic node is archived.
 pub const DEFAULT_DECAY_TTL_SECS: i64 = 14 * 24 * 60 * 60; // 14 days
+/// Volatile nodes decay at ttl / this divisor (7 days at the default TTL) —
+/// volatile is the most perishable durability class.
+pub const VOLATILE_TTL_DIVISOR: i64 = 2;
 /// Same-type cosine similarity at/above which `add_note` treats the new note
 /// as a duplicate and returns the existing match instead of creating (PLAN §6A).
 pub const DUPLICATE_SIMILARITY: f64 = 0.90;
@@ -31,3 +34,10 @@ pub const SEARCH_MIN_SCORE: f64 = 0.1;
 /// Hits scoring below this fraction of the best hit are dropped — the weak
 /// FTS OR-recall tail that rides in behind one genuinely relevant match.
 pub const SEARCH_RELATIVE_CUT: f64 = 0.25;
+/// Newness bonus ceiling in hybrid search: a just-created node scores up to
+/// this fraction higher than an otherwise-identical old one. Multiplicative
+/// and small — relevance still dominates; this only breaks near-ties in
+/// favor of current knowledge.
+pub const SEARCH_RECENCY_BOOST: f64 = 0.15;
+/// Age at which the newness bonus has halved.
+pub const SEARCH_RECENCY_HALF_LIFE_SECS: i64 = 30 * 24 * 60 * 60; // 30 days

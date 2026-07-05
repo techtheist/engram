@@ -103,11 +103,18 @@ mod fast {
         pub fn new() -> Result<Self> {
             let model = match model_dir().filter(|d| has_all_files(d)) {
                 Some(dir) => Self::from_dir(&dir)?,
-                None => TextEmbedding::try_new(
-                    InitOptions::new(EmbeddingModel::BGESmallENV15)
-                        .with_show_download_progress(false),
-                )
-                .map_err(emb_err)?,
+                None => {
+                    // Keep the hf_hub download out of the project: fastembed's
+                    // default cache is ./.fastembed_cache in the cwd (i.e. the
+                    // user's repo). Cache machine-wide next to our own model
+                    // dir instead, so every repo shares one copy.
+                    let mut opts = InitOptions::new(EmbeddingModel::BGESmallENV15)
+                        .with_show_download_progress(false);
+                    if let Some(cache) = shared_cache_dir() {
+                        opts = opts.with_cache_dir(cache);
+                    }
+                    TextEmbedding::try_new(opts).map_err(emb_err)?
+                }
             };
             Ok(Self {
                 model: Mutex::new(model),
@@ -159,9 +166,19 @@ mod fast {
         if let Ok(dir) = std::env::var("ENGRAM_MODEL_DIR") {
             return Some(PathBuf::from(dir));
         }
+        home().map(|h| h.join(".cache/engram/bge-small-en-v1.5"))
+    }
+
+    /// Machine-wide cache for fastembed's own hf_hub downloads.
+    fn shared_cache_dir() -> Option<PathBuf> {
+        home().map(|h| h.join(".cache/engram/fastembed"))
+    }
+
+    fn home() -> Option<PathBuf> {
         std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
             .ok()
-            .map(|h| PathBuf::from(h).join(".cache/engram/bge-small-en-v1.5"))
+            .map(PathBuf::from)
     }
 
     fn has_all_files(dir: &Path) -> bool {
