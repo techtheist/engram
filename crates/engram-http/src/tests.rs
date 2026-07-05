@@ -246,35 +246,27 @@ async fn export_then_import_into_fresh_app() {
 }
 
 #[tokio::test]
-async fn reconfirm_bumps_confidence() {
+async fn reconfirm_stamps_last_seen_and_approve_maxes_trust() {
     let app = test_app();
-    // claude node starts provisional (0.5)
+    // claude node starts on the unseen curve (trust 0.5, unapproved)
     let (_, n) = req(&app, "POST", "/nodes", Some(decision("Provisional", "x"))).await;
     let id = n["id"].as_str().unwrap();
-    assert_eq!(n["confidence"], 0.5);
+    assert!((n["trust"].as_f64().unwrap() - 0.5).abs() < 1e-6);
+    assert!(n["approved_at"].is_null());
 
     let (status, got) = req(&app, "POST", &format!("/nodes/{id}/reconfirm"), None).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(got["confidence"].as_f64().unwrap() > 0.5);
+    assert!(!got["last_seen"].is_null(), "reconfirm stamps last_seen");
+    assert!(got["trust"].as_f64().unwrap() > 0.55);
 
-    let (status, _) = req(&app, "POST", "/nodes/ghost/reconfirm", None).await;
+    let (status, approved) = req(&app, "POST", &format!("/nodes/{id}/approve"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!approved["approved_at"].is_null());
+    assert!(approved["trust"].as_f64().unwrap() > 0.99);
+    assert_eq!(approved["stale"], false);
+
+    let (status, _) = req(&app, "POST", "/nodes/ghost/approve", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn decay_endpoint_runs() {
-    let app = test_app();
-    // fresh nodes won't be stale, so a default-TTL decay archives nothing
-    req(&app, "POST", "/nodes", Some(decision("fresh", ""))).await;
-    let (status, res) = req(&app, "POST", "/decay", None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(res["archived"], 0);
-
-    // ttl_days=0 makes everything eligible by clock, but a stable Decision still
-    // isn't (only provisional episodic decays) -> still 0
-    let (status, res) = req(&app, "POST", "/decay?ttl_days=0", None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(res["archived"], 0);
 }
 
 #[tokio::test]
@@ -408,41 +400,4 @@ async fn search_hits_include_neighbors() {
     let neighbors = hit["neighbors"].as_array().unwrap();
     assert!(!neighbors.is_empty());
     assert_eq!(neighbors[0]["edge_type"], "replaces");
-}
-
-#[tokio::test]
-async fn decay_dry_run_previews_without_archiving() {
-    let app = test_app();
-    let (_, node) = req(
-        &app,
-        "POST",
-        "/nodes",
-        Some(json!({
-            "type": "Insight", "title": "stale provisional", "body": "",
-            "durability": "episodic", "source": "claude", "confidence": 0.5
-        })),
-    )
-    .await;
-    let id = node["id"].as_str().unwrap();
-
-    // simulate a clock far in the future: candidate appears, nothing archives
-    let far = 4102444800i64; // 2100-01-01
-    let (status, preview) = req(
-        &app,
-        "POST",
-        &format!("/decay?ttl_days=14&as_of={far}"),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(preview["dry_run"], true);
-    assert!(preview["ids"].as_array().unwrap().iter().any(|v| v == id));
-
-    let (_, got) = req(&app, "GET", &format!("/nodes/{id}"), None).await;
-    assert!(got["valid_until"].is_null(), "dry run must not archive");
-
-    // real decay with default clock archives nothing (node is fresh)
-    let (_, real) = req(&app, "POST", "/decay?ttl_days=14", None).await;
-    assert_eq!(real["dry_run"], false);
-    assert_eq!(real["archived"], 0);
 }

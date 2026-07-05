@@ -13,7 +13,6 @@ fn new_node(t: NodeType, title: &str, body: &str) -> NewNode {
         source: Source::Claude,
         session_id: Some("s1".to_string()),
         status: None,
-        confidence: Some(0.5),
         code_refs: vec![],
     }
 }
@@ -76,12 +75,11 @@ fn update_node_patches_only_given_fields() {
         .unwrap();
     let patch = NodePatch {
         status: Some(NodeStatus::Resolved),
-        confidence: Some(0.9),
         ..Default::default()
     };
     let updated = s.update_node(&n.id, patch).unwrap();
     assert_eq!(updated.status, Some(NodeStatus::Resolved));
-    assert_eq!(updated.confidence, Some(0.9));
+    assert!(updated.last_seen.is_some(), "update stamps last_seen");
     assert_eq!(updated.title, "flaky test"); // untouched
     assert_eq!(updated.body.as_deref(), Some("intermittent"));
 }
@@ -326,12 +324,12 @@ fn trust_boost_prefers_user_source() {
     let e = engine();
     let mut claude = new_node(NodeType::Decision, "shared title here", "shared body text");
     claude.source = Source::Claude;
-    claude.confidence = Some(0.5);
+    claude.durability = Durability::Episodic;
     let c = e.add_node(claude).unwrap();
 
     let mut user = new_node(NodeType::Decision, "shared title here", "shared body text");
     user.source = Source::User;
-    user.confidence = Some(0.5);
+    user.durability = Durability::Episodic;
     let u = e.add_node(user).unwrap();
 
     let hits = e.search("shared title", &[], 5).unwrap();
@@ -442,152 +440,89 @@ fn export_order_is_stable() {
 }
 
 #[test]
-fn add_node_trust_defaults_by_source() {
-    let e = engine();
-    let mk = |src: Source| NewNode {
-        node_type: NodeType::Insight,
-        title: "t".into(),
-        body: None,
-        durability: Durability::Episodic,
-        source: src,
-        session_id: None,
-        status: None,
-        confidence: None, // let the policy decide
-        code_refs: vec![],
-    };
-    let user = e.add_node(mk(Source::User)).unwrap();
-    let claude = e.add_node(mk(Source::Claude)).unwrap();
-    assert_eq!(user.confidence, Some(crate::policy::USER_CONFIDENCE));
-    assert_eq!(
-        claude.confidence,
-        Some(crate::policy::PROVISIONAL_CONFIDENCE)
-    );
-}
+fn trust_curves_follow_the_three_timestamps() {
+    use crate::policy::{self, trust};
+    let day = 24 * 60 * 60;
+    let t0 = 1_000_000i64;
 
-#[test]
-fn reconfirm_promotes_provisional_toward_trusted_and_caps() {
-    let e = engine();
-    let n = e.add_node(new_node(NodeType::Insight, "idea", "")).unwrap();
-    assert_eq!(n.confidence, Some(0.5)); // new_node sets 0.5
-
-    let c1 = e.reconfirm(&n.id).unwrap().confidence.unwrap();
-    assert!((c1 - 0.65).abs() < 1e-9);
-    let c2 = e.reconfirm(&n.id).unwrap().confidence.unwrap();
+    // created-only: 50% now, linear to the floor at half a year
+    assert!((trust(t0, None, None, t0) - policy::TRUST_UNSEEN_START).abs() < 1e-9);
+    let half_window = t0 + policy::PROVISIONAL_TRUST_WINDOW_SECS / 2;
+    let mid = trust(t0, None, None, half_window);
+    assert!((mid - (policy::TRUST_UNSEEN_START + policy::TRUST_FLOOR) / 2.0).abs() < 1e-6);
     assert!(
-        c2 >= crate::policy::TRUSTED_THRESHOLD,
-        "two reconfirmations should reach trusted"
+        (trust(
+            t0,
+            None,
+            None,
+            t0 + policy::PROVISIONAL_TRUST_WINDOW_SECS + day
+        ) - policy::TRUST_FLOOR)
+            .abs()
+            < 1e-9
     );
 
-    // never exceeds the Claude cap, no matter how many times
-    for _ in 0..10 {
-        e.reconfirm(&n.id).unwrap();
-    }
-    let capped = e.get_node(&n.id).unwrap().unwrap().confidence.unwrap();
-    assert!((capped - crate::policy::CLAUDE_CONFIDENCE_CAP).abs() < 1e-9);
+    // seen: restarts at 60% from last_seen, beats created-only
+    let seen = trust(t0, Some(t0 + 100 * day), None, t0 + 100 * day);
+    assert!((seen - policy::TRUST_SEEN_START).abs() < 1e-9);
+    assert!(seen > trust(t0, None, None, t0 + 100 * day));
+
+    // approved: 100% at approval, floor 20% past a year, wins over last_seen
+    assert!((trust(t0, Some(t0), Some(t0), t0) - policy::TRUST_APPROVED_START).abs() < 1e-9);
+    let old_approval = trust(
+        t0,
+        None,
+        Some(t0),
+        t0 + policy::APPROVED_TRUST_WINDOW_SECS + day,
+    );
+    assert!((old_approval - policy::TRUST_APPROVED_FLOOR).abs() < 1e-9);
+
+    // staleness threshold
+    assert!(policy::is_stale(policy::STALE_TRUST - 0.01));
+    assert!(!policy::is_stale(policy::STALE_TRUST));
 }
 
 #[test]
-fn explicit_confidence_in_patch_is_respected() {
+fn user_nodes_are_approved_on_creation_and_approve_restores_trust() {
     let e = engine();
-    let n = e.add_node(new_node(NodeType::Insight, "idea", "")).unwrap();
-    let updated = e
-        .update_node(
-            &n.id,
-            NodePatch {
-                confidence: Some(0.2),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    assert_eq!(updated.confidence, Some(0.2)); // not auto-bumped
-}
-
-#[test]
-fn decay_archives_only_stale_provisional_episodic() {
-    let e = engine();
-    let ttl = 1000i64;
-
-    // eligible: claude, episodic, provisional, stale
-    let mut s = new_node(NodeType::Insight, "old hunch", "");
-    s.durability = Durability::Episodic;
-    let stale = e.add_node(s).unwrap();
-    // an open Problem that's also stale+provisional (worklist item)
-    let mut prob = new_node(NodeType::Problem, "old flaky thing", "");
-    prob.durability = Durability::Episodic;
-    prob.status = Some(NodeStatus::Open);
-    let stale_problem = e.add_node(prob).unwrap();
-
-    // NOT eligible: trusted (high confidence)
-    let mut t = new_node(NodeType::Insight, "trusted hunch", "");
-    t.durability = Durability::Episodic;
-    t.confidence = Some(0.8);
-    let trusted = e.add_node(t).unwrap();
-    // NOT eligible: stable durability
-    let stable = e
-        .add_node(new_node(NodeType::Decision, "a decision", ""))
-        .unwrap();
-    // NOT eligible: user-sourced
-    let mut u = new_node(NodeType::Insight, "user hunch", "");
-    u.durability = Durability::Episodic;
+    let mut u = new_node(NodeType::Principle, "user truth", "");
     u.source = Source::User;
     let user = e.add_node(u).unwrap();
-
-    // Age the clock past the TTL via the store's decay (now is a parameter).
-    let future = stale.created_at + ttl + 1;
-    let archived = e.store().decay(ttl, future).unwrap();
-
-    assert!(archived.contains(&stale.id));
-    assert!(archived.contains(&stale_problem.id));
-    assert!(!archived.contains(&trusted.id));
-    assert!(!archived.contains(&stable.id));
-    assert!(!archived.contains(&user.id));
-
-    // archived node is marked (valid_until set) but still exists for history
-    let got = e.get_node(&stale.id).unwrap().unwrap();
-    assert!(got.valid_until.is_some());
-
-    // archived nodes drop out of retrieval...
-    let hits = e.search("hunch flaky", &[], 10).unwrap();
-    let ids: Vec<&str> = hits.iter().map(|h| h.id.as_str()).collect();
-    assert!(!ids.contains(&stale.id.as_str()));
-    assert!(!ids.contains(&stale_problem.id.as_str()));
-    assert!(ids.contains(&trusted.id.as_str()));
-    // ...including the open worklist
     assert!(
-        e.list_open(&[])
-            .unwrap()
-            .iter()
-            .all(|n| n.id != stale_problem.id)
+        user.approved_at.is_some(),
+        "user knowledge approved by construction"
     );
-    // ...but remain in the full export (history preserved)
-    assert!(e.export().unwrap().nodes.iter().any(|n| n.id == stale.id));
+    assert!(user.trust > 0.99);
+
+    let claude = e
+        .add_node(new_node(NodeType::Insight, "hunch", ""))
+        .unwrap();
+    assert!(claude.approved_at.is_none());
+    assert!((claude.trust - crate::policy::TRUST_UNSEEN_START).abs() < 1e-6);
+
+    let approved = e.approve(&claude.id).unwrap();
+    assert!(approved.approved_at.is_some());
+    assert!(approved.trust > 0.99);
+    assert!(!approved.stale);
 }
 
 #[test]
-fn volatile_decays_at_half_ttl_episodic_at_full() {
+fn search_and_reconfirm_stamp_last_seen() {
     let e = engine();
-    let ttl = 1000i64;
+    let n = e
+        .add_node(new_node(NodeType::Decision, "sqlite storage decision", ""))
+        .unwrap();
+    assert!(n.last_seen.is_none(), "fresh node has never been seen");
 
-    let mut v = new_node(NodeType::Intent, "temporary idea", "");
-    v.durability = Durability::Volatile;
-    let volatile = e.add_node(v).unwrap();
-    let mut ep = new_node(NodeType::Insight, "episodic hunch", "");
-    ep.durability = Durability::Episodic;
-    let episodic = e.add_node(ep).unwrap();
-
-    // Past half the TTL: volatile goes, episodic survives.
-    let half = volatile.created_at + ttl / 2 + 1;
-    let archived = e.store().decay(ttl, half).unwrap();
-    assert!(archived.contains(&volatile.id), "volatile decays at ttl/2");
+    let hits = e.search("sqlite storage decision", &[], 5).unwrap();
+    assert!(hits.iter().any(|h| h.id == n.id));
+    let seen = e.get_node(&n.id).unwrap().unwrap();
     assert!(
-        !archived.contains(&episodic.id),
-        "episodic survives at ttl/2"
+        seen.last_seen.is_some(),
+        "search surfacing stamps last_seen"
     );
 
-    // Past the full TTL: episodic goes too.
-    let full = episodic.created_at + ttl + 1;
-    let archived = e.store().decay(ttl, full).unwrap();
-    assert!(archived.contains(&episodic.id), "episodic decays at ttl");
+    let reconfirmed = e.reconfirm(&n.id).unwrap();
+    assert!(reconfirmed.last_seen >= seen.last_seen);
 }
 
 #[test]
@@ -600,25 +535,6 @@ fn recency_factor_prefers_newer() {
     // Half-life: at 30 days the bonus is half the ceiling.
     let bonus_at_half_life = rf(crate::policy::SEARCH_RECENCY_HALF_LIFE_SECS) - 1.0;
     assert!((bonus_at_half_life - crate::policy::SEARCH_RECENCY_BOOST / 2.0).abs() < 1e-9);
-}
-
-#[test]
-fn reaching_trusted_protects_from_decay() {
-    let e = engine();
-    let ttl = 1000i64;
-    let n = e
-        .add_node(new_node(NodeType::Insight, "promote me", ""))
-        .unwrap();
-
-    // two reconfirmations cross the trusted threshold (0.5 -> 0.65 -> 0.8)
-    e.reconfirm(&n.id).unwrap();
-    let c = e.reconfirm(&n.id).unwrap().confidence.unwrap();
-    assert!(c >= crate::policy::TRUSTED_THRESHOLD);
-
-    // even far past the TTL, a trusted node is never archived
-    let archived = e.store().decay(ttl, n.created_at + ttl + 10_000).unwrap();
-    assert!(!archived.contains(&n.id));
-    assert!(e.get_node(&n.id).unwrap().unwrap().valid_until.is_none());
 }
 
 #[test]
@@ -902,26 +818,19 @@ fn brief_digests_the_canon_and_respects_budget() {
 }
 
 #[test]
-fn brief_refreshes_the_decay_clock() {
+fn brief_inclusion_stamps_last_seen() {
     let e = engine();
     let n = e
         .add_node(new_node(NodeType::Principle, "keep it minimal", ""))
         .unwrap();
-    // decay far in the future archives nothing trusted... instead check via
-    // a stale provisional episodic node: briefing it must reset the TTL clock.
-    let mut stale = new_node(NodeType::Insight, "provisional insight", "");
-    stale.durability = Durability::Episodic;
-    let stale = e.add_node(stale).unwrap();
+    assert!(n.last_seen.is_none());
 
     e.brief(6000).unwrap();
-    // immediately after the brief, the node is "fresh": a TTL measured from
-    // just before now archives nothing.
-    let archived = e.store().decay(1, now() + 2).unwrap();
+    let seen = e.get_node(&n.id).unwrap().unwrap();
     assert!(
-        archived.contains(&stale.id),
-        "control: it does decay eventually"
+        seen.last_seen.is_some(),
+        "brief inclusion counts as being surfaced"
     );
-    let _ = n;
 }
 
 #[test]
@@ -941,7 +850,10 @@ fn legacy_uuid_ids_shrink_with_edges_and_embeddings_intact() {
         valid_from: Some(1),
         valid_until: None,
         status: None,
-        confidence: Some(0.5),
+        last_seen: None,
+        approved_at: None,
+        trust: 0.0,
+        stale: false,
         code_refs: vec![],
     };
     let b_node = Node {

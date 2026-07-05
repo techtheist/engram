@@ -42,6 +42,7 @@ export const api = {
         request<SearchHit[]>(`/search?q=${encodeURIComponent(query)}&limit=${limit}`),
 
     reconfirm: (id: string) => request<GraphNode>(`/nodes/${id}/reconfirm`, { method: 'POST' }),
+    approve: (id: string) => request<GraphNode>(`/nodes/${id}/approve`, { method: 'POST' }),
 
     patchNode: (id: string, patch: Record<string, unknown>) =>
         request<GraphNode>(`/nodes/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),

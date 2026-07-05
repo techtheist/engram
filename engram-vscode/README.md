@@ -4,6 +4,7 @@
 [![VS Marketplace](https://vsmarketplacebadges.dev/version/techtheist.engram-alpha.svg?label=VS%20Marketplace)](https://marketplace.visualstudio.com/items?itemName=techtheist.engram-alpha)
 [![Installs](https://vsmarketplacebadges.dev/installs-short/techtheist.engram-alpha.svg)](https://marketplace.visualstudio.com/items?itemName=techtheist.engram-alpha)
 [![Open VSX](https://img.shields.io/open-vsx/v/techtheist/engram-alpha?label=Open%20VSX)](https://open-vsx.org/extension/techtheist/engram-alpha)
+[![Downloads](https://img.shields.io/open-vsx/dt/techtheist/engram-alpha)](https://open-vsx.org/extension/techtheist/engram-alpha)
 
 Embeds the [Engram](https://github.com/techtheist/engram) graph pane in VS Code.
 Engram is a durable, graph-based long-term memory for AI coding assistants — the

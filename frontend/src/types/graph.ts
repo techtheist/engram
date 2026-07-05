@@ -35,7 +35,11 @@ export interface GraphNode {
     valid_from: number | null
     valid_until: number | null
     status: NodeStatus | null
-    confidence: number | null
+    last_seen: number | null
+    approved_at: number | null
+    /** Computed by the backend at read time from the three timestamps. */
+    trust: number
+    stale: boolean
     code_refs: string[]
 }
 

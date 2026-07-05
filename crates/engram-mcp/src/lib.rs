@@ -130,7 +130,6 @@ impl Engram {
                 source: Source::Claude,
                 session_id: a.session_id,
                 status,
-                confidence: Some(0.5), // provisional until reconfirmed/approved
                 code_refs: a.code_refs,
             })
             .map_err(map_err)?;
@@ -238,9 +237,26 @@ impl Engram {
         ok_json(&json!({ "id": edge.id }))
     }
 
+    #[tool(description = "Approve a node: trust restarts at 100% on the slow \
+        one-year curve. ONLY on explicit user demand, or after verifying the \
+        node's content word-by-word against current reality. Routine \
+        still-relevant signals belong in update_node/reconfirm, not here.")]
+    async fn approve_node(
+        &self,
+        Parameters(a): Parameters<ApproveArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let node = self
+            .engine
+            .lock()
+            .unwrap()
+            .approve(&a.id)
+            .map_err(map_err)?;
+        ok_json(&json!({ "ok": true, "id": node.id, "trust": node.trust }))
+    }
+
     #[tool(
         description = "Update fields on an existing node (merge / reclassify / \
-        adjust confidence). Re-embeds when title or body changes."
+        refresh its trust via last_seen). Re-embeds when title or body changes."
     )]
     async fn update_node(
         &self,
@@ -259,7 +275,6 @@ impl Engram {
                 .map(|s| NodeStatus::parse(&s))
                 .transpose()
                 .map_err(map_err)?,
-            confidence: a.confidence,
             valid_until: None,
             code_refs: a.code_refs,
         };
@@ -381,9 +396,12 @@ struct UpdateArgs {
     #[serde(default)]
     status: Option<String>,
     #[serde(default)]
-    confidence: Option<f64>,
-    #[serde(default)]
     code_refs: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct ApproveArgs {
+    id: String,
 }
 
 #[derive(Deserialize, JsonSchema)]

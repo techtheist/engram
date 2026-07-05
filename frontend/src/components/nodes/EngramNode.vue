@@ -12,7 +12,7 @@ const body = computed(() => node.value.body ?? '')
 const accent = computed(() => NODE_ACCENT_VAR[node.value.type])
 
 const archived = computed(() => node.value.valid_until != null)
-const trusted = computed(() => (node.value.confidence ?? 0) >= 0.7)
+const trusted = computed(() => node.value.approved_at != null || node.value.trust >= 0.7)
 const isUser = computed(() => node.value.source === 'user')
 </script>
 
@@ -29,9 +29,10 @@ const isUser = computed(() => node.value.source === 'user')
         <span class="meta-badge">{{ node.durability }}</span>
         <span v-if="node.status" class="meta-badge">{{ node.status }}</span>
         <span class="grow" />
-        <span v-if="isUser" class="trust-badge trust-user" title="User-authored — trusted">user</span>
-        <span v-else-if="trusted" class="trust-badge trust-ok" title="Reconfirmed — trusted">trusted</span>
-        <span v-else class="trust-badge trust-prov" title="Claude-authored, not yet reconfirmed">provisional</span>
+        <span v-if="node.stale" class="trust-badge trust-stale" title="Trust decayed below the stale threshold — review or re-approve">stale</span>
+        <span v-else-if="isUser" class="trust-badge trust-user" title="User-authored — trusted">user</span>
+        <span v-else-if="trusted" class="trust-badge trust-ok" title="Approved / recently seen — trusted">trusted</span>
+        <span v-else class="trust-badge trust-prov" title="Claude-authored, not yet approved">provisional</span>
     </header>
 
     <h4 class="node-title">{{ node.title }}</h4>
@@ -138,6 +139,12 @@ const isUser = computed(() => node.value.source === 'user')
     font-size: var(--text-caption);
     font-weight: 600;
     border: 1px solid transparent;
+}
+
+.trust-stale {
+    color: var(--node-problem);
+    background-color: color-mix(in srgb, var(--node-problem) 16%, transparent);
+    border-color: color-mix(in srgb, var(--node-problem) 40%, transparent);
 }
 
 .trust-prov {

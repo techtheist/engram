@@ -81,8 +81,11 @@ Usually let durability default from the type (Principle/Decision/Caution/Anchor 
 
 ## Trust & staleness
 
-- Nodes you create start **provisional** (lower confidence) and earn trust by being **reconfirmed** — `update_node` them in a later session because they're still relevant — or by user approval in the pane. **Stale provisional nodes decay out**; that's the safety valve that makes aggressive capture affordable.
-- Practical effect: when `search` surfaces an existing node that's still correct, **`update_node` it** (even a small body refinement) instead of re-writing it — that reconfirmation promotes it and keeps it alive.
+Trust is **computed from timestamps**, not stored: a never-surfaced node starts at 50% and fades over half a year; once retrieval surfaces it (search hits and the brief stamp `last_seen` automatically), it restarts at 60% on the same fade; an **approved** node restarts at 100% and fades slowly to 20% over a year. Below 30% a node is **stale** — search results and the brief mark it (`stale: true` / `STALE`).
+
+- **Stale hits**: treat with suspicion. If still true, `update_node` it (any update refreshes `last_seen`); if wrong, supersede or `conflicts-with` it; if the user confirms it verbatim, `approve_node` it.
+- **`approve_node` is restricted**: call it ONLY on explicit user demand ("approve this", "yes that's still right") or after verifying the node's content word-by-word against current reality. Routine still-relevant signals are `update_node`, never approval.
+- Practical effect: knowledge that keeps getting retrieved stays alive by itself; what never surfaces fades to stale and waits in the pane's review queue for the user.
 
 ## The daemon & where the user sees memory
 

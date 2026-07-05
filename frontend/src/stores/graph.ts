@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { TRUSTED_CONFIDENCE } from '@/constants/ontology'
+import { TRUSTED_TRUST } from '@/constants/ontology'
 import { api } from '@/services/api'
 import type { Graph, GraphEdge, GraphNode } from '@/types/graph'
 
@@ -23,10 +23,9 @@ const NO_FILTERS: GraphFilters = {
     showArchived: true,
 }
 
-export function trustLevel(n: GraphNode): 'trusted' | 'provisional' {
-    return n.source === 'user' || (n.confidence ?? 0) >= TRUSTED_CONFIDENCE
-        ? 'trusted'
-        : 'provisional'
+export function trustLevel(n: GraphNode): 'trusted' | 'provisional' | 'stale' {
+    if (n.stale) return 'stale'
+    return n.approved_at != null || n.trust >= TRUSTED_TRUST ? 'trusted' : 'provisional'
 }
 
 interface ChangeEvent {
@@ -208,9 +207,9 @@ export const useGraphStore = defineStore('graph', () => {
         upsertNode(await api.reconfirm(id))
     }
 
-    /** Explicit user approval: full trust, regardless of source (PLAN §6A). */
+    /** Explicit user approval: trust restarts at 100% on the slow curve. */
     async function approve(id: string): Promise<void> {
-        upsertNode(await api.patchNode(id, { confidence: 1.0 }))
+        upsertNode(await api.approve(id))
     }
 
     async function setEdgeStatus(id: string, status: 'active' | 'resolved' | 'dismissed'): Promise<void> {

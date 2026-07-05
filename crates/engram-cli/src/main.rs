@@ -34,8 +34,6 @@ enum Command {
     Export(ExportArgs),
     /// Import a JSON snapshot (upsert by id; idempotent).
     Import(ImportArgs),
-    /// Archive stale provisional nodes: episodic past the TTL, volatile past half of it.
-    Decay(DecayArgs),
     /// Print the session-start brief: a compact markdown digest of the graph's
     /// canon (conflicts, open work, principles, decisions, cautions).
     Brief(BriefArgs),
@@ -101,23 +99,6 @@ struct BriefArgs {
     fake_embeddings: bool,
 }
 
-#[derive(clap::Args)]
-struct DecayArgs {
-    #[arg(long, default_value = ".engram/graph.db")]
-    db: PathBuf,
-    /// Days a provisional episodic node may go unconfirmed before archiving.
-    #[arg(long, default_value_t = 14)]
-    ttl_days: i64,
-    /// Print what would be archived without archiving it.
-    #[arg(long)]
-    dry_run: bool,
-    /// Simulate the clock at this unix timestamp (implies --dry-run).
-    #[arg(long)]
-    as_of: Option<i64>,
-    #[arg(long)]
-    fake_embeddings: bool,
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Logs go to STDERR: stdout is the MCP protocol channel and must stay clean.
@@ -133,7 +114,6 @@ async fn main() -> anyhow::Result<()> {
         Command::Mcp(args) => run_mcp(args).await,
         Command::Export(args) => run_export(args),
         Command::Import(args) => run_import(args),
-        Command::Decay(args) => run_decay(args),
         Command::Brief(args) => run_brief(args),
     }
 }
@@ -141,34 +121,6 @@ async fn main() -> anyhow::Result<()> {
 fn run_brief(args: BriefArgs) -> anyhow::Result<()> {
     let engine = build_engine(&args.db, args.fake_embeddings)?;
     println!("{}", engine.brief(args.max_chars)?);
-    Ok(())
-}
-
-fn run_decay(args: DecayArgs) -> anyhow::Result<()> {
-    let engine = build_engine(&args.db, args.fake_embeddings)?;
-    let ttl_secs = args.ttl_days * 24 * 60 * 60;
-    if args.dry_run || args.as_of.is_some() {
-        let ids = engine.decay_preview(ttl_secs, args.as_of)?;
-        println!(
-            "would archive {} stale node(s) (ttl {} days{}):",
-            ids.len(),
-            args.ttl_days,
-            args.as_of
-                .map(|t| format!(", as of {t}"))
-                .unwrap_or_default()
-        );
-        for id in ids {
-            println!("  {id}");
-        }
-        return Ok(());
-    }
-    let archived = engine.decay(ttl_secs)?;
-    tracing::info!(
-        "archived {} stale node(s) (ttl {} days) in {}",
-        archived.len(),
-        args.ttl_days,
-        args.db.display()
-    );
     Ok(())
 }
 
@@ -246,27 +198,6 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // Record where we actually landed so plugins/skills can discover the port.
     write_daemon_file(&args.db, port, &db_display);
     tracing::info!("HTTP + SSE listening on http://127.0.0.1:{port}");
-
-    // Trust decay runs itself: sweep at startup and daily. Archived nodes
-    // notify the change listener, so the pane updates live over SSE.
-    let sweeper = engine.clone();
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 60 * 60));
-        loop {
-            tick.tick().await;
-            let swept = sweeper
-                .lock()
-                .unwrap()
-                .decay(engram_core::policy::DEFAULT_DECAY_TTL_SECS);
-            match swept {
-                Ok(ids) if !ids.is_empty() => {
-                    tracing::info!("decay sweep archived {} stale node(s)", ids.len());
-                }
-                Ok(_) => {}
-                Err(e) => tracing::warn!("decay sweep failed: {e}"),
-            }
-        }
-    });
 
     if args.http_only {
         tracing::info!("http-only mode (no MCP)");

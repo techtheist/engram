@@ -45,4 +45,7 @@ export const ALL_NODE_TYPES: NodeType[] = [
 ]
 
 /** At or above this confidence a node counts as trusted (mirrors backend policy). */
-export const TRUSTED_CONFIDENCE = 0.7
+/** Backend trust at/above which a node reads as "trusted" in the UI. */
+export const TRUSTED_TRUST = 0.7
+/** Mirrors policy::STALE_TRUST — below this the node is stale. */
+export const STALE_TRUST = 0.3

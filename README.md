@@ -81,14 +81,15 @@ Edges read as English sentences: a Decision **because** a Principle, a Resolutio
 
 ## Trust & decay
 
-Memory tools die from noise, so the graph prunes itself:
+Memory tools die from noise, so every node's **trust is computed live** from three timestamps — no background process has to run for the graph to stay honest:
 
-- Nodes written by the assistant start **provisional** (confidence 0.5). They earn trust by being **reconfirmed** — revisited in a later session because they were still relevant — or by your approval in the pane's review queue (only you can reach 100%).
-- Every node has a **durability**: `stable` (principles, decisions, cautions) never decays; `episodic` (problems, resolutions, insights) is archived after **14 days** without reconfirmation; `volatile` (intents, transient notes) after **7 days**. Trusted, user-created, and stable nodes are never touched.
-- The daemon runs the sweep automatically (at startup and daily). Archived nodes leave search and the pane but stay in history and exports — nothing is silently hard-deleted; that's reserved for you.
-- Search folds this in: results rank by relevance × trust, with a small recency bonus so fresher knowledge wins near-ties against stale look-alikes.
+- **Just written** → trust starts at **50%** and fades linearly toward 1% over half a year.
+- **Surfaced by retrieval** (a search hit, the session brief) → the node proved useful; trust restarts at **60%** from that moment, fading on the same half-year curve. Knowledge that keeps getting used keeps itself alive.
+- **Approved** — by you in the pane's review queue, or by the assistant *only on your explicit demand* → trust restarts at **100%** and fades slowly to a 20% floor over a year. Re-approve anytime to reset it.
+- Below **30%** a node is **stale**: badged in the pane, flagged to the assistant in search results and the brief, and queued in Review for your verdict — refresh it, supersede it, or delete it. Nothing is ever silently removed; hard-delete stays yours alone.
+- Search folds this in: results rank by relevance × trust, with a small recency bonus, so fresh, living knowledge wins near-ties against stale look-alikes.
 
-The net effect: capture can be liberal, because whatever never proves useful quietly ages out.
+The net effect: capture can be liberal, because whatever never proves useful quietly fades out of the way.
 
 ## Stack
 Rust core (`rmcp`, `rusqlite`, `sqlite-vec`, `fastembed`) · Vue 3 + TypeScript + Vue Flow · JetBrains (JCEF) & VSCode (Webview) wrappers · MIT licensed.

@@ -93,7 +93,16 @@ pub struct Node {
     pub valid_from: Option<i64>,
     pub valid_until: Option<i64>,
     pub status: Option<NodeStatus>,
-    pub confidence: Option<f64>,
+    /// Last time retrieval surfaced this node (search hit / brief inclusion).
+    pub last_seen: Option<i64>,
+    /// Last explicit approval — user action, or assistant on user demand.
+    pub approved_at: Option<i64>,
+    /// Computed at read time from the three timestamps (policy::trust);
+    /// never stored. Defaults exist only so old exports still import.
+    #[serde(default)]
+    pub trust: f64,
+    #[serde(default)]
+    pub stale: bool,
     pub code_refs: Vec<String>,
 }
 
@@ -111,8 +120,6 @@ pub struct NewNode {
     #[serde(default)]
     pub status: Option<NodeStatus>,
     #[serde(default)]
-    pub confidence: Option<f64>,
-    #[serde(default)]
     pub code_refs: Vec<String>,
 }
 
@@ -126,8 +133,6 @@ pub struct NodePatch {
     pub durability: Option<Durability>,
     #[serde(default)]
     pub status: Option<NodeStatus>,
-    #[serde(default)]
-    pub confidence: Option<f64>,
     #[serde(default)]
     pub valid_until: Option<i64>,
     #[serde(default)]
@@ -195,6 +200,11 @@ pub struct SearchHit {
     pub score: f64,
     pub durability: Durability,
     pub status: Option<NodeStatus>,
+    /// Computed trust at query time (policy::trust).
+    pub trust: f64,
+    /// Trust fell below the stale threshold — treat with suspicion and
+    /// consider reconfirming or superseding.
+    pub stale: bool,
     /// 1-hop subgraph around the match, `conflicts-with`/`replaces` first
     /// (PLAN §6A retrieval), capped.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

@@ -14,9 +14,9 @@ CREATE TABLE IF NOT EXISTS nodes (
   valid_from  INTEGER,
   valid_until INTEGER,
   status      TEXT,
-  confidence  REAL,
   code_refs   TEXT,
-  last_confirmed INTEGER          -- last reconfirmation; drives decay
+  last_seen   INTEGER,            -- last time retrieval surfaced this node
+  approved_at INTEGER             -- last explicit approval; trust anchors here
 );
 
 CREATE TABLE IF NOT EXISTS edges (

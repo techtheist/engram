@@ -16,8 +16,8 @@ const accent = computed(() =>
     selected.value ? NODE_ACCENT_VAR[selected.value.type] : 'var(--node-anchor)',
 )
 const archived = computed(() => selected.value?.valid_until != null)
-const confidencePct = computed(() =>
-    selected.value?.confidence != null ? Math.round(selected.value.confidence * 100) : null,
+const trustPct = computed(() =>
+    selected.value ? Math.round(selected.value.trust * 100) : null,
 )
 
 interface Relation {
@@ -94,7 +94,8 @@ function close(): void {
             <span class="badge">{{ selected.durability }}</span>
             <span class="badge">{{ selected.source }}</span>
             <span v-if="selected.status" class="badge">{{ selected.status }}</span>
-            <span v-if="confidencePct != null" class="badge">trust {{ confidencePct }}%</span>
+            <span v-if="trustPct != null" class="badge">trust {{ trustPct }}%</span>
+            <span v-if="selected.stale" class="badge stale">stale</span>
             <span v-if="archived" class="badge archived">archived</span>
         </div>
 
@@ -232,6 +233,11 @@ function close(): void {
 
 .badge.archived {
     color: var(--text-tertiary);
+}
+
+.badge.stale {
+    color: var(--node-problem);
+    background-color: color-mix(in srgb, var(--node-problem) 14%, transparent);
 }
 
 .body {

@@ -73,13 +73,28 @@ impl Store {
 
     /// Forward-only migrations for databases created before a column existed.
     fn migrate(conn: &Connection) -> Result<()> {
-        if !column_exists(conn, "nodes", "last_confirmed")? {
-            conn.execute_batch("ALTER TABLE nodes ADD COLUMN last_confirmed INTEGER;")?;
+        // Computed-trust model (v0.1.15): last_confirmed becomes last_seen,
+        // approvals get their own timestamp. The old stored-confidence column
+        // stays in legacy DBs (harmless, unread) rather than risking a
+        // DROP COLUMN on user data.
+        if column_exists(conn, "nodes", "last_confirmed")? {
+            conn.execute_batch("ALTER TABLE nodes RENAME COLUMN last_confirmed TO last_seen;")?;
         }
-        // Backfill so existing rows have a sane decay baseline.
-        conn.execute_batch(
-            "UPDATE nodes SET last_confirmed = created_at WHERE last_confirmed IS NULL;",
-        )?;
+        if !column_exists(conn, "nodes", "last_seen")? {
+            conn.execute_batch("ALTER TABLE nodes ADD COLUMN last_seen INTEGER;")?;
+        }
+        if !column_exists(conn, "nodes", "approved_at")? {
+            conn.execute_batch("ALTER TABLE nodes ADD COLUMN approved_at INTEGER;")?;
+            // Data migration: user-authored nodes and heavily-reconfirmed
+            // Claude nodes were trusted under the stored-confidence model —
+            // carry that over as an approval so their trust doesn't collapse.
+            if column_exists(conn, "nodes", "confidence")? {
+                conn.execute_batch(
+                    "UPDATE nodes SET approved_at = COALESCE(last_seen, created_at)
+                     WHERE source = 'user' OR COALESCE(confidence, 0) >= 0.9;",
+                )?;
+            }
+        }
         Ok(())
     }
 
@@ -163,7 +178,7 @@ impl Store {
         self.conn.execute(
             "INSERT INTO nodes
                (id, type, title, body, durability, source, session_id,
-                created_at, valid_from, valid_until, status, confidence, code_refs, last_confirmed)
+                created_at, valid_from, valid_until, status, code_refs, last_seen, approved_at)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
             params![
                 id,
@@ -177,9 +192,10 @@ impl Store {
                 created,
                 Option::<i64>::None,
                 n.status.map(NodeStatus::as_str),
-                n.confidence,
                 code_refs,
-                created,
+                Option::<i64>::None,
+                // User-authored knowledge is approved by construction.
+                (n.source == Source::User).then_some(created),
             ],
         )?;
         self.get_node(&id)?.ok_or_else(|| Error::NotFound(id))
@@ -209,10 +225,6 @@ impl Store {
             sets.push("status=?");
             vals.push(Box::new(v.as_str().to_string()));
         }
-        if let Some(v) = p.confidence {
-            sets.push("confidence=?");
-            vals.push(Box::new(v));
-        }
         if let Some(v) = p.valid_until {
             sets.push("valid_until=?");
             vals.push(Box::new(v));
@@ -221,14 +233,26 @@ impl Store {
             sets.push("code_refs=?");
             vals.push(Box::new(serde_json::to_string(&v)?));
         }
-        // Every update is a reconfirmation: refresh the decay clock.
-        sets.push("last_confirmed=?");
+        // Every update proves the node is still in use: refresh last_seen.
+        sets.push("last_seen=?");
         vals.push(Box::new(now()));
 
         let sql = format!("UPDATE nodes SET {} WHERE id=?", sets.join(", "));
         vals.push(Box::new(id.to_string()));
         let bound: Vec<&dyn ToSql> = vals.iter().map(|b| b.as_ref()).collect();
         self.conn.execute(&sql, bound.as_slice())?;
+        self.get_node(id)?
+            .ok_or_else(|| Error::NotFound(id.to_string()))
+    }
+
+    /// Stamp an explicit approval: trust restarts at its ceiling and decays
+    /// on the slow approved curve. Re-approving refreshes the stamp.
+    pub fn approve(&self, id: &str) -> Result<Node> {
+        let ts = now();
+        self.conn.execute(
+            "UPDATE nodes SET approved_at=?1, last_seen=?2 WHERE id=?3",
+            params![ts, ts, id],
+        )?;
         self.get_node(id)?
             .ok_or_else(|| Error::NotFound(id.to_string()))
     }
@@ -274,15 +298,15 @@ impl Store {
         self.conn.execute(
             "INSERT INTO nodes
                (id, type, title, body, durability, source, session_id,
-                created_at, valid_from, valid_until, status, confidence, code_refs, last_confirmed)
+                created_at, valid_from, valid_until, status, code_refs, last_seen, approved_at)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
              ON CONFLICT(id) DO UPDATE SET
                type=excluded.type, title=excluded.title, body=excluded.body,
                durability=excluded.durability, source=excluded.source,
                session_id=excluded.session_id, created_at=excluded.created_at,
                valid_from=excluded.valid_from, valid_until=excluded.valid_until,
-               status=excluded.status, confidence=excluded.confidence,
-               code_refs=excluded.code_refs, last_confirmed=excluded.last_confirmed",
+               status=excluded.status, code_refs=excluded.code_refs,
+               last_seen=excluded.last_seen, approved_at=excluded.approved_at",
             params![
                 n.id,
                 n.node_type.as_str(),
@@ -295,9 +319,9 @@ impl Store {
                 n.valid_from,
                 n.valid_until,
                 n.status.map(NodeStatus::as_str),
-                n.confidence,
                 code_refs,
-                n.created_at,
+                n.last_seen,
+                n.approved_at,
             ],
         )?;
         Ok(())
@@ -346,53 +370,6 @@ impl Store {
         }
         tx.commit()?;
         Ok(())
-    }
-
-    /// Archive stale provisional episodic nodes: those still current
-    /// (`valid_until IS NULL`), `episodic`, Claude-sourced, below the trusted
-    /// confidence threshold, and not reconfirmed within the TTL. Archiving sets
-    /// `valid_until = now` (history preserved; excluded from retrieval). Returns
-    /// the archived ids. `now` is a parameter so callers/tests control the clock.
-    pub fn decay(&self, ttl_secs: i64, now: i64) -> Result<Vec<String>> {
-        let ids = self.decay_candidates(ttl_secs, now)?;
-        let tx = self.conn.unchecked_transaction()?;
-        for id in &ids {
-            tx.execute(
-                "UPDATE nodes SET valid_until = ?1 WHERE id = ?2",
-                params![now, id],
-            )?;
-        }
-        tx.commit()?;
-        Ok(ids)
-    }
-
-    /// What `decay` *would* archive at `now` — the dry-run / preview query.
-    /// Episodic nodes age out at the full TTL; volatile ones at half of it
-    /// (the most perishable durability class must decay fastest).
-    pub fn decay_candidates(&self, ttl_secs: i64, now: i64) -> Result<Vec<String>> {
-        let episodic_cutoff = now - ttl_secs;
-        let volatile_cutoff = now - ttl_secs / crate::policy::VOLATILE_TTL_DIVISOR;
-        let mut stmt = self.conn.prepare(
-            "SELECT id FROM nodes
-             WHERE valid_until IS NULL
-               AND source = 'claude'
-               AND COALESCE(confidence, 0) < ?1
-               AND (
-                     (durability = 'episodic' AND COALESCE(last_confirmed, created_at) < ?2)
-                  OR (durability = 'volatile' AND COALESCE(last_confirmed, created_at) < ?3)
-               )",
-        )?;
-        let ids: Vec<String> = stmt
-            .query_map(
-                params![
-                    crate::policy::TRUSTED_THRESHOLD,
-                    episodic_cutoff,
-                    volatile_cutoff
-                ],
-                |r| r.get(0),
-            )?
-            .collect::<rusqlite::Result<_>>()?;
-        Ok(ids)
     }
 
     /// Nodes touched by an active `conflicts-with` edge — the contradiction
@@ -476,7 +453,8 @@ impl Store {
         let mut sql = String::from(
             "SELECT n.id, n.type, n.title, \
                     snippet(nodes_fts, -1, '[', ']', '…', 12) AS snip, \
-                    n.durability, n.status, bm25(nodes_fts) AS rank \
+                    n.durability, n.status, bm25(nodes_fts) AS rank, \
+                    n.created_at, n.last_seen, n.approved_at \
              FROM nodes_fts JOIN nodes n ON n.rowid = nodes_fts.rowid \
              WHERE nodes_fts MATCH ?1 AND n.valid_until IS NULL",
         );
@@ -495,6 +473,7 @@ impl Store {
             let dur_s: String = row.get(4)?;
             let status_s: Option<String> = row.get(5)?;
             let rank: f64 = row.get(6)?;
+            let trust = crate::policy::trust(row.get(7)?, row.get(8)?, row.get(9)?, now());
             Ok(SearchHit {
                 id: row.get(0)?,
                 node_type: conv(1, &type_s, NodeType::parse)?,
@@ -506,6 +485,8 @@ impl Store {
                 status: status_s
                     .map(|s| conv(5, &s, NodeStatus::parse))
                     .transpose()?,
+                trust,
+                stale: crate::policy::is_stale(trust),
                 neighbors: Vec::new(),
             })
         })?;
@@ -676,6 +657,8 @@ impl Store {
                 score,
                 durability: node.durability,
                 status: node.status,
+                trust: node.trust,
+                stale: node.stale,
                 neighbors: Vec::new(),
             });
         }
@@ -782,7 +765,8 @@ impl Store {
     pub fn nodes_by_type_active(&self, t: NodeType, limit: usize) -> Result<Vec<Node>> {
         let sql = format!(
             "{NODE_SELECT} WHERE valid_until IS NULL AND type=?1 \
-             ORDER BY COALESCE(confidence,0) DESC, created_at DESC LIMIT ?2"
+             ORDER BY (approved_at IS NOT NULL) DESC, \
+             COALESCE(approved_at, last_seen, created_at) DESC LIMIT ?2"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![t.as_str(), limit as i64], row_to_node)?;
@@ -810,14 +794,14 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Refresh the decay clock (`last_confirmed`) without touching confidence —
-    /// being surfaced in the brief counts as a "reusage" against decay.
+    /// Stamp `last_seen`: being surfaced by retrieval (search hit, brief
+    /// inclusion) is what keeps a node's trust alive.
     pub fn touch(&self, ids: &[String]) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
         }
         let sql = format!(
-            "UPDATE nodes SET last_confirmed=? WHERE id IN ({})",
+            "UPDATE nodes SET last_seen=? WHERE id IN ({})",
             placeholders(ids.len())
         );
         let ts = now();
@@ -856,9 +840,7 @@ fn trust_boost(node: &Node) -> f64 {
         Durability::Episodic => {}
         Durability::Volatile => b -= 0.05,
     }
-    if let Some(c) = node.confidence {
-        b += 0.15 * c;
-    }
+    b += 0.15 * node.trust;
     b
 }
 
@@ -868,7 +850,7 @@ fn excerpt(node: &Node) -> String {
 }
 
 const NODE_SELECT: &str = "SELECT id, type, title, body, durability, source, session_id, \
-     created_at, valid_from, valid_until, status, confidence, code_refs FROM nodes";
+     created_at, valid_from, valid_until, status, code_refs, last_seen, approved_at FROM nodes";
 
 const EDGE_SELECT: &str = "SELECT id, type, from_id, to_id, source, created_at, \
      confidence, strength, note, valid_from, valid_until, status FROM edges WHERE id=?1";
@@ -898,7 +880,11 @@ fn row_to_node(row: &Row) -> rusqlite::Result<Node> {
     let dur_s: String = row.get(4)?;
     let src_s: String = row.get(5)?;
     let status_s: Option<String> = row.get(10)?;
-    let refs_s: Option<String> = row.get(12)?;
+    let refs_s: Option<String> = row.get(11)?;
+    let created_at: i64 = row.get(7)?;
+    let last_seen: Option<i64> = row.get(12)?;
+    let approved_at: Option<i64> = row.get(13)?;
+    let trust = crate::policy::trust(created_at, last_seen, approved_at, now());
     Ok(Node {
         id: row.get(0)?,
         node_type: conv(1, &type_s, NodeType::parse)?,
@@ -907,16 +893,19 @@ fn row_to_node(row: &Row) -> rusqlite::Result<Node> {
         durability: conv(4, &dur_s, Durability::parse)?,
         source: conv(5, &src_s, Source::parse)?,
         session_id: row.get(6)?,
-        created_at: row.get(7)?,
+        created_at,
         valid_from: row.get(8)?,
         valid_until: row.get(9)?,
         status: status_s
             .map(|s| conv(10, &s, NodeStatus::parse))
             .transpose()?,
-        confidence: row.get(11)?,
+        last_seen,
+        approved_at,
+        trust,
+        stale: crate::policy::is_stale(trust),
         code_refs: match refs_s {
             Some(s) => serde_json::from_str(&s).map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(12, Type::Text, Box::new(e))
+                rusqlite::Error::FromSqlConversionFailure(11, Type::Text, Box::new(e))
             })?,
             None => Vec::new(),
         },

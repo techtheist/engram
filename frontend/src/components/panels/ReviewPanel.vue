@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { api } from '@/services/api'
-import { NODE_ACCENT_VAR, TRUSTED_CONFIDENCE } from '@/constants/ontology'
+import { NODE_ACCENT_VAR } from '@/constants/ontology'
 import { useGraphStore } from '@/stores/graph'
 import type { GraphEdge, GraphNode } from '@/types/graph'
 
@@ -29,10 +29,12 @@ const conflicts = computed(() =>
     ),
 )
 
+// Needs a human eye: never-approved Claude nodes, plus anything whose
+// computed trust has gone stale (stale first, then newest).
 const provisional = computed(() =>
     nodeList.value
-        .filter((n) => active(n) && n.source === 'claude' && (n.confidence ?? 0) < TRUSTED_CONFIDENCE)
-        .sort((a, b) => b.created_at - a.created_at),
+        .filter((n) => active(n) && ((n.source === 'claude' && n.approved_at == null) || n.stale))
+        .sort((a, b) => Number(b.stale) - Number(a.stale) || b.created_at - a.created_at),
 )
 
 const recent = computed(() =>
@@ -123,13 +125,14 @@ const settleConflict = (e: GraphEdge, status: 'resolved' | 'dismissed') =>
             </section>
 
             <section v-if="provisional.length" class="block">
-                <h3 class="block-title">Provisional — approve what's right</h3>
+                <h3 class="block-title">Needs review — approve what's right</h3>
                 <div v-for="n in provisional" :key="n.id" class="item">
                     <button class="row" type="button" @click="store.select(n.id)">
                         <span class="dot" :style="{ background: accent(n) }" />
                         <span class="row-title">{{ n.title }}</span>
                         <span v-if="decayIds.has(n.id)" class="stale" title="Will be archived by the next decay pass">decaying</span>
-                        <span class="trust">{{ Math.round((n.confidence ?? 0) * 100) }}%</span>
+                        <span v-if="n.stale" class="stale-badge">stale</span>
+                        <span class="trust">{{ Math.round(n.trust * 100) }}%</span>
                     </button>
                     <button class="mini" type="button" :disabled="busyId === n.id" @click="approve(n)">
                         Approve
@@ -303,6 +306,16 @@ const settleConflict = (e: GraphEdge, status: 'resolved' | 'dismissed') =>
     font-weight: 600;
     color: var(--edge-conflicts, var(--node-problem));
     white-space: nowrap;
+}
+
+.stale-badge {
+    padding: 0.1rem 0.6rem;
+    border-radius: var(--radius-sm);
+    font-size: var(--text-caption);
+    font-weight: 600;
+    color: var(--node-problem);
+    background-color: color-mix(in srgb, var(--node-problem) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--node-problem) 40%, transparent);
 }
 
 .trust,

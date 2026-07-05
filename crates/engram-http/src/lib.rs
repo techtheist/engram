@@ -99,6 +99,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/nodes/{id}/edges", get(node_edges))
         .route("/nodes/{id}/reconfirm", post(reconfirm))
+        .route("/nodes/{id}/approve", post(approve))
         .route("/nodes/{id}/traverse", get(traverse))
         .route("/edges", post(create_edge))
         .route(
@@ -111,7 +112,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/graph", get(graph))
         .route("/export", get(export))
         .route("/import", post(import))
-        .route("/decay", post(decay))
         .route("/events", get(sse))
         // Anything not an API route is the Vue pane (served from the embedded
         // build), so `engram serve` is a complete browser-standalone app and
@@ -346,28 +346,16 @@ async fn reconfirm(
     Ok(Json(node))
 }
 
-async fn decay(
+async fn approve(
     State(state): State<Arc<AppState>>,
-    Query(p): Query<DecayParams>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let ttl_secs = p
-        .ttl_days
-        .map(|d| d * 24 * 60 * 60)
-        .unwrap_or(engram_core::policy::DEFAULT_DECAY_TTL_SECS);
-    // A simulated clock never archives for real: as_of implies dry_run.
-    let dry_run = p.dry_run.unwrap_or(false) || p.as_of.is_some();
-    let ids = if dry_run {
-        state
-            .engine
-            .lock()
-            .unwrap()
-            .decay_preview(ttl_secs, p.as_of)?
-    } else {
-        state.engine.lock().unwrap().decay(ttl_secs)?
-    };
-    Ok(Json(
-        json!({ "archived": ids.len(), "ids": ids, "dry_run": dry_run }),
-    ))
+    Path(id): Path<String>,
+) -> Result<Json<Node>, AppError> {
+    let exists = state.engine.lock().unwrap().get_node(&id)?.is_some();
+    if !exists {
+        return Err(AppError::NotFound);
+    }
+    let node = state.engine.lock().unwrap().approve(&id)?;
+    Ok(Json(node))
 }
 
 async fn export(State(state): State<Arc<AppState>>) -> Result<Json<ExportGraph>, AppError> {
@@ -409,13 +397,6 @@ struct TypesParam {
 struct TraverseParams {
     edge_types: Option<String>,
     depth: Option<usize>,
-}
-
-#[derive(Deserialize)]
-struct DecayParams {
-    ttl_days: Option<i64>,
-    dry_run: Option<bool>,
-    as_of: Option<i64>,
 }
 
 #[derive(Deserialize)]

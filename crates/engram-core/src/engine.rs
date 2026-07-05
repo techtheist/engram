@@ -57,41 +57,20 @@ impl Engine {
         &self.store
     }
 
-    /// Add a node and embed it (title + body) in one step. Applies the trust
-    /// policy: user nodes start trusted, Claude nodes start provisional.
-    pub fn add_node(&self, mut n: NewNode) -> Result<Node> {
-        if n.confidence.is_none() {
-            n.confidence = Some(match n.source {
-                Source::User => crate::policy::USER_CONFIDENCE,
-                Source::Claude => crate::policy::PROVISIONAL_CONFIDENCE,
-            });
-        }
+    /// Add a node and embed it (title + body) in one step. Trust is computed
+    /// from timestamps at read time; user-authored nodes are approved by
+    /// construction (the store stamps `approved_at`).
+    pub fn add_node(&self, n: NewNode) -> Result<Node> {
         let node = self.store.add_node(n)?;
         self.embed_node(&node)?;
         self.notify(ChangeEvent::NodeAdded(node.clone()));
         Ok(node)
     }
 
-    /// Patch a node and re-embed if its text changed. An update is a
-    /// *reconfirmation*: unless the caller sets confidence explicitly, nudge it
-    /// toward trusted (capped per source). The store also refreshes the node's
-    /// decay clock.
-    pub fn update_node(&self, id: &str, mut patch: NodePatch) -> Result<Node> {
+    /// Patch a node and re-embed if its text changed. Any update refreshes
+    /// `last_seen` (the store stamps it): edited knowledge is in-use knowledge.
+    pub fn update_node(&self, id: &str, patch: NodePatch) -> Result<Node> {
         let touches_text = patch.title.is_some() || patch.body.is_some();
-        if patch.confidence.is_none()
-            && let Some(cur) = self.store.get_node(id)?
-        {
-            let cap = match cur.source {
-                Source::User => crate::policy::USER_CONFIDENCE,
-                Source::Claude => crate::policy::CLAUDE_CONFIDENCE_CAP,
-            };
-            let bumped = (cur
-                .confidence
-                .unwrap_or(crate::policy::PROVISIONAL_CONFIDENCE)
-                + crate::policy::RECONFIRM_BUMP)
-                .min(cap);
-            patch.confidence = Some(bumped);
-        }
         let node = self.store.update_node(id, patch)?;
         if touches_text {
             self.embed_node(&node)?;
@@ -100,31 +79,20 @@ impl Engine {
         Ok(node)
     }
 
-    /// Reconfirm a node without changing its content: bumps confidence toward
-    /// trusted and refreshes the decay clock. Use when search surfaces a node
-    /// that's still accurate (PLAN §6A trust model).
+    /// Reconfirm a node without changing its content: refreshes `last_seen`,
+    /// restarting trust on the seen curve. Use when a surfaced node proves
+    /// still accurate (PLAN §6A trust model).
     pub fn reconfirm(&self, id: &str) -> Result<Node> {
         self.update_node(id, NodePatch::default())
     }
 
-    /// Archive stale provisional nodes — episodic past `ttl`, volatile past
-    /// `ttl / 2`. Returns the archived ids. Trusted, stable, and user nodes
-    /// are untouched.
-    pub fn decay(&self, ttl_secs: i64) -> Result<Vec<String>> {
-        let archived = self.store.decay(ttl_secs, crate::now())?;
-        for id in &archived {
-            if let Some(node) = self.store.get_node(id)? {
-                self.notify(ChangeEvent::NodeUpdated(node));
-            }
-        }
-        Ok(archived)
-    }
-
-    /// What `decay` would archive, without archiving — `as_of` simulates a
-    /// future clock so decay behavior is testable before two weeks pass.
-    pub fn decay_preview(&self, ttl_secs: i64, as_of: Option<i64>) -> Result<Vec<String>> {
-        self.store
-            .decay_candidates(ttl_secs, as_of.unwrap_or_else(crate::now))
+    /// Explicit approval: trust restarts at its ceiling on the slow approved
+    /// curve. User action in the pane, or the assistant **only on explicit
+    /// user demand / verbatim verification** (enforced by skill policy).
+    pub fn approve(&self, id: &str) -> Result<Node> {
+        let node = self.store.approve(id)?;
+        self.notify(ChangeEvent::NodeUpdated(node.clone()));
+        Ok(node)
     }
 
     pub fn delete_node(&self, id: &str) -> Result<bool> {
@@ -248,6 +216,10 @@ impl Engine {
         for hit in &mut hits {
             hit.neighbors = self.store.neighbors(&hit.id, NEIGHBOR_CAP)?;
         }
+        // Being surfaced is the trust signal: stamp last_seen on every hit
+        // (after scoring, so the stamp doesn't influence this query's ranks).
+        let ids: Vec<String> = hits.iter().map(|h| h.id.clone()).collect();
+        self.store.touch(&ids)?;
         Ok(hits)
     }
 
@@ -490,6 +462,9 @@ fn node_line(n: &Node, with_id: bool) -> String {
     if let Some(status) = n.status {
         line.push(' ');
         line.push_str(status.as_str());
+    }
+    if n.stale {
+        line.push_str(" STALE");
     }
     line.push(']');
     if let Some(body) = n.body.as_deref().filter(|b| !b.is_empty()) {

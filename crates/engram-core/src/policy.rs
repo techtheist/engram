@@ -1,21 +1,37 @@
-//! Trust & decay tuning (PLAN §6A / §11). These are the concrete numbers the
-//! plan left open; kept in one place so they're easy to revisit as we dogfood.
+//! Trust tuning (PLAN §6A / §11). These are the concrete numbers the plan left
+//! open; kept in one place so they're easy to revisit as we dogfood.
+//!
+//! Trust is **computed at read time** from three timestamps — nothing depends
+//! on a background process having run:
+//! - only `created_at`: starts at [`TRUST_UNSEEN_START`], linear to
+//!   [`TRUST_FLOOR`] over [`PROVISIONAL_TRUST_WINDOW_SECS`]
+//! - `last_seen` set (surfaced by search/brief): starts at
+//!   [`TRUST_SEEN_START`], same window, clock restarts at `last_seen`
+//! - `approved_at` set (user approval, or assistant approval on explicit user
+//!   demand): starts at [`TRUST_APPROVED_START`], linear to
+//!   [`TRUST_APPROVED_FLOOR`] over [`APPROVED_TRUST_WINDOW_SECS`]
+//!
+//! A node whose computed trust falls below [`STALE_TRUST`] is **stale**: still
+//! searchable (buried by the trust multiplier), flagged to the assistant, and
+//! surfaced in the pane's review queue for a human decision.
 
-/// Confidence a Claude-created node starts at — provisional until reconfirmed.
-pub const PROVISIONAL_CONFIDENCE: f64 = 0.5;
-/// Confidence a user-created node starts at — trusted from the start.
-pub const USER_CONFIDENCE: f64 = 1.0;
-/// At or above this, a node is "trusted" and no longer decays.
-pub const TRUSTED_THRESHOLD: f64 = 0.7;
-/// How much each reconfirmation (an `update_node` revisit) raises confidence.
-pub const RECONFIRM_BUMP: f64 = 0.15;
-/// Ceiling for Claude-reconfirmed confidence — only the user reaches 1.0.
-pub const CLAUDE_CONFIDENCE_CAP: f64 = 0.9;
-/// Default time-to-live before a stale provisional episodic node is archived.
-pub const DEFAULT_DECAY_TTL_SECS: i64 = 14 * 24 * 60 * 60; // 14 days
-/// Volatile nodes decay at ttl / this divisor (7 days at the default TTL) —
-/// volatile is the most perishable durability class.
-pub const VOLATILE_TTL_DIVISOR: i64 = 2;
+/// Starting trust for a node that has never been surfaced or approved.
+pub const TRUST_UNSEEN_START: f64 = 0.5;
+/// Starting trust once retrieval has surfaced the node (it proved findable).
+pub const TRUST_SEEN_START: f64 = 0.6;
+/// Where unapproved trust bottoms out.
+pub const TRUST_FLOOR: f64 = 0.01;
+/// Unapproved trust runs its start→floor course over half a year.
+pub const PROVISIONAL_TRUST_WINDOW_SECS: i64 = 183 * 24 * 60 * 60;
+/// Trust the moment a node is approved.
+pub const TRUST_APPROVED_START: f64 = 1.0;
+/// Where approved trust bottoms out — approval never fully expires.
+pub const TRUST_APPROVED_FLOOR: f64 = 0.2;
+/// Approved trust runs its course over a full year.
+pub const APPROVED_TRUST_WINDOW_SECS: i64 = 365 * 24 * 60 * 60;
+/// Below this computed trust a node is stale (needs review or re-approval).
+pub const STALE_TRUST: f64 = 0.3;
+
 /// Same-type cosine similarity at/above which `add_note` treats the new note
 /// as a duplicate and returns the existing match instead of creating (PLAN §6A).
 pub const DUPLICATE_SIMILARITY: f64 = 0.90;
@@ -41,3 +57,44 @@ pub const SEARCH_RELATIVE_CUT: f64 = 0.25;
 pub const SEARCH_RECENCY_BOOST: f64 = 0.15;
 /// Age at which the newness bonus has halved.
 pub const SEARCH_RECENCY_HALF_LIFE_SECS: i64 = 30 * 24 * 60 * 60; // 30 days
+
+/// Linear ramp from `start` at age 0 to `floor` at `window`, clamped.
+fn ramp(start: f64, floor: f64, window: i64, age: i64) -> f64 {
+    if age <= 0 {
+        return start;
+    }
+    if age >= window {
+        return floor;
+    }
+    start - (start - floor) * (age as f64 / window as f64)
+}
+
+/// The computed trust of a node at `now` (see module docs for the model).
+pub fn trust(created_at: i64, last_seen: Option<i64>, approved_at: Option<i64>, now: i64) -> f64 {
+    if let Some(approved) = approved_at {
+        return ramp(
+            TRUST_APPROVED_START,
+            TRUST_APPROVED_FLOOR,
+            APPROVED_TRUST_WINDOW_SECS,
+            now - approved,
+        );
+    }
+    if let Some(seen) = last_seen {
+        return ramp(
+            TRUST_SEEN_START,
+            TRUST_FLOOR,
+            PROVISIONAL_TRUST_WINDOW_SECS,
+            now - seen,
+        );
+    }
+    ramp(
+        TRUST_UNSEEN_START,
+        TRUST_FLOOR,
+        PROVISIONAL_TRUST_WINDOW_SECS,
+        now - created_at,
+    )
+}
+
+pub fn is_stale(trust: f64) -> bool {
+    trust < STALE_TRUST
+}
