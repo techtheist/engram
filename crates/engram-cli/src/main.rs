@@ -247,6 +247,27 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     write_daemon_file(&args.db, port, &db_display);
     tracing::info!("HTTP + SSE listening on http://127.0.0.1:{port}");
 
+    // Trust decay runs itself: sweep at startup and daily. Archived nodes
+    // notify the change listener, so the pane updates live over SSE.
+    let sweeper = engine.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 60 * 60));
+        loop {
+            tick.tick().await;
+            let swept = sweeper
+                .lock()
+                .unwrap()
+                .decay(engram_core::policy::DEFAULT_DECAY_TTL_SECS);
+            match swept {
+                Ok(ids) if !ids.is_empty() => {
+                    tracing::info!("decay sweep archived {} stale node(s)", ids.len());
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("decay sweep failed: {e}"),
+            }
+        }
+    });
+
     if args.http_only {
         tracing::info!("http-only mode (no MCP)");
         axum::serve(listener, router).await?;

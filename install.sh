@@ -81,7 +81,8 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 say "downloading $ASSET ($VERSION)"
-curl -fsSL -o "$TMP/$ASSET" "$URL" || die "download failed: $URL"
+# --progress-bar: the binary is ~15 MB and slow links deserve feedback.
+curl -fL --progress-bar -o "$TMP/$ASSET" "$URL" || die "download failed: $URL"
 curl -fsSL -o "$TMP/$ASSET.sha256" "$URL.sha256" || die "checksum download failed"
 
 say "verifying checksum"

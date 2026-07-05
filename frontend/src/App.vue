@@ -37,7 +37,9 @@ onBeforeUnmount(() => store.disconnect())
                 {{ connected ? 'live' : 'offline' }}
             </span>
         </div>
-        <SearchBar />
+        <div class="topbar-search">
+            <SearchBar />
+        </div>
         <div class="topbar-actions">
             <FilterMenu />
             <ReviewPanel />
@@ -97,9 +99,12 @@ onBeforeUnmount(() => store.disconnect())
     left: 1.6rem;
     right: 1.6rem;
     z-index: 10;
-    display: flex;
+    /* Equal 1fr side tracks keep the search screen-centered regardless of how
+       the brand and actions differ in width; when space runs out the sides
+       floor at their content and the search track shrinks instead. */
+    display: grid;
+    grid-template-columns: minmax(max-content, 1fr) minmax(0, 36rem) minmax(max-content, 1fr);
     align-items: center;
-    justify-content: space-between;
     gap: 1.6rem;
     pointer-events: none;
 }
@@ -108,9 +113,17 @@ onBeforeUnmount(() => store.disconnect())
     pointer-events: auto;
 }
 
+.topbar-search {
+    display: flex;
+    justify-content: center;
+    justify-self: center;
+    width: 100%;
+}
+
 .topbar-actions {
     display: flex;
     align-items: center;
+    justify-self: end;
     gap: 0.8rem;
 }
 
@@ -159,6 +172,9 @@ onBeforeUnmount(() => store.disconnect())
 }
 
 .empty-state {
+    /* Informational, not modal: sit at canvas level so panels (review, search,
+       menus) open above it. */
+    z-index: 1;
     display: flex;
     flex-direction: column;
     gap: 0.8rem;
