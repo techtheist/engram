@@ -328,4 +328,5 @@ Engram $VERSION is ready (wired: $CLIS). Next steps:
        Open VSX:   https://open-vsx.org/extension/techtheist/engram-alpha
   3. restart your assistant's session so it picks up the MCP server and
      the capture instructions. All wired assistants share this one graph.
+  Later: update with \`$BIN update\` (or re-run this installer — it's safe).
 DONE

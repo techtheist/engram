@@ -37,6 +37,9 @@ enum Command {
     /// Print the session-start brief: a compact markdown digest of the graph's
     /// canon (conflicts, open work, principles, decisions, cautions).
     Brief(BriefArgs),
+    /// Self-update: download the latest release for this platform, verify its
+    /// checksum, and replace this binary in place.
+    Update(UpdateArgs),
 }
 
 #[derive(clap::Args)]
@@ -99,6 +102,13 @@ struct BriefArgs {
     fake_embeddings: bool,
 }
 
+#[derive(clap::Args)]
+struct UpdateArgs {
+    /// Release tag to install (e.g. v0.1.16). Default: the latest release.
+    #[arg(long)]
+    version: Option<String>,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Logs go to STDERR: stdout is the MCP protocol channel and must stay clean.
@@ -115,7 +125,138 @@ async fn main() -> anyhow::Result<()> {
         Command::Export(args) => run_export(args),
         Command::Import(args) => run_import(args),
         Command::Brief(args) => run_brief(args),
+        Command::Update(args) => run_update(args),
     }
+}
+
+/// Self-update from GitHub Releases: download the platform asset, verify its
+/// published sha256, and atomically swap the running binary. Uses the system
+/// curl/tar (present on macOS, Linux, WSL, and Windows 10+) so the binary
+/// doesn't carry an HTTP client for one command.
+fn run_update(args: UpdateArgs) -> anyhow::Result<()> {
+    const REPO: &str = "techtheist/engram";
+    let (target, ext, bin_name) = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        ("aarch64-apple-darwin", "tar.gz", "engram")
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        ("x86_64-unknown-linux-gnu", "tar.gz", "engram")
+    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        ("x86_64-pc-windows-msvc", "exe", "engram.exe")
+    } else {
+        anyhow::bail!("no prebuilt binaries for this platform — update from source instead");
+    };
+
+    let tag = match args.version {
+        Some(v) => v,
+        None => {
+            let out = std::process::Command::new("curl")
+                .args([
+                    "-fsSL",
+                    &format!("https://api.github.com/repos/{REPO}/releases/latest"),
+                ])
+                .output()
+                .context("running curl (is it installed?)")?;
+            anyhow::ensure!(out.status.success(), "could not query the latest release");
+            let body = String::from_utf8_lossy(&out.stdout);
+            body.split("\"tag_name\"")
+                .nth(1)
+                .and_then(|rest| rest.split('"').nth(1))
+                .map(str::to_string)
+                .context("parsing the latest release tag")?
+        }
+    };
+
+    let asset = format!("engram-{tag}-{target}.{ext}");
+    let url = format!("https://github.com/{REPO}/releases/download/{tag}/{asset}");
+    let tmp = std::env::temp_dir().join(format!("engram-update-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp)?;
+    let cleanup = scopeguard(tmp.clone());
+    let archive = tmp.join(&asset);
+
+    eprintln!("downloading {asset}…");
+    let fetch = |from: &str, to: &Path| -> anyhow::Result<()> {
+        let status = std::process::Command::new("curl")
+            .args(["-fL", "--progress-bar", "-o"])
+            .arg(to)
+            .arg(from)
+            .status()
+            .context("running curl")?;
+        anyhow::ensure!(status.success(), "download failed: {from}");
+        Ok(())
+    };
+    fetch(&url, &archive)?;
+    let sums = tmp.join(format!("{asset}.sha256"));
+    fetch(&format!("{url}.sha256"), &sums)?;
+
+    let expected = std::fs::read_to_string(&sums)?
+        .split_whitespace()
+        .next()
+        .map(str::to_lowercase)
+        .context("empty checksum file")?;
+    anyhow::ensure!(
+        sha256_file(&archive)? == expected,
+        "checksum mismatch — refusing to install"
+    );
+
+    let new_bin = if ext == "tar.gz" {
+        let status = std::process::Command::new("tar")
+            .arg("-xzf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&tmp)
+            .status()
+            .context("running tar")?;
+        anyhow::ensure!(status.success(), "extracting {asset} failed");
+        tmp.join(bin_name)
+    } else {
+        archive
+    };
+
+    let exe = std::env::current_exe().context("locating the running binary")?;
+    if sha256_file(&new_bin)? == sha256_file(&exe)? {
+        println!("already up to date ({tag})");
+        drop(cleanup);
+        return Ok(());
+    }
+
+    // Stage next to the target so the final rename is atomic (same filesystem).
+    let staged = exe.with_extension("new");
+    std::fs::copy(&new_bin, &staged)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))?;
+    }
+    #[cfg(windows)]
+    {
+        // Windows can't replace a running exe, but it can rename it away.
+        let old = exe.with_extension("old");
+        let _ = std::fs::remove_file(&old);
+        std::fs::rename(&exe, &old)?;
+    }
+    std::fs::rename(&staged, &exe)?;
+    println!(
+        "updated {} to {tag} — restart your daemon (engram serve)",
+        exe.display()
+    );
+    drop(cleanup);
+    Ok(())
+}
+
+fn sha256_file(path: &Path) -> anyhow::Result<String> {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+/// Remove the temp dir when dropped, however the update exits.
+fn scopeguard(dir: PathBuf) -> impl Drop {
+    struct G(PathBuf);
+    impl Drop for G {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    G(dir)
 }
 
 fn run_brief(args: BriefArgs) -> anyhow::Result<()> {

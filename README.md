@@ -69,7 +69,9 @@ Every wired assistant reads and writes the same `.engram/graph.db` through the s
 
 **Windows:** run the same command inside **WSL2** — the script detects WSL and installs the native Windows binary (`engram.exe`), which WSL runs transparently. macOS arm64, Linux x64, and Windows x64 binaries are on [GitHub Releases](https://github.com/techtheist/engram/releases). Intel Macs: no prebuilt binary (onnxruntime upstream dropped Intel-mac builds) — `cargo install --path crates/engram-cli` from a checkout instead.
 
-Options: `--skill relaxed|normal|aggressive` (capture intensity, default relaxed), `--bin-only`, `ENGRAM_VERSION=v0.1.2` to pin.
+Options: `--skill relaxed|normal|aggressive` (capture intensity, default relaxed), `--bin-only`, `ENGRAM_VERSION=v0.1.15` to pin.
+
+**Updating:** `engram update` — checks the latest release, verifies its checksum, and swaps the binary in place (no-op when already current; `--version vX.Y.Z` to pin). Re-running the install one-liner does the same thing and is always safe: repo wiring is idempotent.
 
 ## Capture modes
 
