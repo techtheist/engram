@@ -14,6 +14,11 @@ browser pointed at the local **`engram serve`** daemon — the same daemon your 
 assistant reads from and writes to over MCP. Decisions, cautions, problems, and
 insights surface and update live as you work.
 
+One memory, every agent: the backend speaks MCP, so **Claude Code, Codex CLI,
+Gemini CLI, OpenCode, Kilo, and Google Antigravity** all share the same per-repo graph (wire them
+with `install.sh --cli …`) — a decision captured by one assistant is recalled
+by the next.
+
 ![Engram tool window in IntelliJ IDEA: the graph pane docked right, updating live while Claude Code works in the terminal](../.screenshots/engram-alpha-jetbrains.png)
 
 ## Requirements

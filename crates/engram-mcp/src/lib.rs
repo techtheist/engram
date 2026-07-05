@@ -25,8 +25,10 @@ first. `add_note` self-checks for near-duplicates (returns {matched, \
 created:false} — then merge via `update_node`) and both writes return warnings \
 when the new text lands near contradicted or superseded knowledge: read them. \
 Link nodes with sentence-shaped edges (e.g. a Decision `because` a Principle); \
-repair a wrong link with `unlink` / `update_edge`. Never store secrets or \
-volatile implementation detail.";
+repair a wrong link with `unlink` / `update_edge`. Nodes carry computed \
+`trust` (0..1, from created_at/last_seen/approved_at) and `stale` (trust < \
+0.3 — verify before relying; refresh with `update_node` if still true). \
+Never store secrets or volatile implementation detail.";
 
 #[derive(Clone)]
 pub struct Engram {
@@ -48,7 +50,10 @@ impl Engram {
 
     #[tool(
         description = "Hybrid semantic + keyword search over the memory graph. \
-        Returns top matches with type, title, snippet and score."
+        Hits carry: type, title, snippet, score, trust (computed 0..1), stale \
+        (true = decayed trust, verify before relying), status, and 1-hop \
+        neighbors (conflicts-with/replaces first). Being returned refreshes a \
+        node's last_seen."
     )]
     async fn search(
         &self,
@@ -64,10 +69,17 @@ impl Engram {
         ok_json(&hits)
     }
 
-    #[tool(description = "Fetch one node by id together with its outgoing and incoming edges.")]
+    #[tool(
+        description = "Fetch one node by id with its outgoing and incoming edges. \
+        Node fields include computed trust (0..1) and stale (true = trust < 0.3). \
+        Optional `parents`/`children` (depth 0-3) also return the reasoning \
+        hierarchy: parents are nodes this one points at (its reasons/subjects — \
+        e.g. the Principle behind a Decision); children are nodes pointing at it \
+        (what answers / builds on it). Nested as {edge, node, parents|children}."
+    )]
     async fn get_node(
         &self,
-        Parameters(a): Parameters<IdArg>,
+        Parameters(a): Parameters<GetNodeArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let engine = self.engine.lock().unwrap();
         let Some(node) = engine.get_node(&a.id).map_err(map_err)? else {
@@ -78,7 +90,18 @@ impl Engram {
         };
         let out = engine.edges_out(&a.id).map_err(map_err)?;
         let incoming = engine.edges_in(&a.id).map_err(map_err)?;
-        ok_json(&json!({ "node": node, "edges_out": out, "edges_in": incoming }))
+        let mut payload = json!({ "node": node, "edges_out": out, "edges_in": incoming });
+        let up = a.parents.unwrap_or(0).min(HIERARCHY_MAX_DEPTH);
+        let down = a.children.unwrap_or(0).min(HIERARCHY_MAX_DEPTH);
+        if up > 0 {
+            let mut seen = std::collections::HashSet::from([a.id.clone()]);
+            payload["parents"] = json!(hierarchy(&engine, &a.id, up, true, &mut seen));
+        }
+        if down > 0 {
+            let mut seen = std::collections::HashSet::from([a.id.clone()]);
+            payload["children"] = json!(hierarchy(&engine, &a.id, down, false, &mut seen));
+        }
+        ok_json(&payload)
     }
 
     #[tool(
@@ -349,6 +372,17 @@ struct IdArg {
 }
 
 #[derive(Deserialize, JsonSchema)]
+struct GetNodeArgs {
+    id: String,
+    /// Levels of parent hierarchy to include (nodes this one points at), 0-3.
+    #[serde(default)]
+    parents: Option<usize>,
+    /// Levels of child hierarchy to include (nodes pointing at this one), 0-3.
+    #[serde(default)]
+    children: Option<usize>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 struct TraverseArgs {
     from: String,
     #[serde(default)]
@@ -436,6 +470,59 @@ fn ok_json<T: Serialize>(v: &T) -> Result<CallToolResult, ErrorData> {
     let text = serde_json::to_string_pretty(v)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
     Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
+}
+
+const HIERARCHY_MAX_DEPTH: usize = 3;
+const HIERARCHY_MAX_BREADTH: usize = 8;
+
+/// Recursive reasoning hierarchy around a node. `up` follows outgoing edges
+/// (parents: what this node stands on / is about); `!up` follows incoming
+/// (children: what answers, builds on, or contradicts it). Depth and breadth
+/// are capped and cycles cut so the payload stays context-window friendly.
+fn hierarchy(
+    engine: &engram_core::Engine,
+    id: &str,
+    depth: usize,
+    up: bool,
+    seen: &mut std::collections::HashSet<String>,
+) -> Vec<serde_json::Value> {
+    if depth == 0 {
+        return Vec::new();
+    }
+    let edges = if up {
+        engine.edges_out(id)
+    } else {
+        engine.edges_in(id)
+    }
+    .unwrap_or_default();
+    let mut out = Vec::new();
+    for e in edges.into_iter().take(HIERARCHY_MAX_BREADTH) {
+        let other = if up { &e.to_id } else { &e.from_id };
+        if !seen.insert(other.clone()) {
+            continue;
+        }
+        let Ok(Some(n)) = engine.get_node(other) else {
+            continue;
+        };
+        let deeper = hierarchy(engine, other, depth - 1, up, seen);
+        let mut item = json!({
+            "edge": e.edge_type.as_str(),
+            "node": {
+                "id": n.id,
+                "type": n.node_type.as_str(),
+                "title": n.title,
+                "status": n.status.map(|s| s.as_str()),
+                "trust": (n.trust * 100.0).round() / 100.0,
+                "stale": n.stale,
+                "archived": n.valid_until.is_some(),
+            }
+        });
+        if !deeper.is_empty() {
+            item[if up { "parents" } else { "children" }] = json!(deeper);
+        }
+        out.push(item);
+    }
+    out
 }
 
 fn map_err(e: Error) -> ErrorData {
@@ -543,6 +630,12 @@ mod tool_tests {
         format!("{:?}", res.content)
     }
 
+    fn id_of(r: &CallToolResult) -> String {
+        let t = text_of(r);
+        let start = t.find("\\\"id\\\": \\\"").unwrap() + 10;
+        t[start..].split("\\\"").next().unwrap().to_string()
+    }
+
     fn note(title: &str) -> AddNoteArgs {
         AddNoteArgs {
             node_type: "Decision".into(),
@@ -570,6 +663,81 @@ mod tool_tests {
         let text = text_of(&dupe);
         assert!(text.contains("\\\"created\\\": false"), "got: {text}");
         assert!(text.contains("matched"));
+    }
+
+    #[tokio::test]
+    async fn get_node_returns_parent_and_child_hierarchy() {
+        let s = server();
+        // Decision -because-> Principle (parent); Insight -about-> Decision (child).
+        let principle = id_of(
+            &s.add_note(Parameters(AddNoteArgs {
+                node_type: "Principle".into(),
+                title: "local first".into(),
+                body: None,
+                durability: None,
+                session_id: None,
+                code_refs: vec![],
+            }))
+            .await
+            .unwrap(),
+        );
+        let decision = id_of(
+            &s.add_note(Parameters(note("store data in sqlite")))
+                .await
+                .unwrap(),
+        );
+        let insight = id_of(
+            &s.add_note(Parameters(AddNoteArgs {
+                node_type: "Insight".into(),
+                title: "wal mode matters".into(),
+                body: None,
+                durability: None,
+                session_id: None,
+                code_refs: vec![],
+            }))
+            .await
+            .unwrap(),
+        );
+
+        s.link(Parameters(LinkArgs {
+            from: decision.clone(),
+            to: principle.clone(),
+            edge_type: "because".into(),
+            note: None,
+            confidence: None,
+        }))
+        .await
+        .unwrap();
+        s.link(Parameters(LinkArgs {
+            from: insight.clone(),
+            to: decision.clone(),
+            edge_type: "about".into(),
+            note: None,
+            confidence: None,
+        }))
+        .await
+        .unwrap();
+
+        let res = s
+            .get_node(Parameters(GetNodeArgs {
+                id: decision.clone(),
+                parents: Some(2),
+                children: Some(2),
+            }))
+            .await
+            .unwrap();
+        let text = text_of(&res);
+        assert!(text.contains("parents"), "got: {text}");
+        assert!(text.contains("local first"), "parent node inlined: {text}");
+        assert!(text.contains("children"), "got: {text}");
+        assert!(
+            text.contains("wal mode matters"),
+            "child node inlined: {text}"
+        );
+        assert!(
+            text.contains("trust"),
+            "hierarchy nodes carry trust: {text}"
+        );
     }
 
     #[tokio::test]

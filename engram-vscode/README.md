@@ -16,6 +16,11 @@ in a Webview and talks to the local **`engram serve`** daemon — the same daemo
 your AI assistant reads from and writes to over MCP. Decisions, cautions,
 problems, and insights surface and update live as you work.
 
+One memory, every agent: the backend speaks MCP, so **Claude Code, Codex CLI,
+Gemini CLI, OpenCode, Kilo, and Google Antigravity** all share the same per-repo graph (wire them
+with `install.sh --cli …`) — a decision captured by one assistant is recalled
+by the next.
+
 <!-- Absolute URL on purpose: this README is also the Marketplace listing,
      where repo-relative paths outside the extension folder don't resolve. -->
 ![Engram pane in VS Code's secondary sidebar: the memory graph updates live while the assistant works](https://raw.githubusercontent.com/techtheist/engram/main/.screenshots/engram-alpha-vscode.png)

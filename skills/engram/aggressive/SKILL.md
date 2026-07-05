@@ -1,19 +1,17 @@
 ---
 name: engram
-description: Read and write the project's durable reasoning memory (decisions, principles, cautions, problems, insights) through the Engram MCP tools. Recall relevant memory before non-trivial work; capture decisions and knowledge silently at natural stopping points. Aggressive variant — maximum capture.
+description: Read and write the project's durable reasoning memory (decisions, principles, cautions, problems, insights) through the Engram MCP tools. Recall relevant memory before non-trivial work; capture only durable, high-value knowledge silently at natural stopping points. Relaxed variant — the recommended default.
 ---
 
-# Engram — project memory (Aggressive)
+# Engram — project memory (Relaxed)
 
 Engram is a local, user-owned graph of *why things are the way they are* in this project: decisions and their reasons, gotchas that bit us, problems and how they were solved, and stable preferences. It is **not** a place for code structure or volatile implementation detail — the codebase already holds those.
 
-**This is the Aggressive variant: Engram is the spine of the project's decision history.** Every real decision, realization, and gotcha belongs in the graph. Err on the side of writing — trust decay prunes what never gets reused, so an unneeded node costs little, while a missing one costs a repeated mistake.
+**This is the Relaxed variant: capture only durable, high-value, non-obvious knowledge.** When in doubt, prefer *fewer, better* nodes.
 
-You interact with it through the `engram` MCP tools. Two jobs: **recall** (read before you act) and **capture** (write knowledge after you act).
+Claude Code already has memory of its own (CLAUDE.md, auto-memory) — **don't mirror it**. Engram is additional: it holds the project's *reasoning* — decisions with reasons, conflicts, gotchas — not user preferences, session workflow, or code structure.
 
-## Engram vs Claude Code's own memory
-
-Claude Code already has memory of its own (CLAUDE.md, auto-memory). **Don't mirror it.** Engram is additional and holds the *project's reasoning graph* — decisions with reasons, conflicts, supersessions, gotchas — the durable "why" that outlives any session or tool. In Aggressive mode, project decisions go to **Engram first**; leave user preferences and session workflow to Claude Code's memory, and code structure to the code.
+You interact with it through the `engram` MCP tools. Two jobs: **recall** (read before you act) and **capture** (write durable knowledge after you act).
 
 ## Recall — brief first, then search
 
@@ -30,32 +28,32 @@ go-ahead: read the project's existing canon (README, plan/design docs, recent
 git history) and batch-capture the durable knowledge as provisional nodes —
 key Decisions with their `because` reasons, stated Principles and conventions,
 known Cautions, open Intents — attached to Anchors where several notes share a
-subject. Seed thoroughly — decisions, conventions, gotchas, open threads; trust decay will prune what never gets reused. Point the user at the pane to review the seeded graph. If
+subject. Seed conservatively: only knowledge that is clearly durable and still true — a dozen good nodes beat fifty mirrored doc lines. Point the user at the pane to review the seeded graph. If
 they decline, don't ask again; capture knowledge as it emerges.
 
 ## Answering "why" — retell the reasoning chain
 
-When the user asks *"why did we decide X?"* or *"why is it like this?"*: `search` the topic, then `traverse` the hit along `because`, `replaces`, and `answers` edges and retell the chain as a short narrative — the decision, its reason, what it replaced, and what problem drove it. Include dates when the history matters. This is the core reading skill; it needs no special tool.
+When the user asks *"why did we decide X?"* or *"why is it like this?"*: `search` the topic, then `traverse` the hit along `because`, `replaces`, and `answers` edges and retell the chain as a short narrative — the decision, its reason, what it replaced, and what problem drove it. Include dates when the history matters.
 
 ## Compiling docs from the graph
 
-When the user asks for a decision log / `DECISIONS.md`: walk the current (non-superseded) Decisions with their `because` reasons (grouped by Anchor where it helps), render an ADR-style markdown file, and note supersessions inline ("replaced *X*, see …"). The graph stays personal; the compiled doc is the shareable artifact. Don't commit it unasked.
+When the user asks for a decision log / `DECISIONS.md`: walk the current (non-superseded) Decisions with their `because` reasons (grouped by Anchor where it helps), render an ADR-style markdown file, and note supersessions inline. The graph stays personal; the compiled doc is the shareable artifact. Don't commit it unasked.
 
 ## Capture — what is worth a node
 
-Capture **liberally**:
-
-- **Decision** — *every* choice made for a reason, including fine-grained ones ("we picked X over Y because Z"). The backbone of the graph.
-- **Principle** — any stable preference / convention / taste you observe or are told.
-- **Caution** — gotchas, constraints, specs-as-rules — including **proactive** ones you foresee will bite.
-- **Problem** + **Resolution** — anything non-trivial that went wrong and how it got solved.
-- **Insight** — every non-obvious realization worth carrying forward.
-- **Intent** — every TODO / deferred idea worth surviving the session.
+**Save (sparingly):**
+- **Principle** — a stable preference / convention / taste ("we optimize for X").
+- **Decision** — a *major* choice with a reason ("we chose X because Y"). The backbone of the graph.
+- **Caution** — a gotcha or constraint that will clearly bite later.
+- **Problem** + **Resolution** — only when the problem was *genuinely hard / non-obvious*. Skip routine fixes.
+- **Insight** — rarely: only a realization you'd regret losing.
+- **Intent** — only when the user explicitly asks to remember deferred work.
 
 **Never save:**
 - Secrets, credentials, tokens, PII — *ever*. (The backend also redacts, but you are the first line.)
 - Volatile implementation detail (line numbers, transient state) unless the user explicitly asks.
 - Mirrors of what code, git history, or CLAUDE.md already record.
+- One-off chatter or restating what was just done with no lasting value.
 
 ## How to write
 
@@ -68,7 +66,7 @@ Capture **liberally**:
    - `about` — any node **about** an Anchor (a code subject).
    - `builds-on` — Insight **builds-on** Insight.
    - `replaces` — Decision **replaces** Decision (supersession; the old one stays as history).
-   - `conflicts-with` — when two nodes contradict. **High value — always create this** when you notice a contradiction; it's how the graph stays honest.
+   - `conflicts-with` — when two nodes contradict. **High value — always create this** when you notice a contradiction.
    - `needs` — Intent **needs** Decision (a dependency/blocker).
    - If you can't complete the sentence with one of these verbs, don't link.
 5. **Anchors** are free-text subjects ("auth flow", "the RAG layer"). Create/reuse one and attach nodes with `about` when several notes concern the same area. Optionally pass `code_refs` (responsibilities/paths, **never** line numbers).
@@ -77,7 +75,7 @@ Capture **liberally**:
 
 ## Durability — let it default
 
-Usually let durability default from the type (Principle/Decision/Caution/Anchor → `stable`; Problem/Resolution/Insight → `episodic`; Intent → `volatile`). Override only with a reason.
+Usually let durability default from the type (Principle/Decision/Caution/Anchor → `stable`; Problem/Resolution/Insight → `episodic`; Intent → `volatile`). Override only with a reason. **Never** create `volatile` notes unless the user explicitly asks.
 
 ## Trust & staleness
 
@@ -100,7 +98,3 @@ The graph UI is served by the local daemon — `engram serve`, one per repo, sta
 - **Batch at natural stopping points** — task or sub-task done, end of turn. Never interrupt mid-flow to write.
 - **Be silent.** Don't announce captures or narrate the graph in chat. The graph pane is the transparency surface. (You *may* mention a capture if the user explicitly asks what you saved.)
 - A manual `/engram` invocation means the user wants an explicit "save this" or "recall X" right now — honor it directly.
-
-## Maintaining this skill
-
-This skill is a living document and the project is dogfooding it. **When you notice it steering you wrong** — a rule that produced a low-value node, guidance that's ambiguous mid-task, a missing case — **edit this file** to fix it, and note what changed and why.

@@ -1,7 +1,7 @@
 {
   "name": "engram-alpha",
   "displayName": "Engram Alpha",
-  "description": "Durable, graph-based long-term memory for AI coding assistants — the reasoning/decision layer, as an editable graph.",
+  "description": "Durable, graph-based long-term memory shared by your AI coding assistants — Claude Code, Codex CLI, Gemini CLI, OpenCode, Kilo, Google Antigravity — the reasoning/decision layer, as an editable graph.",
   "version": "0.1.0",
   "publisher": "techtheist",
   "license": "MIT",

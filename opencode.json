@@ -1,0 +1,10 @@
+{
+  "$schema": "https://app.kilo.ai/config.json",
+  "mcp": {
+    "engram": {
+      "type": "local",
+      "command": ["/Users/techtheist/.local/bin/engram", "mcp", "--db", "/Users/techtheist/IdeaProjects/engram/.engram/graph.db"],
+      "enabled": true
+    }
+  }
+}
