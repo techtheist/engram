@@ -50,10 +50,13 @@ This downloads the `engram` binary for your platform (checksum-verified, into `~
 
 ### Choose your assistant
 
-The default wires **Claude Code**. Engram speaks MCP, so the same graph serves every assistant — pick yours (comma-separate, or `all`):
+Setup lives **in the binary**: `engram setup` auto-detects which assistants are installed and wires them; `--cli` picks explicitly (comma-separate, or `all`), `--skill relaxed|normal|aggressive` sets the capture intensity **for any assistant** — every harness gets the matching instruction variant, not just Claude. The installer forwards these flags:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh | sh -s -- --cli codex,gemini
+curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh | sh -s -- --cli codex,gemini --skill normal
+# later, from any repo:
+engram setup                    # auto-detect and wire
+engram setup --cli kilo --skill aggressive
 ```
 
 | `--cli` | MCP registration | Capture instructions |
@@ -67,7 +70,13 @@ curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh |
 
 Every wired assistant reads and writes the same `.engram/graph.db` through the same MCP server — one shared, local memory across your AI agents. The `AGENTS.md`/`GEMINI.md` additions are a marked, idempotent section; re-running the installer never duplicates them.
 
-**Windows:** run the same command inside **WSL2** — the script detects WSL and installs the native Windows binary (`engram.exe`), which WSL runs transparently. macOS arm64, Linux x64, and Windows x64 binaries are on [GitHub Releases](https://github.com/techtheist/engram/releases). Intel Macs: no prebuilt binary (onnxruntime upstream dropped Intel-mac builds) — `cargo install --path crates/engram-cli` from a checkout instead.
+**Windows:** two supported paths — pick where your assistants live. Assistants inside **WSL2** → run the `install.sh` one-liner inside WSL (installs the **Linux** binary; daemon, agents, and graph share the WSL filesystem). Native Windows assistants → PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/techtheist/engram/main/install.ps1 | iex"
+```
+
+Don't mix the two: a Windows `engram.exe` and WSL-side agents see different filesystems and will end up on different graphs. macOS arm64, Linux x64, and Windows x64 binaries are on [GitHub Releases](https://github.com/techtheist/engram/releases). Intel Macs: no prebuilt binary (onnxruntime upstream dropped Intel-mac builds) — `cargo install --path crates/engram-cli` from a checkout instead.
 
 Options: `--skill relaxed|normal|aggressive` (capture intensity, default relaxed), `--bin-only`, `ENGRAM_VERSION=v0.1.15` to pin.
 
@@ -75,7 +84,7 @@ Options: `--skill relaxed|normal|aggressive` (capture intensity, default relaxed
 
 ## Capture modes
 
-How much your assistant writes to the graph is set by which **skill variant** you install — see [`skills/engram/`](./skills/engram/):
+How much your assistant writes to the graph is set by the capture intensity (`engram setup --skill …`) — available for **every supported assistant**, embedded in the binary (sources in [`skills/engram/`](./skills/engram/)):
 
 - **relaxed** *(recommended default)* — only durable, high-value knowledge; fewer, better nodes.
 - **normal** — balanced: adds cautions, selective insights, finer-grained decisions.

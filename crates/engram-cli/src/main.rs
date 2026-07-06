@@ -11,6 +11,8 @@ use clap::{Parser, Subcommand};
 use engram_core::{Embedder, Engine, ExportGraph, FakeEmbedder, FastEmbedder, Store};
 use tracing_subscriber::EnvFilter;
 
+mod setup;
+
 #[derive(Parser)]
 #[command(
     name = "engram",
@@ -40,6 +42,10 @@ enum Command {
     /// Self-update: download the latest release for this platform, verify its
     /// checksum, and replace this binary in place.
     Update(UpdateArgs),
+    /// Wire the current repository for AI assistants: MCP registration +
+    /// capture instructions, from assets embedded in this binary. With no
+    /// --cli, auto-detects which assistants are installed and wires those.
+    Setup(SetupArgs),
 }
 
 #[derive(clap::Args)]
@@ -109,6 +115,17 @@ struct UpdateArgs {
     version: Option<String>,
 }
 
+#[derive(clap::Args)]
+struct SetupArgs {
+    /// Assistants to wire, comma-separated: claude|codex|gemini|opencode|kilo|antigravity|all.
+    /// Default: auto-detect what's installed.
+    #[arg(long)]
+    cli: Option<String>,
+    /// Capture intensity for the installed instructions/skill.
+    #[arg(long, default_value = "relaxed", value_parser = ["relaxed", "normal", "aggressive"])]
+    skill: String,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Logs go to STDERR: stdout is the MCP protocol channel and must stay clean.
@@ -126,7 +143,37 @@ async fn main() -> anyhow::Result<()> {
         Command::Import(args) => run_import(args),
         Command::Brief(args) => run_brief(args),
         Command::Update(args) => run_update(args),
+        Command::Setup(args) => run_setup(args),
     }
+}
+
+fn run_setup(args: SetupArgs) -> anyhow::Result<()> {
+    let agents: Vec<&str> = match args.cli.as_deref() {
+        Some("all") => setup::AGENTS.to_vec(),
+        Some(list) => {
+            let mut v = Vec::new();
+            for a in list.split(',').map(str::trim).filter(|a| !a.is_empty()) {
+                let known = setup::AGENTS.iter().find(|k| **k == a).with_context(|| {
+                    format!(
+                        "unknown --cli '{a}' (claude|codex|gemini|opencode|kilo|antigravity|all)"
+                    )
+                })?;
+                v.push(*known);
+            }
+            v
+        }
+        None => {
+            let detected = setup::detect_agents();
+            anyhow::ensure!(
+                !detected.is_empty(),
+                "no supported assistants detected — pick explicitly with --cli"
+            );
+            println!("==> detected: {}", detected.join(", "));
+            detected
+        }
+    };
+    anyhow::ensure!(!agents.is_empty(), "nothing to wire");
+    setup::Setup::new(&args.skill)?.run(&agents)
 }
 
 /// Self-update from GitHub Releases: download the platform asset, verify its
@@ -339,6 +386,21 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // Record where we actually landed so plugins/skills can discover the port.
     write_daemon_file(&args.db, port, &db_display);
     tracing::info!("HTTP + SSE listening on http://127.0.0.1:{port}");
+
+    // First-run nudge: if installed assistants aren't wired to this repo's
+    // graph yet, say so once at startup (PLAN §8 — the binary owns setup).
+    if let Ok(cwd) = std::env::current_dir() {
+        let unwired: Vec<&str> = setup::detect_agents()
+            .into_iter()
+            .filter(|a| !setup::is_wired(&cwd, a))
+            .collect();
+        if !unwired.is_empty() {
+            tracing::info!(
+                "detected {} without Engram wiring — run `engram setup` in this repo to connect them",
+                unwired.join(", ")
+            );
+        }
+    }
 
     if args.http_only {
         tracing::info!("http-only mode (no MCP)");
