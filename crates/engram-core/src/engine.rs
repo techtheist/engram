@@ -18,10 +18,15 @@ pub enum ChangeEvent {
     EdgeAdded(Edge),
     EdgeUpdated(Edge),
     EdgeDeleted(String),
+    /// The suspected-conflict queue changed (scan found pairs, or one was
+    /// judged) — coarse on purpose; the pane refetches the pending list.
+    SuspectsChanged,
 }
 
 /// How many 1-hop neighbors ride along with each search hit.
 const NEIGHBOR_CAP: usize = 5;
+/// How many suspected conflicts the brief lists (strongest first).
+const BRIEF_SUSPECT_CAP: usize = 8;
 /// How many nearest nodes the write-time duplicate/conflict checks consider.
 const WRITE_CHECK_K: usize = 8;
 
@@ -256,6 +261,7 @@ impl Engine {
 
         let node = self.add_node(n)?;
         let warnings = self.write_warnings(&vec, &node.id)?;
+        self.record_suspects(&vec, &node.id)?;
         Ok(WriteOutcome::Created { node, warnings })
     }
 
@@ -271,6 +277,7 @@ impl Engine {
             let vec = self
                 .embedder
                 .embed_one(&embed_text(&node.title, node.body.as_deref()))?;
+            self.record_suspects(&vec, &node.id)?;
             self.write_warnings(&vec, &node.id)?
         } else {
             Vec::new()
@@ -358,6 +365,44 @@ impl Engine {
                 }
             }
 
+            let mut suspects = self.store.suspects_pending()?;
+            // Strongest first, capped: the brief is a digest, the full queue
+            // lives in list_suspects / the pane.
+            suspects.sort_by(|x, y| y.similarity.total_cmp(&x.similarity));
+            let overflow = suspects.len().saturating_sub(BRIEF_SUSPECT_CAP);
+            suspects.truncate(BRIEF_SUSPECT_CAP);
+            if !suspects.is_empty() {
+                let heading = "\n## Suspected conflicts — judge these\nThe local scan flagged \
+                     unlinked look-alike pairs. For each: `resolve_suspect(id, verdict)` with \
+                     `conflict` (they contradict), `replaces` (the newer supersedes — archives \
+                     the older), or `dismiss` (unrelated/fine together).";
+                if !push_line(&mut out, heading) {
+                    break 'assemble;
+                }
+                for s in suspects {
+                    let line = format!(
+                        "- {}: \"{}\" [{}] vs \"{}\" [{}] ({:.0}% similar)",
+                        s.id,
+                        s.a.title,
+                        s.a.node_type.as_str(),
+                        s.b.title,
+                        s.b.node_type.as_str(),
+                        s.similarity * 100.0,
+                    );
+                    if !push_line(&mut out, &line) {
+                        break 'assemble;
+                    }
+                }
+                if overflow > 0
+                    && !push_line(
+                        &mut out,
+                        &format!("- …and {overflow} more — `list_suspects` has the full queue."),
+                    )
+                {
+                    break 'assemble;
+                }
+            }
+
             let open = self.store.list_open(&[])?;
             if !open.is_empty() && !push_line(&mut out, "\n## Open problems & intents") {
                 break 'assemble;
@@ -421,6 +466,159 @@ impl Engine {
 
         self.store.touch(&included)?;
         Ok(out)
+    }
+
+    // ---- conflict scan (PLAN §7): detection is local and automatic; judgment
+    // stays with Claude in-session or the user in the pane. The daemon never
+    // calls an LLM.
+
+    /// Queue suspects near one freshly-written node — the write-time half of
+    /// the scan, reusing the vector the write already computed.
+    fn record_suspects(&self, vec: &[f32], node_id: &str) -> Result<usize> {
+        let Some(node) = self.store.get_node(node_id)? else {
+            return Ok(0);
+        };
+        let added = self.suspects_near(&node, vec)?;
+        if added > 0 {
+            self.notify(ChangeEvent::SuspectsChanged);
+        }
+        Ok(added)
+    }
+
+    /// Sweep the whole graph for unlinked look-alike pairs (the pane's
+    /// "Scan now" and the daemon's periodic pass). Returns how many new
+    /// suspects were queued.
+    pub fn scan_conflicts(&self) -> Result<usize> {
+        let mut added = 0;
+        for node in self.store.scannable_nodes()? {
+            let Some(vec) = self.store.embedding_of(&node.id)? else {
+                continue;
+            };
+            added += self.suspects_near(&node, &vec)?;
+        }
+        if added > 0 {
+            self.notify(ChangeEvent::SuspectsChanged);
+        }
+        Ok(added)
+    }
+
+    /// Shared candidate logic: nearest neighbors above the suspect threshold,
+    /// both active and non-anchor, not already linked by any edge, pair never
+    /// raised before. Stored newer-first so `replaces` verdicts read forward.
+    fn suspects_near(&self, node: &Node, vec: &[f32]) -> Result<usize> {
+        if node.node_type == NodeType::Anchor || node.valid_until.is_some() {
+            return Ok(0);
+        }
+        let mut added = 0;
+        for (id, distance) in self.store.search_vec(vec, WRITE_CHECK_K)? {
+            if id == node.id {
+                continue;
+            }
+            let similarity = 1.0 - distance;
+            if similarity < crate::policy::CONFLICT_SUSPECT_SIMILARITY {
+                break; // distance-ordered: nothing closer follows
+            }
+            let Some(other) = self.store.get_node(&id)? else {
+                continue;
+            };
+            if other.node_type == NodeType::Anchor
+                || other.valid_until.is_some()
+                || self.store.pair_linked(&node.id, &other.id)?
+                || self.store.suspect_between(&node.id, &other.id)?
+            {
+                continue;
+            }
+            let (newer, older) = if node.created_at >= other.created_at {
+                (&node.id, &other.id)
+            } else {
+                (&other.id, &node.id)
+            };
+            self.store.add_suspect(newer, older, similarity)?;
+            added += 1;
+        }
+        Ok(added)
+    }
+
+    /// The pending queue, ready for judgment.
+    pub fn suspects(&self) -> Result<Vec<SuspectView>> {
+        self.store.suspects_pending()
+    }
+
+    /// Judge a suspected pair. `conflict` records a `conflicts-with` edge;
+    /// `replaces` records the edge *and* archives the older node (the
+    /// supersede-not-delete flow, PLAN §6B); `dismiss` marks the pair judged
+    /// so it is never re-raised. Already-judged suspects are a no-op.
+    pub fn resolve_suspect(
+        &self,
+        id: &str,
+        verdict: SuspectVerdict,
+        source: Source,
+    ) -> Result<Option<Edge>> {
+        let Some(suspect) = self.store.get_suspect(id)? else {
+            return Err(crate::Error::NotFound(id.to_string()));
+        };
+        if suspect.status != SuspectStatus::Suspected {
+            return Ok(None);
+        }
+        let edge = match verdict {
+            SuspectVerdict::Dismiss => None,
+            SuspectVerdict::Conflict => Some(self.add_edge(NewEdge {
+                edge_type: EdgeType::ConflictsWith,
+                from_id: suspect.a_id.clone(),
+                to_id: suspect.b_id.clone(),
+                source,
+                note: Some("confirmed from conflict scan".into()),
+                confidence: Some(suspect.similarity),
+                strength: None,
+                status: None,
+            })?),
+            SuspectVerdict::Replaces => {
+                let edge = self.add_edge(NewEdge {
+                    edge_type: EdgeType::Replaces,
+                    from_id: suspect.a_id.clone(),
+                    to_id: suspect.b_id.clone(),
+                    source,
+                    note: Some("confirmed from conflict scan".into()),
+                    confidence: Some(suspect.similarity),
+                    strength: None,
+                    status: None,
+                })?;
+                self.update_node(
+                    &suspect.b_id,
+                    NodePatch {
+                        valid_until: Some(crate::store::now()),
+                        ..NodePatch::default()
+                    },
+                )?;
+                Some(edge)
+            }
+        };
+        let status = match verdict {
+            SuspectVerdict::Dismiss => SuspectStatus::Dismissed,
+            _ => SuspectStatus::Confirmed,
+        };
+        self.store.set_suspect_status(id, status)?;
+        self.notify(ChangeEvent::SuspectsChanged);
+        Ok(edge)
+    }
+
+    /// The decay pass (PLAN §6B): archive Claude-authored, never-approved
+    /// episodic/volatile nodes that have sat below the stale threshold for
+    /// `ttl_days`. Dry-run reports without mutating.
+    pub fn decay(&self, ttl_days: i64, dry_run: bool) -> Result<Vec<String>> {
+        let now = crate::store::now();
+        let candidates = self.store.decay_candidates(ttl_days * 24 * 60 * 60, now)?;
+        let ids: Vec<String> = candidates.iter().map(|n| n.id.clone()).collect();
+        if dry_run || ids.is_empty() {
+            return Ok(ids);
+        }
+        self.store.archive_nodes(&ids, now)?;
+        for id in &ids {
+            if let Some(node) = self.store.get_node(id)? {
+                self.notify(ChangeEvent::NodeUpdated(node));
+            }
+        }
+        Ok(ids)
     }
 
     fn embed_node(&self, node: &Node) -> Result<()> {

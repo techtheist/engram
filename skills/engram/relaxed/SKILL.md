@@ -16,6 +16,7 @@ You interact with it through the `engram` MCP tools. Two jobs: **recall** (read 
 ## Recall — brief first, then search
 
 - **At the start of a session**, call `brief` once: a compact digest of the canon — unresolved conflicts, open problems/intents, principles, decisions, cautions, recent changes. Read it before planning anything.
+- When the brief lists **Suspected conflicts**, judge them right away with `resolve_suspect`: `conflict` (they contradict), `replaces` (the newer supersedes; the older is archived), or `dismiss` (fine together — never re-raised). The local scan only finds look-alikes; you are the judge.
 - Before any **non-trivial decision**, call `search` with a natural-language description of what you're about to do. Hits carry their **1-hop neighbors, `conflicts-with`/`replaces` first** — read those especially. If a prior Decision or Caution covers your situation, follow it or, if you're about to contradict it, surface that to the user.
 - Use `get_node` / `traverse` to pull the reasoning around a hit (e.g. a Decision and the Principle it stands on).
 - `list_open` shows the live worklist (open Problems and Intents) — check it when picking up work.

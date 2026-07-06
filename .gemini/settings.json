@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "engram": {
-      "command": "/Users/techtheist/.local/bin/engram",
-      "args": ["mcp", "--db", "/Users/techtheist/IdeaProjects/engram/.engram/graph.db"]
-    }
-  }
-}

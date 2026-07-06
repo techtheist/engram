@@ -2,7 +2,7 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { TRUSTED_TRUST } from '@/constants/ontology'
 import { api } from '@/services/api'
-import type { Graph, GraphEdge, GraphNode } from '@/types/graph'
+import type { Graph, GraphEdge, GraphNode, SuspectVerdict, SuspectView } from '@/types/graph'
 
 /** Pure client-side canvas filters; empty group = no restriction. */
 export interface GraphFilters {
@@ -29,13 +29,21 @@ export function trustLevel(n: GraphNode): 'trusted' | 'provisional' | 'stale' {
 }
 
 interface ChangeEvent {
-    type: 'node_added' | 'node_updated' | 'node_deleted' | 'edge_added' | 'edge_updated' | 'edge_deleted'
+    type:
+        | 'node_added'
+        | 'node_updated'
+        | 'node_deleted'
+        | 'edge_added'
+        | 'edge_updated'
+        | 'edge_deleted'
+        | 'suspects_changed'
     data: GraphNode | GraphEdge | { id: string }
 }
 
 export const useGraphStore = defineStore('graph', () => {
     const nodes = ref(new Map<string, GraphNode>())
     const edges = ref(new Map<string, GraphEdge>())
+    const suspects = ref<SuspectView[]>([])
     const selectedId = ref<string | null>(null)
     const loading = ref(false)
     const error = ref<string | null>(null)
@@ -107,11 +115,34 @@ export const useGraphStore = defineStore('graph', () => {
             const g = await api.graph()
             applyGraph(g)
             lastSig = JSON.stringify(g)
+            await loadSuspects()
         } catch (e) {
             error.value = e instanceof Error ? e.message : String(e)
         } finally {
             loading.value = false
         }
+    }
+
+    async function loadSuspects(): Promise<void> {
+        try {
+            suspects.value = await api.suspects()
+        } catch {
+            suspects.value = []
+        }
+    }
+
+    /** Run the local conflict scan now; returns how many new pairs it queued. */
+    async function scanConflicts(): Promise<number> {
+        const { added } = await api.scanConflicts()
+        await loadSuspects()
+        return added
+    }
+
+    /** Judge a suspected pair; graph changes (edges/archival) arrive via SSE. */
+    async function resolveSuspect(id: string, verdict: SuspectVerdict): Promise<void> {
+        await api.resolveSuspect(id, verdict)
+        await loadSuspects()
+        await refresh() // pick up the confirmed edge / archived node immediately
     }
 
     /*
@@ -129,6 +160,9 @@ export const useGraphStore = defineStore('graph', () => {
                 applyGraph(g)
                 lastSig = sig
             }
+            // Suspects can change with no graph delta (a scan queued pairs), so
+            // reconcile them on every poll — the list is tiny.
+            await loadSuspects()
         } catch {
             /* ignore transient poll errors; SSE/error overlay handle real outages */
         }
@@ -176,6 +210,9 @@ export const useGraphStore = defineStore('graph', () => {
                 edges.value = next
                 break
             }
+            case 'suspects_changed':
+                void loadSuspects()
+                break
         }
     }
 
@@ -224,9 +261,19 @@ export const useGraphStore = defineStore('graph', () => {
         dropNode(id) // SSE also emits node_deleted; dropping twice is harmless
     }
 
+    /** Edit node fields from the pane (title/body/type/durability). */
+    async function patchNode(id: string, patch: Record<string, unknown>): Promise<void> {
+        upsertNode(await api.patchNode(id, patch))
+    }
+
     return {
         nodes,
         edges,
+        suspects,
+        loadSuspects,
+        scanConflicts,
+        resolveSuspect,
+        patchNode,
         nodeList,
         edgeList,
         visibleNodeList,

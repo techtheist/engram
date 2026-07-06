@@ -14,7 +14,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use engram_core::{
     ChangeEvent, Edge, EdgePatch, EdgeType, Engine, Error, ExportGraph, ImportSummary, NewEdge,
-    NewNode, Node, NodePatch, NodeType, SearchHit,
+    NewNode, Node, NodePatch, NodeType, SearchHit, SuspectVerdict, SuspectView,
 };
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
@@ -68,6 +68,7 @@ fn encode_event(ev: &ChangeEvent) -> String {
         ChangeEvent::EdgeAdded(e) => ("edge_added", json!(e)),
         ChangeEvent::EdgeUpdated(e) => ("edge_updated", json!(e)),
         ChangeEvent::EdgeDeleted(id) => ("edge_deleted", json!({ "id": id })),
+        ChangeEvent::SuspectsChanged => ("suspects_changed", json!({})),
     };
     json!({ "type": kind, "data": data }).to_string()
 }
@@ -107,6 +108,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::patch(patch_edge).delete(delete_edge),
         )
         .route("/search", get(search))
+        .route("/conflicts/suspects", get(list_suspects))
+        .route("/conflicts/suspects/{id}/resolve", post(resolve_suspect))
+        .route("/conflicts/scan", post(scan_conflicts))
+        .route("/decay", post(decay))
         .route("/brief", get(brief))
         .route("/open", get(list_open))
         .route("/graph", get(graph))
@@ -299,6 +304,63 @@ async fn search(
     let limit = p.limit.unwrap_or(8);
     let hits = state.engine.lock().unwrap().search(&p.q, &types, limit)?;
     Ok(Json(hits))
+}
+
+// ---- conflict scan + decay (PLAN §7 / §6B) --------------------------------
+
+async fn list_suspects(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<SuspectView>>, AppError> {
+    let suspects = state.engine.lock().unwrap().suspects()?;
+    Ok(Json(suspects))
+}
+
+/// Run the local candidate sweep on demand (the pane's "Scan now").
+async fn scan_conflicts(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let added = state.engine.lock().unwrap().scan_conflicts()?;
+    Ok(Json(json!({ "added": added })))
+}
+
+#[derive(Deserialize)]
+struct ResolveBody {
+    verdict: SuspectVerdict,
+}
+
+/// Judge a suspected pair from the pane — a user action, so edges it creates
+/// are user-sourced.
+async fn resolve_suspect(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<ResolveBody>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let edge = state.engine.lock().unwrap().resolve_suspect(
+        &id,
+        body.verdict,
+        engram_core::Source::User,
+    )?;
+    Ok(Json(json!({ "edge": edge })))
+}
+
+#[derive(Deserialize)]
+struct DecayParams {
+    ttl_days: Option<i64>,
+    dry_run: Option<bool>,
+}
+
+/// The decay pass (PLAN §6B). `dry_run=true` previews what would archive.
+async fn decay(
+    State(state): State<Arc<AppState>>,
+    Query(p): Query<DecayParams>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let ttl = p.ttl_days.unwrap_or(engram_core::policy::DECAY_TTL_DAYS);
+    let ids = state
+        .engine
+        .lock()
+        .unwrap()
+        .decay(ttl, p.dry_run.unwrap_or(false))?;
+    Ok(Json(json!({ "archived": ids.len(), "ids": ids })))
 }
 
 /// The session-start digest, as `text/markdown` (PLAN §6A retrieval trigger).

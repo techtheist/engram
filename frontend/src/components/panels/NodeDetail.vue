@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import MarkdownView from '@/components/common/MarkdownView.vue'
 import { EDGE_COLOR, NODE_ACCENT_VAR } from '@/constants/ontology'
@@ -11,6 +11,48 @@ const { selected, nodes, edgeList } = storeToRefs(store)
 
 const busy = ref(false)
 const confirmingDelete = ref(false)
+
+// --- edit mode (PLAN §10 Phase 1: reclassification / editing UX) ----------
+
+const NODE_TYPES = Object.keys(NODE_ACCENT_VAR)
+const DURABILITIES = ['stable', 'episodic', 'volatile']
+
+const editing = ref(false)
+const draft = reactive({ title: '', body: '', type: '', durability: '' })
+
+// Selecting another node must never carry a stale draft onto it.
+watch(
+    () => selected.value?.id,
+    () => {
+        editing.value = false
+        confirmingDelete.value = false
+    },
+)
+
+function startEdit(): void {
+    if (!selected.value) return
+    draft.title = selected.value.title
+    draft.body = selected.value.body ?? ''
+    draft.type = selected.value.type
+    draft.durability = selected.value.durability
+    editing.value = true
+}
+
+async function saveEdit(): Promise<void> {
+    if (!selected.value) return
+    busy.value = true
+    try {
+        await store.patchNode(selected.value.id, {
+            title: draft.title,
+            body: draft.body,
+            type: draft.type,
+            durability: draft.durability,
+        })
+        editing.value = false
+    } finally {
+        busy.value = false
+    }
+}
 
 const accent = computed(() =>
     selected.value ? NODE_ACCENT_VAR[selected.value.type] : 'var(--node-anchor)',
@@ -77,6 +119,7 @@ async function remove(): Promise<void> {
 function close(): void {
     store.select(null)
     confirmingDelete.value = false
+    editing.value = false
 }
 </script>
 
@@ -88,7 +131,34 @@ function close(): void {
             <button class="close" type="button" aria-label="Close" @click="close">×</button>
         </header>
 
-        <h2 class="title">{{ selected.title }}</h2>
+        <template v-if="editing">
+            <input v-model="draft.title" class="edit-input" type="text" aria-label="Title" />
+            <textarea v-model="draft.body" class="edit-input edit-body" rows="8" aria-label="Body (markdown)" />
+            <div class="edit-row">
+                <label class="edit-label">
+                    Type
+                    <select v-model="draft.type" class="edit-select">
+                        <option v-for="t in NODE_TYPES" :key="t" :value="t">{{ t }}</option>
+                    </select>
+                </label>
+                <label class="edit-label">
+                    Durability
+                    <select v-model="draft.durability" class="edit-select">
+                        <option v-for="d in DURABILITIES" :key="d" :value="d">{{ d }}</option>
+                    </select>
+                </label>
+            </div>
+            <div class="edit-actions">
+                <button class="btn" type="button" :disabled="busy || !draft.title.trim()" @click="saveEdit">
+                    Save
+                </button>
+                <button class="btn ghost" type="button" :disabled="busy" @click="editing = false">
+                    Cancel
+                </button>
+            </div>
+        </template>
+
+        <h2 v-if="!editing" class="title">{{ selected.title }}</h2>
 
         <div class="badges">
             <span class="badge">{{ selected.durability }}</span>
@@ -99,7 +169,7 @@ function close(): void {
             <span v-if="archived" class="badge archived">archived</span>
         </div>
 
-        <MarkdownView v-if="selected.body" :content="selected.body" class="body" />
+        <MarkdownView v-if="selected.body && !editing" :content="selected.body" class="body" />
 
         <section v-if="selected.code_refs.length" class="block">
             <h3 class="block-title">Code refs</h3>
@@ -122,12 +192,28 @@ function close(): void {
             </ul>
         </section>
 
-        <dl class="meta">
-            <div><dt>Created</dt><dd>{{ fmtDate(selected.created_at) }}</dd></div>
-            <div v-if="archived"><dt>Archived</dt><dd>{{ fmtDate(selected.valid_until) }}</dd></div>
-        </dl>
+        <section class="block">
+            <h3 class="block-title">Provenance</h3>
+            <dl class="meta">
+                <div><dt>Created</dt><dd>{{ fmtDate(selected.created_at) }} · by {{ selected.source }}</dd></div>
+                <div v-if="selected.session_id">
+                    <dt>Session</dt>
+                    <dd><span class="session-chip">{{ selected.session_id }}</span></dd>
+                </div>
+                <div v-if="selected.last_seen != null" title="Last time retrieval surfaced this node (search hit or brief)">
+                    <dt>Last seen</dt><dd>{{ fmtDate(selected.last_seen) }}</dd>
+                </div>
+                <div v-if="selected.approved_at != null">
+                    <dt>Approved</dt><dd>{{ fmtDate(selected.approved_at) }}</dd>
+                </div>
+                <div v-if="archived"><dt>Archived</dt><dd>{{ fmtDate(selected.valid_until) }}</dd></div>
+            </dl>
+        </section>
 
         <footer class="actions">
+            <button v-if="!editing" class="btn ghost" type="button" :disabled="busy" @click="startEdit">
+                Edit
+            </button>
             <button class="btn ghost" type="button" :disabled="busy" @click="reconfirm">
                 Reconfirm
             </button>
@@ -215,6 +301,51 @@ function close(): void {
     font-weight: 700;
     line-height: var(--leading-tight);
     color: var(--text-primary);
+}
+
+.edit-input {
+    width: 100%;
+    padding: 0.7rem 0.9rem;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+    background-color: var(--surface-sunken);
+    color: var(--text-primary);
+    font-size: var(--text-body-sm);
+    font-family: inherit;
+}
+
+.edit-body {
+    resize: vertical;
+    font-family: var(--font-mono);
+    line-height: var(--leading-normal);
+}
+
+.edit-row {
+    display: flex;
+    gap: 1.2rem;
+}
+
+.edit-label {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 0.3rem;
+    font-size: var(--text-caption);
+    color: var(--text-tertiary);
+}
+
+.edit-select {
+    padding: 0.5rem 0.7rem;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+    background-color: var(--surface-sunken);
+    color: var(--text-primary);
+    font-size: var(--text-body-sm);
+}
+
+.edit-actions {
+    display: flex;
+    gap: 0.6rem;
 }
 
 .badges {
@@ -330,6 +461,18 @@ function close(): void {
 
 .meta dd {
     color: var(--text-secondary);
+}
+
+.session-chip {
+    display: inline-block;
+    max-width: 100%;
+    padding: 0.1rem 0.5rem;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    background-color: var(--surface-sunken);
+    overflow-x: auto;
+    white-space: nowrap;
+    vertical-align: bottom;
 }
 
 .actions {

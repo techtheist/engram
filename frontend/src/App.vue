@@ -5,6 +5,8 @@ import GraphCanvas from '@/components/GraphCanvas.vue'
 import EngramMark from '@/components/common/EngramMark.vue'
 import SearchBar from '@/components/panels/SearchBar.vue'
 import FilterMenu from '@/components/panels/FilterMenu.vue'
+import HealthStrip from '@/components/panels/HealthStrip.vue'
+import MemoryLensPanel from '@/components/panels/MemoryLensPanel.vue'
 import NodeDetail from '@/components/panels/NodeDetail.vue'
 import ReviewPanel from '@/components/panels/ReviewPanel.vue'
 import SettingsMenu from '@/components/panels/SettingsMenu.vue'
@@ -48,6 +50,8 @@ onBeforeUnmount(() => store.disconnect())
     </header>
 
     <NodeDetail />
+    <MemoryLensPanel />
+    <HealthStrip />
 
     <Transition name="fade">
         <div v-if="loading" class="overlay glass-panel">Loading memory…</div>

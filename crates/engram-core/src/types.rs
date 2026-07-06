@@ -73,6 +73,18 @@ str_enum!(NodeStatus {
     Obsolete => "obsolete",
 });
 
+str_enum!(SuspectStatus {
+    Suspected => "suspected",
+    Confirmed => "confirmed",
+    Dismissed => "dismissed",
+});
+
+str_enum!(SuspectVerdict {
+    Conflict => "conflict",
+    Replaces => "replaces",
+    Dismiss => "dismiss",
+});
+
 str_enum!(EdgeStatus {
     Active => "active",
     Resolved => "resolved",
@@ -125,6 +137,10 @@ pub struct NewNode {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct NodePatch {
+    /// Reclassification (PLAN §10 Phase 1): the type was Claude's guess,
+    /// correcting it must not require delete-and-recreate.
+    #[serde(default, rename = "type")]
+    pub node_type: Option<NodeType>,
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
@@ -239,6 +255,39 @@ pub struct EdgePatch {
     pub confidence: Option<f64>,
     #[serde(default)]
     pub strength: Option<f64>,
+}
+
+/// A locally-detected candidate contradiction awaiting judgment (PLAN §7
+/// conflict scan): two unlinked nodes close enough in embedding space to be
+/// talking about the same thing. `a_id` is the newer node, `b_id` the older,
+/// so a confirming `replaces` edge reads "a replaces b". Resolved rows stay
+/// (confirmed/dismissed) so a judged pair is never re-raised.
+#[derive(Debug, Clone, Serialize)]
+pub struct Suspect {
+    pub id: String,
+    pub a_id: String,
+    pub b_id: String,
+    pub similarity: f64,
+    pub created_at: i64,
+    pub status: SuspectStatus,
+}
+
+/// A pending suspect joined with what the judge (pane or Claude) needs to see.
+#[derive(Debug, Clone, Serialize)]
+pub struct SuspectView {
+    pub id: String,
+    pub similarity: f64,
+    pub created_at: i64,
+    pub a: SuspectEndpoint,
+    pub b: SuspectEndpoint,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SuspectEndpoint {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub node_type: NodeType,
+    pub title: String,
 }
 
 /// Attached to a write result when the new text lands near contradicted or

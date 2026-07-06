@@ -57,6 +57,10 @@ const isUser = computed(() => node.value.source === 'user')
     display: flex;
     width: 34rem;
     min-height: 9rem;
+    /* Collapsed cards never exceed 216px: the title clamp below plus the
+       body's flex-shrink keep the content inside, so no overflow:hidden is
+       needed (it would clip the edge handles). */
+    max-height: 21.6rem;
     flex-direction: column;
     gap: 0.6rem;
     padding: 1.4rem 1.6rem;
@@ -78,6 +82,7 @@ const isUser = computed(() => node.value.source === 'user')
 }
 
 .engram-node:hover {
+    max-height: none;
     margin-top: -0.6rem;
     background-color: var(--node-hover-surface);
     box-shadow: var(--shadow-lg);
@@ -97,16 +102,40 @@ const isUser = computed(() => node.value.source === 'user')
     filter: saturate(0.6);
 }
 
+/* The body is the only flex child allowed to shrink under the height cap. */
+.engram-node > header,
+.refs {
+    flex-shrink: 0;
+}
+
 .node-title {
     font-size: var(--text-body);
     font-weight: 600;
     line-height: var(--leading-tight);
     color: var(--text-primary);
+    /* A long title takes space from the body (which flex-shrinks first), but
+       may never blow the card past its 21.6rem cap on its own: 5 clamped
+       lines + header + refs still fit. Unclamped on hover. */
+    flex-shrink: 0;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 5;
+    line-clamp: 5;
+    overflow: hidden;
+}
+
+.engram-node:hover .node-title {
+    -webkit-line-clamp: unset;
+    line-clamp: unset;
 }
 
 .body-clip {
     overflow: hidden;
     max-height: 9rem;
+    /* Shrinks below its content before anything else when the title is tall
+       and the card hits its height cap. */
+    flex-shrink: 1;
+    min-height: 0;
     transition: max-height var(--duration-fast) var(--ease-enter);
 }
 

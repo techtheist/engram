@@ -13,11 +13,13 @@ import type { GraphEdge, GraphNode } from '@/types/graph'
  * canvas, so this drawer and the right-hand NodeDetail work as a pair.
  */
 const store = useGraphStore()
-const { nodeList, edgeList, nodes } = storeToRefs(store)
+const { nodeList, edgeList, nodes, suspects } = storeToRefs(store)
 
 const open = ref(false)
 const busyId = ref<string | null>(null)
 const decayIds = ref<Set<string>>(new Set())
+const scanning = ref(false)
+const scanNote = ref<string | null>(null)
 
 const RECENT_COUNT = 8
 
@@ -44,7 +46,9 @@ const recent = computed(() =>
         .slice(0, RECENT_COUNT),
 )
 
-const attention = computed(() => conflicts.value.length + provisional.value.length)
+const attention = computed(
+    () => conflicts.value.length + provisional.value.length + suspects.value.length,
+)
 
 watch(open, async (isOpen) => {
     if (!isOpen) return
@@ -83,6 +87,21 @@ async function run(id: string, action: () => Promise<void>): Promise<void> {
 const approve = (n: GraphNode) => run(n.id, () => store.approve(n.id))
 const settleConflict = (e: GraphEdge, status: 'resolved' | 'dismissed') =>
     run(e.id, () => store.setEdgeStatus(e.id, status))
+const judge = (id: string, verdict: 'conflict' | 'replaces' | 'dismiss') =>
+    run(id, () => store.resolveSuspect(id, verdict))
+
+async function scanNow(): Promise<void> {
+    scanning.value = true
+    scanNote.value = null
+    try {
+        const added = await store.scanConflicts()
+        scanNote.value = added ? `${added} new suspect${added > 1 ? 's' : ''}` : 'nothing new'
+    } catch (e) {
+        scanNote.value = e instanceof Error ? e.message : String(e)
+    } finally {
+        scanning.value = false
+    }
+}
 </script>
 
 <template>
@@ -102,17 +121,60 @@ const settleConflict = (e: GraphEdge, status: 'resolved' | 'dismissed') =>
         <aside v-if="open" class="panel glass-panel">
             <header class="head">
                 <h2 class="heading">Review</h2>
-                <button class="close" type="button" aria-label="Close" @click="open = false">×</button>
+                <div class="head-actions">
+                    <span v-if="scanNote" class="scan-note">{{ scanNote }}</span>
+                    <button
+                        class="mini"
+                        type="button"
+                        :disabled="scanning"
+                        title="Sweep the graph for unlinked look-alike pairs"
+                        @click="scanNow"
+                    >
+                        {{ scanning ? 'Scanning…' : 'Scan now' }}
+                    </button>
+                    <button class="close" type="button" aria-label="Close" @click="open = false">×</button>
+                </div>
             </header>
+
+            <section v-if="suspects.length" class="block">
+                <h3 class="block-title">Suspected conflicts — needs judgment</h3>
+                <div v-for="s in suspects" :key="s.id" class="conflict">
+                    <div class="row pair">
+                        <button class="row-link" type="button" :title="s.a.title" @click="store.select(s.a.id)">
+                            {{ s.a.title }}
+                        </button>
+                        <span class="verb">vs</span>
+                        <button class="row-link" type="button" :title="s.b.title" @click="store.select(s.b.id)">
+                            {{ s.b.title }}
+                        </button>
+                        <span class="trust">{{ Math.round(s.similarity * 100) }}%</span>
+                    </div>
+                    <div class="row-actions">
+                        <button class="mini" type="button" :disabled="busyId === s.id" title="They contradict — record a conflicts-with edge" @click="judge(s.id, 'conflict')">
+                            Conflict
+                        </button>
+                        <button class="mini" type="button" :disabled="busyId === s.id" title="The newer supersedes — records replaces and archives the older" @click="judge(s.id, 'replaces')">
+                            Replaces
+                        </button>
+                        <button class="mini ghost" type="button" :disabled="busyId === s.id" title="Fine together — never raised again" @click="judge(s.id, 'dismiss')">
+                            Dismiss
+                        </button>
+                    </div>
+                </div>
+            </section>
 
             <section v-if="conflicts.length" class="block">
                 <h3 class="block-title">Unresolved conflicts</h3>
                 <div v-for="e in conflicts" :key="e.id" class="conflict">
-                    <button class="row" type="button" @click="store.select(e.from_id)">
-                        <span class="row-title">{{ title(e.from_id) }}</span>
+                    <div class="row pair">
+                        <button class="row-link" type="button" :title="title(e.from_id)" @click="store.select(e.from_id)">
+                            {{ title(e.from_id) }}
+                        </button>
                         <span class="verb">conflicts with</span>
-                        <span class="row-title">{{ title(e.to_id) }}</span>
-                    </button>
+                        <button class="row-link" type="button" :title="title(e.to_id)" @click="store.select(e.to_id)">
+                            {{ title(e.to_id) }}
+                        </button>
+                    </div>
                     <div class="row-actions">
                         <button class="mini" type="button" :disabled="busyId === e.id" @click="settleConflict(e, 'resolved')">
                             Resolve
@@ -232,6 +294,17 @@ const settleConflict = (e: GraphEdge, status: 'resolved' | 'dismissed') =>
     color: var(--text-primary);
 }
 
+.head-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+}
+
+.scan-note {
+    font-size: var(--text-caption);
+    color: var(--text-tertiary);
+}
+
 .close {
     border: none;
     background: transparent;
@@ -298,6 +371,32 @@ const settleConflict = (e: GraphEdge, status: 'resolved' | 'dismissed') =>
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+/* A pair row is a plain container; each endpoint is its own link so both
+   nodes of a conflict/suspect are reachable. */
+.row.pair {
+    cursor: default;
+}
+
+.row-link {
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+    border: none;
+    background: transparent;
+    font-size: var(--text-body-sm);
+    color: var(--text-primary);
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.row-link:hover {
+    text-decoration: underline;
+    color: var(--interactive-primary);
 }
 
 .verb {

@@ -209,6 +209,10 @@ impl Store {
     pub fn update_node(&self, id: &str, p: NodePatch) -> Result<Node> {
         let mut sets: Vec<&str> = Vec::new();
         let mut vals: Vec<Box<dyn ToSql>> = Vec::new();
+        if let Some(v) = p.node_type {
+            sets.push("type=?");
+            vals.push(Box::new(v.as_str().to_string()));
+        }
         if let Some(v) = p.title {
             sets.push("title=?");
             vals.push(Box::new(crate::redact::scrub(&v)));
@@ -261,6 +265,7 @@ impl Store {
     pub fn delete_node(&self, id: &str) -> Result<bool> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute("DELETE FROM edges WHERE from_id=?1 OR to_id=?1", [id])?;
+        tx.execute("DELETE FROM suspects WHERE a_id=?1 OR b_id=?1", [id])?;
         tx.execute("DELETE FROM vec_nodes WHERE node_id=?1", [id])?;
         let n = tx.execute("DELETE FROM nodes WHERE id=?1", [id])?;
         tx.commit()?;
@@ -726,6 +731,171 @@ impl Store {
         Ok(n > 0)
     }
 
+    // ---- conflict scan (PLAN §7) -------------------------------------------
+
+    /// The stored embedding for a node (vec0 keeps little-endian f32 bytes).
+    pub fn embedding_of(&self, node_id: &str) -> Result<Option<Vec<f32>>> {
+        let blob: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT embedding FROM vec_nodes WHERE node_id=?1",
+                [node_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(blob.map(|b| {
+            b.chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect()
+        }))
+    }
+
+    /// Whether any edge — either direction, any type or status — connects the
+    /// pair. Linked nodes are already consciously related: not scan material.
+    pub fn pair_linked(&self, a: &str, b: &str) -> Result<bool> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM edges \
+             WHERE (from_id=?1 AND to_id=?2) OR (from_id=?2 AND to_id=?1)",
+            params![a, b],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Whether the pair was ever raised, in either order and any status —
+    /// judged (confirmed/dismissed) pairs are never re-raised.
+    pub fn suspect_between(&self, a: &str, b: &str) -> Result<bool> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM suspects \
+             WHERE (a_id=?1 AND b_id=?2) OR (a_id=?2 AND b_id=?1)",
+            params![a, b],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Queue a suspected pair (caller orders newer-first: a = newer).
+    pub fn add_suspect(&self, a_id: &str, b_id: &str, similarity: f64) -> Result<Suspect> {
+        let id = crate::id::new_id();
+        self.conn.execute(
+            "INSERT INTO suspects (id, a_id, b_id, similarity, created_at, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'suspected')",
+            params![id, a_id, b_id, similarity, now()],
+        )?;
+        self.get_suspect(&id)?.ok_or(Error::NotFound(id))
+    }
+
+    pub fn get_suspect(&self, id: &str) -> Result<Option<Suspect>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id, a_id, b_id, similarity, created_at, status \
+                 FROM suspects WHERE id=?1",
+                [id],
+                row_to_suspect,
+            )
+            .optional()?)
+    }
+
+    pub fn set_suspect_status(&self, id: &str, status: SuspectStatus) -> Result<Suspect> {
+        self.conn.execute(
+            "UPDATE suspects SET status=?1 WHERE id=?2",
+            params![status.as_str(), id],
+        )?;
+        self.get_suspect(id)?
+            .ok_or_else(|| Error::NotFound(id.to_string()))
+    }
+
+    /// Pending suspects with their endpoints' display fields, newest first.
+    /// Pairs with an archived endpoint drop out — superseding one side settles
+    /// the question.
+    pub fn suspects_pending(&self) -> Result<Vec<SuspectView>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.similarity, s.created_at,
+                    a.id, a.type, a.title, b.id, b.type, b.title
+             FROM suspects s
+             JOIN nodes a ON a.id = s.a_id
+             JOIN nodes b ON b.id = s.b_id
+             WHERE s.status='suspected'
+               AND a.valid_until IS NULL AND b.valid_until IS NULL
+             ORDER BY s.created_at DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let a_type: String = r.get(4)?;
+            let b_type: String = r.get(7)?;
+            Ok(SuspectView {
+                id: r.get(0)?,
+                similarity: r.get(1)?,
+                created_at: r.get(2)?,
+                a: SuspectEndpoint {
+                    id: r.get(3)?,
+                    node_type: conv(4, &a_type, NodeType::parse)?,
+                    title: r.get(5)?,
+                },
+                b: SuspectEndpoint {
+                    id: r.get(6)?,
+                    node_type: conv(7, &b_type, NodeType::parse)?,
+                    title: r.get(8)?,
+                },
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Active non-anchor nodes — the conflict scan's iteration set (anchor
+    /// labels are similar by nature, not by contradiction).
+    pub fn scannable_nodes(&self) -> Result<Vec<Node>> {
+        let sql = format!(
+            "{NODE_SELECT} WHERE valid_until IS NULL AND type != 'Anchor' ORDER BY created_at DESC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], row_to_node)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    // ---- decay (PLAN §6B) ----------------------------------------------------
+
+    /// Nodes the decay pass would archive at `now_ts`: active, Claude-authored,
+    /// never approved, episodic/volatile, and stale for longer than `ttl_secs`
+    /// (policy::stale_since). Stable durability and user/approved knowledge
+    /// never auto-archive.
+    pub fn decay_candidates(&self, ttl_secs: i64, now_ts: i64) -> Result<Vec<Node>> {
+        let sql = format!(
+            "{NODE_SELECT} WHERE valid_until IS NULL AND source='claude' \
+             AND approved_at IS NULL AND durability IN ('episodic','volatile') \
+             ORDER BY created_at"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], row_to_node)?;
+        let mut out = Vec::new();
+        for node in rows {
+            let node = node?;
+            let Some(since) =
+                crate::policy::stale_since(node.created_at, node.last_seen, node.approved_at)
+            else {
+                continue;
+            };
+            if now_ts - since >= ttl_secs {
+                out.push(node);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Archive nodes in one transaction: sets `valid_until`, preserving history
+    /// (supersede-not-delete, PLAN §6B).
+    pub fn archive_nodes(&self, ids: &[String], ts: i64) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for id in ids {
+            tx.execute(
+                "UPDATE nodes SET valid_until=?1 WHERE id=?2 AND valid_until IS NULL",
+                params![ts, id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn update_edge(&self, id: &str, p: EdgePatch) -> Result<Edge> {
         let mut sets: Vec<&str> = Vec::new();
         let mut vals: Vec<Box<dyn ToSql>> = Vec::new();
@@ -909,6 +1079,18 @@ fn row_to_node(row: &Row) -> rusqlite::Result<Node> {
             })?,
             None => Vec::new(),
         },
+    })
+}
+
+fn row_to_suspect(row: &Row) -> rusqlite::Result<Suspect> {
+    let status_s: String = row.get(5)?;
+    Ok(Suspect {
+        id: row.get(0)?,
+        a_id: row.get(1)?,
+        b_id: row.get(2)?,
+        similarity: row.get(3)?,
+        created_at: row.get(4)?,
+        status: conv(5, &status_s, SuspectStatus::parse)?,
     })
 }
 

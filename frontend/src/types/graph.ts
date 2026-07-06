@@ -74,6 +74,23 @@ export interface ImportSummary {
     edges: number
 }
 
+export type SuspectVerdict = 'conflict' | 'replaces' | 'dismiss'
+
+/** A pending suspected conflict from the local scan (a = newer node). */
+export interface SuspectView {
+    id: string
+    similarity: number
+    created_at: number
+    a: SuspectEndpoint
+    b: SuspectEndpoint
+}
+
+export interface SuspectEndpoint {
+    id: string
+    type: NodeType
+    title: string
+}
+
 export interface SearchHit {
     id: string
     type: NodeType

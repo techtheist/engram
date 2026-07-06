@@ -401,3 +401,75 @@ async fn search_hits_include_neighbors() {
     assert!(!neighbors.is_empty());
     assert_eq!(neighbors[0]["edge_type"], "replaces");
 }
+
+#[tokio::test]
+async fn conflict_scan_flow_over_http() {
+    let app = test_app();
+    let (_, a) = req(
+        &app,
+        "POST",
+        "/nodes",
+        Some(decision("use postgres for storage", "")),
+    )
+    .await;
+    let (_, _b) = req(
+        &app,
+        "POST",
+        "/nodes",
+        Some(decision("use postgres for storage!", "")),
+    )
+    .await;
+
+    let (status, scanned) = req(&app, "POST", "/conflicts/scan", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(scanned["added"], 1);
+
+    let (status, suspects) = req(&app, "GET", "/conflicts/suspects", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let list = suspects.as_array().unwrap();
+    assert_eq!(list.len(), 1);
+    let sid = list[0]["id"].as_str().unwrap();
+    assert!(list[0]["similarity"].as_f64().unwrap() > 0.7);
+
+    let (status, resolved) = req(
+        &app,
+        "POST",
+        &format!("/conflicts/suspects/{sid}/resolve"),
+        Some(json!({ "verdict": "conflict" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(resolved["edge"]["type"], "conflicts-with");
+    assert_eq!(resolved["edge"]["source"], "user");
+
+    let (_, after) = req(&app, "GET", "/conflicts/suspects", None).await;
+    assert!(after.as_array().unwrap().is_empty());
+    let _ = a;
+}
+
+#[tokio::test]
+async fn decay_endpoint_previews_and_archives() {
+    let app = test_app();
+    let (_, node) = req(
+        &app,
+        "POST",
+        "/nodes",
+        Some(json!({
+            "type": "Insight",
+            "title": "temporary workaround",
+            "durability": "episodic",
+            "source": "claude"
+        })),
+    )
+    .await;
+    let id = node["id"].as_str().unwrap();
+
+    // Fresh node: nothing decays even without dry_run.
+    let (status, out) = req(&app, "POST", "/decay?ttl_days=14", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(out["archived"], 0);
+
+    let (_, dry) = req(&app, "POST", "/decay?ttl_days=14&dry_run=true", None).await;
+    assert_eq!(dry["ids"].as_array().unwrap().len(), 0);
+    let _ = id;
+}

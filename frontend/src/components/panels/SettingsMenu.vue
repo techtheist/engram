@@ -2,12 +2,19 @@
 import { ref, useTemplateRef } from 'vue'
 import { onClickOutside } from '@vueuse/core'
 import { api } from '@/services/api'
+import { useMemoryLens } from '@/composables/useMemoryLens'
 import { useGraphStore } from '@/stores/graph'
 import { useThemeStore } from '@/stores/theme'
 import type { ExportGraph } from '@/types/graph'
 
 const theme = useThemeStore()
 const store = useGraphStore()
+const lens = useMemoryLens()
+
+function openBrief(): void {
+    open.value = false
+    lens.show()
+}
 
 const open = ref(false)
 const root = useTemplateRef<HTMLElement>('root')
@@ -128,6 +135,13 @@ function message(e: unknown): string {
             </button>
             <button class="row" type="button" :disabled="busy" @click="pickFile">
                 <span class="row-icon">↑</span> Import JSON
+            </button>
+
+            <div class="divider" />
+
+            <div class="section-label">Memory Lens</div>
+            <button class="row" type="button" @click="openBrief">
+                <span class="row-icon">◉</span> Get brief
             </button>
 
             <p v-if="status" class="status" :class="{ error: isError }">{{ status }}</p>

@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use engram_core::{
     Durability, EdgePatch, EdgeStatus, EdgeType, Engine, Error, NewEdge, NewNode, NodePatch,
-    NodeStatus, NodeType, Source, WriteOutcome,
+    NodeStatus, NodeType, Source, SuspectVerdict, WriteOutcome,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
@@ -25,7 +25,10 @@ first. `add_note` self-checks for near-duplicates (returns {matched, \
 created:false} — then merge via `update_node`) and both writes return warnings \
 when the new text lands near contradicted or superseded knowledge: read them. \
 Link nodes with sentence-shaped edges (e.g. a Decision `because` a Principle); \
-repair a wrong link with `unlink` / `update_edge`. Nodes carry computed \
+repair a wrong link with `unlink` / `update_edge`. When the brief lists \
+suspected conflicts, judge them early via `resolve_suspect` (conflict | \
+replaces | dismiss) — the scan only finds candidates; you are the judge. \
+Nodes carry computed \
 `trust` (0..1, from created_at/last_seen/approved_at) and `stale` (trust < \
 0.3 — verify before relying; refresh with `update_node` if still true). \
 Never store secrets or volatile implementation detail.";
@@ -33,19 +36,24 @@ Never store secrets or volatile implementation detail.";
 #[derive(Clone)]
 pub struct Engram {
     engine: Arc<Mutex<Engine>>,
+    /// Fallback session id when the client omits one: minted once per server
+    /// process, which over stdio is one Claude session. Superseded by the
+    /// transport session id after the streamable-HTTP migration (PLAN §0).
+    session_id: Arc<str>,
 }
 
 #[tool_router]
 impl Engram {
     pub fn new(engine: Engine) -> Self {
-        Self {
-            engine: Arc::new(Mutex::new(engine)),
-        }
+        Self::with_shared(Arc::new(Mutex::new(engine)))
     }
 
     /// Build over an engine shared with the HTTP server (same DB + listener).
     pub fn with_shared(engine: Arc<Mutex<Engine>>) -> Self {
-        Self { engine }
+        Self {
+            engine,
+            session_id: format!("mcp-{}", engram_core::id::new_id()).into(),
+        }
     }
 
     #[tool(
@@ -151,7 +159,7 @@ impl Engram {
                 body: a.body,
                 durability,
                 source: Source::Claude,
-                session_id: a.session_id,
+                session_id: a.session_id.or_else(|| Some(self.session_id.to_string())),
                 status,
                 code_refs: a.code_refs,
             })
@@ -260,6 +268,34 @@ impl Engram {
         ok_json(&json!({ "id": edge.id }))
     }
 
+    #[tool(
+        description = "Pending suspected conflicts from the local scan: unlinked \
+        look-alike node pairs awaiting judgment. Judge each with resolve_suspect."
+    )]
+    async fn list_suspects(&self) -> Result<CallToolResult, ErrorData> {
+        let suspects = self.engine.lock().unwrap().suspects().map_err(map_err)?;
+        ok_json(&json!({ "suspects": suspects }))
+    }
+
+    #[tool(
+        description = "Judge a suspected conflict: verdict `conflict` records a \
+        conflicts-with edge, `replaces` records a replaces edge AND archives the \
+        older node, `dismiss` marks the pair fine-together (never re-raised)."
+    )]
+    async fn resolve_suspect(
+        &self,
+        Parameters(a): Parameters<ResolveSuspectArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let verdict = SuspectVerdict::parse(&a.verdict).map_err(map_err)?;
+        let edge = self
+            .engine
+            .lock()
+            .unwrap()
+            .resolve_suspect(&a.id, verdict, Source::Claude)
+            .map_err(map_err)?;
+        ok_json(&json!({ "ok": true, "edge": edge }))
+    }
+
     #[tool(description = "Approve a node: trust restarts at 100% on the slow \
         one-year curve. ONLY on explicit user demand, or after verifying the \
         node's content word-by-word against current reality. Routine \
@@ -286,6 +322,11 @@ impl Engram {
         Parameters(a): Parameters<UpdateArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let patch = NodePatch {
+            node_type: a
+                .node_type
+                .map(|t| NodeType::parse(&t))
+                .transpose()
+                .map_err(map_err)?,
             title: a.title,
             body: a.body,
             durability: a
@@ -421,6 +462,9 @@ struct LinkArgs {
 #[derive(Deserialize, JsonSchema)]
 struct UpdateArgs {
     id: String,
+    /// Reclassify the node (one of the 8 canonical types).
+    #[serde(default, rename = "type")]
+    node_type: Option<String>,
     #[serde(default)]
     title: Option<String>,
     #[serde(default)]
@@ -436,6 +480,14 @@ struct UpdateArgs {
 #[derive(Deserialize, JsonSchema)]
 struct ApproveArgs {
     id: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct ResolveSuspectArgs {
+    /// The suspect id (from the brief's "Suspected conflicts" section or list_suspects).
+    id: String,
+    /// "conflict" | "replaces" | "dismiss"
+    verdict: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -648,6 +700,19 @@ mod tool_tests {
     }
 
     #[tokio::test]
+    async fn add_note_stamps_process_session_id_when_client_omits_it() {
+        let s = server();
+        let id = id_of(
+            &s.add_note(Parameters(note("Adopt SQLite WAL")))
+                .await
+                .unwrap(),
+        );
+        let node = s.engine.lock().unwrap().get_node(&id).unwrap().unwrap();
+        assert_eq!(node.session_id.as_deref(), Some(&*s.session_id));
+        assert!(s.session_id.starts_with("mcp-"));
+    }
+
+    #[tokio::test]
     async fn add_note_short_circuits_duplicates() {
         let s = server();
         let first = s
@@ -806,5 +871,57 @@ mod tool_tests {
             .unwrap();
         assert!(text_of(&gone).contains("\\\"ok\\\": true"));
         assert!(s.unlink(Parameters(IdArg { id: edge_id })).await.is_err());
+    }
+}
+
+#[cfg(test)]
+mod suspect_tests {
+    use super::*;
+    use engram_core::{FakeEmbedder, Store};
+
+    #[tokio::test]
+    async fn brief_lists_suspects_and_resolve_judges_them() {
+        let s = Engram::new(Engine::new(
+            Store::open_in_memory().unwrap(),
+            Box::new(FakeEmbedder::default()),
+        ));
+        let mk = |t: &str, ty: &str| AddNoteArgs {
+            node_type: ty.into(),
+            title: t.into(),
+            body: None,
+            durability: None,
+            session_id: None,
+            code_refs: vec![],
+        };
+        s.add_note(Parameters(mk("cache invalidation via ttl", "Decision")))
+            .await
+            .unwrap();
+        // Cross-type twin: dodges the duplicate short-circuit, lands as a suspect.
+        s.add_note(Parameters(mk("cache invalidation via ttl", "Caution")))
+            .await
+            .unwrap();
+
+        let listed = format!("{:?}", s.list_suspects().await.unwrap().content);
+        assert!(listed.contains("suspects"), "got: {listed}");
+        let brief = s
+            .brief(Parameters(BriefArgs { max_chars: None }))
+            .await
+            .unwrap();
+        let brief_text = format!("{:?}", brief.content);
+        assert!(
+            brief_text.contains("Suspected conflicts"),
+            "got: {brief_text}"
+        );
+
+        let sid = s.engine.lock().unwrap().suspects().unwrap().remove(0).id;
+        let resolved = s
+            .resolve_suspect(Parameters(ResolveSuspectArgs {
+                id: sid,
+                verdict: "conflict".into(),
+            }))
+            .await
+            .unwrap();
+        let text = format!("{:?}", resolved.content);
+        assert!(text.contains("conflicts-with"), "got: {text}");
     }
 }

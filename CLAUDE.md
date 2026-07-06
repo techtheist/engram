@@ -4,14 +4,16 @@
 
 **Positioning (PLAN.md §1A):** Engram is the **reasoning/decision memory** layer (why/decided/what-bit-us) — *not* a code-structure graph (Graphify/CodeGraph). Those are complementary and can coexist. The validated wedge: an **editable, IDE-embedded graph pane** for reasoning memory + conflict surfacing + local — the closest concept (Cairn) has no UI/traction.
 
-## Status (2026-07-02)
-- **Phase 0 complete & verified** (50 tests: core 36, http 11, mcp 3). `engram serve` serves the HTTP API + SSE + the embedded Vue pane at `http://127.0.0.1:8787`; release binary at `~/.cargo/bin/engram`.
+## Status (2026-07-06)
+- **Phase 0 AND Phase 1 complete & verified** (78 tests: core 54, http 15, mcp 9). `engram serve` serves the HTTP API + SSE + the embedded Vue pane at `http://127.0.0.1:8787`; release binary at `~/.cargo/bin/engram`. **v0.2.0 release prepared** (user updates screenshots, then: push → `gh workflow run draft-release.yml -f version=0.2.0` → publish the draft in the GitHub UI, which tags and builds artifacts).
+- **Phase 1 (v0.2.0):** conflict scan (local embedding candidates ≥ 0.85 → `suspects` queue; write-time + 6-hourly daemon sweep + pane "Scan now"; judgment via pane worklist or Claude's `list_suspects`/`resolve_suspect` — verdicts: conflict / replaces (archives the older) / dismiss); decay pass (`POST /decay`, 14-day TTL past stale-crossing, Claude-authored unapproved episodic/volatile only); brief lists top-8 suspects; graph-health strip; NodeDetail edit mode incl. type reclassification; node provenance section; Memory Lens (brief viewer) in settings; stdio MCP stamps a per-process fallback `session_id` (`mcp-…`).
+- **Name (locked):** the product is **"Engram Alpha"** (Alpha = part of the name, not a version); binary/repo/JetBrains plugin stay `engram`, VSCode extension publishes as `engram-alpha`. See PLAN §0/§1A for the four-way "engram" collision.
 - **JetBrains plugin** (`engram-jetbrains/`, package `dev.techtheist.engram` — don't rename): JCEF tool window (right anchor) + editor-tab mode; `./gradlew buildPlugin` → zip; user-tested in-IDE.
 - **VSCode extension** (`engram-vscode/`): Webview pane in the **secondary sidebar (right)** + `.mcp.json` configurator + daemon status bar; `vsce package` → vsix; user-tested in-IDE.
 - **Skill:** three capture variants in `skills/engram/` (**aggressive / normal / relaxed**; relaxed is the recommended default for users, **aggressive is what this repo dogfoods** via `.claude/skills/engram`).
 - **Known divergence:** MCP currently runs as a stdio `engram mcp` process (wired via `.mcp.json`), not the daemon-hosted streamable HTTP from PLAN §0 — deliberate deferral; the user owns that migration. Don't rewrite it unprompted.
 - **Pane rebuild cycle:** run **`scripts/deploy-pane.sh`** (add `--vsix` / `--jetbrains` to also rebuild plugins; real embeddings are the default — `--fake` only for throwaway DBs, since MCP writes real vectors and a fake-embedding daemon searching them is noise). It builds the pane, reinstalls the binary, restarts the daemon on the repo's absolute DB path, and verifies `/health` serves the right DB — never hand-chain `cd`/build/restart (relative `--db` from the wrong cwd silently creates an empty graph).
-- **Next:** bundle skill + `.mcp.json` bootstrap into the plugins; `runIde`/`verifyPlugin`; MCP transport migration; decay/promotion numbers.
+- **Next (PLAN §10 near-term):** `timeline` MCP tool + pane view; `engram doctor`; unhappy-path guidance in the skills (shared protocol section); ship a `.claude-plugin/`; bundle skill + `.mcp.json` bootstrap into the plugins; `runIde`/`verifyPlugin`; MCP transport migration.
 
 ## Locked decisions (don't relitigate without reason)
 - **Open-source, MIT.** Goal: portfolio/credibility → optimize for docs & DX.

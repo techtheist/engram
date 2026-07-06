@@ -1,4 +1,13 @@
-import type { ExportGraph, Graph, GraphEdge, GraphNode, ImportSummary, SearchHit } from '@/types/graph'
+import type {
+    ExportGraph,
+    Graph,
+    GraphEdge,
+    GraphNode,
+    ImportSummary,
+    SearchHit,
+    SuspectVerdict,
+    SuspectView,
+} from '@/types/graph'
 
 declare global {
     interface Window {
@@ -33,8 +42,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     return (await res.json()) as T
 }
 
+async function requestText(path: string): Promise<string> {
+    const res = await fetch(`${API_BASE}${path}`)
+    if (!res.ok) {
+        const detail = await res.text().catch(() => '')
+        throw new Error(`GET ${path} → ${res.status} ${detail}`)
+    }
+    return res.text()
+}
+
 export const api = {
     graph: () => request<Graph>('/graph'),
+
+    /** The session-start digest, as raw markdown (what the assistant receives). */
+    brief: () => requestText('/brief'),
 
     getNode: (id: string) => request<GraphNode>(`/nodes/${id}`),
 
@@ -51,6 +72,18 @@ export const api = {
         request<GraphEdge>(`/edges/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
 
     deleteNode: (id: string) => request<void>(`/nodes/${id}`, { method: 'DELETE' }),
+
+    /** Pending suspected conflicts from the local scan. */
+    suspects: () => request<SuspectView[]>('/conflicts/suspects'),
+
+    /** Run the candidate sweep now; returns how many new suspects were queued. */
+    scanConflicts: () => request<{ added: number }>('/conflicts/scan', { method: 'POST' }),
+
+    resolveSuspect: (id: string, verdict: SuspectVerdict) =>
+        request<{ edge: GraphEdge | null }>(`/conflicts/suspects/${id}/resolve`, {
+            method: 'POST',
+            body: JSON.stringify({ verdict }),
+        }),
 
     decay: (ttlDays: number) =>
         request<{ archived: number; ids: string[] }>(`/decay?ttl_days=${ttlDays}`, { method: 'POST' }),

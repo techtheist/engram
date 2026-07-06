@@ -402,6 +402,36 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
     }
 
+    // Periodic librarian pass (PLAN §10 Phase 1): archive TTL-expired stale
+    // provisional nodes and refresh the suspected-conflict queue. Purely local
+    // math — judgment stays with Claude/the user (PLAN §7). First tick fires
+    // at startup, then every 6 hours.
+    let sweeper = engine.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(6 * 60 * 60));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            let result = {
+                let engine = sweeper.lock().unwrap();
+                engine
+                    .decay(engram_core::policy::DECAY_TTL_DAYS, false)
+                    .and_then(|archived| {
+                        engine.scan_conflicts().map(|added| (archived.len(), added))
+                    })
+            };
+            match result {
+                Ok((archived, added)) if archived > 0 || added > 0 => {
+                    tracing::info!(
+                        "sweep: archived {archived} stale nodes, queued {added} suspected conflicts"
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("sweep failed: {e}"),
+            }
+        }
+    });
+
     if args.http_only {
         tracing::info!("http-only mode (no MCP)");
         axum::serve(listener, router).await?;

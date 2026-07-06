@@ -1,6 +1,6 @@
 # Engram Alpha — Plan & Spec
 
-> **Working title.** "Engram" = a physical memory trace stored in the brain — literally what this project stores. Rename freely.
+> **Name (locked 2026-07-06).** The product is **"Engram Alpha"** — *Alpha is part of the name, not a version tag*. "Engram" = a physical memory trace stored in the brain — literally what this project stores; the qualifier exists because plain "engram" is heavily contested in the AI-memory space (openengram.ai, jamjet-labs/engram, lessthanno/engram-agent). Existing artifacts keep their short names — the `engram` binary, this repo, the JetBrains plugin — while the **VSCode extension publishes as `engram-alpha`**.
 
 A graph-based, durable, **inspectable long-term project memory** for AI coding assistants (Claude Code first). Engram sits beside your assistant as a memory it can read from and write to — and that you can see, edit, and own. The graph is the product surface, not hidden plumbing.
 
@@ -10,7 +10,8 @@ A graph-based, durable, **inspectable long-term project memory** for AI coding a
 
 | Decision | Choice | Notes |
 |---|---|---|
-| **Goal** | Open-source / portfolio | Public repo; optimize for docs, DX, shareability. |
+| **Goal** | Open-source / portfolio | Public repo; optimize for docs, DX, shareability. Portfolio-first; if real users show up, it gets supported as a real project. |
+| **Name** | **Engram Alpha** — "Alpha" is part of the name, **not** a version | Plain "engram" is taken by three other AI-memory projects. Short `engram` stays for the binary, repo, and JetBrains plugin; VSCode extension = `engram-alpha`. |
 | **License** | **MIT** | Maximally adoptable. |
 | **Memory scope** | **Per-repo only** (v1) | One graph per project. Cross-project/shared layer is a future option. |
 | **Build first** | **Browser standalone** | Fastest loop; doubles as Claude Desktop support. IDE wrappers later. |
@@ -59,6 +60,8 @@ The graph-memory space is crowded at the consumer-companion level (Nomi Mind Map
 **Validated wedge:** the *combination* nobody ships — durable reasoning/decision memory **+** a live, **editable graph pane embedded in the IDE** (dual view beside Claude) **+** conflict/supersede surfacing **+** local-first. JetBrains has **zero** memory-graph plugins at all.
 
 **Honest caveat:** low star counts across the reasoning-memory niche mean *demand is unproven/early*. Fine for the portfolio / dogfood goal; a flag if this ever turns commercial.
+
+**Name collisions (2026-07-06 scan):** four other AI-memory projects ship under "engram" — **Gentleman-Programming/engram** (4.9K★, Go, memory for AI coding agents: the most direct competitor *and* proof of demand for this niche, but flat FTS5 observations — no embeddings, no graph ontology, no trust/decay, no graph UI, global DB; its Claude plugin installs as `engram` from its own marketplace repo), **openengram.ai** (agent-memory infra, TS SDK, dashboard with graph viz, managed cloud coming), **jamjet-labs/engram** (Python multi-tenant memory library), **lessthanno/engram-agent** (behavioral habit coach). None ships an IDE-embedded editable per-repo reasoning graph; hence the product name **Engram Alpha** (see §0). Also scanned: **MemPalace** (57K★) — verbatim conversation memory, the opposite philosophy, no UI. The Gentleman-Programming traction softens the "demand unproven" caveat above: appetite for coding-agent memory is real; unproven is only the graph-pane wedge.
 
 ---
 
@@ -263,6 +266,10 @@ The hardest problem and the real moat: **deciding what's worth a node.** In v1 (
 
 - **v1 (default, passive):** contradictions are recorded as `conflicts-with` edges and shown as a queryable worklist in the graph pane. Awareness during work comes **through RAG** — when Claude retrieves relevant nodes, conflicting ones surface alongside, so the model notices naturally without an active interrupt.
 - **v1 addition (pull-based warnings, shipped):** `add_note` / `update_node` compare the new text against nearby nodes and return `warnings` when it lands close to a node that is **in an active conflict** or **superseded** — the writing assistant self-corrects in the same turn, no push protocol needed. This is the cheap half of the mid-session-push milestone below.
+- **Phase 1 — conflict scan (decided 2026-07-06; inspired by Gentleman-Programming/engram's `conflicts scan`, adapted to our architecture).** Split detection from judgment:
+  - **Candidate detection is local and automatic.** We have embeddings (their FTS5-only design forces an LLM earlier); pairwise cosine + FTS term overlap over same-/related-type nodes is cheap and deterministic. Runs (a) **inline on write** — extend the existing dupe/warning pre-check to also *record* a suspected pair, not just warn; (b) as a **periodic daemon sweep** piggybacking on the decay sweep; (c) **on demand from the pane** ("Scan now" button → HTTP endpoint → same sweep → results stream back via SSE). Manual trigger exists for "after a big session" reassurance, not because the scan needs babysitting.
+  - **Suspected-conflict queue:** candidate pairs get status `suspected` (not yet a `conflicts-with` edge). Stored so they survive sessions and feed the pane worklist and health strip.
+  - **Judgment is cooperative — the daemon never calls an LLM.** Shelling out to `claude -p` (Gentleman's approach) is *possible* but rejected: it adds a PATH/CLI dependency, burns subscription quota in the background, is slow per judgment, and judges without session context. Instead the `brief` reports "N suspected conflicts pending" and the skill has Claude judge them in-session via MCP (confirm → `conflicts-with` or `replaces` edge; dismiss → pair marked ignored, never re-raised). The user can also resolve pairs directly in the pane worklist. Re-evaluate shell-out only if pending queues rot unjudged in dogfooding.
 - **Later (planned):** proactive **mid-session push** via MCP **channels** — Engram tells Claude "this conflicts with an earlier decision" while it's working, so it self-corrects in real time. Behind a flag; opt-in.
 
 This staging keeps v1 simple (retrieval does the work) while reserving the more powerful active-warning behavior as a clear future milestone.
@@ -306,7 +313,7 @@ The stable contract is the *interface* (local HTTP + stdio MCP + SQLite).
   3. **GitHub page** — Pages doubles as the landing page: demo GIF, one-liner, plugin links.
   4. **Binary + plugin present, daemon not running** — **Claude starts it** (`engram serve --http-only`, background, repo root); taught by the skill. Harmless today (stdio MCP works without the daemon), mandatory once MCP moves to daemon-hosted streamable HTTP.
   - **No-plugin usage** is a first-class path: Claude Code runs everything, and the skill tells it to point users at the localhost pane (default `http://127.0.0.1:8787`) when they ask where to see their memory.
-- **Plugin publishing from GitHub Actions:** JetBrains via `publishPlugin` + token (known). VSCode via the official `@vscode/vsce` CLI with a VS Marketplace PAT (Azure DevOps), typically wrapped in the `HaaLeo/publish-vscode-extension` action — which also publishes to **Open VSX** (`ovsx` + token) for VSCodium/Cursor/Windsurf users. Publish to both registries.
+- **Plugin publishing from GitHub Actions:** JetBrains via `publishPlugin` + token (known). VSCode via the official `@vscode/vsce` CLI with a VS Marketplace PAT (Azure DevOps), typically wrapped in the `HaaLeo/publish-vscode-extension` action — which also publishes to **Open VSX** (`ovsx` + token) for VSCodium/Cursor/Windsurf users. Publish to both registries. Marketplace ids per the naming rule (§0): JetBrains plugin stays `engram`; VSCode/Open VSX publish as **`engram-alpha`**.
 - **Code-signing:** start with **checksums / minisign / Sigstore** (free; skill verifies these). OS code-signing (Apple notarization, Windows Authenticode) is added later only if Gatekeeper/SmartScreen friction actually bites — it costs certs + a CI step.
 - SQLite static (`bundled`). One binary per platform; **caveat:** local embeddings pull in ONNX Runtime (a native lib `ort` manages) → "binary + one runtime lib per platform," not fully single-file. The `ort`/onnxruntime linking story on Windows is the main cross-platform risk to spike early.
 
@@ -341,11 +348,11 @@ The stable contract is the *interface* (local HTTP + stdio MCP + SQLite).
 5. **JSON export/import.**
 6. Shipped Claude Code **skill** (cooperative capture; batch + silent; Relaxed default).
 
-**Phase 1 — Quality + first IDE:**
-7. Librarian (async classify/dedupe/contradiction-detect) + provisional-decay/archive.
-8. Write-policy modes (relaxed default) + node reclassification/editing UX + hard-delete.
-9. Conflict worklist in the pane (passive, RAG-surfaced) + "recently added / provisional" review view.
-10. VSCode wrapper (Webview + lifecycle + config bundle + skill).
+**Phase 1 — Quality + first IDE** *(complete — shipped v0.2.0, 2026-07-06)*:
+7. ~~Librarian + provisional-decay/archive~~ **Shipped:** the **conflict scan** of §7 — suspects table, write-time recording, 6-hourly daemon sweep + startup pass, `POST /conflicts/scan`; and the **decay pass** (`POST /decay`, policy `stale_since` + 14-day TTL, archives only Claude-authored/never-approved/episodic-or-volatile nodes). Threshold tuned on the dogfood graph: 0.75 flagged every topical cluster → **0.85**.
+8. ~~Write-policy modes + reclassification/editing + hard-delete~~ **Shipped:** modes are the three skill variants; NodeDetail gained an **edit mode** (title/body/durability + **type reclassification** via `NodePatch.type`, also on MCP `update_node`); hard-delete was already user-only in the pane.
+9. ~~Conflict worklist + review view~~ **Shipped:** Review drawer lists **suspected pairs** (Conflict / Replaces / Dismiss) above confirmed conflicts, with a **Scan now** action; **graph-health strip** (active/suspected/conflicts/stale/provisional counts) sits bottom-left; brief lists the top-8 suspects with judgment instructions and Claude judges via `list_suspects`/`resolve_suspect`.
+10. ~~VSCode wrapper~~ **Shipped** earlier (see Status in CLAUDE.md; JetBrains too).
 
 **Phase 2 — Second IDE + active features:**
 11. JetBrains wrapper (JCEF).
@@ -355,7 +362,13 @@ The stable contract is the *interface* (local HTTP + stdio MCP + SQLite).
 
 **Phase 3 — Multi-harness memory (the "preserve memory between AI agents" pitch):** first-class support for the most-used CLI harnesses beyond Claude Code — **OpenCode, Codex CLI, Gemini CLI, Kilo CLI** — plus the **Codex VS Code integration**. All of them speak MCP, so the backend is already agnostic: the work is per-harness config bootstrap (install.sh + plugins writing each harness's MCP registration), capture-skill/prompt equivalents per harness, and docs. This upgrades the pitch from "memory for your assistant" to **one shared, local memory that persists across different AI agents** — Claude captures a decision, Codex recalls it. Multi-agent read/write concurrency (two or more agents on one graph) is already handled by the local single-daemon design: SQLite WAL + serialized writes through one engine; verify with a concurrency smoke test rather than new architecture.
 
-**Later / maybe:** cross-project shared Principle layer; cloud sync.
+**Near-term additions (from MemPalace competitive scan, 2026-07-06):**
+- **`timeline` MCP tool + pane view:** walk a node's `replaces` chain chronologically ("how did the auth decision evolve"). Primitives already exist (`replaces` edges, `created_at`, superseded status) — this exposes them as a history. Also feeds the §11 "pane review UX" question.
+- **`engram doctor`:** diagnostic/repair CLI command — daemon-vs-repo DB path match, embedding model presence, WAL health, FTS/vector index consistency. Guards the wrong-cwd-empty-DB failure class that `scripts/deploy-pane.sh` works around.
+- **Ship as a Claude Code plugin:** a `.claude-plugin/` dir in this repo (skill + slash commands + `.mcp.json` template, hooks config later) so one plugin install wires everything — the packaging shape MemPalace validates across five harnesses. Complements the locked thin-marketplace-plugin distribution decision (§0) and the IDE extensions; plugin name follows the naming rule (plain `engram` unless the marketplace slug is taken).
+- **Unhappy-path guidance in the skill(s):** what Claude should do when search returns nothing (say so, don't invent), when the MCP server is down (surface the error, don't silently fall back to model memory), and query hygiene (short keyword queries, never paste conversations). Extract into a shared protocol section all three variants reference so it can't drift.
+
+**Later / maybe:** cross-project shared Principle layer; cloud sync; **Obsidian export** (far future — map nodes to notes and typed edges to `[[wikilinks]]`; our typed graph fits Obsidian's model natively, and it's a cheap integration with high appeal to the note-taking crowd).
 
 **Later — tags + pane filtering:** free-form `tags` on nodes, settable by the user in the pane or by Claude on request ("tag everything about the auth rewrite"), with **filter chips in the pane** to focus the canvas on one concern. Tags complement Anchors: an Anchor says *what code a note concerns*; a tag says *how the user wants to slice the graph*. Ship **3–4 recommended default categories** rather than a free-for-all — e.g. `tech-decision` (stack/architecture choices), `preference` (abstract taste/conventions), `process` (how we work: build, release, review), `domain` (business/domain knowledge) — and let users add their own. Needs: a `tags` column (JSON array) + FTS inclusion and a skill line telling Claude to reuse existing tags before inventing new ones. The pane already has a client-side property filter (type/status/trust/source/durability/archived, options gathered from the loaded graph) — tags slot in as one more gathered group.
 

@@ -35,6 +35,15 @@ pub const STALE_TRUST: f64 = 0.3;
 /// Same-type cosine similarity at/above which `add_note` treats the new note
 /// as a duplicate and returns the existing match instead of creating (PLAN §6A).
 pub const DUPLICATE_SIMILARITY: f64 = 0.90;
+/// Cosine similarity at/above which two *unlinked* nodes become a suspected
+/// conflict (PLAN §7 conflict scan): close enough to be about the same thing,
+/// below the duplicate bar. Judgment stays with Claude or the user. Tuned on
+/// the dogfood graph: 0.75 flagged every topical cluster (136 pairs / ~50
+/// nodes); real look-alikes sit ≥ 0.85 with bge-small.
+pub const CONFLICT_SUSPECT_SIMILARITY: f64 = 0.85;
+/// How long a node must sit below [`STALE_TRUST`] before the decay pass
+/// archives it (PLAN §6B: stale provisional episodic nodes decay out).
+pub const DECAY_TTL_DAYS: i64 = 14;
 /// Similarity at/above which a write warns about nearby conflicted or
 /// superseded nodes (the pull-based form of PLAN §7 conflict surfacing).
 pub const WARN_SIMILARITY: f64 = 0.70;
@@ -97,4 +106,24 @@ pub fn trust(created_at: i64, last_seen: Option<i64>, approved_at: Option<i64>, 
 
 pub fn is_stale(trust: f64) -> bool {
     trust < STALE_TRUST
+}
+
+/// When an unapproved node's computed trust crosses [`STALE_TRUST`] — the
+/// clock the decay pass measures its TTL against. `None` for approved nodes:
+/// they never auto-archive (PLAN §6B — confirmed/trusted persist; going stale
+/// only queues them for human review).
+pub fn stale_since(
+    created_at: i64,
+    last_seen: Option<i64>,
+    approved_at: Option<i64>,
+) -> Option<i64> {
+    if approved_at.is_some() {
+        return None;
+    }
+    let (start, anchor) = match last_seen {
+        Some(seen) => (TRUST_SEEN_START, seen),
+        None => (TRUST_UNSEEN_START, created_at),
+    };
+    let fraction = (start - STALE_TRUST) / (start - TRUST_FLOOR);
+    Some(anchor + (PROVISIONAL_TRUST_WINDOW_SECS as f64 * fraction) as i64)
 }

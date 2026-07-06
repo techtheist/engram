@@ -39,6 +39,19 @@ CREATE INDEX IF NOT EXISTS idx_edges_to   ON edges(to_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type);
 CREATE INDEX IF NOT EXISTS idx_nodes_stat ON nodes(status);
 
+-- Conflict-scan queue (PLAN §7): locally-detected candidate contradictions.
+-- Pairs are stored newer-first (a = newer); judged rows stay so a pair is
+-- never re-raised.
+CREATE TABLE IF NOT EXISTS suspects (
+  id          TEXT PRIMARY KEY,
+  a_id        TEXT NOT NULL REFERENCES nodes(id),
+  b_id        TEXT NOT NULL REFERENCES nodes(id),
+  similarity  REAL NOT NULL,
+  created_at  INTEGER NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'suspected',
+  UNIQUE(a_id, b_id)
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts
   USING fts5(title, body, content='nodes', content_rowid='rowid');
 
