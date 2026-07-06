@@ -56,22 +56,43 @@ internal class EngramPanel(
             add(unsupportedCard(), CARD_UNSUPPORTED)
             cards.show(this, CARD_UNSUPPORTED)
         } else {
-            // Windowed (non-OSR) rendering. Off-screen rendering on macOS Retina
-            // loses its scale factor when the tool window is hidden and shown
-            // again, repainting at 1x (the "giant pixels" bug); the native
-            // windowed view keeps its scale and scrolls more smoothly.
-            // Built blank — we only load the pane once /health is green, so a
-            // down daemon never flashes the browser's own connection-error page.
-            val b = JBCefBrowser.createBuilder()
-                .setOffScreenRendering(false)
-                .build()
-            Disposer.register(this, b)
-            browser = b
-
-            add(b.component, CARD_PANE)
+            attachBrowser()
             showOfflineCard(hasBinary = EngramBackend.findBinary() != null)
             scheduleHealthCheck(immediate = true)
         }
+    }
+
+    private fun attachBrowser() {
+        // Windowed (non-OSR) rendering. Off-screen rendering on macOS Retina
+        // loses its scale factor when the tool window is hidden and shown
+        // again, repainting at 1x (the "giant pixels" bug); the native
+        // windowed view keeps its scale and scrolls more smoothly.
+        // Built blank — we only load the pane once /health is green, so a
+        // down daemon never flashes the browser's own connection-error page.
+        val b = JBCefBrowser.createBuilder()
+            .setOffScreenRendering(false)
+            .build()
+        Disposer.register(this, b)
+        browser = b
+        add(b.component, CARD_PANE)
+    }
+
+    /**
+     * Tear down the JCEF browser and build a fresh one, then reconnect.
+     * A plain reload can't recover a wedged renderer process or a pane that
+     * was loaded from an older daemon build; recreating the browser can.
+     * Must run on the EDT (it mutates the component tree).
+     */
+    fun restartBrowser() {
+        if (disposed) return
+        browser?.let {
+            remove(it.component)
+            Disposer.dispose(it)
+        }
+        browser = null
+        loadedUrl = null
+        if (JBCefApp.isSupported()) attachBrowser()
+        retryNow()
     }
 
     /** Poll `/health` off the EDT; flip cards (and lazily load the pane) on the result. */
