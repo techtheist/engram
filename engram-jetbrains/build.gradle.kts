@@ -62,6 +62,9 @@ intellijPlatform {
     pluginVerification {
         ides {
             create(IntelliJPlatformType.IntellijIdeaUltimate, intellijPlatformVersion)
+            // JCEF classes moved plugins in 262 — also verify against a newer IDE
+            // when one is installed locally (CI just skips this).
+            file("/Applications/IntelliJ IDEA 2026.2 EAP.app").takeIf { it.exists() }?.let { local(it) }
         }
     }
 }

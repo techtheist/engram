@@ -1,6 +1,12 @@
 <idea-plugin>
     <dependencies>
         <module name="intellij.platform.frontend"/>
+        <!-- JCEF moved out of core into the com.intellij.modules.jcef plugin in 2026.2
+             (build 262); this module dep is how bundled plugins (markdown) reach
+             JBCefApp there. On 2026.1 the same module name resolves into core.
+             intellij.libraries.jcef (org.cef.*) stays undeclared: it is internal
+             in 261 and we never touch org.cef directly. -->
+        <module name="intellij.platform.ui.jcef"/>
     </dependencies>
 
     <extensions defaultExtensionNs="com.intellij">
