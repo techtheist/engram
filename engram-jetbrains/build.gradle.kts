@@ -52,9 +52,10 @@ intellijPlatform {
     publishing {
         token = providers.environmentVariable("PUBLISH_TOKEN")
         // Release channel from the version: "1.2.0-beta.1" -> "beta"; a plain
-        // "0.1.0" has no suffix, so default to "alpha" (pre-1.0, not Stable).
+        // "0.2.0" has no suffix and goes to "default" — the Marketplace Stable
+        // channel, the only one users see without adding a custom channel repo.
         channels = providers.gradleProperty("pluginVersion").map {
-            listOf(it.substringAfter('-', "alpha").substringBefore('.').ifEmpty { "alpha" })
+            listOf(it.substringAfter('-', "default").substringBefore('.').ifEmpty { "default" })
         }
     }
 
