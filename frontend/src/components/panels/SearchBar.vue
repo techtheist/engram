@@ -124,6 +124,9 @@ watch(query, (q) => {
 
 .input {
     flex: 1;
+    /* Without this the input's min-content width pushes it out of the pill
+       when the pane gets narrow (IDE side panels). */
+    min-width: 0;
     border: none;
     background: transparent;
     color: var(--text-primary);

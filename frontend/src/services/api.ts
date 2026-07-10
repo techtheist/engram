@@ -1,12 +1,17 @@
 import type {
+    AuditPage,
+    DriftEntry,
     ExportGraph,
     Graph,
     GraphEdge,
     GraphNode,
     ImportSummary,
+    NewEdge,
+    NewNode,
     SearchHit,
     SuspectVerdict,
     SuspectView,
+    TagStat,
 } from '@/types/graph'
 
 declare global {
@@ -59,6 +64,17 @@ export const api = {
 
     getNode: (id: string) => request<GraphNode>(`/nodes/${id}`),
 
+    createNode: (node: NewNode) =>
+        request<GraphNode>('/nodes', { method: 'POST', body: JSON.stringify(node) }),
+
+    createEdge: (edge: NewEdge) =>
+        request<GraphEdge>('/edges', { method: 'POST', body: JSON.stringify(edge) }),
+
+    deleteEdge: (id: string) => request<void>(`/edges/${id}`, { method: 'DELETE' }),
+
+    /** Tags in use on current nodes, freshest first. */
+    tags: () => request<TagStat[]>('/tags'),
+
     search: (query: string, limit = 12) =>
         request<SearchHit[]>(`/search?q=${encodeURIComponent(query)}&limit=${limit}`),
 
@@ -79,6 +95,9 @@ export const api = {
     /** Run the candidate sweep now; returns how many new suspects were queued. */
     scanConflicts: () => request<{ added: number }>('/conflicts/scan', { method: 'POST' }),
 
+    /** Nodes whose path-shaped code_refs no longer exist in the project. */
+    drift: () => request<DriftEntry[]>('/drift'),
+
     resolveSuspect: (id: string, verdict: SuspectVerdict) =>
         request<{ edge: GraphEdge | null }>(`/conflicts/suspects/${id}/resolve`, {
             method: 'POST',
@@ -93,6 +112,10 @@ export const api = {
         request<{ archived: number; ids: string[] }>(`/decay?ttl_days=${ttlDays}&dry_run=true`, {
             method: 'POST',
         }),
+
+    /** One page of the audit journal, newest first; pass the last entry's seq as `before` to page on. */
+    audit: (limit = 50, before?: number) =>
+        request<AuditPage>(`/audit?limit=${limit}${before != null ? `&before=${before}` : ''}`),
 
     exportGraph: () => request<ExportGraph>('/export'),
 

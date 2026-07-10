@@ -3,6 +3,10 @@ resolver = "3"
 members = ["crates/engram-core", "crates/engram-http", "crates/engram-mcp", "crates/engram-cli"]
 
 [workspace.package]
+# One version for every crate: audit rows, /health, MCP server info and
+# `engram --version` must all report the same number. release.yml stamps
+# this line from the tag.
+version = "0.3.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.88"

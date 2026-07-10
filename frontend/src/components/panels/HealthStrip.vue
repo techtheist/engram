@@ -10,7 +10,7 @@ import type { GraphNode } from '@/types/graph'
  * the work happens.
  */
 const store = useGraphStore()
-const { nodeList, edgeList, suspects } = storeToRefs(store)
+const { nodeList, edgeList, suspects, drift } = storeToRefs(store)
 
 const active = (n: GraphNode): boolean => n.valid_until == null
 
@@ -29,7 +29,7 @@ const provisionalCount = computed(
 )
 
 const attention = computed(
-    () => staleCount.value + conflictCount.value + suspects.value.length,
+    () => staleCount.value + conflictCount.value + suspects.value.length + drift.value.length,
 )
 </script>
 
@@ -39,6 +39,7 @@ const attention = computed(
     <span v-if="suspects.length" class="stat warn">{{ suspects.length }} suspected</span>
     <span v-if="conflictCount" class="stat warn">{{ conflictCount }} conflicts</span>
     <span v-if="staleCount" class="stat warn">{{ staleCount }} stale</span>
+    <span v-if="drift.length" class="stat warn">{{ drift.length }} drifted</span>
     <span v-if="provisionalCount" class="stat">{{ provisionalCount }} provisional</span>
     <span v-if="!attention" class="stat ok">healthy</span>
 </div>
@@ -57,6 +58,25 @@ const attention = computed(
     padding: 0.5rem 1.1rem;
     border-radius: var(--radius-full);
     font-size: var(--text-caption);
+}
+
+/* Panes thinner than 290px: no room even for the folded strip. */
+@media (width <= 290px) {
+    .health {
+        display: none;
+    }
+}
+
+/* Panes thinner than 426px: the strip would run under the minimap — fold
+   the stats into a column instead. */
+@media (width <= 426px) {
+    .health {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.4rem;
+        padding: 0.8rem 1.2rem;
+        border-radius: var(--radius-lg);
+    }
 }
 
 .stat {

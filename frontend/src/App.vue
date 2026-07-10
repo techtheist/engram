@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted } from 'vue'
+import { onBeforeUnmount, onMounted, ref, useTemplateRef } from 'vue'
+import { onClickOutside } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import GraphCanvas from '@/components/GraphCanvas.vue'
 import EngramMark from '@/components/common/EngramMark.vue'
+import AuditPanel from '@/components/panels/AuditPanel.vue'
 import SearchBar from '@/components/panels/SearchBar.vue'
 import FilterMenu from '@/components/panels/FilterMenu.vue'
 import HealthStrip from '@/components/panels/HealthStrip.vue'
 import MemoryLensPanel from '@/components/panels/MemoryLensPanel.vue'
+import NodeCreatePanel from '@/components/panels/NodeCreatePanel.vue'
 import NodeDetail from '@/components/panels/NodeDetail.vue'
 import ReviewPanel from '@/components/panels/ReviewPanel.vue'
 import SettingsMenu from '@/components/panels/SettingsMenu.vue'
@@ -19,6 +22,19 @@ const store = useGraphStore()
 const { loading, error, connected, nodeList } = storeToRefs(store)
 
 useGraphSync() // poll-reconcile cross-process writes, but only while the user is active
+
+const creating = ref(false)
+
+// Narrow panes (IDE side panels) fold + New / Filter / Review under a burger.
+const menuOpen = ref(false)
+const actionsRoot = useTemplateRef<HTMLElement>('actionsRoot')
+onClickOutside(actionsRoot, () => (menuOpen.value = false))
+
+function startCreate(): void {
+    // Claiming the right side auto-dismisses the detail drawer (usePanels).
+    creating.value = true
+    menuOpen.value = false
+}
 
 onMounted(async () => {
     await store.load()
@@ -42,15 +58,35 @@ onBeforeUnmount(() => store.disconnect())
         <div class="topbar-search">
             <SearchBar />
         </div>
-        <div class="topbar-actions">
-            <FilterMenu />
-            <ReviewPanel />
+        <div ref="actionsRoot" class="topbar-actions">
+            <button
+                class="burger"
+                type="button"
+                :class="{ active: menuOpen }"
+                :title="menuOpen ? 'Close actions' : 'Actions'"
+                @click="menuOpen = !menuOpen"
+            >
+                <svg class="burger-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <line x1="4" y1="6" x2="20" y2="6" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                    <line x1="4" y1="12" x2="20" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                    <line x1="4" y1="18" x2="20" y2="18" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                </svg>
+            </button>
+            <div class="actions-cluster" :class="{ open: menuOpen }">
+                <button class="new-node" type="button" title="Create a memory node" @click="startCreate">
+                    + New
+                </button>
+                <FilterMenu />
+                <ReviewPanel />
+            </div>
             <SettingsMenu />
         </div>
     </header>
 
     <NodeDetail />
+    <NodeCreatePanel v-model="creating" />
     <MemoryLensPanel />
+    <AuditPanel />
     <HealthStrip />
 
     <Transition name="fade">
@@ -125,10 +161,113 @@ onBeforeUnmount(() => store.disconnect())
 }
 
 .topbar-actions {
+    position: relative;
     display: flex;
     align-items: center;
     justify-self: end;
     gap: 0.8rem;
+}
+
+/* Inline row on wide panes; the burger + dropdown take over under 600px. */
+.actions-cluster {
+    display: contents;
+}
+
+.burger {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 0.9rem;
+    border-radius: var(--radius-full);
+    border: 1px solid var(--border-default);
+    background-color: var(--surface-glass);
+    backdrop-filter: var(--glass-backdrop);
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.burger:hover,
+.burger.active {
+    color: var(--text-primary);
+    background-color: var(--node-hover-surface);
+}
+
+.burger-icon {
+    display: block;
+    width: 1.6rem;
+    height: 1.6rem;
+}
+
+@media (width <= 770px) {
+    .burger {
+        display: flex;
+    }
+
+    .actions-cluster {
+        position: absolute;
+        top: calc(100% + 0.8rem);
+        right: 0;
+        z-index: 20;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.8rem;
+        padding: 0.8rem;
+        border-radius: var(--radius-lg);
+        border: 1px solid var(--border-default);
+        background-color: var(--surface-glass);
+        backdrop-filter: var(--glass-backdrop);
+        box-shadow: var(--shadow-lg);
+        /* visibility, not display: the Review drawer is a fixed-position
+           descendant and must survive the menu closing. */
+        visibility: hidden;
+    }
+
+    .actions-cluster.open {
+        visibility: visible;
+    }
+
+    .actions-cluster :deep(.side-panel) {
+        visibility: visible;
+    }
+
+    .actions-cluster > * {
+        width: 100%;
+    }
+
+    .actions-cluster :deep(.toggle) {
+        width: 100%;
+        justify-content: center;
+    }
+}
+
+@media (width <= 390px) {
+    .topbar {
+        display: flex;
+        justify-content: space-between;
+    }
+
+    .topbar-search {
+        display: none;
+    }
+}
+
+.new-node {
+    padding: 0.6rem 1.2rem;
+    border-radius: var(--radius-full);
+    border: 1px solid var(--border-default);
+    background-color: var(--surface-glass);
+    backdrop-filter: var(--glass-backdrop);
+    color: var(--text-secondary);
+    font-size: var(--text-label);
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.new-node:hover {
+    color: var(--text-primary);
+    background-color: var(--node-hover-surface);
 }
 
 .brand {

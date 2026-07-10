@@ -116,6 +116,11 @@ pub struct Node {
     #[serde(default)]
     pub stale: bool,
     pub code_refs: Vec<String>,
+    /// Free-form slice labels (PLAN §10 tags): how the user cuts the graph
+    /// (phases, concerns) — orthogonal to Anchors, which say what code a note
+    /// is about. Normalized to kebab-case on write.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,6 +138,8 @@ pub struct NewNode {
     pub status: Option<NodeStatus>,
     #[serde(default)]
     pub code_refs: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -153,6 +160,8 @@ pub struct NodePatch {
     pub valid_until: Option<i64>,
     #[serde(default)]
     pub code_refs: Option<Vec<String>>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -247,6 +256,10 @@ pub struct NeighborRef {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct EdgePatch {
+    /// Retype the edge (PLAN §10 pane CRUD): picking the wrong verb must not
+    /// require delete-and-recreate.
+    #[serde(default, rename = "type")]
+    pub edge_type: Option<EdgeType>,
     #[serde(default)]
     pub status: Option<EdgeStatus>,
     #[serde(default)]
@@ -255,6 +268,38 @@ pub struct EdgePatch {
     pub confidence: Option<f64>,
     #[serde(default)]
     pub strength: Option<f64>,
+}
+
+/// One generation of a node's `replaces` chain (PLAN §10 timeline), oldest
+/// first: how a piece of knowledge evolved into its current form.
+#[derive(Debug, Clone, Serialize)]
+pub struct TimelineEntry {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub node_type: NodeType,
+    pub title: String,
+    pub created_at: i64,
+    /// Set when this generation was superseded (archived).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub valid_until: Option<i64>,
+    /// The note on the `replaces` edge that superseded this generation —
+    /// usually the why of the change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replaced_note: Option<String>,
+}
+
+/// A node whose path-shaped `code_refs` no longer resolve against the project
+/// root (PLAN §10 verified code refs): the code moved or was deleted and the
+/// memory didn't follow — a contradiction between the graph and reality,
+/// surfaced for review like a conflict.
+#[derive(Debug, Clone, Serialize)]
+pub struct Drift {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub node_type: NodeType,
+    pub title: String,
+    /// The refs that no longer exist (a node's healthy refs are not listed).
+    pub missing: Vec<String>,
 }
 
 /// A locally-detected candidate contradiction awaiting judgment (PLAN §7
@@ -290,6 +335,15 @@ pub struct SuspectEndpoint {
     pub title: String,
 }
 
+/// One tag with its usage stats — the pane's dropdown and the brief's
+/// "recent tags" line both read from this (freshest first).
+#[derive(Debug, Clone, Serialize)]
+pub struct TagStat {
+    pub tag: String,
+    pub count: i64,
+    pub last_used: i64,
+}
+
 /// Attached to a write result when the new text lands near contradicted or
 /// superseded knowledge — the pull-based version of PLAN §7's conflict push.
 #[derive(Debug, Clone, Serialize)]
@@ -299,6 +353,38 @@ pub struct WriteWarning {
     /// "in-active-conflict" | "superseded"
     pub reason: String,
     pub similarity: f64,
+}
+
+/// One row of the append-only audit journal (PLAN §10): a node/edge mutation
+/// with full before/after snapshots plus the binary-side context of the
+/// writing process. `seq` is the keyset-pagination cursor (newest = highest).
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditEntry {
+    pub seq: i64,
+    pub ts: i64,
+    /// created | updated | approved | archived | deleted | imported
+    pub action: String,
+    /// node | edge | graph
+    pub entity: String,
+    pub entity_id: String,
+    /// Display label snapshot — survives the entity's later deletion.
+    pub title: Option<String>,
+    pub before: Option<serde_json::Value>,
+    pub after: Option<serde_json::Value>,
+    /// pane | mcp | daemon | cli | library
+    pub origin: String,
+    pub session_id: Option<String>,
+    pub cwd: Option<String>,
+    pub pid: Option<i64>,
+    pub version: Option<String>,
+}
+
+/// One page of the journal, newest first, with the unfiltered-total so the
+/// pane can show progress ("50 of 312").
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditPage {
+    pub entries: Vec<AuditEntry>,
+    pub total: i64,
 }
 
 /// What a checked (Claude-side) note write did: created a node, or

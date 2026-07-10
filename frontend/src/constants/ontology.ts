@@ -33,6 +33,33 @@ export const EDGE_DASHED: ReadonlySet<EdgeType> = new Set<EdgeType>([
 /** Edges that animate the dash flow — the "active" relations worth the eye. */
 export const EDGE_ANIMATED: ReadonlySet<EdgeType> = new Set<EdgeType>(['conflicts-with'])
 
+export const ALL_EDGE_TYPES: EdgeType[] = [
+    'about',
+    'because',
+    'answers',
+    'builds-on',
+    'replaces',
+    'conflicts-with',
+    'needs',
+]
+
+/** How each verb completes the sentence "A … B" — the connect dialog's hint. */
+export const EDGE_SENTENCE: Record<EdgeType, string> = {
+    about: 'concerns this subject',
+    because: 'is justified by',
+    answers: 'resolves or addresses',
+    'builds-on': 'elaborates on',
+    replaces: 'supersedes (older kept, marked)',
+    'conflicts-with': 'contradicts',
+    needs: 'depends on / is blocked by',
+}
+
+/**
+ * Recommended starting tags (PLAN §10): offered in the editor before the graph
+ * has grown its own vocabulary; real usage takes over from there.
+ */
+export const DEFAULT_TAGS: string[] = ['tech-decision', 'preference', 'process', 'domain']
+
 export const ALL_NODE_TYPES: NodeType[] = [
     'Principle',
     'Decision',

@@ -2,7 +2,17 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { TRUSTED_TRUST } from '@/constants/ontology'
 import { api } from '@/services/api'
-import type { Graph, GraphEdge, GraphNode, SuspectVerdict, SuspectView } from '@/types/graph'
+import type {
+    DriftEntry,
+    EdgeType,
+    Graph,
+    GraphEdge,
+    GraphNode,
+    NewEdge,
+    NewNode,
+    SuspectVerdict,
+    SuspectView,
+} from '@/types/graph'
 
 /** Pure client-side canvas filters; empty group = no restriction. */
 export interface GraphFilters {
@@ -11,6 +21,7 @@ export interface GraphFilters {
     sources: string[]
     statuses: string[]
     trust: string[] // 'trusted' | 'provisional'
+    tags: string[]
     showArchived: boolean
 }
 
@@ -20,6 +31,7 @@ const NO_FILTERS: GraphFilters = {
     sources: [],
     statuses: [],
     trust: [],
+    tags: [],
     showArchived: true,
 }
 
@@ -44,6 +56,7 @@ export const useGraphStore = defineStore('graph', () => {
     const nodes = ref(new Map<string, GraphNode>())
     const edges = ref(new Map<string, GraphEdge>())
     const suspects = ref<SuspectView[]>([])
+    const drift = ref<DriftEntry[]>([])
     const selectedId = ref<string | null>(null)
     const loading = ref(false)
     const error = ref<string | null>(null)
@@ -70,6 +83,7 @@ export const useGraphStore = defineStore('graph', () => {
         if (f.sources.length && !f.sources.includes(n.source)) return false
         if (f.statuses.length && !(n.status && f.statuses.includes(n.status))) return false
         if (f.trust.length && !f.trust.includes(trustLevel(n))) return false
+        if (f.tags.length && !n.tags.some((t) => f.tags.includes(t))) return false
         return true
     }
 
@@ -88,8 +102,20 @@ export const useGraphStore = defineStore('graph', () => {
             f.sources.length +
             f.statuses.length +
             f.trust.length +
+            f.tags.length +
             (f.showArchived ? 0 : 1)
         )
+    })
+
+    /** The live tag vocabulary, most-used first — dropdowns and filter chips. */
+    const allTags = computed(() => {
+        const counts = new Map<string, number>()
+        for (const n of nodeList.value) {
+            for (const t of n.tags) counts.set(t, (counts.get(t) ?? 0) + 1)
+        }
+        return [...counts.entries()]
+            .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+            .map(([tag]) => tag)
     })
 
     function toggleFilter(group: Exclude<keyof GraphFilters, 'showArchived'>, value: string): void {
@@ -116,6 +142,7 @@ export const useGraphStore = defineStore('graph', () => {
             applyGraph(g)
             lastSig = JSON.stringify(g)
             await loadSuspects()
+            await loadDrift()
         } catch (e) {
             error.value = e instanceof Error ? e.message : String(e)
         } finally {
@@ -128,6 +155,17 @@ export const useGraphStore = defineStore('graph', () => {
             suspects.value = await api.suspects()
         } catch {
             suspects.value = []
+        }
+    }
+
+    /** node id → its missing code_refs, for badges on cards and the detail. */
+    const driftByNode = computed(() => new Map(drift.value.map((d) => [d.id, d.missing])))
+
+    async function loadDrift(): Promise<void> {
+        try {
+            drift.value = await api.drift()
+        } catch {
+            drift.value = []
         }
     }
 
@@ -161,7 +199,9 @@ export const useGraphStore = defineStore('graph', () => {
                 lastSig = sig
             }
             // Suspects can change with no graph delta (a scan queued pairs), so
-            // reconcile them on every poll — the list is tiny.
+            // reconcile them on every poll — the list is tiny. Drift is NOT
+            // polled: each scan stats every code_ref on disk under the engine
+            // lock, so it reloads only on store load and Review-panel open.
             await loadSuspects()
         } catch {
             /* ignore transient poll errors; SSE/error overlay handle real outages */
@@ -261,9 +301,40 @@ export const useGraphStore = defineStore('graph', () => {
         dropNode(id) // SSE also emits node_deleted; dropping twice is harmless
     }
 
-    /** Edit node fields from the pane (title/body/type/durability). */
+    /** Edit node fields from the pane (title/body/type/durability/tags). */
     async function patchNode(id: string, patch: Record<string, unknown>): Promise<void> {
         upsertNode(await api.patchNode(id, patch))
+    }
+
+    /** Create a user-sourced node from the pane; returns it selected-ready. */
+    async function createNode(node: Omit<NewNode, 'source'>): Promise<GraphNode> {
+        const created = await api.createNode({ ...node, source: 'user' })
+        upsertNode(created)
+        return created
+    }
+
+    /** Create a user-sourced edge (canvas drag or detail panel). */
+    async function createEdge(edge: Omit<NewEdge, 'source'>): Promise<GraphEdge> {
+        const created = await api.createEdge({ ...edge, source: 'user' })
+        const next = new Map(edges.value)
+        next.set(created.id, created)
+        edges.value = next
+        return created
+    }
+
+    /** Rewrite an edge's verb in place (pane CRUD parity). */
+    async function retypeEdge(id: string, type: EdgeType): Promise<void> {
+        const edge = await api.patchEdge(id, { type })
+        const next = new Map(edges.value)
+        next.set(edge.id, edge)
+        edges.value = next
+    }
+
+    async function removeEdge(id: string): Promise<void> {
+        await api.deleteEdge(id)
+        const next = new Map(edges.value)
+        next.delete(id) // SSE also emits edge_deleted; dropping twice is harmless
+        edges.value = next
     }
 
     return {
@@ -271,14 +342,22 @@ export const useGraphStore = defineStore('graph', () => {
         edges,
         suspects,
         loadSuspects,
+        drift,
+        driftByNode,
+        loadDrift,
         scanConflicts,
         resolveSuspect,
         patchNode,
+        createNode,
+        createEdge,
+        retypeEdge,
+        removeEdge,
         nodeList,
         edgeList,
         visibleNodeList,
         visibleEdgeList,
         filters,
+        allTags,
         activeFilterCount,
         toggleFilter,
         clearFilters,

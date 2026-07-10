@@ -29,6 +29,8 @@ const CLAUDE_AGGRESSIVE: &str = include_str!("../../../skills/engram/aggressive/
 const AGENT_RELAXED: &str = include_str!("../../../skills/engram/agents/relaxed.md");
 const AGENT_NORMAL: &str = include_str!("../../../skills/engram/agents/normal.md");
 const AGENT_AGGRESSIVE: &str = include_str!("../../../skills/engram/agents/aggressive.md");
+// SessionStart hook: injects the brief so sessions start pre-briefed.
+const SESSION_BRIEF_HOOK: &str = include_str!("../../../hooks/session-brief.sh");
 
 pub fn claude_skill(variant: &str) -> &'static str {
     match variant {
@@ -119,10 +121,11 @@ pub struct Setup {
     bin: String,
     db: String,
     variant: String,
+    mcp_only: bool,
 }
 
 impl Setup {
-    pub fn new(variant: &str) -> anyhow::Result<Self> {
+    pub fn new(variant: &str, mcp_only: bool) -> anyhow::Result<Self> {
         let repo = std::env::current_dir()?;
         let bin = std::env::current_exe()
             .context("locating the engram binary")?
@@ -134,6 +137,7 @@ impl Setup {
             bin,
             db,
             variant: variant.to_string(),
+            mcp_only,
         })
     }
 
@@ -174,6 +178,9 @@ impl Setup {
     /// Insert or refresh the marked instruction section in an AGENTS.md-style
     /// file. Re-running with a different --skill replaces the section.
     fn write_instructions(&self, file: &str) -> anyhow::Result<()> {
+        if self.mcp_only {
+            return Ok(());
+        }
         let path = self.repo.join(file);
         let block = format!("{MARK_BEGIN}\n{}{MARK_END}\n", agent_block(&self.variant));
         let current = fs::read_to_string(&path).unwrap_or_default();
@@ -243,6 +250,9 @@ impl Setup {
 
     fn wire_claude(&self) -> anyhow::Result<()> {
         self.write_mcp_servers(".mcp.json", "claude")?;
+        if self.mcp_only {
+            return Ok(());
+        }
         let dir = self.repo.join(".claude/skills/engram");
         // A symlinked skill dir (this repo dogfoods that way) points into
         // someone's source tree — writing through it would clobber the
@@ -259,6 +269,38 @@ impl Setup {
             "claude: installed the '{}' skill to .claude/skills/engram",
             self.variant
         ));
+        self.install_claude_brief_hook()
+    }
+
+    /// Install the SessionStart brief hook: the script under `.claude/hooks/`
+    /// plus its registration in `.claude/settings.json`. A foreign settings
+    /// file is never rewritten — the snippet is printed instead (same policy
+    /// as `write_mcp_servers`).
+    fn install_claude_brief_hook(&self) -> anyhow::Result<()> {
+        let hooks_dir = self.repo.join(".claude/hooks");
+        fs::create_dir_all(&hooks_dir)?;
+        let script = hooks_dir.join("engram-brief.sh");
+        fs::write(&script, SESSION_BRIEF_HOOK)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
+        }
+
+        let registration = "{\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"matcher\": \"startup|clear|compact\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"\\\"$CLAUDE_PROJECT_DIR\\\"/.claude/hooks/engram-brief.sh\"\n          }\n        ]\n      }\n    ]\n  }\n}\n";
+        let settings = self.repo.join(".claude/settings.json");
+        if settings.exists() {
+            let current = fs::read_to_string(&settings)?;
+            if current.contains("engram-brief") || current.contains("session-brief") {
+                say("claude: .claude/settings.json already runs the brief hook — leaving it");
+            } else {
+                say("claude: .claude/settings.json exists — add this SessionStart hook manually:");
+                println!("{registration}");
+            }
+            return Ok(());
+        }
+        fs::write(&settings, registration)?;
+        say("claude: session-start brief hook installed (.claude/hooks + settings.json)");
         Ok(())
     }
 
@@ -323,5 +365,59 @@ impl Setup {
             say(&format!("{label}: wrote {rel}"));
         }
         self.write_instructions("AGENTS.md")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The Claude Code plugin (claude-plugin/) ships verbatim copies of assets
+    // whose canonical home is elsewhere in the repo — a symlink would break on
+    // Windows checkouts, so these tests are the sync mechanism instead.
+
+    #[test]
+    fn plugin_skill_matches_relaxed_variant() {
+        let plugin = include_str!("../../../claude-plugin/skills/engram/SKILL.md");
+        assert_eq!(
+            plugin, CLAUDE_RELAXED,
+            "claude-plugin/skills/engram/SKILL.md drifted from skills/engram/relaxed/SKILL.md — re-copy it"
+        );
+    }
+
+    #[test]
+    fn plugin_hook_matches_canonical_script() {
+        let plugin = include_str!("../../../claude-plugin/hooks/session-brief.sh");
+        assert_eq!(
+            plugin, SESSION_BRIEF_HOOK,
+            "claude-plugin/hooks/session-brief.sh drifted from hooks/session-brief.sh — re-copy it"
+        );
+    }
+
+    #[test]
+    fn plugin_manifests_parse() {
+        for raw in [
+            include_str!("../../../claude-plugin/.claude-plugin/plugin.json"),
+            include_str!("../../../.claude-plugin/marketplace.json"),
+            include_str!("../../../claude-plugin/hooks/hooks.json"),
+        ] {
+            serde_json::from_str::<serde_json::Value>(raw).expect("plugin manifest is valid JSON");
+        }
+    }
+
+    // The plugin installs from the repo (not from release artifacts), so its
+    // checked-in version must move with the workspace version by hand — this
+    // makes a release-prep bump of Cargo.toml fail until plugin.json follows.
+    #[test]
+    fn plugin_version_matches_workspace() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../claude-plugin/.claude-plugin/plugin.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            manifest["version"].as_str(),
+            Some(env!("CARGO_PKG_VERSION")),
+            "claude-plugin/.claude-plugin/plugin.json version drifted from [workspace.package] version"
+        );
     }
 }

@@ -13,8 +13,9 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use engram_core::{
-    ChangeEvent, Edge, EdgePatch, EdgeType, Engine, Error, ExportGraph, ImportSummary, NewEdge,
-    NewNode, Node, NodePatch, NodeType, SearchHit, SuspectVerdict, SuspectView,
+    AuditOrigin, AuditPage, ChangeEvent, Drift, Edge, EdgePatch, EdgeType, Engine, Error,
+    ExportGraph, ImportSummary, NewEdge, NewNode, Node, NodePatch, NodeType, SearchHit,
+    SuspectVerdict, SuspectView, TagStat, TimelineEntry,
 };
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
@@ -57,6 +58,34 @@ impl AppState {
             events,
             db_path,
         }
+    }
+
+    /// Lock the engine and stamp the pane as the writer. Handlers go through
+    /// this instead of locking directly: MCP may share the engine, so audit
+    /// attribution has to be re-stamped under the lock on every operation.
+    fn engine(&self) -> std::sync::MutexGuard<'_, Engine> {
+        let mut guard = self.engine.lock().unwrap();
+        guard.set_audit_origin(AuditOrigin::pane());
+        guard
+    }
+
+    /// The repo root code_refs resolve against: derived from the served DB
+    /// path (`<root>/.engram/graph.db`), so a daemon launched from another
+    /// directory doesn't flag the whole graph as drifted. Cwd is only the
+    /// fallback for custom DB locations outside a `.engram` dir.
+    fn repo_root(&self) -> std::path::PathBuf {
+        self.db_path
+            .as_deref()
+            .map(std::path::Path::new)
+            .and_then(|db| {
+                let dir = db.parent()?;
+                if dir.file_name()? != ".engram" {
+                    return None;
+                }
+                dir.parent()
+            })
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()))
     }
 }
 
@@ -108,11 +137,15 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::patch(patch_edge).delete(delete_edge),
         )
         .route("/search", get(search))
+        .route("/tags", get(tags))
         .route("/conflicts/suspects", get(list_suspects))
         .route("/conflicts/suspects/{id}/resolve", post(resolve_suspect))
         .route("/conflicts/scan", post(scan_conflicts))
+        .route("/drift", get(drift))
+        .route("/nodes/{id}/timeline", get(timeline))
         .route("/decay", post(decay))
         .route("/brief", get(brief))
+        .route("/audit", get(audit))
         .route("/open", get(list_open))
         .route("/graph", get(graph))
         .route("/export", get(export))
@@ -188,7 +221,7 @@ async fn create_node(
     State(state): State<Arc<AppState>>,
     Json(input): Json<NewNode>,
 ) -> Result<Json<Node>, AppError> {
-    let node = state.engine.lock().unwrap().add_node(input)?;
+    let node = state.engine().add_node(input)?;
     Ok(Json(node))
 }
 
@@ -196,7 +229,7 @@ async fn get_node(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Node>, AppError> {
-    let node = state.engine.lock().unwrap().get_node(&id)?;
+    let node = state.engine().get_node(&id)?;
     node.map(Json).ok_or(AppError::NotFound)
 }
 
@@ -206,7 +239,7 @@ async fn patch_node(
     Json(patch): Json<NodePatch>,
 ) -> Result<Json<Node>, AppError> {
     let node = {
-        let engine = state.engine.lock().unwrap();
+        let engine = state.engine();
         if engine.get_node(&id)?.is_none() {
             return Err(AppError::NotFound);
         }
@@ -219,7 +252,7 @@ async fn delete_node(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    let removed = state.engine.lock().unwrap().delete_node(&id)?;
+    let removed = state.engine().delete_node(&id)?;
     if removed {
         Ok(StatusCode::NO_CONTENT)
     } else {
@@ -231,7 +264,7 @@ async fn node_edges(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<EdgesResponse>, AppError> {
-    let engine = state.engine.lock().unwrap();
+    let engine = state.engine();
     if engine.get_node(&id)?.is_none() {
         return Err(AppError::NotFound);
     }
@@ -263,7 +296,7 @@ async fn create_edge(
     Json(input): Json<NewEdge>,
 ) -> Result<Json<Edge>, AppError> {
     let edge = {
-        let engine = state.engine.lock().unwrap();
+        let engine = state.engine();
         // Surface dangling endpoints as 404 rather than an opaque FK failure.
         if engine.get_node(&input.from_id)?.is_none() || engine.get_node(&input.to_id)?.is_none() {
             return Err(AppError::NotFound);
@@ -278,7 +311,7 @@ async fn patch_edge(
     Path(id): Path<String>,
     Json(patch): Json<EdgePatch>,
 ) -> Result<Json<Edge>, AppError> {
-    let edge = state.engine.lock().unwrap().update_edge(&id, patch)?;
+    let edge = state.engine().update_edge(&id, patch)?;
     Ok(Json(edge))
 }
 
@@ -286,7 +319,7 @@ async fn delete_edge(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    let removed = state.engine.lock().unwrap().delete_edge(&id)?;
+    let removed = state.engine().delete_edge(&id)?;
     if removed {
         Ok(StatusCode::NO_CONTENT)
     } else {
@@ -302,8 +335,19 @@ async fn search(
 ) -> Result<Json<Vec<SearchHit>>, AppError> {
     let types = parse_node_types(p.types.as_deref())?;
     let limit = p.limit.unwrap_or(8);
-    let hits = state.engine.lock().unwrap().search(&p.q, &types, limit)?;
+    let hits = state.engine().search(&p.q, &types, limit)?;
     Ok(Json(hits))
+}
+
+/// Tags in use on current nodes, freshest first — feeds the pane's tag
+/// dropdown and filter chips (PLAN §10 tags).
+async fn tags(
+    State(state): State<Arc<AppState>>,
+    Query(p): Query<TagsParams>,
+) -> Result<Json<Vec<TagStat>>, AppError> {
+    let limit = p.limit.unwrap_or(200);
+    let tags = state.engine().tags(limit)?;
+    Ok(Json(tags))
 }
 
 // ---- conflict scan + decay (PLAN §7 / §6B) --------------------------------
@@ -311,15 +355,32 @@ async fn search(
 async fn list_suspects(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<SuspectView>>, AppError> {
-    let suspects = state.engine.lock().unwrap().suspects()?;
+    let suspects = state.engine().suspects()?;
     Ok(Json(suspects))
+}
+
+/// Verified code refs (PLAN §10): nodes whose path-shaped refs no longer
+/// exist under the repo root (see [`AppState::repo_root`]).
+async fn drift(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Drift>>, AppError> {
+    let root = state.repo_root();
+    let drifted = state.engine().scan_code_refs(&root)?;
+    Ok(Json(drifted))
+}
+
+/// Timeline (PLAN §10): the node's `replaces` chain, oldest first.
+async fn timeline(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<TimelineEntry>>, AppError> {
+    let chain = state.engine().timeline(&id)?;
+    Ok(Json(chain))
 }
 
 /// Run the local candidate sweep on demand (the pane's "Scan now").
 async fn scan_conflicts(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let added = state.engine.lock().unwrap().scan_conflicts()?;
+    let added = state.engine().scan_conflicts()?;
     Ok(Json(json!({ "added": added })))
 }
 
@@ -335,11 +396,9 @@ async fn resolve_suspect(
     Path(id): Path<String>,
     Json(body): Json<ResolveBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let edge = state.engine.lock().unwrap().resolve_suspect(
-        &id,
-        body.verdict,
-        engram_core::Source::User,
-    )?;
+    let edge = state
+        .engine()
+        .resolve_suspect(&id, body.verdict, engram_core::Source::User)?;
     Ok(Json(json!({ "edge": edge })))
 }
 
@@ -371,7 +430,7 @@ async fn brief(
     let max_chars = p
         .max_chars
         .unwrap_or(engram_core::policy::DEFAULT_BRIEF_CHARS);
-    let text = state.engine.lock().unwrap().brief(max_chars)?;
+    let text = state.engine().brief(max_chars)?;
     Ok((
         [(
             axum::http::header::CONTENT_TYPE,
@@ -382,17 +441,31 @@ async fn brief(
         .into_response())
 }
 
+/// One page of the audit journal, newest first (PLAN §10). Keyset pagination:
+/// pass the last entry's `seq` as `before` for the next page; `entity_id`
+/// narrows to one node/edge's history.
+async fn audit(
+    State(state): State<Arc<AppState>>,
+    Query(p): Query<AuditParams>,
+) -> Result<Json<AuditPage>, AppError> {
+    let limit = p.limit.unwrap_or(50).min(200);
+    let page = state
+        .engine()
+        .audit_log(p.before, p.entity_id.as_deref(), limit)?;
+    Ok(Json(page))
+}
+
 async fn list_open(
     State(state): State<Arc<AppState>>,
     Query(p): Query<TypesParam>,
 ) -> Result<Json<Vec<Node>>, AppError> {
     let types = parse_node_types(p.types.as_deref())?;
-    let nodes = state.engine.lock().unwrap().list_open(&types)?;
+    let nodes = state.engine().list_open(&types)?;
     Ok(Json(nodes))
 }
 
 async fn graph(State(state): State<Arc<AppState>>) -> Result<Json<GraphResponse>, AppError> {
-    let (nodes, edges) = state.engine.lock().unwrap().graph()?;
+    let (nodes, edges) = state.engine().graph()?;
     Ok(Json(GraphResponse { nodes, edges }))
 }
 
@@ -400,11 +473,11 @@ async fn reconfirm(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Node>, AppError> {
-    let exists = state.engine.lock().unwrap().get_node(&id)?.is_some();
+    let exists = state.engine().get_node(&id)?.is_some();
     if !exists {
         return Err(AppError::NotFound);
     }
-    let node = state.engine.lock().unwrap().reconfirm(&id)?;
+    let node = state.engine().reconfirm(&id)?;
     Ok(Json(node))
 }
 
@@ -412,16 +485,16 @@ async fn approve(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Node>, AppError> {
-    let exists = state.engine.lock().unwrap().get_node(&id)?.is_some();
+    let exists = state.engine().get_node(&id)?.is_some();
     if !exists {
         return Err(AppError::NotFound);
     }
-    let node = state.engine.lock().unwrap().approve(&id)?;
+    let node = state.engine().approve(&id)?;
     Ok(Json(node))
 }
 
 async fn export(State(state): State<Arc<AppState>>) -> Result<Json<ExportGraph>, AppError> {
-    let graph = state.engine.lock().unwrap().export()?;
+    let graph = state.engine().export()?;
     Ok(Json(graph))
 }
 
@@ -429,7 +502,7 @@ async fn import(
     State(state): State<Arc<AppState>>,
     Json(graph): Json<ExportGraph>,
 ) -> Result<Json<ImportSummary>, AppError> {
-    let summary = state.engine.lock().unwrap().import(graph)?;
+    let summary = state.engine().import(graph)?;
     Ok(Json(summary))
 }
 
@@ -464,6 +537,18 @@ struct TraverseParams {
 #[derive(Deserialize)]
 struct BriefParams {
     max_chars: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct TagsParams {
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct AuditParams {
+    limit: Option<usize>,
+    before: Option<i64>,
+    entity_id: Option<String>,
 }
 
 fn parse_node_types(s: Option<&str>) -> Result<Vec<NodeType>, AppError> {

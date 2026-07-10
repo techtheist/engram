@@ -54,13 +54,15 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # `engram --version` should report the release, not the checked-in 0.1.0.
-      - name: Sync crate version from tag
+      # Every crate inherits the workspace version, so stamping the root
+      # manifest fixes `engram --version`, /health, MCP server info AND the
+      # version recorded on audit journal rows in one place.
+      - name: Sync workspace version from tag
         shell: bash
         run: |
           V="${RELEASE_TAG#v}"
-          sed -i.bak "s/^version = \"[0-9.]*\"/version = \"$V\"/" crates/engram-cli/Cargo.toml
-          rm -f crates/engram-cli/Cargo.toml.bak
+          sed -i.bak "s/^version = \"[0-9.]*\"/version = \"$V\"/" Cargo.toml
+          rm -f Cargo.toml.bak
 
       - name: Build release binary
         run: cargo build --release -p engram

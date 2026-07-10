@@ -124,6 +124,11 @@ struct SetupArgs {
     /// Capture intensity for the installed instructions/skill.
     #[arg(long, default_value = "relaxed", value_parser = ["relaxed", "normal", "aggressive"])]
     skill: String,
+    /// Only register the MCP server (and git-ignore the graph) — skip the
+    /// skill, instruction blocks, and hooks. For setups where something else
+    /// already ships those, like the Claude Code plugin.
+    #[arg(long)]
+    mcp_only: bool,
 }
 
 #[tokio::main]
@@ -173,7 +178,7 @@ fn run_setup(args: SetupArgs) -> anyhow::Result<()> {
         }
     };
     anyhow::ensure!(!agents.is_empty(), "nothing to wire");
-    setup::Setup::new(&args.skill)?.run(&agents)
+    setup::Setup::new(&args.skill, args.mcp_only)?.run(&agents)
 }
 
 /// Self-update from GitHub Releases: download the platform asset, verify its
@@ -335,7 +340,8 @@ fn run_import(args: ImportArgs) -> anyhow::Result<()> {
     let data = std::fs::read_to_string(&args.file)
         .with_context(|| format!("reading {}", args.file.display()))?;
     let graph: ExportGraph = serde_json::from_str(&data).context("parsing export JSON")?;
-    let engine = build_engine(&args.db, args.fake_embeddings)?;
+    let mut engine = build_engine(&args.db, args.fake_embeddings)?;
+    engine.set_audit_origin(engram_core::AuditOrigin::cli());
     let summary = engine.import(graph)?;
     tracing::info!(
         "imported {} nodes / {} edges into {}",
@@ -413,7 +419,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         loop {
             tick.tick().await;
             let result = {
-                let engine = sweeper.lock().unwrap();
+                let mut engine = sweeper.lock().unwrap();
+                // Sweep writes (decay archives, scan suspects) are the
+                // daemon's own — attribute them as such in the audit journal.
+                engine.set_audit_origin(engram_core::AuditOrigin::daemon());
                 engine
                     .decay(engram_core::policy::DECAY_TTL_DAYS, false)
                     .and_then(|archived| {

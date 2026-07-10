@@ -2,12 +2,19 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import MarkdownView from '@/components/common/MarkdownView.vue'
-import { EDGE_COLOR, NODE_ACCENT_VAR } from '@/constants/ontology'
+import SidePanel from '@/components/common/SidePanel.vue'
+import TagEditor from '@/components/common/TagEditor.vue'
+import { ALL_EDGE_TYPES, EDGE_COLOR, NODE_ACCENT_VAR } from '@/constants/ontology'
 import { useGraphStore } from '@/stores/graph'
-import type { GraphEdge } from '@/types/graph'
+import type { EdgeType, GraphEdge } from '@/types/graph'
 
 const store = useGraphStore()
-const { selected, nodes, edgeList } = storeToRefs(store)
+const { selected, nodes, edgeList, driftByNode } = storeToRefs(store)
+
+/** Code refs of this node that no longer exist in the project (drifted). */
+const missingRefs = computed(() =>
+    selected.value ? (driftByNode.value.get(selected.value.id) ?? []) : [],
+)
 
 const busy = ref(false)
 const confirmingDelete = ref(false)
@@ -18,7 +25,7 @@ const NODE_TYPES = Object.keys(NODE_ACCENT_VAR)
 const DURABILITIES = ['stable', 'episodic', 'volatile']
 
 const editing = ref(false)
-const draft = reactive({ title: '', body: '', type: '', durability: '' })
+const draft = reactive({ title: '', body: '', type: '', durability: '', tags: [] as string[] })
 
 // Selecting another node must never carry a stale draft onto it.
 watch(
@@ -35,6 +42,7 @@ function startEdit(): void {
     draft.body = selected.value.body ?? ''
     draft.type = selected.value.type
     draft.durability = selected.value.durability
+    draft.tags = [...selected.value.tags]
     editing.value = true
 }
 
@@ -47,8 +55,31 @@ async function saveEdit(): Promise<void> {
             body: draft.body,
             type: draft.type,
             durability: draft.durability,
+            tags: draft.tags,
         })
         editing.value = false
+    } finally {
+        busy.value = false
+    }
+}
+
+// --- connection editing (PLAN §10 pane CRUD: retype/delete from the list) --
+
+async function retypeEdge(edge: GraphEdge, event: Event): Promise<void> {
+    const type = (event.target as HTMLSelectElement).value as EdgeType
+    if (type === edge.type) return
+    busy.value = true
+    try {
+        await store.retypeEdge(edge.id, type)
+    } finally {
+        busy.value = false
+    }
+}
+
+async function removeEdge(edge: GraphEdge): Promise<void> {
+    busy.value = true
+    try {
+        await store.removeEdge(edge.id)
     } finally {
         busy.value = false
     }
@@ -124,13 +155,24 @@ function close(): void {
 </script>
 
 <template>
-<Transition name="drawer">
-    <aside v-if="selected" class="detail glass-panel" :style="{ '--accent': accent }">
-        <header class="head">
+<SidePanel
+    :open="selected != null"
+    side="right"
+    panel-id="detail"
+    :default-rem="40"
+    :min-rem="28"
+    :dismiss="close"
+    :accent="accent"
+    :style="{ '--accent': accent }"
+>
+    <template #header>
+        <header v-if="selected" class="head">
             <span class="type-pill">{{ selected.type }}</span>
             <button class="close" type="button" aria-label="Close" @click="close">×</button>
         </header>
+    </template>
 
+    <template v-if="selected">
         <template v-if="editing">
             <input v-model="draft.title" class="edit-input" type="text" aria-label="Title" />
             <textarea v-model="draft.body" class="edit-input edit-body" rows="8" aria-label="Body (markdown)" />
@@ -148,6 +190,10 @@ function close(): void {
                     </select>
                 </label>
             </div>
+            <label class="edit-label">
+                Tags
+                <TagEditor v-model="draft.tags" />
+            </label>
             <div class="edit-actions">
                 <button class="btn" type="button" :disabled="busy || !draft.title.trim()" @click="saveEdit">
                     Save
@@ -166,7 +212,16 @@ function close(): void {
             <span v-if="selected.status" class="badge">{{ selected.status }}</span>
             <span v-if="trustPct != null" class="badge">trust {{ trustPct }}%</span>
             <span v-if="selected.stale" class="badge stale">stale</span>
+            <span
+                v-if="missingRefs.length"
+                class="badge drifted"
+                title="Some code refs no longer exist in the project — the code moved, this memory may be stale"
+            >drifted</span>
             <span v-if="archived" class="badge archived">archived</span>
+        </div>
+
+        <div v-if="selected.tags.length && !editing" class="tag-row">
+            <span v-for="t in selected.tags" :key="t" class="tag-chip">#{{ t }}</span>
         </div>
 
         <MarkdownView v-if="selected.body && !editing" :content="selected.body" class="body" />
@@ -174,22 +229,49 @@ function close(): void {
         <section v-if="selected.code_refs.length" class="block">
             <h3 class="block-title">Code refs</h3>
             <div class="refs">
-                <span v-for="codeRef in selected.code_refs" :key="codeRef" class="ref-chip">{{ codeRef }}</span>
+                <span
+                    v-for="codeRef in selected.code_refs"
+                    :key="codeRef"
+                    class="ref-chip"
+                    :class="{ missing: missingRefs.includes(codeRef) }"
+                    :title="missingRefs.includes(codeRef) ? 'This file no longer exists in the project' : undefined"
+                >{{ codeRef }}</span>
             </div>
         </section>
 
         <section v-if="relations.length" class="block">
             <h3 class="block-title">Connections</h3>
             <ul class="relations">
-                <li v-for="r in relations" :key="r.edge.id">
+                <li v-for="r in relations" :key="r.edge.id" class="relation-row">
+                    <span class="rel-dir" :style="{ color: EDGE_COLOR[r.edge.type] }">
+                        {{ r.dir === 'out' ? '→' : '←' }}
+                    </span>
+                    <select
+                        class="rel-select"
+                        :value="r.edge.type"
+                        :disabled="busy"
+                        :style="{ color: EDGE_COLOR[r.edge.type] }"
+                        title="Change the connection verb"
+                        @change="retypeEdge(r.edge, $event)"
+                    >
+                        <option v-for="t in ALL_EDGE_TYPES" :key="t" :value="t">{{ t }}</option>
+                    </select>
                     <button class="relation" type="button" @click="store.select(r.otherId)">
-                        <span class="rel-verb" :style="{ color: EDGE_COLOR[r.edge.type] }">
-                            {{ r.dir === 'out' ? '→' : '←' }} {{ r.edge.type }}
-                        </span>
                         <span class="rel-target">{{ r.otherTitle }}</span>
+                    </button>
+                    <button
+                        class="rel-delete"
+                        type="button"
+                        :disabled="busy"
+                        :aria-label="`Delete ${r.edge.type} connection`"
+                        title="Delete this connection"
+                        @click="removeEdge(r.edge)"
+                    >
+                        ×
                     </button>
                 </li>
             </ul>
+            <p class="rel-hint">Drag between node handles on the canvas to add a connection.</p>
         </section>
 
         <section class="block">
@@ -229,44 +311,11 @@ function close(): void {
                 Delete
             </button>
         </footer>
-    </aside>
-</Transition>
+    </template>
+</SidePanel>
 </template>
 
 <style scoped>
-.detail {
-    /* Right-edge drawer: full height below the topbar, adaptive width so it
-       fits a narrow side-view window (down to the whole pane on tiny widths). */
-    position: absolute;
-    top: 6.4rem;
-    right: 0;
-    bottom: 0;
-    z-index: 9;
-    display: flex;
-    flex-direction: column;
-    gap: 1.2rem;
-    width: min(40rem, 100vw);
-    overflow-y: auto;
-    padding: 1.8rem;
-    border-top-left-radius: var(--radius-xl);
-    border-bottom-left-radius: var(--radius-xl);
-    border-left: 3px solid var(--accent);
-    box-shadow: var(--shadow-lg);
-}
-
-.drawer-enter-active,
-.drawer-leave-active {
-    transition:
-        transform var(--duration-normal) var(--ease-default),
-        opacity var(--duration-normal) var(--ease-default);
-}
-
-.drawer-enter-from,
-.drawer-leave-to {
-    transform: translateX(100%);
-    opacity: 0;
-}
-
 .head {
     display: flex;
     align-items: center;
@@ -371,6 +420,11 @@ function close(): void {
     background-color: color-mix(in srgb, var(--node-problem) 14%, transparent);
 }
 
+.badge.drifted {
+    color: var(--node-caution);
+    background-color: color-mix(in srgb, var(--node-caution) 14%, transparent);
+}
+
 .body {
     font-size: var(--text-body-sm);
     line-height: var(--leading-normal);
@@ -404,6 +458,28 @@ function close(): void {
     white-space: nowrap;
 }
 
+.ref-chip.missing {
+    color: var(--node-problem);
+    background-color: color-mix(in srgb, var(--node-problem) 12%, transparent);
+    text-decoration: line-through;
+}
+
+.tag-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+
+.tag-chip {
+    padding: 0.2rem 0.7rem;
+    border-radius: var(--radius-full);
+    font-size: var(--text-caption);
+    font-weight: 600;
+    color: var(--interactive-primary);
+    background-color: color-mix(in srgb, var(--interactive-primary) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--interactive-primary) 40%, transparent);
+}
+
 .relations {
     display: flex;
     flex-direction: column;
@@ -411,11 +487,55 @@ function close(): void {
     list-style: none;
 }
 
+.relation-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.rel-dir {
+    flex: none;
+    font-size: var(--text-caption);
+    font-weight: 600;
+}
+
+.rel-select {
+    flex: none;
+    padding: 0.3rem 0.4rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-subtle);
+    background-color: transparent;
+    font-size: var(--text-caption);
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.rel-delete {
+    flex: none;
+    border: none;
+    background: transparent;
+    color: var(--text-tertiary);
+    font-size: 1.6rem;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.rel-delete:hover:not(:disabled) {
+    color: var(--node-problem);
+}
+
+.rel-hint {
+    margin-top: 0.5rem;
+    font-size: var(--text-caption);
+    color: var(--text-tertiary);
+}
+
 .relation {
     display: flex;
     align-items: baseline;
     gap: 0.8rem;
-    width: 100%;
+    flex: 1;
+    min-width: 0;
     padding: 0.6rem 0.8rem;
     border: none;
     border-radius: var(--radius-md);
@@ -426,12 +546,6 @@ function close(): void {
 
 .relation:hover {
     background-color: var(--interactive-ghost-hover);
-}
-
-.rel-verb {
-    font-size: var(--text-caption);
-    font-weight: 600;
-    white-space: nowrap;
 }
 
 .rel-target {

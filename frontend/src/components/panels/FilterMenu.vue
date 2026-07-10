@@ -32,12 +32,14 @@ const sections = computed<Section[]>(() => {
     const sources = new Set<string>()
     const statuses = new Set<string>()
     const trust = new Set<string>()
+    const tags = new Set<string>()
     for (const n of nodeList.value) {
         types.add(n.type)
         durabilities.add(n.durability)
         sources.add(n.source)
         if (n.status) statuses.add(n.status)
         trust.add(trustLevel(n))
+        for (const t of n.tags) tags.add(t)
     }
     const section = (group: Group, label: string, set: Set<string>): Section => ({
         group,
@@ -46,11 +48,14 @@ const sections = computed<Section[]>(() => {
     })
     return [
         section('types', 'Type', types),
+        // Even a lone tag partitions the graph (unlike the property groups,
+        // where a single value means every node matches).
+        section('tags', 'Tags', tags),
         section('statuses', 'Status', statuses),
         section('trust', 'Trust', trust),
         section('sources', 'Source', sources),
         section('durabilities', 'Durability', durabilities),
-    ].filter((s) => s.values.length > 1)
+    ].filter((s) => (s.group === 'tags' ? s.values.length > 0 : s.values.length > 1))
 })
 
 const hasArchived = computed(() => nodeList.value.some((n) => n.valid_until != null))

@@ -47,8 +47,8 @@ pub const DECAY_TTL_DAYS: i64 = 14;
 /// Similarity at/above which a write warns about nearby conflicted or
 /// superseded nodes (the pull-based form of PLAN §7 conflict surfacing).
 pub const WARN_SIMILARITY: f64 = 0.70;
-/// Character budget for the session-start brief (~3k tokens).
-pub const DEFAULT_BRIEF_CHARS: usize = 12000;
+/// Character budget for the session-start brief (~4k tokens).
+pub const DEFAULT_BRIEF_CHARS: usize = 16000;
 /// Cosine similarity below which a vector hit carries no semantic signal.
 /// bge-small compresses unrelated pairs into roughly [0.5, 0.7]; the semantic
 /// component rescales from this floor to 1.0 and is zero underneath it.

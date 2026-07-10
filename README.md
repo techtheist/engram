@@ -12,31 +12,110 @@
 
 Engram gives your AI coding assistant a memory that survives across sessions: a structured graph of your project's **principles, decisions, cautions, problems, resolutions, insights, and intents** — that the assistant reads from and writes to, and that **you can see, edit, and own**.
 
-![The Engram pane: hybrid search over the graph, a review queue for approving what the assistant saved, and the full reasoning trail behind every node](.screenshots/engram-alpha-standalone.png)
+![The Engram pane: the live memory graph with the review queue open on the left and the theme & layout menu on the right](.screenshots/engram-alpha-standalone.png)
 
 <details>
-<summary><b>Inside JetBrains IDEs</b><i>(click to expand)</i></summary>
+<summary><b>Inside JetBrains IDEs</b> <i>(click to expand)</i></summary>
 <br>
 
 ![Engram tool window in IntelliJ IDEA: the graph updates live while Claude Code works in the terminal below](.screenshots/engram-alpha-jetbrains.png)
 </details>
 
 <details>
-<summary><b>Inside VS Code</b><i>(click to expand)</i></summary>
+<summary><b>Inside VS Code</b> <i>(click to expand)</i></summary>
 <br>
 
 ![Engram pane in VS Code's secondary sidebar: the memory graph fills in while the assistant explains the project](.screenshots/engram-alpha-vscode.png)
 </details>
 
-Unlike a flat note pile, Engram's graph is *active*: it tracks when knowledge is **superseded** (`replaces`) and when it **conflicts** (`conflicts-with`), and it knows which facts are durable vs. likely to go stale — so it doesn't rot.
+Unlike a flat note pile, Engram's graph is *active*: superseded knowledge is archived behind a `replaces` edge instead of silently contradicting the new canon, look-alike claims get flagged and judged, contradictions become visible `conflicts-with` edges, and trust decays on anything that never proves useful. On a medium or large project that is the difference between a memory you still trust after six months and a memory you quietly stop reading.
 
 The payoff shows up the second time something goes wrong. When your assistant gets stuck on a problem it has fought before — a flaky build step, a library quirk, a config trap — the graph already holds the artifacts from last time: the **Problem**, the **Resolution** that answered it, and the **Caution** that would have prevented it. Instead of rediscovering the fix from scratch, the assistant recalls it and applies it.
 
-- **Local-first** — your memory is a local SQLite graph. No cloud, no keys.
-- **Portable** — one local backend serves **Claude Code, Codex CLI, Gemini CLI, OpenCode, Kilo, and Google Antigravity** over MCP, plus a browser UI over HTTP. Your agents share one memory: a decision captured by Claude is recalled by Codex.
-- **Graph-first** — the graph is the product surface, not hidden plumbing.
+- **Local-first** — your memory is a SQLite file inside your repo. Embeddings are computed on your machine (fastembed/ONNX): no cloud, no keys, fully offline. Portable via JSON export/import, not a binary blob.
+- **Portable across agents** — one local backend serves **Claude Code, Codex CLI, Gemini CLI, OpenCode, Kilo, and Google Antigravity** over MCP, plus a browser UI over HTTP. Your agents share one memory: a decision captured by Claude is recalled by Codex.
+- **Graph-first** — the graph is the product surface, not hidden plumbing. Everything below happens in the pane, not in a debug view.
 
-**Status:** early development. See [`PLAN.md`](./PLAN.md) for the full spec and roadmap.
+Every screenshot on this page is Engram's own graph — the project is built by dogfooding it.
+
+## What you get
+
+### A graph you can actually read
+
+The canvas renders the whole graph and updates live over SSE — you watch nodes appear and link up while your assistant works in the terminal next to it. Because one shape can't serve every question, the canvas ships four layouts:
+
+| **Skyline** — layered left→right, packed rows | **Nebula** — one force-directed cloud |
+|---|---|
+| ![Skyline layout: the graph as layered columns, dependency flow reading left to right](.screenshots/layout-skyline-example.png) | ![Nebula layout: the whole graph as a single force-directed cloud, related nodes pulled together](.screenshots/layout-nebula-example.png) |
+| **Archipelago** — community islands, physics inside | **Orbit** — hubs with satellites in rings |
+| ![Archipelago layout: the graph split into separate islands, one per topic community](.screenshots/layout-archipelago-example.png) | ![Orbit layout: highly-connected hub nodes with their satellites arranged in rings around them](.screenshots/layout-orbit-example.png) |
+
+Skyline reads like a history, Nebula shows what clusters, Archipelago separates concerns into islands, Orbit puts the load-bearing nodes in the middle of their neighborhoods. Themes match where you work (Engram Purple, JetBrains dark/light, VS Code dark/light), a click-to-center minimap handles big graphs, and a health strip keeps the counts that matter — suspected conflicts, stale nodes, provisional writes — in the corner of your eye.
+
+### Focus on one feature at a time — tags
+
+Nodes carry free-form tags, settable by you in the pane or by the assistant on request (*"tag everything about the auth rewrite"*). The filter menu turns the graph into slices: one click on a tag chip and the canvas shows only that concern; combine it with type, status (`open`/`resolved`/`obsolete`), trust (`provisional`/`trusted`), and durability filters to get views like *"open problems in the retrieval layer"* or *"every unreviewed decision from phase 2"*.
+
+<img src=".screenshots/engram-alpha-filter-and-tags-feature.png" width="170" alt="The filter menu: colored type chips, the project's tag vocabulary, and status / trust / durability filters — nine filters active">
+
+This is the piece that keeps a big graph workable: the session brief tells the assistant which tags the project already uses, the assistant reuses them when it captures, and you filter by them when you review. Developer and AI end up focused on the same slice.
+
+### Edit everything by hand
+
+The graph is yours, not a read-only visualization of what the AI did. Create nodes from the **+ New** drawer — type, title, markdown body, durability, tags:
+
+<img src=".screenshots/engram-alpha-add-memory-feature.png" width="198" alt="The New memory dialog: pick one of the eight types, write a title and markdown body, set durability and tags">
+
+Drag from one node's handle to another and a dialog asks which of the seven verbs the connection means — if no verb fits, there is no edge to create. Every node can be edited, retyped, and re-anchored in place; edges can be retyped and deleted from the node's connection list. Hard-delete is deliberately **user-only**: the assistant can supersede knowledge, but only you can destroy it.
+
+### Your assistant starts every session already briefed
+
+A session-start hook injects a compact digest of the graph's canon — suspected conflicts to judge, open problems and intents, principles, decisions, cautions, and the tag vocabulary — so the assistant doesn't start cold and doesn't have to remember to ask. This is a real (trimmed) brief from this repo:
+
+```markdown
+# Engram brief
+Recent tags (reuse before inventing new ones): phase-2, hooks, pane-crud, retrieval, tags
+
+## Suspected conflicts — judge these
+- "New pane drawers must go through SidePanel — a single-element scrolling drawer
+  rubber-bands its content out of the frame on macOS" [Caution] vs "Pane side drawers
+  unified into SidePanel.vue: one drawer per side, drag-resizable widths" [Decision] (88% similar)
+
+## Open problems & intents
+- Session quarantine: exclude a session's writes from retrieval without deleting them [Intent open]
+- Phase 2: mid-session conflict push over MCP [Intent open]
+
+## Cautions
+- engram serve must start in the repo root — a relative --db silently creates a fresh DB anywhere else
+```
+
+Mid-session, the assistant recalls on demand: hybrid search (FTS5 + local vectors, ranked by relevance × trust) returns each hit with its 1-hop neighbors — **conflicts and supersessions first**, so contradicting a standing decision is hard to do by accident. Writes are guarded too: a near-duplicate note is merged into the existing node instead of created, and a write that lands next to superseded or conflicted knowledge comes back with a warning. You can read the same brief anytime in the pane (Memory Lens).
+
+### Silent writes, visible review
+
+Capture is batched and silent — no *"I've saved a note!"* chatter in your chat. The Review drawer is where it becomes accountable: everything recently added, everything awaiting review with its computed trust, one-click **Approve** for what you vouch for.
+
+<img src=".screenshots/engram-alpha-review-feature.png" width="243" alt="The Review drawer: a suspected-conflict pair at 86% similarity awaiting a Conflict / Replaces / Dismiss verdict, above the approval queue with per-node trust">
+
+Above the queue sits the conflict worklist. A local scan flags unlinked look-alike pairs as **suspected conflicts**, and each pair gets a judgment — from you in the pane, or from the assistant at the start of its next session: **Conflict** (they contradict; record it), **Replaces** (the newer supersedes; the older is archived into history), or **Dismiss** (fine together). The scan only finds candidates; a person or an AI is always the judge.
+
+### Every change is on the record
+
+An append-only audit journal records every node and edge mutation — created, updated, approved, archived — with the before/after values, which session did it, over which transport, and what the daemon knew at the time. When you come back from vacation to a graph that looks different, *"what changed and who wrote this"* has an exact answer:
+
+<img src=".screenshots/engram-alpha-audit-log-feature.png" width="240" alt="The Audit log: created/updated rows per mutation, expanded to show the full field-level record including source, session, and edge endpoints">
+
+History works at the knowledge level too: `timeline` walks a decision's `replaces` chain oldest-first, each retired generation carrying the note that explains why it was replaced — *"how did the auth decision evolve"* is one call, with dates.
+
+### Memory that tracks the code
+
+Nodes can point at code (`code_refs`). When the code moves, the memory doesn't get to pretend otherwise: drift scans check every path-shaped ref against the repository, and a ref that no longer resolves badges its node as **drifted** — in the pane, in the health strip, and in the assistant's `list_drift` worklist. The contract is repair-or-retire: fix the path if the knowledge still holds, supersede it if the refactor invalidated it.
+
+### All of it runs offline
+
+The scans that keep the graph honest run in the local daemon, on local embeddings: the conflict scan at write time plus a six-hourly sweep (or **Scan now** in the pane), the drift check over code refs, and the decay pass that archives stale never-approved scratch notes (see [Trust & decay](#trust--decay)). No API calls, no telemetry, nothing leaves your machine — the whole loop works on a plane.
+
+**Status:** early development, heavily dogfooded. See [`PLAN.md`](./PLAN.md) for the full spec and roadmap.
 
 ## Install
 
@@ -47,6 +126,17 @@ curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh |
 ```
 
 This downloads the `engram` binary for your platform (checksum-verified, into `~/.local/bin`), wires the repo for your assistant, and git-ignores the personal `.engram/` graph. Then run `engram serve` and open `http://127.0.0.1:8787` — or use the [JetBrains plugin](https://plugins.jetbrains.com/plugin/32654-engram) or the VS Code extension ([VS Marketplace](https://marketplace.visualstudio.com/items?itemName=techtheist.engram-alpha) · [Open VSX](https://open-vsx.org/extension/techtheist/engram-alpha) for VSCodium/Cursor/Windsurf) instead of the browser.
+
+### Claude Code: install as a plugin
+
+The plugin is the one-install path for Claude Code — it carries the capture skill, the session-start brief hook, and the setup commands with it into every project:
+
+```
+/plugin marketplace add techtheist/engram
+/plugin install engram@engram
+```
+
+Then run `/engram:setup` once per repository you want remembered (it installs the binary if missing, git-ignores `.engram/`, and registers the MCP server) — `/engram:pane` opens the graph UI. Details in [`claude-plugin/`](./claude-plugin/).
 
 ### Choose your assistant
 

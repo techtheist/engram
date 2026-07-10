@@ -2,18 +2,36 @@
 import { ref, useTemplateRef } from 'vue'
 import { onClickOutside } from '@vueuse/core'
 import { api } from '@/services/api'
+import { useAuditLog } from '@/composables/useAuditLog'
 import { useMemoryLens } from '@/composables/useMemoryLens'
 import { useGraphStore } from '@/stores/graph'
+import { useLayoutStore, type LayoutMode } from '@/stores/layout'
 import { useThemeStore } from '@/stores/theme'
 import type { ExportGraph } from '@/types/graph'
 
+const LAYOUT_GLYPH: Record<LayoutMode, string> = {
+    skyline: '▦',
+    nebula: '✦',
+    archipelago: '⁂',
+    orbit: '◉',
+}
+
 const theme = useThemeStore()
+const layout = useLayoutStore()
 const store = useGraphStore()
 const lens = useMemoryLens()
+const auditLog = useAuditLog()
 
 function openBrief(): void {
     open.value = false
+    auditLog.hide() // the drawers share the left edge — one at a time
     lens.show()
+}
+
+function openAudit(): void {
+    open.value = false
+    lens.hide()
+    auditLog.show()
 }
 
 const open = ref(false)
@@ -129,6 +147,27 @@ function message(e: unknown): string {
 
             <div class="divider" />
 
+            <div class="section-label">Layout</div>
+            <div class="themes">
+                <button
+                    v-for="l in layout.layouts"
+                    :key="l.id"
+                    class="theme-opt"
+                    :class="{ current: l.id === layout.current }"
+                    type="button"
+                    @click="layout.set(l.id)"
+                >
+                    <span class="layout-glyph" aria-hidden="true">{{ LAYOUT_GLYPH[l.id] }}</span>
+                    <span class="theme-name">
+                        {{ l.label }}
+                        <span class="layout-hint">{{ l.hint }}</span>
+                    </span>
+                    <span v-if="l.id === layout.current" class="check" aria-hidden="true">✓</span>
+                </button>
+            </div>
+
+            <div class="divider" />
+
             <div class="section-label">Graph</div>
             <button class="row" type="button" :disabled="busy" @click="exportGraph">
                 <span class="row-icon">↓</span> Export JSON
@@ -142,6 +181,13 @@ function message(e: unknown): string {
             <div class="section-label">Memory Lens</div>
             <button class="row" type="button" @click="openBrief">
                 <span class="row-icon">◉</span> Get brief
+            </button>
+
+            <div class="divider" />
+
+            <div class="section-label">History</div>
+            <button class="row" type="button" @click="openAudit">
+                <span class="row-icon">≡</span> Audit log
             </button>
 
             <p v-if="status" class="status" :class="{ error: isError }">{{ status }}</p>
@@ -245,6 +291,19 @@ function message(e: unknown): string {
 
 .theme-name {
     flex: 1;
+}
+
+.layout-glyph {
+    width: 1.4rem;
+    flex-shrink: 0;
+    text-align: center;
+    color: var(--text-tertiary);
+}
+
+.layout-hint {
+    display: block;
+    font-size: var(--text-caption);
+    color: var(--text-tertiary);
 }
 
 .check {

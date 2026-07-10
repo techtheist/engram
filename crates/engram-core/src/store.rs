@@ -5,7 +5,7 @@ use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, Row, ToSql, params};
 
 use crate::rag::EMBED_DIM;
-use crate::schema::SCHEMA;
+use crate::schema::{FTS_SCHEMA, SCHEMA};
 use crate::types::*;
 use crate::{Error, Result};
 
@@ -60,6 +60,7 @@ impl Store {
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         conn.execute_batch(SCHEMA)?;
         Self::migrate(&conn)?;
+        Self::ensure_fts(&conn)?;
         conn.execute_batch(&format!(
             "CREATE VIRTUAL TABLE IF NOT EXISTS vec_nodes USING vec0(
                node_id TEXT PRIMARY KEY,
@@ -94,6 +95,34 @@ impl Store {
                      WHERE source = 'user' OR COALESCE(confidence, 0) >= 0.9;",
                 )?;
             }
+        }
+        if !column_exists(conn, "nodes", "tags")? {
+            conn.execute_batch("ALTER TABLE nodes ADD COLUMN tags TEXT;")?;
+        }
+        Ok(())
+    }
+
+    /// Keep `nodes_fts` in lockstep with [`FTS_SCHEMA`]: when a database's FTS
+    /// mirror predates a column (tags), drop it — triggers included — and
+    /// recreate + rebuild from the content table. Fresh databases just create.
+    fn ensure_fts(conn: &Connection) -> Result<()> {
+        let fts_exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='nodes_fts'",
+            [],
+            |r| r.get(0),
+        )?;
+        let outdated = fts_exists > 0 && !column_exists(conn, "nodes_fts", "tags")?;
+        if outdated {
+            conn.execute_batch(
+                "DROP TRIGGER IF EXISTS nodes_ai;
+                 DROP TRIGGER IF EXISTS nodes_ad;
+                 DROP TRIGGER IF EXISTS nodes_au;
+                 DROP TABLE nodes_fts;",
+            )?;
+        }
+        conn.execute_batch(FTS_SCHEMA)?;
+        if outdated {
+            conn.execute_batch("INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild');")?;
         }
         Ok(())
     }
@@ -175,11 +204,12 @@ impl Store {
         let title = crate::redact::scrub(&n.title);
         let body = n.body.as_deref().map(crate::redact::scrub);
         let code_refs = serde_json::to_string(&n.code_refs)?;
+        let tags = serde_json::to_string(&normalize_tags(&n.tags))?;
         self.conn.execute(
             "INSERT INTO nodes
                (id, type, title, body, durability, source, session_id,
-                created_at, valid_from, valid_until, status, code_refs, last_seen, approved_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                created_at, valid_from, valid_until, status, code_refs, tags, last_seen, approved_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
             params![
                 id,
                 n.node_type.as_str(),
@@ -193,6 +223,7 @@ impl Store {
                 Option::<i64>::None,
                 n.status.map(NodeStatus::as_str),
                 code_refs,
+                tags,
                 Option::<i64>::None,
                 // User-authored knowledge is approved by construction.
                 (n.source == Source::User).then_some(created),
@@ -236,6 +267,10 @@ impl Store {
         if let Some(v) = p.code_refs {
             sets.push("code_refs=?");
             vals.push(Box::new(serde_json::to_string(&v)?));
+        }
+        if let Some(v) = p.tags {
+            sets.push("tags=?");
+            vals.push(Box::new(serde_json::to_string(&normalize_tags(&v))?));
         }
         // Every update proves the node is still in use: refresh last_seen.
         sets.push("last_seen=?");
@@ -300,18 +335,20 @@ impl Store {
         let title = crate::redact::scrub(&n.title);
         let body = n.body.as_deref().map(crate::redact::scrub);
         let code_refs = serde_json::to_string(&n.code_refs)?;
+        let tags = serde_json::to_string(&normalize_tags(&n.tags))?;
         self.conn.execute(
             "INSERT INTO nodes
                (id, type, title, body, durability, source, session_id,
-                created_at, valid_from, valid_until, status, code_refs, last_seen, approved_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+                created_at, valid_from, valid_until, status, code_refs, tags, last_seen, approved_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
              ON CONFLICT(id) DO UPDATE SET
                type=excluded.type, title=excluded.title, body=excluded.body,
                durability=excluded.durability, source=excluded.source,
                session_id=excluded.session_id, created_at=excluded.created_at,
                valid_from=excluded.valid_from, valid_until=excluded.valid_until,
                status=excluded.status, code_refs=excluded.code_refs,
-               last_seen=excluded.last_seen, approved_at=excluded.approved_at",
+               tags=excluded.tags, last_seen=excluded.last_seen,
+               approved_at=excluded.approved_at",
             params![
                 n.id,
                 n.node_type.as_str(),
@@ -325,6 +362,7 @@ impl Store {
                 n.valid_until,
                 n.status.map(NodeStatus::as_str),
                 code_refs,
+                tags,
                 n.last_seen,
                 n.approved_at,
             ],
@@ -899,6 +937,10 @@ impl Store {
     pub fn update_edge(&self, id: &str, p: EdgePatch) -> Result<Edge> {
         let mut sets: Vec<&str> = Vec::new();
         let mut vals: Vec<Box<dyn ToSql>> = Vec::new();
+        if let Some(v) = p.edge_type {
+            sets.push("type=?");
+            vals.push(Box::new(v.as_str().to_string()));
+        }
         if let Some(v) = p.status {
             sets.push("status=?");
             vals.push(Box::new(v.as_str().to_string()));
@@ -929,14 +971,80 @@ impl Store {
         Ok(self.conn.execute("DELETE FROM edges WHERE id=?1", [id])? > 0)
     }
 
+    // ---- audit journal (PLAN §10) -----------------------------------------
+
+    /// Append one journal row. `seq` on the input is ignored (assigned by
+    /// SQLite); rows are only ever inserted, never updated or deleted.
+    pub fn add_audit(&self, e: &AuditEntry) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO audit
+               (ts, action, entity, entity_id, title, before_json, after_json,
+                origin, session_id, cwd, pid, version)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            params![
+                e.ts,
+                e.action,
+                e.entity,
+                e.entity_id,
+                e.title,
+                e.before.as_ref().map(serde_json::Value::to_string),
+                e.after.as_ref().map(serde_json::Value::to_string),
+                e.origin,
+                e.session_id,
+                e.cwd,
+                e.pid,
+                e.version,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// One journal page, newest first. Keyset pagination: pass the last seen
+    /// `seq` as `before` for the next page. `entity_id` narrows to one
+    /// node/edge's history; `total` counts under the same filter.
+    pub fn audit_page(
+        &self,
+        before: Option<i64>,
+        entity_id: Option<&str>,
+        limit: usize,
+    ) -> Result<AuditPage> {
+        let total: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM audit WHERE (?1 IS NULL OR entity_id = ?1)",
+            params![entity_id],
+            |r| r.get(0),
+        )?;
+        let mut stmt = self.conn.prepare(
+            "SELECT seq, ts, action, entity, entity_id, title, before_json,
+                    after_json, origin, session_id, cwd, pid, version
+             FROM audit
+             WHERE (?1 IS NULL OR seq < ?1) AND (?2 IS NULL OR entity_id = ?2)
+             ORDER BY seq DESC LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![before, entity_id, limit as i64], row_to_audit)?;
+        Ok(AuditPage {
+            entries: rows.collect::<rusqlite::Result<_>>()?,
+            total,
+        })
+    }
+
     // ---- brief queries ----------------------------------------------------
+
+    /// How many current (non-archived) nodes of one type exist — the brief's
+    /// overflow counts.
+    pub fn count_by_type_active(&self, t: NodeType) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM nodes WHERE valid_until IS NULL AND type=?1",
+            [t.as_str()],
+            |r| r.get(0),
+        )?)
+    }
 
     /// Current (non-archived) nodes of one type, most trusted first.
     pub fn nodes_by_type_active(&self, t: NodeType, limit: usize) -> Result<Vec<Node>> {
         let sql = format!(
             "{NODE_SELECT} WHERE valid_until IS NULL AND type=?1 \
              ORDER BY (approved_at IS NOT NULL) DESC, \
-             COALESCE(approved_at, last_seen, created_at) DESC LIMIT ?2"
+             COALESCE(approved_at, last_seen, created_at) DESC, rowid DESC LIMIT ?2"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![t.as_str(), limit as i64], row_to_node)?;
@@ -955,12 +1063,36 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Most recently created current nodes (any type).
+    /// Most recently created current nodes (any type). `created_at` has
+    /// second granularity, so rowid breaks ties by insertion order.
     pub fn recent_nodes(&self, limit: usize) -> Result<Vec<Node>> {
-        let sql =
-            format!("{NODE_SELECT} WHERE valid_until IS NULL ORDER BY created_at DESC LIMIT ?1");
+        let sql = format!(
+            "{NODE_SELECT} WHERE valid_until IS NULL \
+             ORDER BY created_at DESC, rowid DESC LIMIT ?1"
+        );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([limit as i64], row_to_node)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Every tag in use on current nodes with count and freshness, freshest
+    /// first (PLAN §10 tags). "Used" leans on the trust clock: a node touched
+    /// by write or retrieval refreshes its tags' recency too.
+    pub fn tag_stats(&self, limit: usize) -> Result<Vec<TagStat>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT je.value, COUNT(*), MAX(COALESCE(n.last_seen, n.created_at)) \
+             FROM nodes n, json_each(COALESCE(n.tags, '[]')) je \
+             WHERE n.valid_until IS NULL \
+             GROUP BY je.value \
+             ORDER BY 3 DESC, 2 DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], |r| {
+            Ok(TagStat {
+                tag: r.get(0)?,
+                count: r.get(1)?,
+                last_used: r.get(2)?,
+            })
+        })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
@@ -1020,10 +1152,27 @@ fn excerpt(node: &Node) -> String {
 }
 
 const NODE_SELECT: &str = "SELECT id, type, title, body, durability, source, session_id, \
-     created_at, valid_from, valid_until, status, code_refs, last_seen, approved_at FROM nodes";
+     created_at, valid_from, valid_until, status, code_refs, last_seen, approved_at, tags FROM nodes";
 
 const EDGE_SELECT: &str = "SELECT id, type, from_id, to_id, source, created_at, \
      confidence, strength, note, valid_from, valid_until, status FROM edges WHERE id=?1";
+
+/// Canonical tag form: kebab-cased lowercase, deduped, empties dropped — so
+/// "Phase 1" and "phase-1" are one tag and the pane's dropdown stays clean.
+pub fn normalize_tags(tags: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in tags {
+        let tag = t
+            .to_lowercase()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join("-");
+        if !tag.is_empty() && !out.contains(&tag) {
+            out.push(tag);
+        }
+    }
+    out
+}
 
 fn placeholders(n: usize) -> String {
     std::iter::repeat_n("?", n).collect::<Vec<_>>().join(",")
@@ -1054,6 +1203,7 @@ fn row_to_node(row: &Row) -> rusqlite::Result<Node> {
     let created_at: i64 = row.get(7)?;
     let last_seen: Option<i64> = row.get(12)?;
     let approved_at: Option<i64> = row.get(13)?;
+    let tags_s: Option<String> = row.get(14)?;
     let trust = crate::policy::trust(created_at, last_seen, approved_at, now());
     Ok(Node {
         id: row.get(0)?,
@@ -1079,6 +1229,38 @@ fn row_to_node(row: &Row) -> rusqlite::Result<Node> {
             })?,
             None => Vec::new(),
         },
+        tags: match tags_s {
+            Some(s) => serde_json::from_str(&s).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(14, Type::Text, Box::new(e))
+            })?,
+            None => Vec::new(),
+        },
+    })
+}
+
+fn row_to_audit(row: &Row) -> rusqlite::Result<AuditEntry> {
+    let parse_json = |idx: usize, s: Option<String>| {
+        s.map(|s| {
+            serde_json::from_str(&s).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(idx, Type::Text, Box::new(e))
+            })
+        })
+        .transpose()
+    };
+    Ok(AuditEntry {
+        seq: row.get(0)?,
+        ts: row.get(1)?,
+        action: row.get(2)?,
+        entity: row.get(3)?,
+        entity_id: row.get(4)?,
+        title: row.get(5)?,
+        before: parse_json(6, row.get(6)?)?,
+        after: parse_json(7, row.get(7)?)?,
+        origin: row.get(8)?,
+        session_id: row.get(9)?,
+        cwd: row.get(10)?,
+        pid: row.get(11)?,
+        version: row.get(12)?,
     })
 }
 

@@ -41,6 +41,36 @@ export interface GraphNode {
     trust: number
     stale: boolean
     code_refs: string[]
+    /** Free-form slice labels (kebab-cased by the backend). */
+    tags: string[]
+}
+
+/** POST /nodes payload — the pane creates user-sourced nodes. */
+export interface NewNode {
+    type: NodeType
+    title: string
+    body?: string
+    durability: Durability
+    source: Source
+    status?: NodeStatus
+    code_refs?: string[]
+    tags?: string[]
+}
+
+/** POST /edges payload. */
+export interface NewEdge {
+    type: EdgeType
+    from_id: string
+    to_id: string
+    source: Source
+    note?: string
+}
+
+/** One tag with usage stats (GET /tags), freshest first. */
+export interface TagStat {
+    tag: string
+    count: number
+    last_used: number
 }
 
 export interface GraphEdge {
@@ -89,6 +119,47 @@ export interface SuspectEndpoint {
     id: string
     type: NodeType
     title: string
+}
+
+/**
+ * A node whose path-shaped code_refs no longer exist in the project
+ * (GET /drift): the code moved and the memory didn't — needs review.
+ */
+export interface DriftEntry {
+    id: string
+    type: NodeType
+    title: string
+    missing: string[]
+}
+
+/**
+ * One append-only audit journal row (GET /audit): a node/edge mutation with
+ * before/after snapshots plus the writing process's context.
+ */
+export interface AuditEntry {
+    seq: number
+    ts: number
+    /** created | updated | approved | archived | deleted | imported */
+    action: string
+    /** node | edge | graph */
+    entity: string
+    entity_id: string
+    /** Display label snapshot — survives the entity's later deletion. */
+    title: string | null
+    before: Record<string, unknown> | null
+    after: Record<string, unknown> | null
+    /** pane | mcp | daemon | cli | library */
+    origin: string
+    session_id: string | null
+    cwd: string | null
+    pid: number | null
+    version: string | null
+}
+
+/** One journal page, newest first, with the total row count for progress. */
+export interface AuditPage {
+    entries: AuditEntry[]
+    total: number
 }
 
 export interface SearchHit {

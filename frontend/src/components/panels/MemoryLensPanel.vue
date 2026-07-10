@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import MarkdownView from '@/components/common/MarkdownView.vue'
+import SidePanel from '@/components/common/SidePanel.vue'
 import { api } from '@/services/api'
 import { useMemoryLens } from '@/composables/useMemoryLens'
 
@@ -29,83 +30,27 @@ watch(open, async (isOpen) => {
 </script>
 
 <template>
-<Transition name="drawer-left">
-    <aside v-if="open" class="panel glass-panel">
-        <header class="head">
-            <h2 class="heading">Memory Lens</h2>
-            <button class="close" type="button" aria-label="Close" @click="hide">×</button>
-        </header>
+<SidePanel
+    :open="open"
+    side="left"
+    panel-id="lens"
+    :default-rem="44"
+    :min-rem="30"
+    :dismiss="hide"
+    title="Memory Lens"
+    style="--panel-gap: 1rem"
+>
+    <p class="hint">
+        What your assistant receives from <code>brief</code> at session start.
+    </p>
 
-        <p class="hint">
-            What your assistant receives from <code>brief</code> at session start.
-        </p>
-
-        <p v-if="loading" class="state">Loading brief…</p>
-        <p v-else-if="error" class="state error">{{ error }}</p>
-        <MarkdownView v-else-if="content" :content="content" class="content" />
-    </aside>
-</Transition>
+    <p v-if="loading" class="state">Loading brief…</p>
+    <p v-else-if="error" class="state error">{{ error }}</p>
+    <MarkdownView v-else-if="content" :content="content" class="content" />
+</SidePanel>
 </template>
 
 <style scoped>
-.panel {
-    /* Left-edge drawer, mirroring NodeDetail on the right. */
-    position: fixed;
-    top: 6.4rem;
-    left: 0;
-    bottom: 0;
-    /* Above the topbar's stacking context (z-10) — the Review drawer lives
-       inside it, and the lens must not open hidden behind that drawer. */
-    z-index: 11;
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-    width: min(44rem, 100vw);
-    overflow-y: auto;
-    padding: 1.8rem;
-    border-top-right-radius: var(--radius-xl);
-    border-bottom-right-radius: var(--radius-xl);
-    box-shadow: var(--shadow-lg);
-}
-
-.drawer-left-enter-active,
-.drawer-left-leave-active {
-    transition:
-        transform var(--duration-normal) var(--ease-default),
-        opacity var(--duration-normal) var(--ease-default);
-}
-
-.drawer-left-enter-from,
-.drawer-left-leave-to {
-    transform: translateX(-100%);
-    opacity: 0;
-}
-
-.head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-}
-
-.heading {
-    font-size: var(--text-h3);
-    font-weight: 700;
-    color: var(--text-primary);
-}
-
-.close {
-    border: none;
-    background: transparent;
-    color: var(--text-tertiary);
-    font-size: 2.4rem;
-    line-height: 1;
-    cursor: pointer;
-}
-
-.close:hover {
-    color: var(--text-primary);
-}
-
 .hint {
     font-size: var(--text-caption);
     color: var(--text-tertiary);

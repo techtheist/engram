@@ -1,0 +1,20 @@
+{
+  "name": "engram",
+  "owner": {
+    "name": "techtheist"
+  },
+  "description": "Engram Alpha — durable, local-first graph memory for AI coding assistants.",
+  "plugins": [
+    {
+      "name": "engram",
+      "displayName": "Engram Alpha",
+      "source": "./claude-plugin",
+      "description": "Capture skill + session-start brief hook + per-repo setup commands for the Engram memory graph.",
+      "license": "MIT",
+      "homepage": "https://github.com/techtheist/engram",
+      "repository": "https://github.com/techtheist/engram",
+      "keywords": ["memory", "knowledge-graph", "mcp", "local-first", "decisions"],
+      "category": "productivity"
+    }
+  ]
+}

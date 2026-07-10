@@ -4,6 +4,7 @@ import {
     VueFlow,
     PanOnScrollMode,
     useVueFlow,
+    type Connection,
     type Edge,
     type FitViewParams,
     type Node,
@@ -15,12 +16,15 @@ import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
 import { storeToRefs } from 'pinia'
 import EngramNode from '@/components/nodes/EngramNode.vue'
+import ConnectDialog from '@/components/panels/ConnectDialog.vue'
 import { layoutGraph, type XY } from '@/composables/useLayout'
 import { EDGE_ANIMATED, EDGE_COLOR, EDGE_DASHED, NODE_ACCENT_VAR } from '@/constants/ontology'
 import { useGraphStore } from '@/stores/graph'
+import { useLayoutStore } from '@/stores/layout'
 import type { GraphNode } from '@/types/graph'
 
 const store = useGraphStore()
+const layout = useLayoutStore()
 const { visibleNodeList, visibleEdgeList, selectedId } = storeToRefs(store)
 const { fitView, setCenter, viewport } = useVueFlow()
 
@@ -48,7 +52,17 @@ async function onNodesInitialized(): Promise<void> {
 const overrides = ref(new Map<string, XY>())
 
 const positions = computed(() =>
-    layoutGraph(visibleNodeList.value, visibleEdgeList.value, overrides.value),
+    layoutGraph(visibleNodeList.value, visibleEdgeList.value, overrides.value, layout.current),
+)
+
+// Switching Skyline ↔ Nebula rearranges everything — re-fit so the user
+// lands on the new shape instead of an empty corner of the old one.
+watch(
+    () => layout.current,
+    async () => {
+        await nextTick()
+        await fitView({ ...FIT_VIEW_PARAMS, duration: 400 })
+    },
 )
 
 const flowNodes = computed<Node<GraphNode>[]>(() =>
@@ -81,6 +95,17 @@ const flowEdges = computed<Edge[]>(() =>
 
 function onNodeClick({ node }: NodeMouseEvent): void {
     store.select(node.id)
+}
+
+/**
+ * A handle-to-handle drag proposes an edge; the dialog asks for the verb that
+ * makes it a sentence (PLAN §10 pane CRUD — edge creation by dragging).
+ */
+const pendingConnection = ref<{ source: string; target: string } | null>(null)
+
+function onConnect(conn: Connection): void {
+    if (!conn.source || !conn.target || conn.source === conn.target) return
+    pendingConnection.value = { source: conn.source, target: conn.target }
 }
 
 function onNodeDragStop({ node }: NodeDragEvent): void {
@@ -122,39 +147,55 @@ watch(
 </script>
 
 <template>
-<VueFlow
-    :nodes="flowNodes"
-    :edges="flowEdges"
-    :node-types="nodeTypes"
-    :min-zoom="0.05"
-    :max-zoom="1"
-    :pan-on-scroll="true"
-    :pan-on-scroll-mode="PanOnScrollMode.Free"
-    :zoom-on-scroll="false"
-    :zoom-on-pinch="true"
-    :zoom-activation-key-code="['Meta', 'Control']"
-    class="engram-canvas"
-    @node-click="onNodeClick"
-    @node-drag-stop="onNodeDragStop"
-    @pane-click="onPaneClick"
-    @nodes-initialized="onNodesInitialized"
->
-    <Background :gap="22" :size="1.4" pattern-color="var(--canvas-dots)" />
-    <Controls position="bottom-left" :fit-view-params="FIT_VIEW_PARAMS" />
-    <MiniMap
-        zoomable
-        position="bottom-right"
-        :width="100"
-        :height="75"
-        :node-color="minimapColor"
-        mask-color="var(--surface-overlay)"
-        @click="onMiniMapClick"
+<div class="canvas-root">
+    <VueFlow
+        :nodes="flowNodes"
+        :edges="flowEdges"
+        :node-types="nodeTypes"
+        :min-zoom="0.05"
+        :max-zoom="1"
+        :pan-on-scroll="true"
+        :pan-on-scroll-mode="PanOnScrollMode.Free"
+        :zoom-on-scroll="false"
+        :zoom-on-pinch="true"
+        :zoom-activation-key-code="['Meta', 'Control']"
+        class="engram-canvas"
+        @node-click="onNodeClick"
+        @node-drag-stop="onNodeDragStop"
+        @pane-click="onPaneClick"
+        @nodes-initialized="onNodesInitialized"
+        @connect="onConnect"
+    >
+        <Background :gap="22" :size="1.4" pattern-color="var(--canvas-dots)" />
+        <Controls position="bottom-left" :fit-view-params="FIT_VIEW_PARAMS" />
+        <MiniMap
+            zoomable
+            position="bottom-right"
+            :width="100"
+            :height="75"
+            :node-color="minimapColor"
+            mask-color="var(--surface-overlay)"
+            @click="onMiniMapClick"
+        />
+        <div class="canvas-glow" aria-hidden="true" />
+    </VueFlow>
+
+    <ConnectDialog
+        v-if="pendingConnection"
+        :source="pendingConnection.source"
+        :target="pendingConnection.target"
+        @close="pendingConnection = null"
     />
-    <div class="canvas-glow" aria-hidden="true" />
-</VueFlow>
+</div>
 </template>
 
 <style scoped>
+.canvas-root {
+    position: relative;
+    width: 100%;
+    height: 100%;
+}
+
 .engram-canvas {
     width: 100%;
     height: 100%;

@@ -45,6 +45,10 @@ const isUser = computed(() => node.value.source === 'user')
         <span v-for="ref in node.code_refs" :key="ref" class="ref-chip">{{ ref }}</span>
     </div>
 
+    <div v-if="node.tags.length" class="refs tags">
+        <span v-for="t in node.tags" :key="t" class="tag-chip">#{{ t }}</span>
+    </div>
+
     <span v-if="archived" class="archived-flag" title="Archived by decay or superseded">archived</span>
 
     <Handle :position="Position.Right" type="source" class="engram-handle" />
@@ -202,6 +206,17 @@ const isUser = computed(() => node.value.source === 'user')
 .engram-node:hover .refs {
     max-height: 40rem;
     transition: max-height var(--duration-slow) var(--ease-default);
+}
+
+.tag-chip {
+    padding: 0.1rem 0.6rem;
+    border-radius: var(--radius-full);
+    font-size: var(--text-caption);
+    font-weight: 600;
+    color: var(--interactive-primary);
+    background-color: color-mix(in srgb, var(--interactive-primary) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--interactive-primary) 35%, transparent);
+    white-space: nowrap;
 }
 
 .ref-chip {

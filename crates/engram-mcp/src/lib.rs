@@ -10,8 +10,13 @@ use engram_core::{
     NodeStatus, NodeType, Source, SuspectVerdict, WriteOutcome,
 };
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
-use rmcp::{ErrorData, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
+use rmcp::model::{
+    CallToolResult, ContentBlock, Implementation, ListResourceTemplatesResult, ListResourcesResult,
+    PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult, Resource,
+    ResourceContents, ResourceTemplate, ServerCapabilities, ServerInfo,
+};
+use rmcp::service::RequestContext;
+use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -31,6 +36,13 @@ replaces | dismiss) — the scan only finds candidates; you are the judge. \
 Nodes carry computed \
 `trust` (0..1, from created_at/last_seen/approved_at) and `stale` (trust < \
 0.3 — verify before relying; refresh with `update_node` if still true). \
+Nodes can carry free-form `tags` — how the user slices the graph (phases, \
+concerns). Reuse the recent tags the brief lists before inventing new ones; \
+an unknown tag is simply created. \
+For history questions: `timeline` walks a node's replaces chain (\"how did \
+this decision evolve\"), `audit` pages the mutation journal (\"what changed, \
+who wrote this\"). `list_drift` finds nodes whose code_refs no longer exist \
+in the project — repair the refs via `update_node` and re-check the claim. \
 Never store secrets or volatile implementation detail.";
 
 #[derive(Clone)]
@@ -56,6 +68,15 @@ impl Engram {
         }
     }
 
+    /// Lock the engine and stamp this MCP session as the writer (audit journal
+    /// attribution). Re-stamped on every operation: the engine may be shared
+    /// with the HTTP pane, which stamps itself the same way.
+    fn engine(&self) -> std::sync::MutexGuard<'_, Engine> {
+        let mut guard = self.engine.lock().unwrap();
+        guard.set_audit_origin(engram_core::AuditOrigin::mcp(self.session_id.to_string()));
+        guard
+    }
+
     #[tool(
         description = "Hybrid semantic + keyword search over the memory graph. \
         Hits carry: type, title, snippet, score, trust (computed 0..1), stale \
@@ -69,9 +90,7 @@ impl Engram {
     ) -> Result<CallToolResult, ErrorData> {
         let types = node_types(&a.types)?;
         let hits = self
-            .engine
-            .lock()
-            .unwrap()
+            .engine()
             .search(&a.query, &types, a.limit.unwrap_or(8))
             .map_err(map_err)?;
         ok_json(&hits)
@@ -89,7 +108,7 @@ impl Engram {
         &self,
         Parameters(a): Parameters<GetNodeArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let engine = self.engine.lock().unwrap();
+        let engine = self.engine();
         let Some(node) = engine.get_node(&a.id).map_err(map_err)? else {
             return Err(ErrorData::invalid_params(
                 format!("node not found: {}", a.id),
@@ -122,9 +141,7 @@ impl Engram {
     ) -> Result<CallToolResult, ErrorData> {
         let edge_types = edge_types(&a.edge_types)?;
         let (nodes, edges) = self
-            .engine
-            .lock()
-            .unwrap()
+            .engine()
             .traverse(&a.from, &edge_types, a.depth.unwrap_or(2))
             .map_err(map_err)?;
         ok_json(&json!({ "nodes": nodes, "edges": edges }))
@@ -150,9 +167,7 @@ impl Engram {
             _ => None,
         };
         let outcome = self
-            .engine
-            .lock()
-            .unwrap()
+            .engine()
             .add_node_checked(NewNode {
                 node_type,
                 title: a.title,
@@ -162,6 +177,7 @@ impl Engram {
                 session_id: a.session_id.or_else(|| Some(self.session_id.to_string())),
                 status,
                 code_refs: a.code_refs,
+                tags: a.tags,
             })
             .map_err(map_err)?;
         match outcome {
@@ -190,9 +206,7 @@ impl Engram {
         Parameters(a): Parameters<BriefArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let text = self
-            .engine
-            .lock()
-            .unwrap()
+            .engine()
             .brief(
                 a.max_chars
                     .unwrap_or(engram_core::policy::DEFAULT_BRIEF_CHARS),
@@ -204,12 +218,7 @@ impl Engram {
     #[tool(description = "Delete one edge by id — for repairing a mislink. \
         Nodes are never deleted this way (hard node delete is user-only).")]
     async fn unlink(&self, Parameters(a): Parameters<IdArg>) -> Result<CallToolResult, ErrorData> {
-        let removed = self
-            .engine
-            .lock()
-            .unwrap()
-            .delete_edge(&a.id)
-            .map_err(map_err)?;
+        let removed = self.engine().delete_edge(&a.id).map_err(map_err)?;
         if !removed {
             return Err(ErrorData::invalid_params(
                 format!("edge not found: {}", a.id),
@@ -228,6 +237,9 @@ impl Engram {
         Parameters(a): Parameters<UpdateEdgeArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let patch = EdgePatch {
+            // Retype stays a pane action; Claude repairs a wrong verb with
+            // unlink + link (which re-states the sentence deliberately).
+            edge_type: None,
             status: a
                 .status
                 .map(|s| EdgeStatus::parse(&s))
@@ -237,12 +249,7 @@ impl Engram {
             confidence: a.confidence,
             strength: None,
         };
-        let edge = self
-            .engine
-            .lock()
-            .unwrap()
-            .update_edge(&a.id, patch)
-            .map_err(map_err)?;
+        let edge = self.engine().update_edge(&a.id, patch).map_err(map_err)?;
         ok_json(&json!({ "ok": true, "id": edge.id }))
     }
 
@@ -251,9 +258,7 @@ impl Engram {
     async fn link(&self, Parameters(a): Parameters<LinkArgs>) -> Result<CallToolResult, ErrorData> {
         let edge_type = EdgeType::parse(&a.edge_type).map_err(map_err)?;
         let edge = self
-            .engine
-            .lock()
-            .unwrap()
+            .engine()
             .add_edge(NewEdge {
                 edge_type,
                 from_id: a.from,
@@ -273,7 +278,7 @@ impl Engram {
         look-alike node pairs awaiting judgment. Judge each with resolve_suspect."
     )]
     async fn list_suspects(&self) -> Result<CallToolResult, ErrorData> {
-        let suspects = self.engine.lock().unwrap().suspects().map_err(map_err)?;
+        let suspects = self.engine().suspects().map_err(map_err)?;
         ok_json(&json!({ "suspects": suspects }))
     }
 
@@ -288,9 +293,7 @@ impl Engram {
     ) -> Result<CallToolResult, ErrorData> {
         let verdict = SuspectVerdict::parse(&a.verdict).map_err(map_err)?;
         let edge = self
-            .engine
-            .lock()
-            .unwrap()
+            .engine()
             .resolve_suspect(&a.id, verdict, Source::Claude)
             .map_err(map_err)?;
         ok_json(&json!({ "ok": true, "edge": edge }))
@@ -304,12 +307,7 @@ impl Engram {
         &self,
         Parameters(a): Parameters<ApproveArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let node = self
-            .engine
-            .lock()
-            .unwrap()
-            .approve(&a.id)
-            .map_err(map_err)?;
+        let node = self.engine().approve(&a.id).map_err(map_err)?;
         ok_json(&json!({ "ok": true, "id": node.id, "trust": node.trust }))
     }
 
@@ -341,11 +339,10 @@ impl Engram {
                 .map_err(map_err)?,
             valid_until: None,
             code_refs: a.code_refs,
+            tags: a.tags,
         };
         let (node, warnings) = self
-            .engine
-            .lock()
-            .unwrap()
+            .engine()
             .update_node_checked(&a.id, patch)
             .map_err(map_err)?;
         if warnings.is_empty() {
@@ -362,21 +359,151 @@ impl Engram {
     ) -> Result<CallToolResult, ErrorData> {
         let types = node_types(&a.types)?;
         let nodes = self
-            .engine
-            .lock()
-            .unwrap()
+            .engine()
             .worklist(&types, a.include_conflicts.unwrap_or(true))
             .map_err(map_err)?;
         ok_json(&nodes)
     }
+
+    #[tool(
+        description = "The chronological story of one piece of knowledge: the \
+        node's `replaces` chain, oldest first. Each superseded generation \
+        carries the note of the replaces edge that retired it. Use to answer \
+        \"how did this decision evolve\"."
+    )]
+    async fn timeline(
+        &self,
+        Parameters(a): Parameters<IdArg>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let chain = self.engine().timeline(&a.id).map_err(map_err)?;
+        ok_json(&json!({ "timeline": chain }))
+    }
+
+    #[tool(description = "Nodes whose path-shaped code_refs no longer exist in \
+        the project — the code moved and the memory didn't (drifted). Review \
+        each: fix the refs via update_node, and check whether the knowledge \
+        itself is still true (supersede or conflicts-with it if not).")]
+    async fn list_drift(&self) -> Result<CallToolResult, ErrorData> {
+        let root =
+            std::env::current_dir().map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let drifted = self.engine().scan_code_refs(&root).map_err(map_err)?;
+        ok_json(&json!({ "drifted": drifted }))
+    }
+
+    #[tool(description = "One page of the audit journal, newest first: every \
+        node/edge mutation with before/after snapshots and writer context \
+        (origin, session, cwd, pid, version). Filter to one node/edge with \
+        entity_id; page with before = the last row's seq. Read-only — answers \
+        \"what changed while I was away\" and \"who wrote this\".")]
+    async fn audit(
+        &self,
+        Parameters(a): Parameters<AuditArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let page = self
+            .engine()
+            .audit_log(
+                a.before,
+                a.entity_id.as_deref(),
+                a.limit.unwrap_or(20).min(200),
+            )
+            .map_err(map_err)?;
+        ok_json(&page)
+    }
 }
+
+/// How many concrete node resources `resources/list` advertises (newest
+/// first); the full graph stays reachable through the uri template.
+const RESOURCE_LIST_CAP: usize = 25;
 
 #[tool_handler]
 impl ServerHandler for Engram {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("engram", env!("CARGO_PKG_VERSION")))
-            .with_instructions(INSTRUCTIONS.to_string())
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        )
+        .with_server_info(Implementation::new("engram", env!("CARGO_PKG_VERSION")))
+        .with_instructions(INSTRUCTIONS.to_string())
+    }
+
+    /// Appendix A: `engram://node/{id}` so a user can @-mention a node in a
+    /// prompt. The list shows the newest nodes; anything else resolves
+    /// through the template with an id from `search`/the pane.
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        let nodes = self
+            .engine()
+            .store()
+            .recent_nodes(RESOURCE_LIST_CAP)
+            .map_err(map_err)?;
+        Ok(ListResourcesResult {
+            meta: None,
+            next_cursor: None,
+            resources: nodes
+                .into_iter()
+                .map(|n| {
+                    Resource::new(format!("engram://node/{}", n.id), n.id.clone())
+                        .with_title(n.title)
+                        .with_description(format!(
+                            "{} node in the Engram memory graph",
+                            n.node_type.as_str()
+                        ))
+                        .with_mime_type("application/json")
+                })
+                .collect(),
+        })
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, ErrorData> {
+        Ok(ListResourceTemplatesResult {
+            meta: None,
+            next_cursor: None,
+            resource_templates: vec![
+                ResourceTemplate::new("engram://node/{id}", "node")
+                    .with_title("Engram memory node")
+                    .with_description(
+                        "One memory node with its edges, by id (ids come from search, \
+                         the brief, or the pane)",
+                    )
+                    .with_mime_type("application/json"),
+            ],
+        })
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, ErrorData> {
+        let Some(id) = request.uri.strip_prefix("engram://node/") else {
+            return Err(ErrorData::invalid_params(
+                format!("unknown resource uri: {}", request.uri),
+                None,
+            ));
+        };
+        let engine = self.engine();
+        let Some(node) = engine.get_node(id).map_err(map_err)? else {
+            return Err(ErrorData::invalid_params(
+                format!("node not found: {id}"),
+                None,
+            ));
+        };
+        let out = engine.edges_out(id).map_err(map_err)?;
+        let incoming = engine.edges_in(id).map_err(map_err)?;
+        let payload = json!({ "node": node, "edges_out": out, "edges_in": incoming });
+        Ok(ReadResourceResult::new(vec![
+            ResourceContents::text(payload.to_string(), request.uri)
+                .with_mime_type("application/json"),
+        ]))
     }
 }
 
@@ -413,6 +540,20 @@ struct IdArg {
 }
 
 #[derive(Deserialize, JsonSchema)]
+struct AuditArgs {
+    /// Max rows to return (default 20, newest first).
+    #[serde(default)]
+    limit: Option<usize>,
+    /// Keyset cursor: only rows with seq strictly below this (page with the
+    /// last row's seq).
+    #[serde(default)]
+    before: Option<i64>,
+    /// Restrict to one node/edge id's history.
+    #[serde(default)]
+    entity_id: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 struct GetNodeArgs {
     id: String,
     /// Levels of parent hierarchy to include (nodes this one points at), 0-3.
@@ -445,6 +586,11 @@ struct AddNoteArgs {
     session_id: Option<String>,
     #[serde(default)]
     code_refs: Vec<String>,
+    /// Free-form slice labels (kebab-cased on write). Reuse the recent tags
+    /// listed in the brief before inventing new ones; new tags are created
+    /// implicitly.
+    #[serde(default)]
+    tags: Vec<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -475,6 +621,9 @@ struct UpdateArgs {
     status: Option<String>,
     #[serde(default)]
     code_refs: Option<Vec<String>>,
+    /// Replaces the node's tag list when set (kebab-cased on write).
+    #[serde(default)]
+    tags: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -500,7 +649,7 @@ struct ListOpenArgs {
 
 #[derive(Deserialize, JsonSchema)]
 struct BriefArgs {
-    /// Character budget for the digest (default ~12000, about 3k tokens).
+    /// Character budget for the digest (default ~16000, about 4k tokens).
     #[serde(default)]
     max_chars: Option<usize>,
 }
@@ -646,6 +795,7 @@ mod tests {
                 durability: None,
                 session_id: None,
                 code_refs: vec![],
+                tags: vec![],
             }))
             .await
             .unwrap();
@@ -696,6 +846,7 @@ mod tool_tests {
             durability: None,
             session_id: None,
             code_refs: vec![],
+            tags: vec![],
         }
     }
 
@@ -710,6 +861,21 @@ mod tool_tests {
         let node = s.engine.lock().unwrap().get_node(&id).unwrap().unwrap();
         assert_eq!(node.session_id.as_deref(), Some(&*s.session_id));
         assert!(s.session_id.starts_with("mcp-"));
+    }
+
+    #[tokio::test]
+    async fn add_note_persists_normalized_tags() {
+        let s = server();
+        let id = id_of(
+            &s.add_note(Parameters(AddNoteArgs {
+                tags: vec!["Phase 1".into(), "UI".into()],
+                ..note("tagged decision")
+            }))
+            .await
+            .unwrap(),
+        );
+        let node = s.engine.lock().unwrap().get_node(&id).unwrap().unwrap();
+        assert_eq!(node.tags, vec!["phase-1", "ui"]);
     }
 
     #[tokio::test]
@@ -742,6 +908,7 @@ mod tool_tests {
                 durability: None,
                 session_id: None,
                 code_refs: vec![],
+                tags: vec![],
             }))
             .await
             .unwrap(),
@@ -759,6 +926,7 @@ mod tool_tests {
                 durability: None,
                 session_id: None,
                 code_refs: vec![],
+                tags: vec![],
             }))
             .await
             .unwrap(),
@@ -872,6 +1040,80 @@ mod tool_tests {
         assert!(text_of(&gone).contains("\\\"ok\\\": true"));
         assert!(s.unlink(Parameters(IdArg { id: edge_id })).await.is_err());
     }
+
+    #[tokio::test]
+    async fn timeline_tool_orders_the_replaces_chain() {
+        let s = server();
+        let old = id_of(
+            &s.add_note(Parameters(AddNoteArgs {
+                body: Some("cookie sessions".into()),
+                ..note("auth v1")
+            }))
+            .await
+            .unwrap(),
+        );
+        let new = id_of(
+            &s.add_note(Parameters(AddNoteArgs {
+                body: Some("oauth device flow".into()),
+                ..note("auth v2")
+            }))
+            .await
+            .unwrap(),
+        );
+        s.link(Parameters(LinkArgs {
+            from: new.clone(),
+            to: old.clone(),
+            edge_type: "replaces".into(),
+            note: Some("cookies broke on mobile".into()),
+            confidence: None,
+        }))
+        .await
+        .unwrap();
+
+        let t = text_of(&s.timeline(Parameters(IdArg { id: new })).await.unwrap());
+        let (v1, v2) = (t.find("auth v1").unwrap(), t.find("auth v2").unwrap());
+        assert!(v1 < v2, "oldest first: {t}");
+        assert!(t.contains("cookies broke on mobile"));
+        assert!(
+            s.timeline(Parameters(IdArg { id: "nope".into() }))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn list_drift_flags_missing_refs() {
+        let s = server();
+        s.add_note(Parameters(AddNoteArgs {
+            code_refs: vec!["Cargo.toml".into(), "src/vanished.rs".into()],
+            ..note("refs moved")
+        }))
+        .await
+        .unwrap();
+        let t = text_of(&s.list_drift().await.unwrap());
+        assert!(t.contains("src/vanished.rs"), "got: {t}");
+        assert!(
+            !t.contains("Cargo.toml"),
+            "existing refs are not drift: {t}"
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_tool_pages_the_journal() {
+        let s = server();
+        let id = id_of(&s.add_note(Parameters(note("journaled"))).await.unwrap());
+        let t = text_of(
+            &s.audit(Parameters(AuditArgs {
+                limit: None,
+                before: None,
+                entity_id: Some(id),
+            }))
+            .await
+            .unwrap(),
+        );
+        assert!(t.contains("created"), "got: {t}");
+        assert!(t.contains("journaled"));
+    }
 }
 
 #[cfg(test)]
@@ -892,6 +1134,7 @@ mod suspect_tests {
             durability: None,
             session_id: None,
             code_refs: vec![],
+            tags: vec![],
         };
         s.add_note(Parameters(mk("cache invalidation via ttl", "Decision")))
             .await

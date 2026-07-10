@@ -54,6 +54,33 @@ async fn health_ok() {
 }
 
 #[tokio::test]
+async fn drift_lists_nodes_with_missing_code_refs() {
+    let app = test_app();
+    let (_, node) = req(
+        &app,
+        "POST",
+        "/nodes",
+        Some(json!({
+            "type": "Caution",
+            "title": "refs moved",
+            "durability": "stable",
+            "source": "claude",
+            // Cargo.toml exists in the test cwd; the other path nowhere.
+            "code_refs": ["Cargo.toml", "src/definitely-gone.rs"]
+        })),
+    )
+    .await;
+    let id = node["id"].as_str().unwrap();
+
+    let (status, drifted) = req(&app, "GET", "/drift", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let list = drifted.as_array().unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["id"], id);
+    assert_eq!(list[0]["missing"], json!(["src/definitely-gone.rs"]));
+}
+
+#[tokio::test]
 async fn create_get_and_missing_node() {
     let app = test_app();
     let (status, node) = req(
@@ -472,4 +499,122 @@ async fn decay_endpoint_previews_and_archives() {
     let (_, dry) = req(&app, "POST", "/decay?ttl_days=14&dry_run=true", None).await;
     assert_eq!(dry["ids"].as_array().unwrap().len(), 0);
     let _ = id;
+}
+
+#[tokio::test]
+async fn tags_endpoint_lists_vocabulary_and_edge_retype_works() {
+    let app = test_app();
+    let (_, a) = req(
+        &app,
+        "POST",
+        "/nodes",
+        Some(json!({
+            "type": "Decision", "title": "A", "durability": "stable",
+            "source": "user", "tags": ["Phase 1", "ui"]
+        })),
+    )
+    .await;
+    let (_, b) = req(
+        &app,
+        "POST",
+        "/nodes",
+        Some(json!({
+            "type": "Principle", "title": "B", "durability": "stable",
+            "source": "user", "tags": ["phase-1"]
+        })),
+    )
+    .await;
+    assert_eq!(
+        a["tags"],
+        json!(["phase-1", "ui"]),
+        "tags normalized on write"
+    );
+
+    let (status, tags) = req(&app, "GET", "/tags", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let list = tags.as_array().unwrap();
+    assert_eq!(list.len(), 2);
+    let phase = list.iter().find(|t| t["tag"] == "phase-1").unwrap();
+    assert_eq!(phase["count"], 2);
+
+    // Edge retype from the pane: PATCH {type} rewrites the verb in place.
+    let (_, edge) = req(
+        &app,
+        "POST",
+        "/edges",
+        Some(json!({
+            "type": "about", "from_id": a["id"], "to_id": b["id"], "source": "user"
+        })),
+    )
+    .await;
+    let (status, patched) = req(
+        &app,
+        "PATCH",
+        &format!("/edges/{}", edge["id"].as_str().unwrap()),
+        Some(json!({ "type": "because" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(patched["type"], "because");
+}
+
+#[tokio::test]
+async fn audit_endpoint_pages_the_journal_with_pane_origin() {
+    let app = test_app();
+    let (_, node) = req(&app, "POST", "/nodes", Some(decision("first", "a"))).await;
+    let id = node["id"].as_str().unwrap().to_string();
+    req(
+        &app,
+        "PATCH",
+        &format!("/nodes/{id}"),
+        Some(json!({ "status": "resolved" })),
+    )
+    .await;
+    req(
+        &app,
+        "POST",
+        "/nodes",
+        Some(decision("second unrelated", "b")),
+    )
+    .await;
+
+    let (status, page) = req(&app, "GET", "/audit", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["total"], 3);
+    let entries = page["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 3);
+    // Newest first: created(second), updated(first), created(first).
+    assert_eq!(entries[0]["action"], "created");
+    assert_eq!(entries[1]["action"], "updated");
+    assert_eq!(entries[2]["action"], "created");
+    assert_eq!(entries[1]["entity_id"], id.as_str());
+    assert_eq!(
+        entries[1]["origin"], "pane",
+        "HTTP writes attribute to the pane"
+    );
+    assert_eq!(entries[1]["before"]["status"], Value::Null);
+    assert_eq!(entries[1]["after"]["status"], "resolved");
+    assert!(entries[0]["cwd"].is_string());
+    assert!(entries[0]["pid"].is_number());
+    assert!(entries[0]["version"].is_string());
+
+    // Keyset pagination: limit + before cursor.
+    let (_, p1) = req(&app, "GET", "/audit?limit=2", None).await;
+    assert_eq!(p1["entries"].as_array().unwrap().len(), 2);
+    let cursor = p1["entries"][1]["seq"].as_i64().unwrap();
+    let (_, p2) = req(&app, "GET", &format!("/audit?before={cursor}"), None).await;
+    let rest = p2["entries"].as_array().unwrap();
+    assert_eq!(rest.len(), 1);
+    assert!(rest[0]["seq"].as_i64().unwrap() < cursor);
+
+    // Entity filter narrows to one node's history.
+    let (_, filtered) = req(&app, "GET", &format!("/audit?entity_id={id}"), None).await;
+    assert_eq!(filtered["total"], 2);
+    assert!(
+        filtered["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["entity_id"] == id.as_str())
+    );
 }

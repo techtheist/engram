@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import SidePanel from '@/components/common/SidePanel.vue'
 import { api } from '@/services/api'
 import { NODE_ACCENT_VAR } from '@/constants/ontology'
 import { useGraphStore } from '@/stores/graph'
@@ -13,7 +14,7 @@ import type { GraphEdge, GraphNode } from '@/types/graph'
  * canvas, so this drawer and the right-hand NodeDetail work as a pair.
  */
 const store = useGraphStore()
-const { nodeList, edgeList, nodes, suspects } = storeToRefs(store)
+const { nodeList, edgeList, nodes, suspects, drift } = storeToRefs(store)
 
 const open = ref(false)
 const busyId = ref<string | null>(null)
@@ -47,11 +48,16 @@ const recent = computed(() =>
 )
 
 const attention = computed(
-    () => conflicts.value.length + provisional.value.length + suspects.value.length,
+    () =>
+        conflicts.value.length +
+        provisional.value.length +
+        suspects.value.length +
+        drift.value.length,
 )
 
 watch(open, async (isOpen) => {
     if (!isOpen) return
+    void store.loadDrift() // files move on disk without any graph event
     try {
         const preview = await api.decayPreview()
         decayIds.value = new Set(preview.ids)
@@ -117,105 +123,128 @@ async function scanNow(): Promise<void> {
         <span v-if="attention" class="count">{{ attention }}</span>
     </button>
 
-    <Transition name="drawer-left">
-        <aside v-if="open" class="panel glass-panel">
-            <header class="head">
-                <h2 class="heading">Review</h2>
-                <div class="head-actions">
-                    <span v-if="scanNote" class="scan-note">{{ scanNote }}</span>
-                    <button
-                        class="mini"
-                        type="button"
-                        :disabled="scanning"
-                        title="Sweep the graph for unlinked look-alike pairs"
-                        @click="scanNow"
+    <SidePanel
+        :open="open"
+        side="left"
+        panel-id="review"
+        :default-rem="36"
+        :min-rem="28"
+        :dismiss="() => (open = false)"
+        title="Review"
+        style="--panel-gap: 1.4rem"
+    >
+        <template #actions>
+            <span v-if="scanNote" class="scan-note">{{ scanNote }}</span>
+            <button
+                class="mini"
+                type="button"
+                :disabled="scanning"
+                title="Sweep the graph for unlinked look-alike pairs"
+                @click="scanNow"
+            >
+                {{ scanning ? 'Scanning…' : 'Scan now' }}
+            </button>
+        </template>
+
+        <section v-if="suspects.length" class="block">
+            <h3 class="block-title">Suspected conflicts — needs judgment</h3>
+            <div v-for="s in suspects" :key="s.id" class="conflict">
+                <div class="row pair">
+                    <button class="row-link" type="button" :title="s.a.title" @click="store.select(s.a.id)">
+                        {{ s.a.title }}
+                    </button>
+                    <span class="verb">vs</span>
+                    <button class="row-link" type="button" :title="s.b.title" @click="store.select(s.b.id)">
+                        {{ s.b.title }}
+                    </button>
+                    <span class="trust">{{ Math.round(s.similarity * 100) }}%</span>
+                </div>
+                <div class="row-actions">
+                    <button class="mini" type="button" :disabled="busyId === s.id" title="They contradict — record a conflicts-with edge" @click="judge(s.id, 'conflict')">
+                        Conflict
+                    </button>
+                    <button class="mini" type="button" :disabled="busyId === s.id" title="The newer supersedes — records replaces and archives the older" @click="judge(s.id, 'replaces')">
+                        Replaces
+                    </button>
+                    <button class="mini ghost" type="button" :disabled="busyId === s.id" title="Fine together — never raised again" @click="judge(s.id, 'dismiss')">
+                        Dismiss
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <section v-if="conflicts.length" class="block">
+            <h3 class="block-title">Unresolved conflicts</h3>
+            <div v-for="e in conflicts" :key="e.id" class="conflict">
+                <div class="row pair">
+                    <button class="row-link" type="button" :title="title(e.from_id)" @click="store.select(e.from_id)">
+                        {{ title(e.from_id) }}
+                    </button>
+                    <span class="verb">conflicts with</span>
+                    <button class="row-link" type="button" :title="title(e.to_id)" @click="store.select(e.to_id)">
+                        {{ title(e.to_id) }}
+                    </button>
+                </div>
+                <div class="row-actions">
+                    <button class="mini" type="button" :disabled="busyId === e.id" @click="settleConflict(e, 'resolved')">
+                        Resolve
+                    </button>
+                    <button class="mini ghost" type="button" :disabled="busyId === e.id" @click="settleConflict(e, 'dismissed')">
+                        Dismiss
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <section v-if="drift.length" class="block">
+            <h3 class="block-title">Drifted code refs — the code moved, the memory didn't</h3>
+            <div v-for="d in drift" :key="d.id" class="conflict">
+                <button class="row" type="button" :title="d.title" @click="store.select(d.id)">
+                    <span class="dot" :style="{ background: NODE_ACCENT_VAR[d.type] }" />
+                    <span class="row-title">{{ d.title }}</span>
+                </button>
+                <div class="missing-refs">
+                    <span
+                        v-for="r in d.missing"
+                        :key="r"
+                        class="missing-ref"
+                        title="This file no longer exists in the project"
                     >
-                        {{ scanning ? 'Scanning…' : 'Scan now' }}
-                    </button>
-                    <button class="close" type="button" aria-label="Close" @click="open = false">×</button>
+                        {{ r }}
+                    </span>
                 </div>
-            </header>
+            </div>
+        </section>
 
-            <section v-if="suspects.length" class="block">
-                <h3 class="block-title">Suspected conflicts — needs judgment</h3>
-                <div v-for="s in suspects" :key="s.id" class="conflict">
-                    <div class="row pair">
-                        <button class="row-link" type="button" :title="s.a.title" @click="store.select(s.a.id)">
-                            {{ s.a.title }}
-                        </button>
-                        <span class="verb">vs</span>
-                        <button class="row-link" type="button" :title="s.b.title" @click="store.select(s.b.id)">
-                            {{ s.b.title }}
-                        </button>
-                        <span class="trust">{{ Math.round(s.similarity * 100) }}%</span>
-                    </div>
-                    <div class="row-actions">
-                        <button class="mini" type="button" :disabled="busyId === s.id" title="They contradict — record a conflicts-with edge" @click="judge(s.id, 'conflict')">
-                            Conflict
-                        </button>
-                        <button class="mini" type="button" :disabled="busyId === s.id" title="The newer supersedes — records replaces and archives the older" @click="judge(s.id, 'replaces')">
-                            Replaces
-                        </button>
-                        <button class="mini ghost" type="button" :disabled="busyId === s.id" title="Fine together — never raised again" @click="judge(s.id, 'dismiss')">
-                            Dismiss
-                        </button>
-                    </div>
-                </div>
-            </section>
+        <section v-if="provisional.length" class="block">
+            <h3 class="block-title">Needs review — approve what's right</h3>
+            <div v-for="n in provisional" :key="n.id" class="item">
+                <button class="row" type="button" @click="store.select(n.id)">
+                    <span class="dot" :style="{ background: accent(n) }" />
+                    <span class="row-title">{{ n.title }}</span>
+                    <span v-if="decayIds.has(n.id)" class="stale" title="Will be archived by the next decay pass">decaying</span>
+                    <span v-if="n.stale" class="stale-badge">stale</span>
+                    <span class="trust">{{ Math.round(n.trust * 100) }}%</span>
+                </button>
+                <button class="mini" type="button" :disabled="busyId === n.id" @click="approve(n)">
+                    Approve
+                </button>
+            </div>
+        </section>
 
-            <section v-if="conflicts.length" class="block">
-                <h3 class="block-title">Unresolved conflicts</h3>
-                <div v-for="e in conflicts" :key="e.id" class="conflict">
-                    <div class="row pair">
-                        <button class="row-link" type="button" :title="title(e.from_id)" @click="store.select(e.from_id)">
-                            {{ title(e.from_id) }}
-                        </button>
-                        <span class="verb">conflicts with</span>
-                        <button class="row-link" type="button" :title="title(e.to_id)" @click="store.select(e.to_id)">
-                            {{ title(e.to_id) }}
-                        </button>
-                    </div>
-                    <div class="row-actions">
-                        <button class="mini" type="button" :disabled="busyId === e.id" @click="settleConflict(e, 'resolved')">
-                            Resolve
-                        </button>
-                        <button class="mini ghost" type="button" :disabled="busyId === e.id" @click="settleConflict(e, 'dismissed')">
-                            Dismiss
-                        </button>
-                    </div>
-                </div>
-            </section>
+        <section v-if="recent.length" class="block">
+            <h3 class="block-title">Recently added</h3>
+            <div v-for="n in recent" :key="n.id" class="item">
+                <button class="row" type="button" @click="store.select(n.id)">
+                    <span class="dot" :style="{ background: accent(n) }" />
+                    <span class="row-title">{{ n.title }}</span>
+                    <span class="date">{{ fmtDate(n.created_at) }}</span>
+                </button>
+            </div>
+        </section>
 
-            <section v-if="provisional.length" class="block">
-                <h3 class="block-title">Needs review — approve what's right</h3>
-                <div v-for="n in provisional" :key="n.id" class="item">
-                    <button class="row" type="button" @click="store.select(n.id)">
-                        <span class="dot" :style="{ background: accent(n) }" />
-                        <span class="row-title">{{ n.title }}</span>
-                        <span v-if="decayIds.has(n.id)" class="stale" title="Will be archived by the next decay pass">decaying</span>
-                        <span v-if="n.stale" class="stale-badge">stale</span>
-                        <span class="trust">{{ Math.round(n.trust * 100) }}%</span>
-                    </button>
-                    <button class="mini" type="button" :disabled="busyId === n.id" @click="approve(n)">
-                        Approve
-                    </button>
-                </div>
-            </section>
-
-            <section v-if="recent.length" class="block">
-                <h3 class="block-title">Recently added</h3>
-                <div v-for="n in recent" :key="n.id" class="item">
-                    <button class="row" type="button" @click="store.select(n.id)">
-                        <span class="dot" :style="{ background: accent(n) }" />
-                        <span class="row-title">{{ n.title }}</span>
-                        <span class="date">{{ fmtDate(n.created_at) }}</span>
-                    </button>
-                </div>
-            </section>
-
-            <p v-if="!attention && !recent.length" class="empty">Nothing to review.</p>
-        </aside>
-    </Transition>
+        <p v-if="!attention && !recent.length" class="empty">Nothing to review.</p>
+    </SidePanel>
 </div>
 </template>
 
@@ -251,71 +280,9 @@ async function scanNow(): Promise<void> {
     text-align: center;
 }
 
-.panel {
-    /* Left-edge drawer, mirroring NodeDetail on the right. */
-    position: fixed;
-    top: 6.4rem;
-    left: 0;
-    bottom: 0;
-    z-index: 9;
-    display: flex;
-    flex-direction: column;
-    gap: 1.4rem;
-    width: min(36rem, 100vw);
-    overflow-y: auto;
-    padding: 1.8rem;
-    border-top-right-radius: var(--radius-xl);
-    border-bottom-right-radius: var(--radius-xl);
-    box-shadow: var(--shadow-lg);
-}
-
-.drawer-left-enter-active,
-.drawer-left-leave-active {
-    transition:
-        transform var(--duration-normal) var(--ease-default),
-        opacity var(--duration-normal) var(--ease-default);
-}
-
-.drawer-left-enter-from,
-.drawer-left-leave-to {
-    transform: translateX(-100%);
-    opacity: 0;
-}
-
-.head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-}
-
-.heading {
-    font-size: var(--text-h3);
-    font-weight: 700;
-    color: var(--text-primary);
-}
-
-.head-actions {
-    display: flex;
-    align-items: center;
-    gap: 0.8rem;
-}
-
 .scan-note {
     font-size: var(--text-caption);
     color: var(--text-tertiary);
-}
-
-.close {
-    border: none;
-    background: transparent;
-    color: var(--text-tertiary);
-    font-size: 2.4rem;
-    line-height: 1;
-    cursor: pointer;
-}
-
-.close:hover {
-    color: var(--text-primary);
 }
 
 .block-title {
@@ -438,6 +405,23 @@ async function scanNow(): Promise<void> {
     display: flex;
     gap: 0.4rem;
     padding-left: 0.7rem;
+}
+
+.missing-refs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    padding-left: 0.7rem;
+}
+
+.missing-ref {
+    padding: 0.1rem 0.6rem;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: var(--text-caption);
+    color: var(--node-problem);
+    background-color: color-mix(in srgb, var(--node-problem) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--node-problem) 35%, transparent);
 }
 
 .mini {

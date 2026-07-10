@@ -14,6 +14,7 @@ fn new_node(t: NodeType, title: &str, body: &str) -> NewNode {
         session_id: Some("s1".to_string()),
         status: None,
         code_refs: vec![],
+        tags: vec![],
     }
 }
 
@@ -806,17 +807,20 @@ fn brief_digests_the_canon_and_respects_budget() {
 
     let text = e.brief(6000).unwrap();
     assert!(text.contains("## Unresolved conflicts"));
-    assert!(text.contains("## Open problems & intents"));
+    assert!(text.contains("## Recently added"));
     assert!(text.contains("local first always"));
     assert!(text.contains("backend in rust"));
     assert!(text.contains(&prob.title));
-    // ids appear only in "Recently added" — everything else is re-findable via search
-    assert!(!text.contains(&p.id), "canon sections must not carry ids");
-    assert!(!text.contains(&prob.id), "worklist must not carry ids");
-    assert!(
-        text.contains(&extra.id),
-        "recently-added lines keep their id"
-    );
+    // every record carries its node id (the brief doubles as a lookup table),
+    // and each node surfaces exactly once — the first section claims it.
+    for n in [&p, &d, &prob, &i, &extra] {
+        assert_eq!(
+            text.matches(n.id.as_str()).count(),
+            1,
+            "\"{}\" must appear exactly once with its id: {text}",
+            n.title
+        );
+    }
 
     let small = e.brief(120).unwrap();
     assert!(
@@ -864,6 +868,7 @@ fn legacy_uuid_ids_shrink_with_edges_and_embeddings_intact() {
         trust: 0.0,
         stale: false,
         code_refs: vec![],
+        tags: vec![],
     };
     let b_node = Node {
         id: uuid_b.clone(),
@@ -1155,4 +1160,568 @@ fn reclassification_via_node_patch() {
         )
         .unwrap();
     assert_eq!(updated.node_type, NodeType::Decision);
+}
+
+// ---- tags (PLAN §10) -------------------------------------------------------
+
+#[test]
+fn tags_normalize_dedupe_and_roundtrip() {
+    let s = store();
+    let n = s
+        .add_node(NewNode {
+            tags: vec![
+                "Phase 1".into(),
+                "phase-1".into(),
+                "  UI  ".into(),
+                "".into(),
+            ],
+            ..new_node(NodeType::Decision, "tagged", "body")
+        })
+        .unwrap();
+    assert_eq!(n.tags, vec!["phase-1", "ui"]);
+    assert_eq!(s.get_node(&n.id).unwrap().unwrap().tags, n.tags);
+}
+
+#[test]
+fn node_patch_replaces_tags_and_none_keeps_them() {
+    let s = store();
+    let n = s
+        .add_node(NewNode {
+            tags: vec!["phase-1".into()],
+            ..new_node(NodeType::Decision, "tagged", "")
+        })
+        .unwrap();
+    let updated = s
+        .update_node(
+            &n.id,
+            NodePatch {
+                tags: Some(vec!["Phase 2".into()]),
+                ..NodePatch::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(updated.tags, vec!["phase-2"]);
+    let untouched = s.update_node(&n.id, NodePatch::default()).unwrap();
+    assert_eq!(untouched.tags, vec!["phase-2"]);
+}
+
+#[test]
+fn tag_stats_count_and_skip_archived() {
+    let s = store();
+    let a = s
+        .add_node(NewNode {
+            tags: vec!["alpha".into()],
+            ..new_node(NodeType::Decision, "first", "")
+        })
+        .unwrap();
+    let b = s
+        .add_node(NewNode {
+            tags: vec!["alpha".into(), "beta".into()],
+            ..new_node(NodeType::Insight, "second", "")
+        })
+        .unwrap();
+
+    let stats = s.tag_stats(10).unwrap();
+    assert_eq!(stats.len(), 2);
+    let alpha = stats.iter().find(|t| t.tag == "alpha").unwrap();
+    assert_eq!(alpha.count, 2);
+
+    // Archiving the only carrier of "beta" drops it from the vocabulary.
+    s.archive_nodes(std::slice::from_ref(&b.id), now()).unwrap();
+    let stats = s.tag_stats(10).unwrap();
+    assert_eq!(stats.len(), 1);
+    assert_eq!(stats[0].tag, "alpha");
+    let _ = a;
+}
+
+#[test]
+fn fts_finds_nodes_by_tag() {
+    let s = store();
+    let n = s
+        .add_node(NewNode {
+            tags: vec!["observability".into()],
+            ..new_node(NodeType::Decision, "storage layer", "sqlite wal")
+        })
+        .unwrap();
+    let hits = s.search_fts("observability", &[], 10).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, n.id);
+}
+
+#[test]
+fn update_edge_retypes() {
+    let s = store();
+    let a = s.add_node(new_node(NodeType::Insight, "a", "")).unwrap();
+    let b = s.add_node(new_node(NodeType::Decision, "b", "")).unwrap();
+    let e = s
+        .add_edge(NewEdge {
+            edge_type: EdgeType::About,
+            from_id: a.id.clone(),
+            to_id: b.id.clone(),
+            source: Source::User,
+            note: None,
+            confidence: None,
+            strength: None,
+            status: None,
+        })
+        .unwrap();
+    let patched = s
+        .update_edge(
+            &e.id,
+            EdgePatch {
+                edge_type: Some(EdgeType::Because),
+                ..EdgePatch::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(patched.edge_type, EdgeType::Because);
+}
+
+#[test]
+fn legacy_db_gains_tags_column_and_fts_rebuild() {
+    let path = std::env::temp_dir().join(format!("engram-test-{}.db", id::new_id()));
+
+    // A database from before tags existed: no tags column, two-column FTS.
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE nodes (
+               id TEXT PRIMARY KEY, type TEXT NOT NULL, title TEXT NOT NULL, body TEXT,
+               durability TEXT NOT NULL, source TEXT NOT NULL, session_id TEXT,
+               created_at INTEGER NOT NULL, valid_from INTEGER, valid_until INTEGER,
+               status TEXT, code_refs TEXT, last_seen INTEGER, approved_at INTEGER
+             );
+             CREATE VIRTUAL TABLE nodes_fts
+               USING fts5(title, body, content='nodes', content_rowid='rowid');
+             CREATE TRIGGER nodes_ai AFTER INSERT ON nodes BEGIN
+               INSERT INTO nodes_fts(rowid, title, body) VALUES (new.rowid, new.title, new.body);
+             END;
+             INSERT INTO nodes (id, type, title, body, durability, source, created_at, code_refs)
+               VALUES ('aaaaaaaaaaaa', 'Decision', 'legacy node', 'old body', 'stable', 'user',
+                       1, '[]');",
+        )
+        .unwrap();
+    }
+
+    let s = Store::open(&path).unwrap();
+    let legacy = s.get_node("aaaaaaaaaaaa").unwrap().unwrap();
+    assert!(legacy.tags.is_empty(), "pre-tags rows read as untagged");
+
+    // The rebuilt FTS + triggers index tags on the migrated database.
+    s.update_node(
+        "aaaaaaaaaaaa",
+        NodePatch {
+            tags: Some(vec!["migrated".into()]),
+            ..NodePatch::default()
+        },
+    )
+    .unwrap();
+    let hits = s.search_fts("migrated", &[], 10).unwrap();
+    assert_eq!(hits.len(), 1, "tag is FTS-searchable after migration");
+
+    drop(s);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn brief_leads_with_recent_tags() {
+    let e = engine();
+    e.add_node(NewNode {
+        tags: vec!["phase-1".into()],
+        ..new_node(NodeType::Decision, "tagged decision", "")
+    })
+    .unwrap();
+    let brief = e.brief(2000).unwrap();
+    let idx = brief.find("Recent tags").expect("brief names recent tags");
+    assert!(
+        idx < 100,
+        "tags line sits at the top, before budget-cut sections: {brief}"
+    );
+    assert!(brief.contains("phase-1"));
+}
+
+#[test]
+fn brief_caps_open_worklist_with_exact_overflow() {
+    let e = engine();
+    for i in 0..24 {
+        e.add_node(NewNode {
+            status: Some(NodeStatus::Open),
+            durability: Durability::Volatile,
+            ..new_node(NodeType::Intent, &format!("todo item number {i}"), "")
+        })
+        .unwrap();
+    }
+    let brief = e.brief(50_000).unwrap();
+    // "Recently added" comes first and claims the 7 newest; the worklist
+    // shows its cap of 10 from the rest and counts the overflow exactly.
+    let recent = brief.find("## Recently added").expect("recent section");
+    let open = brief.find("## Open problems & intents").expect("worklist");
+    assert!(recent < open, "recent must precede the worklist: {brief}");
+    assert_eq!(brief.matches("- todo item number").count(), 17);
+    assert!(
+        brief.contains("…and 7 more — `list_open` has the full worklist."),
+        "got: {brief}"
+    );
+}
+
+#[test]
+fn brief_counts_canon_overflow() {
+    let e = engine();
+    for i in 0..15 {
+        e.add_node(new_node(
+            NodeType::Decision,
+            &format!("decision number {i}"),
+            "",
+        ))
+        .unwrap();
+    }
+    let brief = e.brief(50_000).unwrap();
+    // 7 newest land in "Recently added"; the Decisions section fills its cap
+    // of 7 with the others and the overflow counts only what's truly unseen.
+    assert_eq!(brief.matches("- decision number").count(), 14);
+    assert!(
+        brief.contains("…1 more Decisions — `search` reaches them."),
+        "got: {brief}"
+    );
+}
+
+#[test]
+fn brief_line_excerpts_stay_compact() {
+    let e = engine();
+    let long_body = "word ".repeat(120); // ~600 chars, must be cut
+    e.add_node(new_node(NodeType::Decision, "verbose decision", &long_body))
+        .unwrap();
+    e.add_node(new_node(NodeType::Caution, "verbose caution", &long_body))
+        .unwrap();
+    // enough newer nodes that both fall out of "Recently added" and render
+    // in their canon sections
+    for i in 0..7 {
+        e.add_node(new_node(NodeType::Insight, &format!("filler {i}"), ""))
+            .unwrap();
+    }
+    let brief = e.brief(50_000).unwrap();
+    let line = |title: &str| {
+        let prefix = format!("- {title}");
+        brief
+            .lines()
+            .find(|l| l.starts_with(&prefix))
+            .unwrap_or_else(|| panic!("line for {title} present: {brief}"))
+            .to_string()
+    };
+    let caution = line("verbose caution");
+    assert!(
+        caution.chars().count() < 210,
+        "title + id + ~140-char excerpt, got {} chars: {caution}",
+        caution.chars().count()
+    );
+    assert!(caution.ends_with('…'), "cut excerpts end with an ellipsis");
+    let decision = line("verbose decision");
+    assert!(
+        decision.chars().count() < 150,
+        "decisions preview less body (~80 chars), got {} chars: {decision}",
+        decision.chars().count()
+    );
+    assert!(
+        decision.chars().count() < caution.chars().count(),
+        "decision excerpts are shorter than the default"
+    );
+}
+
+// ---- timeline (PLAN §10) -------------------------------------------------------
+
+#[test]
+fn timeline_walks_the_replaces_chain_oldest_first() {
+    let e = engine();
+    let a = e
+        .add_node(new_node(NodeType::Decision, "auth v1", ""))
+        .unwrap();
+    let b = e
+        .add_node(new_node(NodeType::Decision, "auth v2", ""))
+        .unwrap();
+    let c = e
+        .add_node(new_node(NodeType::Decision, "auth v3", ""))
+        .unwrap();
+    let mk = |from: &str, to: &str, note: &str| NewEdge {
+        edge_type: EdgeType::Replaces,
+        from_id: from.to_string(),
+        to_id: to.to_string(),
+        source: Source::Claude,
+        note: Some(note.to_string()),
+        confidence: None,
+        strength: None,
+        status: None,
+    };
+    e.add_edge(mk(&b.id, &a.id, "sessions over JWT")).unwrap();
+    e.add_edge(mk(&c.id, &b.id, "moved to OAuth")).unwrap();
+
+    // Asking from the middle still yields the whole chain, oldest first.
+    let chain = e.timeline(&b.id).unwrap();
+    assert_eq!(
+        chain.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(),
+        ["auth v1", "auth v2", "auth v3"]
+    );
+    assert_eq!(chain[0].replaced_note.as_deref(), Some("sessions over JWT"));
+    assert_eq!(chain[1].replaced_note.as_deref(), Some("moved to OAuth"));
+    assert_eq!(chain[2].replaced_note, None);
+
+    // A chainless node is a single-entry timeline; unknown ids are NotFound.
+    let lone = e
+        .add_node(new_node(NodeType::Insight, "loner", ""))
+        .unwrap();
+    assert_eq!(e.timeline(&lone.id).unwrap().len(), 1);
+    assert!(e.timeline("missing").is_err());
+}
+
+// ---- verified code refs (PLAN §10) --------------------------------------------
+
+#[test]
+fn scan_code_refs_flags_missing_paths_only() {
+    let e = engine();
+    let root = std::env::temp_dir().join("engram-drift-test");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/real.rs"), "x").unwrap();
+
+    // Healthy: an existing path plus a free-text label (never checkable).
+    e.add_node(NewNode {
+        code_refs: vec!["src/real.rs".into(), "auth flow".into()],
+        ..new_node(NodeType::Decision, "refs intact", "")
+    })
+    .unwrap();
+
+    // Drifted: one existing ref, one that points nowhere.
+    let drifted = e
+        .add_node(NewNode {
+            code_refs: vec!["src/real.rs".into(), "src/gone.rs".into()],
+            ..new_node(NodeType::Caution, "refs moved", "")
+        })
+        .unwrap();
+
+    // Archived nodes are history — they never drift.
+    let archived = e
+        .add_node(NewNode {
+            code_refs: vec!["src/gone.rs".into()],
+            ..new_node(NodeType::Insight, "archived refs", "")
+        })
+        .unwrap();
+    e.update_node(
+        &archived.id,
+        NodePatch {
+            valid_until: Some(now()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let report = e.scan_code_refs(&root).unwrap();
+    assert_eq!(report.len(), 1, "only the active node with a missing path");
+    assert_eq!(report[0].id, drifted.id);
+    assert_eq!(report[0].missing, vec!["src/gone.rs".to_string()]);
+}
+
+// ---- audit journal (PLAN §10) ------------------------------------------------
+
+#[test]
+fn audit_journals_node_lifecycle_with_context() {
+    let e = engine();
+    let n = e
+        .add_node(new_node(NodeType::Decision, "Use Rust", "for the backend"))
+        .unwrap();
+    e.update_node(
+        &n.id,
+        NodePatch {
+            title: Some("Use Rust everywhere".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    e.approve(&n.id).unwrap();
+    e.delete_node(&n.id).unwrap();
+
+    let page = e.audit_log(None, None, 10).unwrap();
+    assert_eq!(page.total, 4);
+    let actions: Vec<&str> = page.entries.iter().map(|x| x.action.as_str()).collect();
+    assert_eq!(actions, ["deleted", "approved", "updated", "created"]);
+
+    let created = page.entries.last().unwrap();
+    assert_eq!(created.entity, "node");
+    assert_eq!(created.entity_id, n.id);
+    assert_eq!(created.title.as_deref(), Some("Use Rust"));
+    assert!(created.before.is_none());
+    assert!(created.after.is_some());
+    assert_eq!(created.origin, "library");
+    assert_eq!(created.session_id.as_deref(), Some("s1"));
+    assert!(created.cwd.is_some());
+    assert!(created.pid.is_some());
+    assert!(created.version.is_some());
+
+    let updated = &page.entries[2];
+    assert_eq!(updated.before.as_ref().unwrap()["title"], "Use Rust");
+    assert_eq!(
+        updated.after.as_ref().unwrap()["title"],
+        "Use Rust everywhere"
+    );
+
+    let deleted = &page.entries[0];
+    assert!(deleted.after.is_none());
+    assert_eq!(deleted.title.as_deref(), Some("Use Rust everywhere"));
+}
+
+#[test]
+fn audit_journals_edges_with_sentence_labels() {
+    let e = engine();
+    let a = e
+        .add_node(new_node(NodeType::Decision, "keep sqlite", ""))
+        .unwrap();
+    let b = e
+        .add_node(new_node(NodeType::Principle, "local first", ""))
+        .unwrap();
+    let edge = e
+        .add_edge(NewEdge {
+            edge_type: EdgeType::Because,
+            from_id: a.id.clone(),
+            to_id: b.id.clone(),
+            source: Source::Claude,
+            note: None,
+            confidence: None,
+            strength: None,
+            status: None,
+        })
+        .unwrap();
+    e.update_edge(
+        &edge.id,
+        EdgePatch {
+            note: Some("checked".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    e.delete_edge(&edge.id).unwrap();
+
+    // entity_id narrows the journal to this edge's history.
+    let page = e.audit_log(None, Some(&edge.id), 10).unwrap();
+    assert_eq!(page.total, 3);
+    let actions: Vec<&str> = page.entries.iter().map(|x| x.action.as_str()).collect();
+    assert_eq!(actions, ["deleted", "updated", "created"]);
+    for entry in &page.entries {
+        assert_eq!(entry.entity, "edge");
+        let label = entry.title.as_deref().unwrap();
+        assert!(
+            label.contains("keep sqlite")
+                && label.contains("because")
+                && label.contains("local first"),
+            "sentence-shaped label, got: {label}"
+        );
+    }
+}
+
+#[test]
+fn audit_logs_supersede_and_decay_as_archived() {
+    let e = engine();
+    let superseded = e
+        .add_node(new_node(NodeType::Decision, "old way", ""))
+        .unwrap();
+    e.update_node(
+        &superseded.id,
+        NodePatch {
+            valid_until: Some(now()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let page = e.audit_log(None, Some(&superseded.id), 1).unwrap();
+    assert_eq!(page.entries[0].action, "archived");
+
+    let doomed = e
+        .add_node(episodic(NodeType::Insight, "temp workaround"))
+        .unwrap();
+    backdate(&e, &doomed.id, 100);
+    e.decay(policy::DECAY_TTL_DAYS, false).unwrap();
+    let page = e.audit_log(None, Some(&doomed.id), 1).unwrap();
+    assert_eq!(page.entries[0].action, "archived");
+    assert!(page.entries[0].before.is_some());
+    assert!(page.entries[0].after.is_some());
+}
+
+#[test]
+fn audit_page_keyset_pagination() {
+    let e = engine();
+    for i in 0..5 {
+        e.add_node(new_node(NodeType::Decision, &format!("decision {i}"), ""))
+            .unwrap();
+    }
+    let p1 = e.audit_log(None, None, 2).unwrap();
+    assert_eq!(p1.total, 5);
+    assert_eq!(p1.entries.len(), 2);
+    assert!(p1.entries[0].seq > p1.entries[1].seq, "newest first");
+
+    let cursor = p1.entries.last().unwrap().seq;
+    let p2 = e.audit_log(Some(cursor), None, 10).unwrap();
+    assert_eq!(p2.entries.len(), 3, "the rest, no overlap");
+    assert!(p2.entries.iter().all(|x| x.seq < cursor));
+    assert_eq!(p2.total, 5, "total is page-independent");
+}
+
+#[test]
+fn audit_origin_stamp_and_session_fallback() {
+    let mut e = engine();
+    e.set_audit_origin(AuditOrigin::mcp("mcp-test".into()));
+
+    let mut anonymous = new_node(NodeType::Insight, "origin check", "");
+    anonymous.session_id = None;
+    let n = e.add_node(anonymous).unwrap();
+    let entry = &e.audit_log(None, Some(&n.id), 1).unwrap().entries[0];
+    assert_eq!(entry.origin, "mcp");
+    assert_eq!(
+        entry.session_id.as_deref(),
+        Some("mcp-test"),
+        "falls back to the origin's session"
+    );
+
+    // A node that carries its own session id wins over the origin's.
+    let n2 = e
+        .add_node(new_node(NodeType::Insight, "session check", ""))
+        .unwrap();
+    let entry = &e.audit_log(None, Some(&n2.id), 1).unwrap().entries[0];
+    assert_eq!(entry.session_id.as_deref(), Some("s1"));
+
+    // But only for its creation: a later mutation from another session is
+    // that session's action, not the creator's.
+    e.set_audit_origin(AuditOrigin::mcp("mcp-later".into()));
+    e.update_node(
+        &n2.id,
+        NodePatch {
+            title: Some("session recheck".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let entry = &e.audit_log(None, Some(&n2.id), 1).unwrap().entries[0];
+    assert_eq!(entry.action, "updated");
+    assert_eq!(
+        entry.session_id.as_deref(),
+        Some("mcp-later"),
+        "updates attribute the acting session, not the node's creator"
+    );
+}
+
+#[test]
+fn audit_import_writes_one_summary_row() {
+    let e = engine();
+    e.add_node(new_node(NodeType::Decision, "exported knowledge", ""))
+        .unwrap();
+    let snapshot = e.export().unwrap();
+
+    let target = engine();
+    target.import(snapshot).unwrap();
+    let page = e.audit_log(None, None, 100).unwrap();
+    let _ = page; // source journal untouched by the target's import
+    let page = target.audit_log(None, None, 100).unwrap();
+    let imported: Vec<_> = page
+        .entries
+        .iter()
+        .filter(|x| x.action == "imported")
+        .collect();
+    assert_eq!(imported.len(), 1, "one summary row, not one per entity");
+    assert_eq!(imported[0].entity, "graph");
+    assert_eq!(imported[0].title.as_deref(), Some("1 nodes / 0 edges"));
 }
