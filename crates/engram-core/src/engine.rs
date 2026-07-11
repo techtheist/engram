@@ -468,34 +468,58 @@ impl Engine {
 
         let node = self.add_node(n)?;
         let warnings = self.write_warnings(&vec, &node.id)?;
-        self.record_suspects(&vec, &node.id)?;
-        Ok(WriteOutcome::Created { node, warnings })
+        let suspects = if self.record_suspects(&vec, &node.id)? > 0 {
+            self.suspects_involving(&node.id)?
+        } else {
+            Vec::new()
+        };
+        Ok(WriteOutcome::Created {
+            node,
+            warnings,
+            suspects,
+        })
     }
 
-    /// `update_node` plus conflict warnings when the new text changed.
+    /// `update_node` plus conflict warnings and freshly-queued suspects when
+    /// any embedded field changed.
     pub fn update_node_checked(
         &self,
         id: &str,
         patch: NodePatch,
-    ) -> Result<(Node, Vec<WriteWarning>)> {
+    ) -> Result<(Node, Vec<WriteWarning>, Vec<SuspectView>)> {
         let touches_text = patch.title.is_some()
             || patch.body.is_some()
             || patch.tags.is_some()
             || patch.code_refs.is_some();
         let node = self.update_node(id, patch)?;
-        let warnings = if touches_text {
+        let (warnings, suspects) = if touches_text {
             let vec = self.embedder.embed_one(&embed_text(
                 &node.title,
                 node.body.as_deref(),
                 &node.tags,
                 &node.code_refs,
             ))?;
-            self.record_suspects(&vec, &node.id)?;
-            self.write_warnings(&vec, &node.id)?
+            let suspects = if self.record_suspects(&vec, &node.id)? > 0 {
+                self.suspects_involving(&node.id)?
+            } else {
+                Vec::new()
+            };
+            (self.write_warnings(&vec, &node.id)?, suspects)
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
-        Ok((node, warnings))
+        Ok((node, warnings, suspects))
+    }
+
+    /// Pending suspects that involve this node — the judgeable form of what a
+    /// write just queued.
+    fn suspects_involving(&self, node_id: &str) -> Result<Vec<SuspectView>> {
+        Ok(self
+            .store
+            .suspects_pending()?
+            .into_iter()
+            .filter(|s| s.a.id == node_id || s.b.id == node_id)
+            .collect())
     }
 
     /// Nearby nodes that are contradicted (active `conflicts-with`) or

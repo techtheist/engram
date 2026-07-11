@@ -21,10 +21,17 @@ relying on it, and refresh it with `update_node` if it's still accurate.
 **Capture.** Capture sparingly — only clearly durable, high-value knowledge: key Decisions with their reasons, stated Principles, hard-won Cautions, Problems with their Resolutions. A dozen good nodes beat fifty mirrored doc lines; when in doubt, don't write.
 Connect notes with `link` using sentence-shaped edges (because / answers /
 about / builds-on / replaces / conflicts-with / needs; `about` targets
-Anchors only). If `add_note` returns `{matched, created: false}`, merge into
-the match with `update_node` instead of duplicating. When several notes share
-a subject, create/reuse an Anchor and attach them — anchors never accrue by
-themselves. Batch writes at natural stopping points; don't narrate them.
+Anchors only). Every write's response is a verdict, not a receipt: on
+`{matched, created: false}` merge into the match with `update_node` instead
+of duplicating; on `warnings` you are near contradicted or superseded canon —
+check it before piling on; on `suspects` the write queued unjudged look-alike
+pairs — judge each immediately with `resolve_suspect` (conflict | replaces |
+dismiss) and tell the user when one genuinely contradicts standing canon (the
+one exception to silent capture). When several notes share a subject,
+create/reuse an Anchor and attach them — anchors never accrue by themselves.
+Batch the writing at natural stopping points, never the noticing: every real
+decision gets captured unprompted — a feature request usually hides one
+(library picked, shape chosen, tradeoff accepted). Don't narrate writes.
 Never store secrets, credentials, or volatile implementation detail (line
 numbers, transient state).
 

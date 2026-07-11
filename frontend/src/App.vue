@@ -140,7 +140,12 @@ onBeforeUnmount(() => store.disconnect())
     top: 1.6rem;
     left: 1.6rem;
     right: 1.6rem;
-    z-index: 10;
+    /* Above the side drawers (z 11): the bar itself never overlaps them
+       (drawers start below it), but its dropdowns — settings, filters,
+       search results, the burger cluster — must stack over open drawers.
+       This is the whole subtree's stacking context, so the inner z-20s
+       can't win on their own. */
+    z-index: 12;
     /* Equal 1fr side tracks keep the search screen-centered regardless of how
        the brand and actions differ in width; when space runs out the sides
        floor at their content and the search track shrinks instead. */

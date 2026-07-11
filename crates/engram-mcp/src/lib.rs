@@ -26,9 +26,15 @@ Engram is the project's durable reasoning/decision memory as an editable graph. 
 Call `brief` at the start of a session for a compact digest of the canon \
 (conflicts, open work, principles, decisions, cautions). Use `search` before \
 non-trivial work — hits carry their 1-hop neighbors, conflicts and supersessions \
-first. `add_note` self-checks for near-duplicates (returns {matched, \
-created:false} — then merge via `update_node`) and both writes return warnings \
-when the new text lands near contradicted or superseded knowledge: read them. \
+first. Capture every decision as it happens — a feature request usually hides \
+one (library picked, shape chosen, tradeoff accepted) and it belongs in the \
+graph even though nobody said \"remember this\". Every write's response is a \
+verdict, not a receipt: `add_note` returns {matched, created:false} on a \
+near-duplicate (merge via `update_node`), `warnings` when the text lands near \
+contradicted or superseded knowledge, and `suspects` when it queued unjudged \
+look-alike pairs — judge those immediately with `resolve_suspect` and tell \
+the user when one is a genuine contradiction; that alert is the one exception \
+to silent capture. \
 Link nodes with sentence-shaped edges (e.g. a Decision `because` a Principle); \
 repair a wrong link with `unlink` / `update_edge`. When the brief lists \
 suspected conflicts, judge them early via `resolve_suspect` (conflict | \
@@ -52,6 +58,14 @@ Never store secrets or volatile implementation detail.";
 /// Upper bound on items per batch tool call — big enough for any real
 /// curation sweep, small enough to keep one call's audit burst readable.
 const BATCH_CAP: usize = 100;
+
+/// Attached to write responses that queued suspects: the write landed, but
+/// the graph now holds an unjudged look-alike pair — the writer must close
+/// that loop in the same turn, not leave it for the next session's brief.
+const SUSPECT_ACTION: &str = "This note closely resembles existing unlinked knowledge (see `suspects`). \
+Judge each pair NOW with resolve_suspect: `conflict` if they contradict (then tell the user — a live \
+contradiction with standing canon is the one thing silent capture must surface), `replaces` if this \
+write supersedes the older claim, `dismiss` if they are fine together.";
 
 #[derive(Clone)]
 pub struct Engram {
@@ -165,9 +179,12 @@ impl Engram {
 
     #[tool(
         description = "Create a memory node (source = claude, starts provisional). \
-        Self-checks for a same-type near-duplicate and returns {matched, created: false} \
-        instead of creating one — merge via update_node in that case. A created note \
-        may carry `warnings` when it lands near contradicted or superseded knowledge."
+        ALWAYS read the response, it is a verdict, not a receipt: {matched, created: false} \
+        = a same-type near-duplicate exists, merge via update_node instead; `warnings` = the \
+        note landed near contradicted or superseded knowledge, check you are not re-treading \
+        settled ground; `suspects` = the write queued unjudged look-alike pairs, judge each \
+        with resolve_suspect in this same turn and tell the user if one is a genuine \
+        contradiction."
     )]
     async fn add_note(
         &self,
@@ -203,11 +220,20 @@ impl Engram {
             })
             .map_err(map_err)?;
         Ok(match outcome {
-            WriteOutcome::Created { node, warnings } if warnings.is_empty() => {
-                json!({ "id": node.id, "created": true })
-            }
-            WriteOutcome::Created { node, warnings } => {
-                json!({ "id": node.id, "created": true, "warnings": warnings })
+            WriteOutcome::Created {
+                node,
+                warnings,
+                suspects,
+            } => {
+                let mut out = json!({ "id": node.id, "created": true });
+                if !warnings.is_empty() {
+                    out["warnings"] = json!(warnings);
+                }
+                if !suspects.is_empty() {
+                    out["suspects"] = json!(suspects);
+                    out["action_required"] = json!(SUSPECT_ACTION);
+                }
+                out
             }
             WriteOutcome::Matched { node, similarity } => json!({
                 "matched": node.id,
@@ -363,7 +389,10 @@ impl Engram {
 
     #[tool(
         description = "Update fields on an existing node (merge / reclassify / \
-        refresh its trust via last_seen). Re-embeds when title or body changes."
+        refresh its trust via last_seen). Re-embeds when any indexed field \
+        changes. Read the response like add_note's: `warnings` and `suspects` \
+        carry the same act-now duties (judge suspects via resolve_suspect; \
+        surface real contradictions to the user)."
     )]
     async fn update_node(
         &self,
@@ -397,15 +426,19 @@ impl Engram {
             code_refs: a.code_refs,
             tags: a.tags,
         };
-        let (node, warnings) = self
+        let (node, warnings, suspects) = self
             .engine()
             .update_node_checked(&a.id, patch)
             .map_err(map_err)?;
-        Ok(if warnings.is_empty() {
-            json!({ "ok": true, "id": node.id })
-        } else {
-            json!({ "ok": true, "id": node.id, "warnings": warnings })
-        })
+        let mut out = json!({ "ok": true, "id": node.id });
+        if !warnings.is_empty() {
+            out["warnings"] = json!(warnings);
+        }
+        if !suspects.is_empty() {
+            out["suspects"] = json!(suspects);
+            out["action_required"] = json!(SUSPECT_ACTION);
+        }
+        Ok(out)
     }
 
     #[tool(
@@ -1462,5 +1495,47 @@ mod suspect_tests {
             .unwrap();
         let text = format!("{:?}", resolved.content);
         assert!(text.contains("conflicts-with"), "got: {text}");
+    }
+
+    #[tokio::test]
+    async fn write_response_surfaces_freshly_queued_suspects() {
+        let s = Engram::new(Engine::new(
+            Store::open_in_memory().unwrap(),
+            Box::new(FakeEmbedder::default()),
+        ));
+        let mk = |t: &str, ty: &str| AddNoteArgs {
+            node_type: ty.into(),
+            title: t.into(),
+            body: None,
+            durability: None,
+            session_id: None,
+            code_refs: vec![],
+            tags: vec![],
+        };
+        let first = s
+            .add_note(Parameters(mk(
+                "retry queue drains on reconnect",
+                "Decision",
+            )))
+            .await
+            .unwrap();
+        let first_text = format!("{:?}", first.content);
+        assert!(
+            !first_text.contains("suspects"),
+            "nothing to suspect yet: {first_text}"
+        );
+
+        // Cross-type twin: dodges the duplicate short-circuit, queues a
+        // suspect — which the WRITE RESPONSE itself must now surface.
+        let second = s
+            .add_note(Parameters(mk("retry queue drains on reconnect", "Caution")))
+            .await
+            .unwrap();
+        let text = format!("{:?}", second.content);
+        assert!(text.contains("suspects"), "got: {text}");
+        assert!(
+            text.contains("action_required") && text.contains("resolve_suspect"),
+            "the response tells the writer what to do: {text}"
+        );
     }
 }

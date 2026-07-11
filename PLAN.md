@@ -135,7 +135,7 @@ All implemented; summary of the resolved design:
 - **Trust & decay:** Claude nodes start **provisional** (derived, not stored: claude-sourced + never approved), earn trust via cross-session reconfirmation or user approval; stale provisional episodic/volatile nodes decay out. User nodes are trusted from the start.
 - **Anchors:** free-text responsibility label + optional `code_refs` file binding; flexible granularity (Claude decides); auto-created/reused; on refactor, fuzzy re-match and flag if unsure.
 - **Retrieval:** session-start `brief` (budgeted digest: conflicts, open work, principles, decisions, cautions, recent adds) + on-demand `search`. Hits carry **matches + ≤5 1-hop neighbors, conflicts/replaces first**; ranking is hybrid (FTS5 OR-recall + cosine) × trust boost — trust modulates, never dominates.
-- **Skill writes:** batched at natural stopping points, **fully silent** — transparency lives in the pane, not the chat. Both auto-invoked and manual (`/engram`). Default mode Relaxed.
+- **Skill writes:** batched at natural stopping points, **silent by default** — transparency lives in the pane, not the chat; the one audible exception is a genuine contradiction surfaced by a write. Decisions are captured unprompted (feature requests usually hide one); every write response is a verdict (matched → merge, warnings → check canon, suspects → judge immediately via resolve_suspect). Both auto-invoked and manual (`/engram`). Default mode Relaxed.
 
 ---
 

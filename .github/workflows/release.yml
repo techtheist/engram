@@ -88,17 +88,16 @@ jobs:
           fi
           echo "ASSETS=$ASSETS" >> "$GITHUB_ENV"
 
-      # Two Windows assets: the zip for humans, and the raw .exe so install.sh
-      # needs no unzip inside WSL (fresh Ubuntu ships without it).
-      - name: Package zip + raw exe + checksums (Windows)
+      # One Windows asset: the raw .exe — install.ps1, self-update, and WSL-free
+      # setups all consume it directly (the zip wrapper was dropped in v0.4.1;
+      # nothing ever downloaded it).
+      - name: Package raw exe + checksum (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $zip = "engram-alpha-$env:RELEASE_TAG-${{ matrix.target }}.zip"
           $exe = "engram-alpha-$env:RELEASE_TAG-${{ matrix.target }}.exe"
-          Compress-Archive -Path target/release/engram-alpha.exe -DestinationPath $zip
           Copy-Item target/release/engram-alpha.exe $exe
-          $files = @($zip, $exe)
+          $files = @($exe)
           # Transition shim, v0.4.x ONLY (self-sunsetting): pre-rename
           # engram.exe self-updates from the raw exe asset under the old name.
           if ($env:RELEASE_TAG -like "v0.4.*") {

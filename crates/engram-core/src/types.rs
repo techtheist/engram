@@ -394,6 +394,11 @@ pub enum WriteOutcome {
     Created {
         node: Node,
         warnings: Vec<WriteWarning>,
+        /// Look-alike pairs this write just queued — returned so the writer
+        /// judges them in the same turn instead of leaving them for the next
+        /// session's brief (PLAN §7: detection is local, judgment is the
+        /// assistant's).
+        suspects: Vec<SuspectView>,
     },
     Matched {
         node: Node,

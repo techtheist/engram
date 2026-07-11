@@ -47,6 +47,12 @@ they decline, don't ask again; capture knowledge as it emerges.
 
 **But first**: if the project plainly *should* have memory (an `.engram/` directory exists, the pane has nodes, or history says so), an empty brief means something is wrong — usually the wrong working directory or DB path. Check you're in the repo root and what `.engram/daemon.json` says before seeding; never seed a duplicate graph next to a real one.
 
+## Subagents
+
+Subagents share your MCP connection: any subagent with tool access can `search`, `get_node`, `list_nodes`, even call `brief`. Two things they don't get: the session-start brief (hooks don't fire for them) and this skill's guidance — a subagent starts cold and writes under *your* session id in the audit journal. So:
+- **Recall flows down.** Do the recall yourself and pass the relevant node ids/excerpts into the subagent's prompt; for a research subagent, telling it to call `brief` first is fine.
+- **Capture flows up.** Prefer having subagents *return* findings for you to capture at the stopping point — several parallel agents each writing their own overlapping notes is how the suspect queue fills with noise. If a long-running subagent must write its own findings, put the verdict protocol in its prompt explicitly (merge on `matched`, judge `suspects` immediately, never store secrets).
+
 ## Answering "why" — retell the reasoning chain
 
 When the user asks *"why did we decide X?"* or *"why is it like this?"*: `search` the topic, then follow `because` / `answers` edges (`get_node`, `traverse`) and — when the decision has history — `timeline` for the supersession chain. Retell it as a short narrative: the decision, its reason, what it replaced and why, and what problem drove it. Include dates when the history matters.
@@ -64,6 +70,8 @@ When the user asks for a decision log / `DECISIONS.md`: walk the current (non-su
 - **Problem** + **Resolution** — when the problem was genuinely tricky or its solution non-obvious. Skip routine fixes.
 - **Insight** — selectively: realizations you'd want back in a month.
 - **Intent** — deferred work clearly worth carrying across sessions.
+
+**Decisions are not opt-in.** Every real decision gets captured — the user never has to say "remember this". And most decisions arrive disguised as feature requests: "add a login page" is a feature, but *sessions in httpOnly cookies rather than localStorage* is a Decision made while building it. At every stopping point ask: *what did I just choose, and why?* If alternatives existed and you picked one for a reason, that's a node.
 
 **Never save:**
 - Secrets, credentials, tokens, PII — *ever*. (The backend also redacts, but you are the first line.)
@@ -85,7 +93,11 @@ When the user asks for a decision log / `DECISIONS.md`: walk the current (non-su
    - `needs` — Intent **needs** Decision (a dependency/blocker).
    - If you can't complete the sentence with one of these verbs, don't link. An honestly unlinked node beats a forced edge.
 5. **Anchors at write time.** Anchors are free-text subjects ("auth flow", "the RAG layer"). The moment a batch contains two or three notes on one subject, create/reuse the Anchor and attach them with `about` — anchors never accrue by themselves, and unanchored clusters are what makes the pane unreadable later. Optionally pass `code_refs` (repo-relative paths or responsibilities, **never** line numbers; path-shaped refs get drift-checked, so keep them real).
-6. **Read write results.** `add_note`/`update_node` may return `warnings`: your note landed near a node that is `in-active-conflict` or `superseded`. Check the flagged node — align with the canon, or record the contradiction deliberately with a `conflicts-with`/`replaces` edge.
+6. **The write response is a verdict, not a receipt — act on it in the same turn:**
+   - `{ matched, created: false }` — a same-type near-duplicate exists. Merge into it with `update_node`; never re-add.
+   - `warnings` — your note landed near a node that is `in-active-conflict` or `superseded`. Read the flagged node: align with the canon, or record the disagreement deliberately (`conflicts-with` / `replaces`).
+   - `suspects` — the write queued unlinked look-alike pairs, returned so *you* judge them now with `resolve_suspect`: they contradict → `conflict`, **and say so in chat** ("heads-up: this contradicts a standing decision — *\<title\>*") — that alert is the one exception to silent capture; your note is the fresher claim → `replaces`; fine together → `dismiss`, then add the real edge if one fits (`answers`, `about`).
+   An unhandled verdict is how graphs rot: unjudged suspects pile up in the next session's brief and become someone else's archaeology.
 7. **Repair mislinks.** A wrong edge (bad verb, wrong endpoints) is yours to fix: `unlink` deletes it; `update_edge` changes its status (`resolved`/`dismissed` for settled conflicts), note, or confidence.
 
 ## Example flows — imitate these
@@ -133,5 +145,5 @@ The graph UI is served by the local daemon — `engram-alpha serve`, one per rep
 ## Timing & etiquette
 
 - **Batch at natural stopping points** — task or sub-task done, end of turn. Never interrupt mid-flow to write.
-- **Be silent.** Don't announce captures or narrate the graph in chat. The graph pane is the transparency surface. (You *may* mention a capture if the user explicitly asks what you saved.)
+- **Be silent** about writes — the graph pane is the transparency surface, not the chat. Two exceptions only: the cold-start seeding offer, and a genuine contradiction surfaced by a write's `warnings`/`suspects` — those you say out loud, immediately. (You *may* also mention a capture if the user explicitly asks what you saved.)
 - A manual `/engram` invocation means the user wants an explicit "save this" or "recall X" right now — honor it directly.

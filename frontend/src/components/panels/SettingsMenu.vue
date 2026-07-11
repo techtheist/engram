@@ -255,6 +255,12 @@ function message(e: unknown): string {
     z-index: 20;
     width: 24rem;
     max-width: calc(100vw - 3.2rem);
+    /* The menu outgrew short panes (IDE side panels): cap it at the space
+       below the gear and scroll inside; contain keeps macOS overscroll from
+       rubber-banding the page. */
+    max-height: calc(100vh - 8rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
     padding: 0.8rem;
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-lg);
