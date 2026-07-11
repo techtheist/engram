@@ -7,8 +7,15 @@ import { useGraphStore } from '@/stores/graph'
 import { NODE_ACCENT_VAR } from '@/constants/ontology'
 import type { SearchHit } from '@/types/graph'
 
-/** FTS5 wraps matches in <mark>; keep only that tag, drop any stored markup. */
-const safeSnippet = (s: string): string => DOMPurify.sanitize(s, { ALLOWED_TAGS: ['mark'] })
+/**
+ * The backend marks FTS matches with private-use sentinels (U+E000/U+E001) —
+ * characters no stored text contains. Strip every stored tag first, then turn
+ * the sentinels into real <mark> highlights.
+ */
+const safeSnippet = (s: string): string =>
+    DOMPurify.sanitize(s, { ALLOWED_TAGS: [] })
+        .replaceAll('\uE000', '<mark>')
+        .replaceAll('\uE001', '</mark>')
 
 const store = useGraphStore()
 

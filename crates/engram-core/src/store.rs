@@ -37,6 +37,13 @@ pub fn now() -> i64 {
         .unwrap_or(0)
 }
 
+/// FTS snippet match markers: private-use sentinels no real body text carries
+/// (bodies legitimately contain `[` — node-id references would false-mark).
+/// The MCP layer rewrites them to `[`/`]` for assistants; the pane turns them
+/// into `<mark>` highlights.
+pub const SNIPPET_OPEN: char = '\u{e000}';
+pub const SNIPPET_CLOSE: char = '\u{e001}';
+
 /// The graph store: one SQLite connection bound to one repo's `.engram/graph.db`.
 /// Writes are serialized by `&mut`-free design + the daemon's single writer; WAL
 /// gives concurrent reads (PLAN §6B).
@@ -103,15 +110,18 @@ impl Store {
     }
 
     /// Keep `nodes_fts` in lockstep with [`FTS_SCHEMA`]: when a database's FTS
-    /// mirror predates a column (tags), drop it — triggers included — and
-    /// recreate + rebuild from the content table. Fresh databases just create.
+    /// mirror predates a column (tags, code_refs), drop it — triggers included
+    /// — and recreate + rebuild from the content table. Fresh databases just
+    /// create.
     fn ensure_fts(conn: &Connection) -> Result<()> {
         let fts_exists: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='nodes_fts'",
             [],
             |r| r.get(0),
         )?;
-        let outdated = fts_exists > 0 && !column_exists(conn, "nodes_fts", "tags")?;
+        let outdated = fts_exists > 0
+            && (!column_exists(conn, "nodes_fts", "tags")?
+                || !column_exists(conn, "nodes_fts", "code_refs")?);
         if outdated {
             conn.execute_batch(
                 "DROP TRIGGER IF EXISTS nodes_ai;
@@ -124,6 +134,21 @@ impl Store {
         if outdated {
             conn.execute_batch("INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild');")?;
         }
+        Ok(())
+    }
+
+    /// Which embedding composition the stored vectors were computed with
+    /// (PRAGMA user_version; see `engine::EMBED_COMPOSITION`). 0 = legacy
+    /// title+body. The engine re-embeds and bumps this when it's behind.
+    pub fn embed_version(&self) -> Result<i64> {
+        Ok(self
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))?)
+    }
+
+    pub fn set_embed_version(&self, v: i64) -> Result<()> {
+        self.conn
+            .execute_batch(&format!("PRAGMA user_version = {v};"))?;
         Ok(())
     }
 
@@ -493,9 +518,9 @@ impl Store {
         if fts.is_empty() {
             return Ok(Vec::new());
         }
-        let mut sql = String::from(
+        let mut sql = format!(
             "SELECT n.id, n.type, n.title, \
-                    snippet(nodes_fts, -1, '[', ']', '…', 12) AS snip, \
+                    snippet(nodes_fts, -1, '{SNIPPET_OPEN}', '{SNIPPET_CLOSE}', '…', 12) AS snip, \
                     n.durability, n.status, bm25(nodes_fts) AS rank, \
                     n.created_at, n.last_seen, n.approved_at \
              FROM nodes_fts JOIN nodes n ON n.rowid = nodes_fts.rowid \

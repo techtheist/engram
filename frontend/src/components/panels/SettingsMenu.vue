@@ -4,6 +4,7 @@ import { onClickOutside } from '@vueuse/core'
 import { api } from '@/services/api'
 import { useAuditLog } from '@/composables/useAuditLog'
 import { useMemoryLens } from '@/composables/useMemoryLens'
+import { useSystemInfo } from '@/composables/useSystemInfo'
 import { useGraphStore } from '@/stores/graph'
 import { useLayoutStore, type LayoutMode } from '@/stores/layout'
 import { useThemeStore } from '@/stores/theme'
@@ -21,17 +22,27 @@ const layout = useLayoutStore()
 const store = useGraphStore()
 const lens = useMemoryLens()
 const auditLog = useAuditLog()
+const systemInfo = useSystemInfo()
 
 function openBrief(): void {
     open.value = false
     auditLog.hide() // the drawers share the left edge — one at a time
+    systemInfo.hide()
     lens.show()
 }
 
 function openAudit(): void {
     open.value = false
     lens.hide()
+    systemInfo.hide()
     auditLog.show()
+}
+
+function openSystem(): void {
+    open.value = false
+    lens.hide()
+    auditLog.hide()
+    systemInfo.show()
 }
 
 const open = ref(false)
@@ -188,6 +199,13 @@ function message(e: unknown): string {
             <div class="section-label">History</div>
             <button class="row" type="button" @click="openAudit">
                 <span class="row-icon">≡</span> Audit log
+            </button>
+
+            <div class="divider" />
+
+            <div class="section-label">System</div>
+            <button class="row" type="button" @click="openSystem">
+                <span class="row-icon">ⓘ</span> System info
             </button>
 
             <p v-if="status" class="status" :class="{ error: isError }">{{ status }}</p>

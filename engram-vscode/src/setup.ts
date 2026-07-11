@@ -13,18 +13,21 @@ import { daemonUrl } from './daemon'
 export const INSTALL_COMMAND =
     'curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh | sh'
 
-/** PATH first, then the two conventional install locations. */
+/**
+ * PATH first, then the two conventional install locations. The binary is
+ * `engram-alpha` since v0.4.0; a pre-rename `engram` install still counts.
+ */
 export function findBinary(): string | undefined {
-    const exe = process.platform === 'win32' ? 'engram.exe' : 'engram'
+    const names = process.platform === 'win32' ? ['engram-alpha.exe', 'engram.exe'] : ['engram-alpha', 'engram']
     const home = process.env.HOME ?? process.env.USERPROFILE ?? ''
-    const candidates = [
+    const candidates = names.flatMap((exe) => [
         ...(process.env.PATH ?? '')
             .split(delimiter)
             .filter(Boolean)
             .map((dir) => join(dir, exe)),
         join(home, '.local', 'bin', exe),
         join(home, '.cargo', 'bin', exe),
-    ]
+    ])
     return candidates.find((p) => existsSync(p))
 }
 
@@ -77,10 +80,10 @@ export async function installBackend(): Promise<void> {
     terminal.sendText(INSTALL_COMMAND, false)
 }
 
-/** Run `engram serve` in a visible terminal at the workspace root. */
+/** Run `engram-alpha serve` in a visible terminal at the workspace root. */
 export function startDaemon(): void {
-    const bin = findBinary() ?? 'engram'
-    const terminal = vscode.window.createTerminal({ name: 'engram serve', cwd: workspaceRoot() })
+    const bin = findBinary() ?? 'engram-alpha'
+    const terminal = vscode.window.createTerminal({ name: 'engram-alpha serve', cwd: workspaceRoot() })
     terminal.show()
     const quoted = bin.includes(' ') ? `"${bin}"` : bin
     terminal.sendText(process.platform === 'win32' && bin.includes(' ') ? `& ${quoted} serve` : `${quoted} serve`, true)
@@ -95,10 +98,10 @@ export async function offerSetupIfNeeded(context: vscode.ExtensionContext): Prom
     if (findBinary()) {
         const pick = await vscode.window.showInformationMessage(
             'Engram: the daemon is not running in this workspace.',
-            'Start engram serve',
+            'Start engram-alpha serve',
             'Later',
         )
-        if (pick === 'Start engram serve') startDaemon()
+        if (pick === 'Start engram-alpha serve') startDaemon()
         if (pick === 'Later') await context.workspaceState.update('engram.setupDismissed', true)
     } else {
         const pick = await vscode.window.showInformationMessage(
@@ -138,12 +141,12 @@ export function createStatusBar(context: vscode.ExtensionContext): void {
                 return
             }
             const actions = findBinary()
-                ? ['Start engram serve', 'Configure MCP']
+                ? ['Start engram-alpha serve', 'Configure MCP']
                 : ['Install backend', 'Configure MCP']
             const pick = await vscode.window.showQuickPick(actions, {
                 placeHolder: 'Engram daemon is unreachable',
             })
-            if (pick === 'Start engram serve') startDaemon()
+            if (pick === 'Start engram-alpha serve') startDaemon()
             if (pick === 'Install backend') installBackend()
             if (pick === 'Configure MCP') await vscode.commands.executeCommand('engram.configureMcp')
         }),

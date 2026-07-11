@@ -13,7 +13,9 @@ Before any non-trivial decision, `search` the graph; hits carry their 1-hop
 neighbors — read `conflicts-with` / `replaces` edges first, and pass
 `parents`/`children` to `get_node` when you need the reasoning chain. For
 history: `timeline` walks a node's replaces chain, `audit` pages the mutation
-journal. A hit marked `stale: true` has decayed trust: verify it before
+journal. For whole-graph reviews or exports (a decisions.md), page
+`list_nodes` — complete nodes with full bodies; batch cleanups and multi-note
+captures go through `update_nodes` / `add_notes`. A hit marked `stale: true` has decayed trust: verify it before
 relying on it, and refresh it with `update_node` if it's still accurate.
 
 **Capture.** Capture the load-bearing knowledge: Decisions with reasons, Principles and conventions, Cautions and gotchas, resolved Problems, selective non-obvious Insights, and Intents worth surviving the session. Skip anything the code or docs already state verbatim.
@@ -38,7 +40,7 @@ or after verifying a node's content word-by-word. Routine "still relevant"
 signals are `update_node`, never approval.
 
 The user sees and curates the graph at http://127.0.0.1:8787 — started with
-`engram serve` in the repo root (one daemon per repo; the real port lives in
+`engram-alpha serve` in the repo root (one daemon per repo; the real port lives in
 `.engram/daemon.json`). If the engram tools disconnect mid-session, don't
 drop captures — the daemon serves the same operations over HTTP (`POST
 /nodes` etc. with `"source": "claude"`), or tell the user to reconnect.

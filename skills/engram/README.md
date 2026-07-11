@@ -20,6 +20,6 @@ mkdir -p .claude/skills && cp -R skills/engram/relaxed .claude/skills/engram
 mkdir -p ~/.claude/skills && cp -R skills/engram/relaxed ~/.claude/skills/engram
 ```
 
-Switch modes by replacing the installed copy with another variant. The future `engram` installer will do this for you (relaxed by default).
+Switch modes by replacing the installed copy with another variant. `engram-alpha setup --cli claude --skill <variant>` does this for you (relaxed by default).
 
 All variants share the same recall behavior, ontology rules, secret/PII prohibition, and silent-batched write etiquette — they differ only in how much is worth a node.

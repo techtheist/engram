@@ -1,4 +1,4 @@
-# Engram
+# Engram Alpha
 
 [![Backend](https://github.com/techtheist/engram/actions/workflows/backend.yml/badge.svg)](https://github.com/techtheist/engram/actions/workflows/backend.yml)
 [![Frontend](https://github.com/techtheist/engram/actions/workflows/frontend.yml/badge.svg)](https://github.com/techtheist/engram/actions/workflows/frontend.yml)
@@ -8,9 +8,7 @@
 [![VS Marketplace](https://vsmarketplacebadges.dev/version/techtheist.engram-alpha.svg?label=VS%20Marketplace)](https://marketplace.visualstudio.com/items?itemName=techtheist.engram-alpha)
 [![Open VSX](https://img.shields.io/open-vsx/v/techtheist/engram-alpha?label=Open%20VSX)](https://open-vsx.org/extension/techtheist/engram-alpha)
 
-> Durable, inspectable long-term project memory for AI coding assistants. Local-first, user-owned, graph-first.
-
-Engram gives your AI coding assistant a memory that survives across sessions: a structured graph of your project's **principles, decisions, cautions, problems, resolutions, insights, and intents** — that the assistant reads from and writes to, and that **you can see, edit, and own**.
+> Inspectable long-term project memory for AI coding assistants. Local-first, user-owned, graph-first.
 
 ![The Engram pane: the live memory graph with the review queue open on the left and the theme & layout menu on the right](.screenshots/engram-alpha-standalone.png)
 
@@ -33,10 +31,20 @@ Unlike a flat note pile, Engram's graph is *active*: superseded knowledge is arc
 The payoff shows up the second time something goes wrong. When your assistant gets stuck on a problem it has fought before — a flaky build step, a library quirk, a config trap — the graph already holds the artifacts from last time: the **Problem**, the **Resolution** that answered it, and the **Caution** that would have prevented it. Instead of rediscovering the fix from scratch, the assistant recalls it and applies it.
 
 - **Local-first** — your memory is a SQLite file inside your repo. Embeddings are computed on your machine (fastembed/ONNX): no cloud, no keys, fully offline. Portable via JSON export/import, not a binary blob.
-- **Portable across agents** — one local backend serves **Claude Code, Codex CLI, Gemini CLI, OpenCode, Kilo, and Google Antigravity** over MCP, plus a browser UI over HTTP. Your agents share one memory: a decision captured by Claude is recalled by Codex.
+- **Portable across agents** — one local backend serves **Claude Code, Codex (CLI and desktop app), Gemini CLI, OpenCode, Kilo, and Google Antigravity** over MCP, plus a browser UI over HTTP. Your agents share one memory: a decision captured by Claude is recalled by Codex.
 - **Graph-first** — the graph is the product surface, not hidden plumbing. Everything below happens in the pane, not in a debug view.
 
 Every screenshot on this page is Engram's own graph — the project is built by dogfooding it.
+
+## Install
+
+From your project's root:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh | sh
+```
+
+This downloads the `engram-alpha` binary for your platform (checksum-verified, into `~/.local/bin`), wires the repo for your assistant, and git-ignores the personal `.engram/` graph. Then run `engram-alpha serve` and open `http://127.0.0.1:8787` — or use the [JetBrains plugin](https://plugins.jetbrains.com/plugin/32654-engram) or the VS Code extension ([VS Marketplace](https://marketplace.visualstudio.com/items?itemName=techtheist.engram-alpha) · [Open VSX](https://open-vsx.org/extension/techtheist/engram-alpha) for VSCodium/Cursor/Windsurf) instead of the browser.
 
 ## What you get
 
@@ -86,7 +94,7 @@ Recent tags (reuse before inventing new ones): phase-2, hooks, pane-crud, retrie
 - Phase 2: mid-session conflict push over MCP [Intent open]
 
 ## Cautions
-- engram serve must start in the repo root — a relative --db silently creates a fresh DB anywhere else
+- engram-alpha serve must start in the repo root — a relative --db silently creates a fresh DB anywhere else
 ```
 
 Mid-session, the assistant recalls on demand: hybrid search (FTS5 + local vectors, ranked by relevance × trust) returns each hit with its 1-hop neighbors — **conflicts and supersessions first**, so contradicting a standing decision is hard to do by accident. Writes are guarded too: a near-duplicate note is merged into the existing node instead of created, and a write that lands next to superseded or conflicted knowledge comes back with a warning. You can read the same brief anytime in the pane (Memory Lens).
@@ -105,7 +113,7 @@ An append-only audit journal records every node and edge mutation — created, u
 
 <img src=".screenshots/engram-alpha-audit-log-feature.png" width="240" alt="The Audit log: created/updated rows per mutation, expanded to show the full field-level record including source, session, and edge endpoints">
 
-History works at the knowledge level too: `timeline` walks a decision's `replaces` chain oldest-first, each retired generation carrying the note that explains why it was replaced — *"how did the auth decision evolve"* is one call, with dates.
+History works at the knowledge level too: `timeline` walks a decision's `replaces` chain oldest-first, each retired generation carrying the note that explains why it was replaced — *"how did the auth decision evolve"* is one call, with dates. The pane shows the same chain as a **History** section in any chained node's detail drawer: every generation on a timeline, the current one marked, one click to jump to any of them.
 
 ### Memory that tracks the code
 
@@ -116,16 +124,6 @@ Nodes can point at code (`code_refs`). When the code moves, the memory doesn't g
 The scans that keep the graph honest run in the local daemon, on local embeddings: the conflict scan at write time plus a six-hourly sweep (or **Scan now** in the pane), the drift check over code refs, and the decay pass that archives stale never-approved scratch notes (see [Trust & decay](#trust--decay)). No API calls, no telemetry, nothing leaves your machine — the whole loop works on a plane.
 
 **Status:** early development, heavily dogfooded. See [`PLAN.md`](./PLAN.md) for the full spec and roadmap.
-
-## Install
-
-From your project's root:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh | sh
-```
-
-This downloads the `engram` binary for your platform (checksum-verified, into `~/.local/bin`), wires the repo for your assistant, and git-ignores the personal `.engram/` graph. Then run `engram serve` and open `http://127.0.0.1:8787` — or use the [JetBrains plugin](https://plugins.jetbrains.com/plugin/32654-engram) or the VS Code extension ([VS Marketplace](https://marketplace.visualstudio.com/items?itemName=techtheist.engram-alpha) · [Open VSX](https://open-vsx.org/extension/techtheist/engram-alpha) for VSCodium/Cursor/Windsurf) instead of the browser.
 
 ### Claude Code: install as a plugin
 
@@ -140,19 +138,19 @@ Then run `/engram:setup` once per repository you want remembered (it installs th
 
 ### Choose your assistant
 
-Setup lives **in the binary**: `engram setup` auto-detects which assistants are installed and wires them; `--cli` picks explicitly (comma-separate, or `all`), `--skill relaxed|normal|aggressive` sets the capture intensity **for any assistant** — every harness gets the matching instruction variant, not just Claude. The installer forwards these flags:
+Setup lives **in the binary**: `engram-alpha setup` auto-detects which assistants are installed and wires them; `--cli` picks explicitly (comma-separate, or `all`), `--skill relaxed|normal|aggressive` sets the capture intensity **for any assistant** — every harness gets the matching instruction variant, not just Claude. The installer forwards these flags:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh | sh -s -- --cli codex,gemini --skill normal
 # later, from any repo:
-engram setup                    # auto-detect and wire
-engram setup --cli kilo --skill aggressive
+engram-alpha setup              # auto-detect and wire
+engram-alpha setup --cli kilo --skill aggressive
 ```
 
 | `--cli` | MCP registration | Capture instructions |
 |---|---|---|
 | `claude` *(default)* | `.mcp.json` | `.claude/skills/engram/SKILL.md` (three intensities via `--skill`) |
-| `codex` | `~/.codex/config.toml` (global — launch `codex` from the repo root) | `AGENTS.md` |
+| `codex` | `~/.codex/config.toml` (global, shared by the CLI **and** the Codex/ChatGPT desktop app — launch `codex` from the repo root; for the app, pin `cwd` or an absolute `--db` in the entry) | `AGENTS.md` |
 | `gemini` | `.gemini/settings.json` | `GEMINI.md` |
 | `opencode` | `opencode.json` | `AGENTS.md` |
 | `kilo` | `kilo.json` | `AGENTS.md` |
@@ -166,15 +164,17 @@ Every wired assistant reads and writes the same `.engram/graph.db` through the s
 powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/techtheist/engram/main/install.ps1 | iex"
 ```
 
-Don't mix the two: a Windows `engram.exe` and WSL-side agents see different filesystems and will end up on different graphs. macOS arm64, Linux x64, and Windows x64 binaries are on [GitHub Releases](https://github.com/techtheist/engram/releases). Intel Macs: no prebuilt binary (onnxruntime upstream dropped Intel-mac builds) — `cargo install --path crates/engram-cli` from a checkout instead.
+Don't mix the two: a Windows `engram-alpha.exe` and WSL-side agents see different filesystems and will end up on different graphs. macOS arm64, Linux x64, and Windows x64 binaries are on [GitHub Releases](https://github.com/techtheist/engram/releases). Intel Macs: no prebuilt binary (onnxruntime upstream dropped Intel-mac builds) — `cargo install --path crates/engram-cli` from a checkout instead.
 
-Options: `--skill relaxed|normal|aggressive` (capture intensity, default relaxed), `--bin-only`, `ENGRAM_VERSION=v0.1.15` to pin.
+Options: `--skill relaxed|normal|aggressive` (capture intensity, default relaxed), `--bin-only`, `ENGRAM_VERSION=v0.4.0` to pin.
 
-**Updating:** `engram update` — checks the latest release, verifies its checksum, and swaps the binary in place (no-op when already current; `--version vX.Y.Z` to pin). Re-running the install one-liner does the same thing and is always safe: repo wiring is idempotent.
+**Updating:** `engram-alpha update` — checks the latest release, verifies its checksum, and swaps the binary in place (no-op when already current; `--version vX.Y.Z` to pin). Re-running the install one-liner does the same thing and is always safe: repo wiring is idempotent. Coming from **v0.3.0 or older** (when the binary was named `engram`)? Both paths work: `engram update` lands you on the current version via transition assets shipped with v0.4.x, and the installer swaps the old binary for `engram-alpha` and re-points your MCP wiring automatically.
+
+**Something off?** `engram-alpha doctor` checks the whole chain from your repo's root — store integrity (WAL, FTS, vectors), the embedding model, whether the running daemon actually serves *this* repo's DB, and every detected assistant's wiring — and says exactly what to fix. It exits non-zero on real failures, so it doubles as a pre-flight in scripts.
 
 ## Capture modes
 
-How much your assistant writes to the graph is set by the capture intensity (`engram setup --skill …`) — available for **every supported assistant**, embedded in the binary (sources in [`skills/engram/`](./skills/engram/)):
+How much your assistant writes to the graph is set by the capture intensity (`engram-alpha setup --skill …`) — available for **every supported assistant**, embedded in the binary (sources in [`skills/engram/`](./skills/engram/)):
 
 - **relaxed** *(recommended default)* — only durable, high-value knowledge; fewer, better nodes.
 - **normal** — balanced: adds cautions, selective insights, finer-grained decisions.

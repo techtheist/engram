@@ -133,6 +133,47 @@ export interface DriftEntry {
 }
 
 /**
+ * Daemon-side diagnostics (GET /system): the doctor's facts as structured
+ * JSON — binary version, store health, model cache, per-assistant wiring.
+ */
+export interface SystemInfo {
+    version: string
+    daemon: {
+        pid: number
+        uptime_secs: number
+        repo_root: string
+    }
+    store: {
+        db: string | null
+        size_bytes: number | null
+        nodes: number
+        edges: number
+        embedded: number
+        fts: number
+        journal_mode: string
+        integrity_ok: boolean
+        embed_composition: number
+        embed_composition_current: boolean
+    }
+    model_cached: boolean
+    wiring: { agent: string; wired: boolean; prerename: boolean }[]
+}
+
+/**
+ * One generation in a node's `replaces` chain (GET /nodes/{id}/timeline),
+ * oldest first. `replaced_note` is the note on the edge that retired this
+ * generation — usually the why of the change.
+ */
+export interface TimelineEntry {
+    id: string
+    type: NodeType
+    title: string
+    created_at: number
+    valid_until?: number
+    replaced_note?: string
+}
+
+/**
  * One append-only audit journal row (GET /audit): a node/edge mutation with
  * before/after snapshots plus the writing process's context.
  */

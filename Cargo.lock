@@ -791,7 +791,7 @@ dependencies = [
 
 [[package]]
 name = "engram"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -808,7 +808,7 @@ dependencies = [
 
 [[package]]
 name = "engram-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "fastembed",
  "getrandom 0.4.3",
@@ -822,7 +822,7 @@ dependencies = [
 
 [[package]]
 name = "engram-http"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "engram-core",
@@ -839,7 +839,7 @@ dependencies = [
 
 [[package]]
 name = "engram-mcp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "engram-core",

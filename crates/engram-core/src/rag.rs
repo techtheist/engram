@@ -19,6 +19,14 @@ pub trait Embedder: Send + Sync {
             .pop()
             .expect("embed returns one vector per input"))
     }
+
+    /// Deterministic stand-in vectors (`--fake-embeddings`)? Bulk maintenance
+    /// passes (composition re-embeds) must not run with a fake over an
+    /// existing graph — they would overwrite real vectors with noise. The
+    /// brief hook routinely opens real DBs with the fake embedder.
+    fn is_fake(&self) -> bool {
+        false
+    }
 }
 
 /// Deterministic, dependency-free embedder for tests and offline fallback.
@@ -37,6 +45,10 @@ impl Default for FakeEmbedder {
 impl Embedder for FakeEmbedder {
     fn dim(&self) -> usize {
         self.dim
+    }
+
+    fn is_fake(&self) -> bool {
+        true
     }
 
     fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {

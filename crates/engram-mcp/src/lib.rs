@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use engram_core::{
-    Durability, EdgePatch, EdgeStatus, EdgeType, Engine, Error, NewEdge, NewNode, NodePatch,
+    Durability, EdgePatch, EdgeStatus, EdgeType, Engine, Error, NewEdge, NewNode, Node, NodePatch,
     NodeStatus, NodeType, Source, SuspectVerdict, WriteOutcome,
 };
 use rmcp::handler::server::wrapper::Parameters;
@@ -43,7 +43,15 @@ For history questions: `timeline` walks a node's replaces chain (\"how did \
 this decision evolve\"), `audit` pages the mutation journal (\"what changed, \
 who wrote this\"). `list_drift` finds nodes whose code_refs no longer exist \
 in the project — repair the refs via `update_node` and re-check the claim. \
+For whole-graph work, use the bulk tools: `list_nodes` pages complete nodes \
+(full bodies — the lossless read behind \"export every Decision to a \
+decisions.md\"), `update_nodes` applies many patches in one call (curation \
+sweeps), `add_notes` batch-creates with the same dupe checks as add_note. \
 Never store secrets or volatile implementation detail.";
+
+/// Upper bound on items per batch tool call — big enough for any real
+/// curation sweep, small enough to keep one call's audit burst readable.
+const BATCH_CAP: usize = 100;
 
 #[derive(Clone)]
 pub struct Engram {
@@ -89,10 +97,18 @@ impl Engram {
         Parameters(a): Parameters<SearchArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let types = node_types(&a.types)?;
-        let hits = self
+        let mut hits = self
             .engine()
             .search(&a.query, &types, a.limit.unwrap_or(8))
             .map_err(map_err)?;
+        // The store marks matches with private-use sentinels (the pane's
+        // highlight markers); assistants read plain brackets instead.
+        for h in &mut hits {
+            h.snippet = h
+                .snippet
+                .replace(engram_core::SNIPPET_OPEN, "[")
+                .replace(engram_core::SNIPPET_CLOSE, "]");
+        }
         ok_json(&hits)
     }
 
@@ -157,6 +173,12 @@ impl Engram {
         &self,
         Parameters(a): Parameters<AddNoteArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        let payload = self.create_note(a)?;
+        ok_json(&payload)
+    }
+
+    /// The add_note core, shared with the batch form.
+    fn create_note(&self, a: AddNoteArgs) -> Result<serde_json::Value, ErrorData> {
         let node_type = NodeType::parse(&a.node_type).map_err(map_err)?;
         let durability = match a.durability {
             Some(d) => Durability::parse(&d).map_err(map_err)?,
@@ -180,20 +202,48 @@ impl Engram {
                 tags: a.tags,
             })
             .map_err(map_err)?;
-        match outcome {
+        Ok(match outcome {
             WriteOutcome::Created { node, warnings } if warnings.is_empty() => {
-                ok_json(&json!({ "id": node.id, "created": true }))
+                json!({ "id": node.id, "created": true })
             }
             WriteOutcome::Created { node, warnings } => {
-                ok_json(&json!({ "id": node.id, "created": true, "warnings": warnings }))
+                json!({ "id": node.id, "created": true, "warnings": warnings })
             }
-            WriteOutcome::Matched { node, similarity } => ok_json(&json!({
+            WriteOutcome::Matched { node, similarity } => json!({
                 "matched": node.id,
                 "created": false,
                 "title": node.title,
                 "similarity": similarity,
-            })),
+            }),
+        })
+    }
+
+    #[tool(
+        description = "Batch create: add several notes in one call — each item \
+        runs the same near-duplicate pre-check and redaction as add_note. \
+        Results are per-item and positional: {id, created} | {matched, \
+        created: false} | {ok: false, error}; one bad item never blocks the \
+        rest. For seeding passes and multi-note stopping points."
+    )]
+    async fn add_notes(
+        &self,
+        Parameters(a): Parameters<AddNotesArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if a.notes.len() > BATCH_CAP {
+            return Err(ErrorData::invalid_params(
+                format!("at most {BATCH_CAP} notes per call"),
+                None,
+            ));
         }
+        let results: Vec<serde_json::Value> = a
+            .notes
+            .into_iter()
+            .map(|item| {
+                self.create_note(item)
+                    .unwrap_or_else(|e| json!({ "ok": false, "error": e.message }))
+            })
+            .collect();
+        ok_json(&json!({ "results": results }))
     }
 
     #[tool(
@@ -319,6 +369,12 @@ impl Engram {
         &self,
         Parameters(a): Parameters<UpdateArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        let payload = self.patch_node(a)?;
+        ok_json(&payload)
+    }
+
+    /// The update_node core, shared with the batch form.
+    fn patch_node(&self, a: UpdateArgs) -> Result<serde_json::Value, ErrorData> {
         let patch = NodePatch {
             node_type: a
                 .node_type
@@ -345,11 +401,79 @@ impl Engram {
             .engine()
             .update_node_checked(&a.id, patch)
             .map_err(map_err)?;
-        if warnings.is_empty() {
-            ok_json(&json!({ "ok": true, "id": node.id }))
+        Ok(if warnings.is_empty() {
+            json!({ "ok": true, "id": node.id })
         } else {
-            ok_json(&json!({ "ok": true, "id": node.id, "warnings": warnings }))
+            json!({ "ok": true, "id": node.id, "warnings": warnings })
+        })
+    }
+
+    #[tool(
+        description = "Batch update: apply several node patches in one call — \
+        the bulk counterpart of update_node for curation sweeps (term renames, \
+        status fixes, tag hygiene). Each item takes the same fields as \
+        update_node; items apply independently, results are positional \
+        ({ok, id} | {ok: false, id, error}), one bad item never blocks the \
+        rest, and every change lands in the audit journal individually."
+    )]
+    async fn update_nodes(
+        &self,
+        Parameters(a): Parameters<UpdateNodesArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if a.updates.len() > BATCH_CAP {
+            return Err(ErrorData::invalid_params(
+                format!("at most {BATCH_CAP} updates per call"),
+                None,
+            ));
         }
+        let results: Vec<serde_json::Value> = a
+            .updates
+            .into_iter()
+            .map(|item| {
+                let id = item.id.clone();
+                self.patch_node(item)
+                    .unwrap_or_else(|e| json!({ "ok": false, "id": id, "error": e.message }))
+            })
+            .collect();
+        ok_json(&json!({ "results": results }))
+    }
+
+    #[tool(description = "Full-fidelity paged read of the graph: complete nodes \
+        (whole body, tags, status, durability, code_refs, computed trust) with \
+        optional filters — types, status, tag, include_archived. This is the \
+        lossless bulk read for reviews and exports: building a decisions.md \
+        means paging every Decision with its full body, which search snippets \
+        and the budgeted brief cannot provide. Newest first; `total` is the \
+        filtered count, page with limit/offset. Read-only — does not refresh \
+        trust clocks.")]
+    async fn list_nodes(
+        &self,
+        Parameters(a): Parameters<ListNodesArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let types = node_types(&a.types)?;
+        let status = a
+            .status
+            .map(|s| NodeStatus::parse(&s))
+            .transpose()
+            .map_err(map_err)?;
+        let tag = a
+            .tag
+            .map(|t| engram_core::normalize_tags(&[t]))
+            .and_then(|mut v| v.pop());
+        let (mut nodes, _) = self.engine().graph().map_err(map_err)?;
+        nodes.retain(|n| {
+            (a.include_archived.unwrap_or(false) || n.valid_until.is_none())
+                && (types.is_empty() || types.contains(&n.node_type))
+                && status.is_none_or(|s| n.status == Some(s))
+                && tag.as_ref().is_none_or(|t| n.tags.contains(t))
+        });
+        // Ids are time-sortable, so this is newest-first creation order.
+        nodes.sort_by(|x, y| y.id.cmp(&x.id));
+        let total = nodes.len();
+        let offset = a.offset.unwrap_or(0);
+        let limit = a.limit.unwrap_or(30).min(200);
+        let page: Vec<Node> = nodes.into_iter().skip(offset).take(limit).collect();
+        ok_json(&json!({ "total": total, "offset": offset, "nodes": page }))
     }
 
     #[tool(description = "List the live worklist: open Problems and Intents.")]
@@ -624,6 +748,40 @@ struct UpdateArgs {
     /// Replaces the node's tag list when set (kebab-cased on write).
     #[serde(default)]
     tags: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct AddNotesArgs {
+    /// Notes to create; each item takes the same fields as add_note.
+    notes: Vec<AddNoteArgs>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct UpdateNodesArgs {
+    /// Patches to apply; each item takes the same fields as update_node.
+    updates: Vec<UpdateArgs>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct ListNodesArgs {
+    /// Filter to these node types (default: all 8).
+    #[serde(default)]
+    types: Vec<String>,
+    /// Filter Problems/Intents by status: open | resolved | obsolete.
+    #[serde(default)]
+    status: Option<String>,
+    /// Only nodes carrying this tag.
+    #[serde(default)]
+    tag: Option<String>,
+    /// Also return archived (superseded) generations. Default false.
+    #[serde(default)]
+    include_archived: Option<bool>,
+    /// Page size (default 30, max 200).
+    #[serde(default)]
+    limit: Option<usize>,
+    /// Skip this many (after filtering, newest first).
+    #[serde(default)]
+    offset: Option<usize>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -1113,6 +1271,144 @@ mod tool_tests {
         );
         assert!(t.contains("created"), "got: {t}");
         assert!(t.contains("journaled"));
+    }
+
+    #[tokio::test]
+    async fn bulk_create_read_update_roundtrip() {
+        let s = server();
+        // Batch create: a Decision with a long body, a tagged Caution, and a
+        // near-duplicate of the first — the dupe check must run per item.
+        let created = s
+            .add_notes(Parameters(AddNotesArgs {
+                notes: vec![
+                    AddNoteArgs {
+                        body: Some("the full body that an export must not lose".into()),
+                        ..note("store data in sqlite")
+                    },
+                    AddNoteArgs {
+                        node_type: "Caution".into(),
+                        tags: vec!["hygiene".into()],
+                        ..note("never trust a relative db path")
+                    },
+                    AddNoteArgs {
+                        body: Some("the full body that an export must not lose".into()),
+                        ..note("store data in sqlite")
+                    },
+                ],
+            }))
+            .await
+            .unwrap();
+        let text = text_of(&created);
+        assert!(text.contains("created"), "got: {text}");
+        assert!(text.contains("matched"), "per-item dupe check: {text}");
+
+        // Full-fidelity filtered read: only Decisions, whole body included.
+        let listed = s
+            .list_nodes(Parameters(ListNodesArgs {
+                types: vec!["Decision".into()],
+                status: None,
+                tag: None,
+                include_archived: None,
+                limit: None,
+                offset: None,
+            }))
+            .await
+            .unwrap();
+        let text = text_of(&listed);
+        assert!(
+            text.contains("the full body that an export must not lose"),
+            "full body survives the bulk read: {text}"
+        );
+        assert!(
+            !text.contains("relative db path"),
+            "type filter holds: {text}"
+        );
+
+        // Tag filter reaches the Caution.
+        let tagged = s
+            .list_nodes(Parameters(ListNodesArgs {
+                types: vec![],
+                status: None,
+                tag: Some("hygiene".into()),
+                include_archived: None,
+                limit: None,
+                offset: None,
+            }))
+            .await
+            .unwrap();
+        let text = text_of(&tagged);
+        assert!(text.contains("relative db path"), "got: {text}");
+        assert!(!text.contains("sqlite"), "got: {text}");
+    }
+
+    #[tokio::test]
+    async fn update_nodes_applies_independently_and_reports_per_item() {
+        let s = server();
+        let id = id_of(
+            &s.add_note(Parameters(note("original title")))
+                .await
+                .unwrap(),
+        );
+        let blank = |id: String| UpdateArgs {
+            id,
+            node_type: None,
+            title: None,
+            body: None,
+            durability: None,
+            status: None,
+            code_refs: None,
+            tags: None,
+        };
+        let res = s
+            .update_nodes(Parameters(UpdateNodesArgs {
+                updates: vec![
+                    UpdateArgs {
+                        title: Some("renamed title".into()),
+                        ..blank(id.clone())
+                    },
+                    blank("nonexistent-id".into()),
+                ],
+            }))
+            .await
+            .unwrap();
+        let text = text_of(&res);
+        assert!(
+            text.contains("renamed title") || text.contains("true"),
+            "got: {text}"
+        );
+        assert!(text.contains("false"), "bad id reported, not fatal: {text}");
+
+        let node = s
+            .get_node(Parameters(GetNodeArgs {
+                id,
+                parents: None,
+                children: None,
+            }))
+            .await
+            .unwrap();
+        assert!(text_of(&node).contains("renamed title"), "patch landed");
+    }
+
+    #[tokio::test]
+    async fn search_snippets_use_brackets_not_sentinels() {
+        let s = server();
+        s.add_note(Parameters(note("sentinel roundtrip check")))
+            .await
+            .unwrap();
+        let res = s
+            .search(Parameters(SearchArgs {
+                query: "sentinel".into(),
+                types: vec![],
+                limit: None,
+            }))
+            .await
+            .unwrap();
+        let text = text_of(&res);
+        assert!(text.contains('['), "brackets for assistants: {text}");
+        assert!(
+            !text.contains('\u{e000}') && !text.contains('\u{e001}'),
+            "no raw sentinels leak over MCP: {text}"
+        );
     }
 }
 

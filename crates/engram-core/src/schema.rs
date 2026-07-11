@@ -81,16 +81,16 @@ CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit(entity_id);
 /// `Store::ensure_fts`.
 pub const FTS_SCHEMA: &str = r#"
 CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts
-  USING fts5(title, body, tags, content='nodes', content_rowid='rowid');
+  USING fts5(title, body, tags, code_refs, content='nodes', content_rowid='rowid');
 
 CREATE TRIGGER IF NOT EXISTS nodes_ai AFTER INSERT ON nodes BEGIN
-  INSERT INTO nodes_fts(rowid, title, body, tags) VALUES (new.rowid, new.title, new.body, new.tags);
+  INSERT INTO nodes_fts(rowid, title, body, tags, code_refs) VALUES (new.rowid, new.title, new.body, new.tags, new.code_refs);
 END;
 CREATE TRIGGER IF NOT EXISTS nodes_ad AFTER DELETE ON nodes BEGIN
-  INSERT INTO nodes_fts(nodes_fts, rowid, title, body, tags) VALUES('delete', old.rowid, old.title, old.body, old.tags);
+  INSERT INTO nodes_fts(nodes_fts, rowid, title, body, tags, code_refs) VALUES('delete', old.rowid, old.title, old.body, old.tags, old.code_refs);
 END;
 CREATE TRIGGER IF NOT EXISTS nodes_au AFTER UPDATE ON nodes BEGIN
-  INSERT INTO nodes_fts(nodes_fts, rowid, title, body, tags) VALUES('delete', old.rowid, old.title, old.body, old.tags);
-  INSERT INTO nodes_fts(rowid, title, body, tags) VALUES (new.rowid, new.title, new.body, new.tags);
+  INSERT INTO nodes_fts(nodes_fts, rowid, title, body, tags, code_refs) VALUES('delete', old.rowid, old.title, old.body, old.tags, old.code_refs);
+  INSERT INTO nodes_fts(rowid, title, body, tags, code_refs) VALUES (new.rowid, new.title, new.body, new.tags, new.code_refs);
 END;
 "#;

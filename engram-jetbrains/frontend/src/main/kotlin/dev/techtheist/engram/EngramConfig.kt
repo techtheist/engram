@@ -5,7 +5,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 /**
- * Where the pane lives. The local `engram serve` daemon hosts both the JSON API
+ * Where the pane lives. The local `engram-alpha serve` daemon hosts both the JSON API
  * and the built Vue pane. It binds 8787 by default but walks to the next free
  * port when that's taken (one daemon per repo makes collisions routine) and
  * records the result in `.engram/daemon.json` — so the URL is resolved from

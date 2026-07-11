@@ -30,7 +30,7 @@ export async function configureMcp(): Promise<void> {
     }
 
     ;(config.mcpServers as Record<string, unknown>).engram = {
-        command: 'engram',
+        command: 'engram-alpha',
         args: ['mcp', '--db', '.engram/graph.db'],
     }
 
@@ -39,7 +39,7 @@ export async function configureMcp(): Promise<void> {
 
     const open = 'Open .mcp.json'
     const choice = await vscode.window.showInformationMessage(
-        'Engram MCP added to .mcp.json. Restart Claude Code to pick it up. (Requires the `engram` binary on your PATH.)',
+        'Engram MCP added to .mcp.json. Restart Claude Code to pick it up. (Requires the `engram-alpha` binary on your PATH.)',
         open,
     )
     if (choice === open) {

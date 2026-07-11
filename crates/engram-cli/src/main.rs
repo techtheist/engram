@@ -1,4 +1,4 @@
-//! `engram serve` — one local daemon per repo exposing HTTP + SSE (for the
+//! `engram-alpha serve` — one local daemon per repo exposing HTTP + SSE (for the
 //! pane) and the MCP stdio server (for Claude) over a single shared engine
 //! bound to that repo's `.engram/graph.db` (PLAN §6B).
 
@@ -11,11 +11,12 @@ use clap::{Parser, Subcommand};
 use engram_core::{Embedder, Engine, ExportGraph, FakeEmbedder, FastEmbedder, Store};
 use tracing_subscriber::EnvFilter;
 
+mod doctor;
 mod setup;
 
 #[derive(Parser)]
 #[command(
-    name = "engram",
+    name = "engram-alpha",
     version,
     about = "Durable graph memory for AI coding assistants"
 )]
@@ -42,6 +43,10 @@ enum Command {
     /// Self-update: download the latest release for this platform, verify its
     /// checksum, and replace this binary in place.
     Update(UpdateArgs),
+    /// Diagnose this repo's Engram installation: store integrity, embedding
+    /// model, daemon-vs-DB path match, and per-assistant wiring. Exits
+    /// non-zero when something needs fixing.
+    Doctor(DoctorArgs),
     /// Wire the current repository for AI assistants: MCP registration +
     /// capture instructions, from assets embedded in this binary. With no
     /// --cli, auto-detects which assistants are installed and wires those.
@@ -116,6 +121,13 @@ struct UpdateArgs {
 }
 
 #[derive(clap::Args)]
+struct DoctorArgs {
+    /// Path to the graph database this repo is expected to use.
+    #[arg(long, default_value = ".engram/graph.db")]
+    db: PathBuf,
+}
+
+#[derive(clap::Args)]
 struct SetupArgs {
     /// Assistants to wire, comma-separated: claude|codex|gemini|opencode|kilo|antigravity|all.
     /// Default: auto-detect what's installed.
@@ -148,6 +160,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Import(args) => run_import(args),
         Command::Brief(args) => run_brief(args),
         Command::Update(args) => run_update(args),
+        Command::Doctor(args) => doctor::run(&args.db),
         Command::Setup(args) => run_setup(args),
     }
 }
@@ -188,11 +201,11 @@ fn run_setup(args: SetupArgs) -> anyhow::Result<()> {
 fn run_update(args: UpdateArgs) -> anyhow::Result<()> {
     const REPO: &str = "techtheist/engram";
     let (target, ext, bin_name) = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        ("aarch64-apple-darwin", "tar.gz", "engram")
+        ("aarch64-apple-darwin", "tar.gz", "engram-alpha")
     } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        ("x86_64-unknown-linux-gnu", "tar.gz", "engram")
+        ("x86_64-unknown-linux-gnu", "tar.gz", "engram-alpha")
     } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        ("x86_64-pc-windows-msvc", "exe", "engram.exe")
+        ("x86_64-pc-windows-msvc", "exe", "engram-alpha.exe")
     } else {
         anyhow::bail!("no prebuilt binaries for this platform — update from source instead");
     };
@@ -217,7 +230,7 @@ fn run_update(args: UpdateArgs) -> anyhow::Result<()> {
         }
     };
 
-    let asset = format!("engram-{tag}-{target}.{ext}");
+    let asset = format!("engram-alpha-{tag}-{target}.{ext}");
     let url = format!("https://github.com/{REPO}/releases/download/{tag}/{asset}");
     let tmp = std::env::temp_dir().join(format!("engram-update-{}", std::process::id()));
     std::fs::create_dir_all(&tmp)?;
@@ -287,7 +300,7 @@ fn run_update(args: UpdateArgs) -> anyhow::Result<()> {
     }
     std::fs::rename(&staged, &exe)?;
     println!(
-        "updated {} to {tag} — restart your daemon (engram serve)",
+        "updated {} to {tag} — restart your daemon (engram-alpha serve)",
         exe.display()
     );
     drop(cleanup);
@@ -365,7 +378,15 @@ fn build_engine(db: &Path, fake_embeddings: bool) -> anyhow::Result<Engine> {
         tracing::info!("loading local embedding model…");
         Box::new(FastEmbedder::new().context("initializing fastembed model")?)
     };
-    Ok(Engine::new(store, embedder))
+    let engine = Engine::new(store, embedder);
+    // One-time vector upgrade when the embedding composition changed (e.g.
+    // tags/code_refs joined title+body in v0.4.0). Never fatal at startup.
+    match engine.ensure_embed_composition() {
+        Ok(0) => {}
+        Ok(n) => tracing::info!("re-embedded {n} nodes for the current embedding composition"),
+        Err(e) => tracing::warn!("embedding-composition upgrade failed: {e}"),
+    }
+    Ok(engine)
 }
 
 async fn run_mcp(args: McpArgs) -> anyhow::Result<()> {
@@ -402,7 +423,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             .collect();
         if !unwired.is_empty() {
             tracing::info!(
-                "detected {} without Engram wiring — run `engram setup` in this repo to connect them",
+                "detected {} without Engram wiring — run `engram-alpha setup` in this repo to connect them",
                 unwired.join(", ")
             );
         }

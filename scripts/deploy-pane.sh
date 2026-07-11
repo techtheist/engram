@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Deploy the Engram pane end-to-end, safely from ANY working directory:
 #   1. build the Vue pane (bun)
-#   2. reinstall the engram binary (the pane is rust-embedded)
+#   2. reinstall the engram-alpha binary (the pane is rust-embedded)
 #   3. restart the local daemon on this repo's DB (absolute path — a relative
 #      --db from the wrong cwd silently creates a fresh empty DB)
 #   4. verify /health serves the right DB and report the node count
@@ -20,7 +20,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DB="$ROOT/.engram/graph.db"
 LOG="$ROOT/.engram/serve.log"
-BIN="$HOME/.cargo/bin/engram"
+BIN="$HOME/.cargo/bin/engram-alpha"
 
 VSIX=0 JETBRAINS=0 EMBED_FLAG=""
 for arg in "$@"; do
@@ -36,11 +36,11 @@ done
 echo "==> building pane"
 (cd "$ROOT/frontend" && bun run build)
 
-echo "==> reinstalling engram binary"
+echo "==> reinstalling engram-alpha binary"
 cargo install --path "$ROOT/crates/engram-cli" --force --quiet
 
 echo "==> restarting daemon"
-pkill -f "engram serve" 2>/dev/null || true
+pkill -f "engram(-alpha)? serve" 2>/dev/null || true
 sleep 1
 mkdir -p "$ROOT/.engram"
 # shellcheck disable=SC2086  # EMBED_FLAG is intentionally word-split (may be empty)

@@ -23,7 +23,7 @@ MAX_CHARS="${ENGRAM_BRIEF_CHARS:-16000}"
 [ -e "$DB" ] || exit 0
 
 # The Claude Code plugin runs this script too (ENGRAM_HOOK_SOURCE=plugin).
-# When the repo also registers its own copy (engram setup, or a checkout of
+# When the repo also registers its own copy (engram-alpha setup, or a checkout of
 # engram itself), the repo-level hook wins — the brief must never inject twice.
 if [ "${ENGRAM_HOOK_SOURCE:-}" = "plugin" ]; then
     grep -qsE 'engram-brief|session-brief' \
@@ -52,6 +52,6 @@ fi
 # Fallback: read the DB directly (WAL — safe beside a daemon). The brief
 # never embeds anything, so --fake-embeddings just skips the ONNX model load
 # that would otherwise slow session start.
-command -v engram >/dev/null 2>&1 || exit 0
-engram brief --db "$DB" --max-chars "$MAX_CHARS" --fake-embeddings 2>/dev/null || true
+BIN="$(command -v engram-alpha || command -v engram)" 2>/dev/null || exit 0
+"$BIN" brief --db "$DB" --max-chars "$MAX_CHARS" --fake-embeddings 2>/dev/null || true
 exit 0

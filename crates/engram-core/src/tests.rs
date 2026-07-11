@@ -149,8 +149,8 @@ fn fts_search_finds_and_ranks() {
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].title, "Adopt SQLite WAL mode");
     assert!(
-        hits[0].snippet.contains('['),
-        "snippet should mark the match: {}",
+        hits[0].snippet.contains(crate::SNIPPET_OPEN),
+        "snippet should mark the match with the highlight sentinel: {}",
         hits[0].snippet
     );
 
@@ -1724,4 +1724,72 @@ fn audit_import_writes_one_summary_row() {
     assert_eq!(imported.len(), 1, "one summary row, not one per entity");
     assert_eq!(imported[0].entity, "graph");
     assert_eq!(imported[0].title.as_deref(), Some("1 nodes / 0 edges"));
+}
+
+#[test]
+fn search_reaches_code_refs_and_tags() {
+    let e = engine();
+    let mut with_refs = new_node(NodeType::Decision, "Trust curves live in one module", "");
+    with_refs.code_refs = vec!["crates/engram-core/src/policy.rs".into()];
+    with_refs.tags = vec!["retrieval".into()];
+    e.add_node(with_refs).unwrap();
+    e.add_node(new_node(
+        NodeType::Decision,
+        "Unrelated pane layout choice",
+        "",
+    ))
+    .unwrap();
+
+    let hits = e.search("policy", &[], 5).unwrap();
+    assert_eq!(
+        hits.first().map(|h| h.title.as_str()),
+        Some("Trust curves live in one module"),
+        "a code_ref path token reaches the node"
+    );
+    let hits = e.search("retrieval", &[], 5).unwrap();
+    assert!(
+        hits.iter()
+            .any(|h| h.title == "Trust curves live in one module"),
+        "a tag token reaches the node"
+    );
+}
+
+#[test]
+fn embed_composition_upgrade_reembeds_only_with_real_vectors() {
+    let db = std::env::temp_dir().join(format!("engram-compose-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&db);
+
+    // FakeEmbedder math with the real-embedder contract — exercises the
+    // upgrade path without ONNX.
+    struct NotFake(FakeEmbedder);
+    impl Embedder for NotFake {
+        fn dim(&self) -> usize {
+            self.0.dim()
+        }
+        fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+            self.0.embed(texts)
+        }
+    }
+
+    // Seed a node, then rewind the version marker to legacy.
+    let e = Engine::new(Store::open(&db).unwrap(), Box::new(FakeEmbedder::default()));
+    let mut n = new_node(NodeType::Decision, "composed", "");
+    n.code_refs = vec!["crates/engram-core/src/rag.rs".into()];
+    e.add_node(n).unwrap();
+    e.store().set_embed_version(0).unwrap();
+
+    // A fake embedder must refuse to touch an existing graph's vectors.
+    assert_eq!(e.ensure_embed_composition().unwrap(), 0);
+    assert_eq!(e.store().embed_version().unwrap(), 0);
+    drop(e);
+
+    // A real one upgrades every node and stamps the version.
+    let e = Engine::new(
+        Store::open(&db).unwrap(),
+        Box::new(NotFake(FakeEmbedder::default())),
+    );
+    assert_eq!(e.ensure_embed_composition().unwrap(), 1);
+    assert_eq!(e.store().embed_version().unwrap(), EMBED_COMPOSITION);
+    drop(e);
+    let _ = std::fs::remove_file(&db);
 }

@@ -235,7 +235,7 @@ impl Engine {
         )
     }
 
-    /// Add a node and embed it (title + body) in one step. Trust is computed
+    /// Add a node and embed it (full-field composition) in one step. Trust is computed
     /// from timestamps at read time; user-authored nodes are approved by
     /// construction (the store stamps `approved_at`).
     pub fn add_node(&self, n: NewNode) -> Result<Node> {
@@ -246,10 +246,14 @@ impl Engine {
         Ok(node)
     }
 
-    /// Patch a node and re-embed if its text changed. Any update refreshes
-    /// `last_seen` (the store stamps it): edited knowledge is in-use knowledge.
+    /// Patch a node and re-embed if any embedded field changed (title, body,
+    /// tags, code_refs). Any update refreshes `last_seen` (the store stamps
+    /// it): edited knowledge is in-use knowledge.
     pub fn update_node(&self, id: &str, patch: NodePatch) -> Result<Node> {
-        let touches_text = patch.title.is_some() || patch.body.is_some();
+        let touches_text = patch.title.is_some()
+            || patch.body.is_some()
+            || patch.tags.is_some()
+            || patch.code_refs.is_some();
         let before = self.store.get_node(id)?;
         let node = self.store.update_node(id, patch)?;
         if touches_text {
@@ -442,9 +446,12 @@ impl Engine {
     pub fn add_node_checked(&self, n: NewNode) -> Result<WriteOutcome> {
         let scrubbed_title = crate::redact::scrub(&n.title);
         let scrubbed_body = n.body.as_deref().map(crate::redact::scrub);
-        let vec = self
-            .embedder
-            .embed_one(&embed_text(&scrubbed_title, scrubbed_body.as_deref()))?;
+        let vec = self.embedder.embed_one(&embed_text(
+            &scrubbed_title,
+            scrubbed_body.as_deref(),
+            &n.tags,
+            &n.code_refs,
+        ))?;
 
         for (id, distance) in self.store.search_vec(&vec, WRITE_CHECK_K)? {
             let similarity = 1.0 - distance;
@@ -471,12 +478,18 @@ impl Engine {
         id: &str,
         patch: NodePatch,
     ) -> Result<(Node, Vec<WriteWarning>)> {
-        let touches_text = patch.title.is_some() || patch.body.is_some();
+        let touches_text = patch.title.is_some()
+            || patch.body.is_some()
+            || patch.tags.is_some()
+            || patch.code_refs.is_some();
         let node = self.update_node(id, patch)?;
         let warnings = if touches_text {
-            let vec = self
-                .embedder
-                .embed_one(&embed_text(&node.title, node.body.as_deref()))?;
+            let vec = self.embedder.embed_one(&embed_text(
+                &node.title,
+                node.body.as_deref(),
+                &node.tags,
+                &node.code_refs,
+            ))?;
             self.record_suspects(&vec, &node.id)?;
             self.write_warnings(&vec, &node.id)?
         } else {
@@ -996,10 +1009,33 @@ impl Engine {
     }
 
     fn embed_node(&self, node: &Node) -> Result<()> {
-        let vec = self
-            .embedder
-            .embed_one(&embed_text(&node.title, node.body.as_deref()))?;
+        let vec = self.embedder.embed_one(&embed_text(
+            &node.title,
+            node.body.as_deref(),
+            &node.tags,
+            &node.code_refs,
+        ))?;
         self.store.upsert_embedding(&node.id, &vec)
+    }
+
+    /// Bring stored vectors up to the current [`EMBED_COMPOSITION`], returning
+    /// how many nodes were re-embedded (0 = already current or skipped).
+    /// Skipped with a fake embedder over a non-empty graph — fake vectors must
+    /// never replace real ones, and the brief hook routinely opens real DBs
+    /// with `--fake-embeddings`. Idempotent; stamps the version when done.
+    pub fn ensure_embed_composition(&self) -> Result<usize> {
+        if self.store.embed_version()? >= EMBED_COMPOSITION {
+            return Ok(0);
+        }
+        let nodes = self.store.all_nodes()?;
+        if self.embedder.is_fake() && !nodes.is_empty() {
+            return Ok(0);
+        }
+        for n in &nodes {
+            self.embed_node(n)?;
+        }
+        self.store.set_embed_version(EMBED_COMPOSITION)?;
+        Ok(nodes.len())
     }
 }
 
@@ -1047,13 +1083,31 @@ fn ref_is_path(r: &str) -> bool {
     !r.is_empty() && !r.contains(char::is_whitespace) && (r.contains('/') || r.contains('.'))
 }
 
+/// Which embedding composition stored vectors were computed with (kept in
+/// `PRAGMA user_version`). Bump when [`embed_text`] changes what it includes;
+/// [`Engine::ensure_embed_composition`] re-embeds databases that are behind.
+/// 0 = legacy title+body; 2 = full fields (title, body, tags, code_refs).
+pub const EMBED_COMPOSITION: i64 = 2;
+
 /// The text a node is embedded as — kept in one place so write-time similarity
-/// checks embed exactly what storage embeds.
-fn embed_text(title: &str, body: Option<&str>) -> String {
-    match body {
-        Some(b) if !b.is_empty() => format!("{title}\n{b}"),
-        _ => title.to_string(),
+/// checks embed exactly what storage embeds. Tags and code_refs ride along so
+/// "everything about policy.rs" works as a semantic query, not only a keyword
+/// one; title+body still dominate the vector, so dupe detection is unaffected.
+fn embed_text(title: &str, body: Option<&str>, tags: &[String], code_refs: &[String]) -> String {
+    let mut text = title.to_string();
+    if let Some(b) = body.filter(|b| !b.is_empty()) {
+        text.push('\n');
+        text.push_str(b);
     }
+    if !tags.is_empty() {
+        text.push('\n');
+        text.push_str(&tags.join(" "));
+    }
+    if !code_refs.is_empty() {
+        text.push('\n');
+        text.push_str(&code_refs.join(" "));
+    }
+    text
 }
 
 /// Longest excerpt a brief line carries. Word-boundary cut, so lines read as

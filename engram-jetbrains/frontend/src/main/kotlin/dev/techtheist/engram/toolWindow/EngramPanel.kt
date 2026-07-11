@@ -29,7 +29,7 @@ import javax.swing.JComponent
 
 /**
  * The Engram tool window contents. Hosts the Vue pane (served by the local
- * `engram serve` daemon) in a JCEF browser, and degrades to a clear
+ * `engram-alpha serve` daemon) in a JCEF browser, and degrades to a clear
  * "backend not running" panel — with start/install guidance — when the daemon
  * can't be reached, re-checking in the background so it connects on its own
  * once the daemon comes up.
@@ -156,12 +156,12 @@ internal class EngramPanel(
         heading("Engram backend isn't running")
         body("The graph pane is served by the local Engram daemon.")
         gap()
-        button("Start engram serve") {
+        button("Start engram-alpha serve") {
             if (EngramBackend.startDaemon(project)) retryNow()
         }
         gap()
         body("Or start it yourself from the repo root:")
-        mono("engram serve")
+        mono("engram-alpha serve")
         gap()
         button("Retry") { retryNow() }
     }
@@ -183,7 +183,7 @@ internal class EngramPanel(
             CopyPasteManager.getInstance().setContents(StringSelection(EngramBackend.INSTALL_COMMAND))
         }
         gap()
-        body("Then start the daemon (engram serve) — the pane connects on its own.")
+        body("Then start the daemon (engram-alpha serve) — the pane connects on its own.")
         button("Retry") { retryNow() }
     }
 

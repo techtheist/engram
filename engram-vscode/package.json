@@ -2,7 +2,7 @@
   "name": "engram-alpha",
   "displayName": "Engram Alpha",
   "description": "Durable, graph-based long-term memory shared by your AI coding assistants — Claude Code, Codex CLI, Gemini CLI, OpenCode, Kilo, Google Antigravity — the reasoning/decision layer, as an editable graph.",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "publisher": "techtheist",
   "license": "MIT",
   "repository": {
@@ -74,7 +74,7 @@
         "engram.daemonUrl": {
           "type": "string",
           "default": "http://127.0.0.1:8787",
-          "description": "Fallback URL of the local `engram serve` daemon. Normally the pane discovers the actual port from the workspace's .engram/daemon.json (the daemon auto-increments its port when the default is taken); this setting applies only when that file is absent."
+          "description": "Fallback URL of the local `engram-alpha serve` daemon. Normally the pane discovers the actual port from the workspace's .engram/daemon.json (the daemon auto-increments its port when the default is taken); this setting applies only when that file is absent."
         }
       }
     }

@@ -33,6 +33,8 @@ pub struct AppState {
     /// The database this daemon serves, reported by `/health` so a client that
     /// discovered a port can verify it belongs to *this* repo's daemon.
     db_path: Option<String>,
+    /// Daemon start time, for `/system`'s uptime.
+    started: std::time::Instant,
 }
 
 impl AppState {
@@ -57,6 +59,7 @@ impl AppState {
             engine,
             events,
             db_path,
+            started: std::time::Instant::now(),
         }
     }
 
@@ -122,6 +125,7 @@ pub fn router_shared_with_db(engine: Arc<Mutex<Engine>>, db_path: String) -> Rou
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/system", get(system))
         .route("/nodes", post(create_node))
         .route(
             "/nodes/{id}",
@@ -152,7 +156,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/import", post(import))
         .route("/events", get(sse))
         // Anything not an API route is the Vue pane (served from the embedded
-        // build), so `engram serve` is a complete browser-standalone app and
+        // build), so `engram-alpha serve` is a complete browser-standalone app and
         // the IDE wrappers just point a webview at this one URL.
         .fallback(static_pane)
         .layer(CorsLayer::permissive())
@@ -212,6 +216,59 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
         "db": state.db_path,
+    }))
+}
+
+/// The pane's System info (Settings → System): the doctor's daemon-side facts
+/// as structured JSON — binary version, store health, model cache, and which
+/// assistants are wired to this repo. Everything is best-effort: a partial
+/// report beats a 500 on a diagnostics screen.
+async fn system(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let repo = state.repo_root();
+    let wiring = engram_core::harness::wiring(&repo);
+    let model_cached = engram_core::harness::home_file(".cache/engram").is_some_and(|dir| {
+        std::fs::read_dir(&dir).is_ok_and(|mut entries| entries.next().is_some())
+    });
+    let db_size = state
+        .db_path
+        .as_deref()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .map(|m| m.len());
+
+    let engine = state.engine();
+    let store = engine.store();
+    let conn = store.conn();
+    let count = |sql: &str| {
+        conn.query_row(sql, [], |row| row.get::<_, i64>(0))
+            .unwrap_or(-1)
+    };
+    let pragma = |sql: &str| {
+        conn.query_row(sql, [], |row| row.get::<_, String>(0))
+            .unwrap_or_default()
+    };
+    let embed_version = store.embed_version().unwrap_or(0);
+
+    Json(json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "daemon": {
+            "pid": std::process::id(),
+            "uptime_secs": state.started.elapsed().as_secs(),
+            "repo_root": repo.display().to_string(),
+        },
+        "store": {
+            "db": state.db_path,
+            "size_bytes": db_size,
+            "nodes": count("SELECT count(*) FROM nodes"),
+            "edges": count("SELECT count(*) FROM edges"),
+            "embedded": count("SELECT count(*) FROM vec_nodes"),
+            "fts": count("SELECT count(*) FROM nodes_fts"),
+            "journal_mode": pragma("PRAGMA journal_mode"),
+            "integrity_ok": pragma("PRAGMA quick_check") == "ok",
+            "embed_composition": embed_version,
+            "embed_composition_current": embed_version >= engram_core::EMBED_COMPOSITION,
+        },
+        "model_cached": model_cached,
+        "wiring": wiring,
     }))
 }
 

@@ -55,7 +55,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       # Every crate inherits the workspace version, so stamping the root
-      # manifest fixes `engram --version`, /health, MCP server info AND the
+      # manifest fixes `engram-alpha --version`, /health, MCP server info AND the
       # version recorded on audit journal rows in one place.
       - name: Sync workspace version from tag
         shell: bash
@@ -70,10 +70,23 @@ jobs:
       - name: Package tarball + checksum
         if: runner.os != 'Windows'
         run: |
-          ASSET="engram-${RELEASE_TAG}-${{ matrix.target }}.tar.gz"
-          tar -czf "$ASSET" -C target/release engram
+          ASSET="engram-alpha-${RELEASE_TAG}-${{ matrix.target }}.tar.gz"
+          tar -czf "$ASSET" -C target/release engram-alpha
           shasum -a 256 "$ASSET" > "$ASSET.sha256"
-          echo "ASSETS=$ASSET $ASSET.sha256" >> "$GITHUB_ENV"
+          ASSETS="$ASSET $ASSET.sha256"
+          # Transition shim, v0.4.x ONLY (self-sunsetting — the gate below
+          # stops shipping these at v0.5): pre-rename binaries self-update
+          # from assets named engram-<tag>-<target> containing a file named
+          # `engram`, so ship the new binary under the old name once and
+          # their `engram update` lands them on the current version in place.
+          if [[ "$RELEASE_TAG" == v0.4.* ]]; then
+            LEGACY="engram-${RELEASE_TAG}-${{ matrix.target }}.tar.gz"
+            cp target/release/engram-alpha engram
+            tar -czf "$LEGACY" engram
+            shasum -a 256 "$LEGACY" > "$LEGACY.sha256"
+            ASSETS="$ASSETS $LEGACY $LEGACY.sha256"
+          fi
+          echo "ASSETS=$ASSETS" >> "$GITHUB_ENV"
 
       # Two Windows assets: the zip for humans, and the raw .exe so install.sh
       # needs no unzip inside WSL (fresh Ubuntu ships without it).
@@ -81,15 +94,24 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $zip = "engram-$env:RELEASE_TAG-${{ matrix.target }}.zip"
-          $exe = "engram-$env:RELEASE_TAG-${{ matrix.target }}.exe"
-          Compress-Archive -Path target/release/engram.exe -DestinationPath $zip
-          Copy-Item target/release/engram.exe $exe
-          foreach ($f in @($zip, $exe)) {
+          $zip = "engram-alpha-$env:RELEASE_TAG-${{ matrix.target }}.zip"
+          $exe = "engram-alpha-$env:RELEASE_TAG-${{ matrix.target }}.exe"
+          Compress-Archive -Path target/release/engram-alpha.exe -DestinationPath $zip
+          Copy-Item target/release/engram-alpha.exe $exe
+          $files = @($zip, $exe)
+          # Transition shim, v0.4.x ONLY (self-sunsetting): pre-rename
+          # engram.exe self-updates from the raw exe asset under the old name.
+          if ($env:RELEASE_TAG -like "v0.4.*") {
+            $legacy = "engram-$env:RELEASE_TAG-${{ matrix.target }}.exe"
+            Copy-Item target/release/engram-alpha.exe $legacy
+            $files += $legacy
+          }
+          foreach ($f in $files) {
             $hash = (Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
             "$hash  $f" | Out-File -Encoding ascii "$f.sha256"
           }
-          "ASSETS=$zip $zip.sha256 $exe $exe.sha256" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+          $list = ($files | ForEach-Object { "$_ ${_}.sha256" }) -join " "
+          "ASSETS=$list" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
 
       - name: Attach to release
         shell: bash

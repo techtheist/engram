@@ -1,4 +1,4 @@
-//! `engram setup` — wire the current repository for AI assistants: MCP
+//! `engram-alpha setup` — wire the current repository for AI assistants: MCP
 //! registration + capture instructions, all from assets embedded in the
 //! binary (PLAN §8/§10 Phase 3). The shell installers only fetch the binary;
 //! this module is the single source of setup truth.
@@ -9,14 +9,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
-pub const AGENTS: [&str; 6] = [
-    "claude",
-    "codex",
-    "gemini",
-    "opencode",
-    "kilo",
-    "antigravity",
-];
+// Machine/harness probes live in engram-core (shared with the daemon's
+// /system endpoint); re-exported so main.rs/doctor keep their `setup::` paths.
+pub use engram_core::harness::{
+    AGENTS, detect_agents, home_file, is_prerename_bin, is_wired, on_path,
+};
 
 const MARK_BEGIN: &str = "<!-- engram:begin -->";
 const MARK_END: &str = "<!-- engram:end -->";
@@ -50,70 +47,6 @@ pub fn agent_block(variant: &str) -> &'static str {
 
 fn say(msg: &str) {
     println!("==> {msg}");
-}
-
-/// Which assistants look installed on this machine (binary on PATH or a
-/// well-known config directory).
-pub fn detect_agents() -> Vec<&'static str> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map(PathBuf::from)
-        .ok();
-    let dir = |rel: &str| home.as_ref().is_some_and(|h| h.join(rel).exists());
-    let mut found = Vec::new();
-    if on_path("claude") || dir(".claude") {
-        found.push("claude");
-    }
-    if on_path("codex") || dir(".codex") {
-        found.push("codex");
-    }
-    if on_path("gemini") || dir(".gemini") {
-        found.push("gemini");
-    }
-    if on_path("opencode") || dir(".config/opencode") {
-        found.push("opencode");
-    }
-    if on_path("kilo") {
-        found.push("kilo");
-    }
-    if on_path("antigravity") || on_path("agy") || dir(".antigravity") {
-        found.push("antigravity");
-    }
-    found
-}
-
-fn on_path(bin: &str) -> bool {
-    let Some(paths) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&paths).any(|dir| {
-        let base = dir.join(bin);
-        base.exists() || base.with_extension("exe").exists() || base.with_extension("cmd").exists()
-    })
-}
-
-/// Is this repo already wired for the given agent? (Used by `serve` to decide
-/// whether to suggest `engram setup` — cheap file probes only.)
-pub fn is_wired(repo: &Path, agent: &str) -> bool {
-    let has_engram = |p: PathBuf| fs::read_to_string(p).is_ok_and(|s| s.contains("engram"));
-    match agent {
-        "claude" => has_engram(repo.join(".mcp.json")),
-        "codex" => home_file(".codex/config.toml").is_some_and(|p| {
-            fs::read_to_string(p).is_ok_and(|s| s.contains("[mcp_servers.engram]"))
-        }),
-        "gemini" => has_engram(repo.join(".gemini/settings.json")),
-        "opencode" => has_engram(repo.join("opencode.json")),
-        "kilo" => has_engram(repo.join("kilo.json")),
-        "antigravity" => has_engram(repo.join(".agents/mcp_config.json")),
-        _ => false,
-    }
-}
-
-fn home_file(rel: &str) -> Option<PathBuf> {
-    std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .ok()
-        .map(|h| PathBuf::from(h).join(rel))
 }
 
 pub struct Setup {
@@ -211,6 +144,63 @@ impl Setup {
         Ok(())
     }
 
+    /// v0.3.0 → v0.4.0 repair: if a JSON config's engram entry launches the
+    /// pre-rename binary, re-point it at this one. Handles both shapes —
+    /// `mcpServers.engram.command` (claude/gemini) and the opencode/kilo
+    /// `mcp.engram.command` array. Returns the rewritten file when a repair
+    /// applied; None means nothing to fix.
+    fn repaired_json_config(&self, raw: &str) -> Option<String> {
+        let mut v: serde_json::Value = serde_json::from_str(raw).ok()?;
+        let mut repaired = false;
+        if let Some(entry) = v.pointer_mut("/mcpServers/engram") {
+            let cmd = entry.get("command").and_then(|c| c.as_str());
+            if cmd.is_some_and(is_prerename_bin) {
+                entry["command"] = serde_json::json!(self.bin);
+                entry["args"] = serde_json::json!(["mcp", "--db", self.db]);
+                repaired = true;
+            }
+        }
+        if let Some(entry) = v.pointer_mut("/mcp/engram") {
+            let first = entry
+                .get("command")
+                .and_then(|c| c.as_array())
+                .and_then(|a| a.first())
+                .and_then(|x| x.as_str());
+            if first.is_some_and(is_prerename_bin) {
+                entry["command"] = serde_json::json!([self.bin, "mcp", "--db", self.db]);
+                repaired = true;
+            }
+        }
+        repaired
+            .then(|| serde_json::to_string_pretty(&v).ok())
+            .flatten()
+            .map(|s| s + "\n")
+    }
+
+    /// The same repair for codex's global TOML: rewrite the `command = "…"`
+    /// line inside `[mcp_servers.engram]` when it names the pre-rename binary.
+    fn repaired_codex_toml(&self, raw: &str) -> Option<String> {
+        let mut in_engram = false;
+        let mut repaired = false;
+        let out: Vec<String> = raw
+            .lines()
+            .map(|line| {
+                let t = line.trim();
+                if t.starts_with('[') {
+                    in_engram = t == "[mcp_servers.engram]";
+                } else if in_engram
+                    && t.starts_with("command")
+                    && t.split('"').nth(1).is_some_and(is_prerename_bin)
+                {
+                    repaired = true;
+                    return format!("command = \"{}\"", self.bin);
+                }
+                line.to_string()
+            })
+            .collect();
+        repaired.then(|| out.join("\n") + "\n")
+    }
+
     fn mcp_snippet(&self) -> String {
         format!(
             "\"engram\": {{ \"command\": \"{}\", \"args\": [\"mcp\", \"--db\", \"{}\"] }}",
@@ -225,7 +215,14 @@ impl Setup {
         if path.exists() {
             let current = fs::read_to_string(&path)?;
             if current.contains("\"engram\"") {
-                say(&format!("{label}: {rel} already has engram — leaving it"));
+                if let Some(next) = self.repaired_json_config(&current) {
+                    fs::write(&path, next)?;
+                    say(&format!(
+                        "{label}: re-pointed {rel}'s engram entry at this binary (was the pre-rename `engram`)"
+                    ));
+                } else {
+                    say(&format!("{label}: {rel} already has engram — leaving it"));
+                }
             } else {
                 say(&format!(
                     "{label}: {rel} exists — add this to its mcpServers manually:"
@@ -304,13 +301,23 @@ impl Setup {
         Ok(())
     }
 
+    /// Codex's MCP config is global (`~/.codex/config.toml`) and shared by the
+    /// CLI, the IDE extension, and the Codex/ChatGPT desktop app — the app
+    /// ignores project-local config entirely (openai/codex#13025). No --db, so
+    /// the graph resolves against the cwd: one entry serves every repo when
+    /// codex is launched from the repo root.
     fn wire_codex(&self) -> anyhow::Result<()> {
-        // Codex's MCP config is global; no --db so the graph resolves against
-        // the cwd — one entry serves every repo, launch codex from the root.
         let path = home_file(".codex/config.toml").context("no home directory")?;
         let current = fs::read_to_string(&path).unwrap_or_default();
         if current.contains("[mcp_servers.engram]") {
-            say("codex: ~/.codex/config.toml already has engram — leaving it");
+            if let Some(next) = self.repaired_codex_toml(&current) {
+                fs::write(&path, next)?;
+                say(
+                    "codex: re-pointed ~/.codex/config.toml's engram entry at this binary (was the pre-rename `engram`)",
+                );
+            } else {
+                say("codex: ~/.codex/config.toml already has engram — leaving it");
+            }
         } else {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)?;
@@ -323,6 +330,9 @@ impl Setup {
             fs::write(&path, s)?;
             say(
                 "codex: registered engram in ~/.codex/config.toml (launch codex from the repo root)",
+            );
+            say(
+                "codex: the desktop app may launch MCP servers from another cwd — if you use it, pin this repo there: add `cwd = \"<repo>\"` or `args = [\"mcp\", \"--db\", \"<repo>/.engram/graph.db\"]` to that entry (`engram-alpha doctor` checks this)",
             );
         }
         self.write_instructions("AGENTS.md")
@@ -344,7 +354,14 @@ impl Setup {
         if path.exists() {
             let current = fs::read_to_string(&path)?;
             if current.contains("\"engram\"") {
-                say(&format!("{label}: {rel} already has engram — leaving it"));
+                if let Some(next) = self.repaired_json_config(&current) {
+                    fs::write(&path, next)?;
+                    say(&format!(
+                        "{label}: re-pointed {rel}'s engram entry at this binary (was the pre-rename `engram`)"
+                    ));
+                } else {
+                    say(&format!("{label}: {rel} already has engram — leaving it"));
+                }
             } else {
                 say(&format!(
                     "{label}: {rel} exists — add this to its \"mcp\" block manually:"
@@ -375,6 +392,48 @@ mod tests {
     // The Claude Code plugin (claude-plugin/) ships verbatim copies of assets
     // whose canonical home is elsewhere in the repo — a symlink would break on
     // Windows checkouts, so these tests are the sync mechanism instead.
+
+    #[test]
+    fn prerename_detection() {
+        assert!(is_prerename_bin("/usr/local/bin/engram"));
+        assert!(is_prerename_bin("engram.exe"));
+        assert!(!is_prerename_bin("/usr/local/bin/engram-alpha"));
+        assert!(!is_prerename_bin("someones-engram"));
+    }
+
+    #[test]
+    fn prerename_wiring_is_repaired_in_every_config_shape() {
+        let s = Setup {
+            repo: PathBuf::from("/repo"),
+            bin: "/new/engram-alpha".into(),
+            db: "/repo/.engram/graph.db".into(),
+            variant: "relaxed".into(),
+            mcp_only: true,
+        };
+
+        // claude / gemini shape: mcpServers.engram.command
+        let raw = r#"{"mcpServers":{"engram":{"command":"/old/engram","args":["mcp","--db","/repo/.engram/graph.db"]},"other":{"command":"keep-me"}}}"#;
+        let fixed = s.repaired_json_config(raw).expect("repairs old command");
+        assert!(fixed.contains("/new/engram-alpha"));
+        assert!(fixed.contains("keep-me"), "unrelated servers survive");
+        assert!(s.repaired_json_config(&fixed).is_none(), "idempotent");
+
+        // opencode / kilo shape: mcp.engram.command array
+        let raw = r#"{"mcp":{"engram":{"type":"local","command":["/old/engram.exe","mcp"],"enabled":true}}}"#;
+        let fixed = s.repaired_json_config(raw).expect("repairs command array");
+        assert!(fixed.contains("/new/engram-alpha"));
+
+        // codex global TOML: only the engram section's command line changes
+        let raw = "[mcp_servers.other]\ncommand = \"/old/engram\"\n[mcp_servers.engram]\ncommand = \"/old/engram\"\nargs = [\"mcp\"]\n";
+        let fixed = s.repaired_codex_toml(raw).expect("repairs codex command");
+        assert!(fixed.contains("command = \"/new/engram-alpha\""));
+        assert_eq!(
+            fixed.matches("/new/engram-alpha").count(),
+            1,
+            "other sections untouched"
+        );
+        assert!(s.repaired_codex_toml(&fixed).is_none(), "idempotent");
+    }
 
     #[test]
     fn plugin_skill_matches_relaxed_variant() {

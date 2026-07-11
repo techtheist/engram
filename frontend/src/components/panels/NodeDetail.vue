@@ -5,8 +5,9 @@ import MarkdownView from '@/components/common/MarkdownView.vue'
 import SidePanel from '@/components/common/SidePanel.vue'
 import TagEditor from '@/components/common/TagEditor.vue'
 import { ALL_EDGE_TYPES, EDGE_COLOR, NODE_ACCENT_VAR } from '@/constants/ontology'
+import { api } from '@/services/api'
 import { useGraphStore } from '@/stores/graph'
-import type { EdgeType, GraphEdge } from '@/types/graph'
+import type { EdgeType, GraphEdge, TimelineEntry } from '@/types/graph'
 
 const store = useGraphStore()
 const { selected, nodes, edgeList, driftByNode } = storeToRefs(store)
@@ -117,6 +118,29 @@ const relations = computed<Relation[]>(() => {
 function title(id: string): string {
     return nodes.value.get(id)?.title ?? id.slice(0, 8)
 }
+
+// --- history (PLAN §10: timeline pane view) --------------------------------
+
+const timeline = ref<TimelineEntry[]>([])
+
+/** Only chain members carry a `replaces` edge — everyone else skips the fetch. */
+const inChain = computed(() => relations.value.some((r) => r.edge.type === 'replaces'))
+
+watch(
+    [() => selected.value?.id, inChain],
+    async ([id, chained]) => {
+        timeline.value = []
+        if (!id || !chained) return
+        try {
+            const chain = await api.timeline(id)
+            // The selection may have moved while the request was in flight.
+            if (selected.value?.id === id) timeline.value = chain
+        } catch {
+            // History is supplementary — a failed fetch just hides the section.
+        }
+    },
+    { immediate: true },
+)
 
 function fmtDate(secs: number | null): string {
     if (secs == null) return '—'
@@ -272,6 +296,34 @@ function close(): void {
                 </li>
             </ul>
             <p class="rel-hint">Drag between node handles on the canvas to add a connection.</p>
+        </section>
+
+        <section v-if="timeline.length > 1" class="block">
+            <h3 class="block-title">History</h3>
+            <ol class="timeline">
+                <li
+                    v-for="entry in timeline"
+                    :key="entry.id"
+                    class="tl-row"
+                    :class="{ current: entry.id === selected.id }"
+                >
+                    <span class="tl-dot" aria-hidden="true" />
+                    <div class="tl-item">
+                        <button
+                            class="tl-title"
+                            type="button"
+                            :disabled="entry.id === selected.id"
+                            @click="store.select(entry.id)"
+                        >
+                            {{ entry.title }}
+                        </button>
+                        <span class="tl-meta">
+                            {{ fmtDate(entry.created_at) }}<template v-if="entry.valid_until == null && !entry.replaced_note"> · current</template>
+                        </span>
+                        <p v-if="entry.replaced_note" class="tl-note">{{ entry.replaced_note }}</p>
+                    </div>
+                </li>
+            </ol>
         </section>
 
         <section class="block">
@@ -554,6 +606,92 @@ function close(): void {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.timeline {
+    display: flex;
+    flex-direction: column;
+    list-style: none;
+}
+
+.tl-row {
+    position: relative;
+    display: flex;
+    gap: 1rem;
+    padding-bottom: 1rem;
+}
+
+/* The connecting line between generation dots. */
+.tl-row::before {
+    content: '';
+    position: absolute;
+    top: 1.1rem;
+    bottom: -0.2rem;
+    left: 0.35rem;
+    width: 1px;
+    background-color: var(--border-subtle);
+}
+
+.tl-row:last-child {
+    padding-bottom: 0;
+}
+
+.tl-row:last-child::before {
+    display: none;
+}
+
+.tl-dot {
+    flex-shrink: 0;
+    width: 0.8rem;
+    height: 0.8rem;
+    margin-top: 0.4rem;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-full);
+    background-color: var(--surface-muted);
+}
+
+.tl-row.current .tl-dot {
+    border-color: var(--accent);
+    background-color: var(--accent);
+}
+
+.tl-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    min-width: 0;
+}
+
+.tl-title {
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: var(--text-body-sm);
+    text-align: left;
+    cursor: pointer;
+}
+
+.tl-title:hover:not(:disabled) {
+    color: var(--text-primary);
+    text-decoration: underline;
+}
+
+.tl-row.current .tl-title {
+    color: var(--text-primary);
+    font-weight: 600;
+    cursor: default;
+}
+
+.tl-meta {
+    font-size: var(--text-caption);
+    color: var(--text-tertiary);
+}
+
+.tl-note {
+    font-size: var(--text-caption);
+    font-style: italic;
+    color: var(--text-tertiary);
 }
 
 .meta {

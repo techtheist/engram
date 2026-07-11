@@ -3,7 +3,7 @@ import { join } from 'path'
 import * as vscode from 'vscode'
 
 /**
- * The `engram serve` URL. The daemon binds 8787 by default but walks to the
+ * The `engram-alpha serve` URL. The daemon binds 8787 by default but walks to the
  * next free port when it's taken (one daemon per repo makes collisions
  * routine) and records the result in `.engram/daemon.json` — so prefer that
  * file from the workspace, then the `engram.daemonUrl` setting.

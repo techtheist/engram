@@ -10,11 +10,11 @@ AI coding assistants — the *reasoning/decision* layer (why we chose this, what
 bit us, what's still open), shown as a graph you can see, edit, and own.
 
 The plugin is a thin client: it hosts the Engram pane (a Vue app) in a JCEF
-browser pointed at the local **`engram serve`** daemon — the same daemon your AI
+browser pointed at the local **`engram-alpha serve`** daemon — the same daemon your AI
 assistant reads from and writes to over MCP. Decisions, cautions, problems, and
 insights surface and update live as you work.
 
-One memory, every agent: the backend speaks MCP, so **Claude Code, Codex CLI,
+One memory, every agent: the backend speaks MCP, so **Claude Code, Codex (CLI and desktop app),
 Gemini CLI, OpenCode, Kilo, and Google Antigravity** all share the same per-repo graph (wire them
 with `install.sh --cli …`) — a decision captured by one assistant is recalled
 by the next.
@@ -24,7 +24,7 @@ by the next.
 ## Requirements
 
 - **The Engram backend.** The plugin renders nothing useful on its own; it
-  connects to `engram serve` on `http://127.0.0.1:8787`.
+  connects to `engram-alpha serve` on `http://127.0.0.1:8787`.
 - A JetBrains IDE on build **261** (2026.1) or later, with JCEF (the default in
   all standard IDE distributions).
 
@@ -34,12 +34,12 @@ by the next.
    ```sh
    curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh | sh
    ```
-   This installs the `engram` binary (checksum-verified, into `~/.local/bin`)
+   This installs the `engram-alpha` binary (checksum-verified, into `~/.local/bin`)
    and wires the repo for Claude Code (`.mcp.json` + the capture skill). On
    Windows, run the same command inside WSL2 — it installs the native
-   `engram.exe`. Then start the daemon:
+   `engram-alpha.exe`. Then start the daemon:
    ```sh
-   engram serve
+   engram-alpha serve
    ```
    This serves both the JSON API and the graph pane on port 8787.
 2. **Install this plugin** — from the JetBrains Marketplace (search **“Engram
@@ -73,13 +73,13 @@ as well as a monolithic IDE:
   (`EngramPanel`) that hosts the pane and handles the backend-down state. JCEF
   lives here because it must render on the frontend/client side in split mode.
 - **`backend`** — intentionally empty for now. The future home for backend-side
-  logic (e.g. managing the `engram serve` lifecycle) that must run on the backend
+  logic (e.g. managing the `engram-alpha serve` lifecycle) that must run on the backend
   IDE in split mode.
 - **`shared`** — cross-boundary contracts (DTOs/RPC) when the backend grows them.
 
 > Split-mode caveat: in a remote-dev session the JCEF browser runs on the client,
 > so `127.0.0.1:8787` is the *client's* localhost. Until the backend module
-> manages/forwards the daemon, run `engram serve` where the pane renders.
+> manages/forwards the daemon, run `engram-alpha serve` where the pane renders.
 
 ## Release & signing
 

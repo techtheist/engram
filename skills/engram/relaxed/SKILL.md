@@ -21,6 +21,7 @@ You interact with it through the `engram` MCP tools. Three jobs: **recall** (rea
 - Before any **non-trivial decision**, call `search` with a natural-language description of what you're about to do. Hits carry their **1-hop neighbors, `conflicts-with`/`replaces` first** — read those especially. If a prior Decision or Caution covers your situation, follow it or, if you're about to contradict it, surface that to the user.
 - Use `get_node` / `traverse` to pull the reasoning around a hit (e.g. a Decision and the Principle it stands on).
 - For **history**: `timeline` walks a node's `replaces` chain oldest-first, each retired generation carrying the note that explains why it was replaced. `audit` pages the mutation journal — "what changed while I was away", "who wrote this".
+- For **whole-graph work**: `list_nodes` pages complete nodes (full bodies, filters by type/status/tag) — the lossless read for reviews and exports like a decisions.md; `update_nodes` / `add_notes` batch a curation sweep or a multi-note capture into one call (same per-item dupe checks and warnings).
 - `list_open` shows the live worklist (open Problems and Intents) — check it when picking up work.
 
 ## Maintenance — keep the graph honest
@@ -124,11 +125,11 @@ Trust is **computed from timestamps**, not stored: a never-surfaced node starts 
 
 ## The daemon & where the user sees memory
 
-The graph UI is served by the local daemon — `engram serve`, one per repo, started in the repo root, default `http://127.0.0.1:8787`. If the default port is taken (another repo's daemon), the daemon takes the next free port and records the real one in `.engram/daemon.json` — **read that file first** when you need the URL. Your stdio MCP connection works without the daemon; it exists for the human.
+The graph UI is served by the local daemon — `engram-alpha serve`, one per repo, started in the repo root, default `http://127.0.0.1:8787`. If the default port is taken (another repo's daemon), the daemon takes the next free port and records the real one in `.engram/daemon.json` — **read that file first** when you need the URL. Your stdio MCP connection works without the daemon; it exists for the human.
 
 - If the user asks **where to see the memory** ("where did you save that?", "show me the graph"): point them to their IDE's Engram panel, or the pane at `http://127.0.0.1:8787` (mind a custom `--http-port`).
-- If the daemon isn't running (health check on that URL fails), **start it yourself**: run `engram serve --http-only` in the repo root as a background process, then share the URL.
-- If the `engram` binary is missing entirely, don't improvise an install — point the user at the project's GitHub releases / README instructions.
+- If the daemon isn't running (health check on that URL fails), **start it yourself**: run `engram-alpha serve --http-only` in the repo root as a background process, then share the URL.
+- If the `engram-alpha` binary is missing entirely, don't improvise an install — point the user at the project's GitHub releases / README instructions.
 
 ## Timing & etiquette
 

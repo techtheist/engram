@@ -11,7 +11,9 @@ import type {
     SearchHit,
     SuspectVerdict,
     SuspectView,
+    SystemInfo,
     TagStat,
+    TimelineEntry,
 } from '@/types/graph'
 
 declare global {
@@ -26,7 +28,7 @@ declare global {
  *  1. `window.__ENGRAM_API__` — a host (the VSCode webview loads a *bundled*
  *     SPA, so it can't use same-origin; it injects the daemon URL).
  *  2. `VITE_ENGRAM_API` — the Vite dev server points this at :8787.
- *  3. `''` (same origin) — the `engram serve` daemon serves the pane itself
+ *  3. `''` (same origin) — the `engram-alpha serve` daemon serves the pane itself
  *     (browser standalone, JetBrains JCEF), so relative URLs just work.
  */
 export const API_BASE: string =
@@ -97,6 +99,12 @@ export const api = {
 
     /** Nodes whose path-shaped code_refs no longer exist in the project. */
     drift: () => request<DriftEntry[]>('/drift'),
+
+    /** The node's `replaces` chain, oldest generation first. */
+    timeline: (id: string) => request<TimelineEntry[]>(`/nodes/${id}/timeline`),
+
+    /** Daemon-side diagnostics for the System info panel. */
+    system: () => request<SystemInfo>('/system'),
 
     resolveSuspect: (id: string, verdict: SuspectVerdict) =>
         request<{ edge: GraphEdge | null }>(`/conflicts/suspects/${id}/resolve`, {

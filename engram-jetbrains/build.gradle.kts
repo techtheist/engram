@@ -68,3 +68,9 @@ intellijPlatform {
         }
     }
 }
+
+// Ship the README inside the distribution zip so an install-from-disk user
+// gets the requirements/setup story offline (the Marketplace shows plugin.xml).
+tasks.named<Zip>("buildPlugin") {
+    from(layout.projectDirectory.file("README.md"))
+}

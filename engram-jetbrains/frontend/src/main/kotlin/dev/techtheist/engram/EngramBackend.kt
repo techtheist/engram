@@ -7,7 +7,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 /**
- * Local `engram` binary discovery and daemon startup, backing the tool
+ * Local `engram-alpha` binary discovery and daemon startup, backing the tool
  * window's setup card (PLAN §8 onboarding path 1: the plugin surfaces the
  * install one-liner; path 4: it can start an installed daemon itself).
  * Installation is never performed silently — the card only offers the
@@ -17,23 +17,32 @@ object EngramBackend {
     const val INSTALL_COMMAND: String =
         "curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh | sh"
 
-    /** PATH first, then the two conventional install locations. */
+    /**
+     * PATH first, then the two conventional install locations. The binary is
+     * `engram-alpha` since v0.4.0; a pre-rename `engram` install still counts.
+     */
     fun findBinary(): Path? {
-        val exe = if (SystemInfo.isWindows) "engram.exe" else "engram"
+        val names = if (SystemInfo.isWindows) {
+            listOf("engram-alpha.exe", "engram.exe")
+        } else {
+            listOf("engram-alpha", "engram")
+        }
         val home = System.getProperty("user.home")
         val candidates = buildList {
-            System.getenv("PATH")
-                ?.split(File.pathSeparator)
-                ?.filter { it.isNotBlank() }
-                ?.forEach { add(Path.of(it, exe)) }
-            add(Path.of(home, ".local", "bin", exe))
-            add(Path.of(home, ".cargo", "bin", exe))
+            for (exe in names) {
+                System.getenv("PATH")
+                    ?.split(File.pathSeparator)
+                    ?.filter { it.isNotBlank() }
+                    ?.forEach { add(Path.of(it, exe)) }
+                add(Path.of(home, ".local", "bin", exe))
+                add(Path.of(home, ".cargo", "bin", exe))
+            }
         }
         return candidates.firstOrNull { runCatching { Files.isExecutable(it) }.getOrDefault(false) }
     }
 
     /**
-     * Launch `engram serve` detached in the project root (the daemon resolves
+     * Launch `engram-alpha serve` detached in the project root (the daemon resolves
      * `--db` against its cwd — starting anywhere else creates a fresh empty
      * graph). Output goes to `.engram/serve.log`, same as deploy-pane.sh.
      */

@@ -6,7 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "engram"
+name = "engram-alpha"
 path = "src/main.rs"
 
 [dependencies]

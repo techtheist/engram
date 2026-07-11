@@ -13,6 +13,7 @@ import NodeCreatePanel from '@/components/panels/NodeCreatePanel.vue'
 import NodeDetail from '@/components/panels/NodeDetail.vue'
 import ReviewPanel from '@/components/panels/ReviewPanel.vue'
 import SettingsMenu from '@/components/panels/SettingsMenu.vue'
+import SystemInfoPanel from '@/components/panels/SystemInfoPanel.vue'
 import { useGraphStore } from '@/stores/graph'
 import { useThemeStore } from '@/stores/theme'
 import { useGraphSync } from '@/composables/useGraphSync'
@@ -87,6 +88,7 @@ onBeforeUnmount(() => store.disconnect())
     <NodeCreatePanel v-model="creating" />
     <MemoryLensPanel />
     <AuditPanel />
+    <SystemInfoPanel />
     <HealthStrip />
 
     <Transition name="fade">
@@ -95,7 +97,7 @@ onBeforeUnmount(() => store.disconnect())
 
     <Transition name="fade">
         <div v-if="error" class="overlay glass-panel error">
-            <p>Can't reach <code>engram serve</code>.</p>
+            <p>Can't reach <code>engram-alpha serve</code>.</p>
             <p class="overlay-detail">{{ error }}</p>
             <button class="retry" type="button" @click="store.load()">Retry</button>
         </div>

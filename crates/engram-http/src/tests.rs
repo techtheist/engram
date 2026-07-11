@@ -618,3 +618,25 @@ async fn audit_endpoint_pages_the_journal_with_pane_origin() {
             .all(|e| e["entity_id"] == id.as_str())
     );
 }
+
+#[tokio::test]
+async fn system_reports_version_store_and_wiring() {
+    // Mirror real daemon startup: build_engine stamps the embed composition.
+    let engine = Engine::new(
+        Store::open_in_memory().unwrap(),
+        Box::new(FakeEmbedder::default()),
+    );
+    engine.ensure_embed_composition().unwrap();
+    let app = app(engine);
+    req(&app, "POST", "/nodes", Some(decision("one", "body"))).await;
+
+    let (status, v) = req(&app, "GET", "/system", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(v["store"]["nodes"], 1);
+    assert_eq!(v["store"]["journal_mode"], "memory"); // in-memory test store
+    assert_eq!(v["store"]["integrity_ok"], true);
+    assert!(v["store"]["embed_composition_current"].as_bool().unwrap());
+    assert!(v["wiring"].is_array());
+    assert!(v["daemon"]["pid"].as_u64().unwrap() > 0);
+}

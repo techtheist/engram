@@ -12,11 +12,11 @@ Engram is a durable, graph-based long-term memory for AI coding assistants — t
 shown as a graph you can see, edit, and own.
 
 The extension hosts the Engram pane (the Vue app, **bundled into the extension**)
-in a Webview and talks to the local **`engram serve`** daemon — the same daemon
+in a Webview and talks to the local **`engram-alpha serve`** daemon — the same daemon
 your AI assistant reads from and writes to over MCP. Decisions, cautions,
 problems, and insights surface and update live as you work.
 
-One memory, every agent: the backend speaks MCP, so **Claude Code, Codex CLI,
+One memory, every agent: the backend speaks MCP, so **Claude Code, Codex (CLI and desktop app),
 Gemini CLI, OpenCode, Kilo, and Google Antigravity** all share the same per-repo graph (wire them
 with `install.sh --cli …`) — a decision captured by one assistant is recalled
 by the next.
@@ -33,15 +33,15 @@ by the next.
   curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh | sh
   ```
 
-  This installs the `engram` binary (checksum-verified, into `~/.local/bin`),
+  This installs the `engram-alpha` binary (checksum-verified, into `~/.local/bin`),
   writes the workspace `.mcp.json` for Claude Code, and installs the capture
   skill. On Windows, run the same command inside WSL2 — it installs the native
-  `engram.exe`. The pane and status bar connect to the daemon at
+  `engram-alpha.exe`. The pane and status bar connect to the daemon at
   `http://127.0.0.1:8787` (configurable via `engram.daemonUrl`).
 
 ## Use
 
-1. Run `engram serve` in your project.
+1. Run `engram-alpha serve` in your project.
 2. Open the **Engram** view from the activity bar (graph icon), or run
    **Engram: Open Graph in Editor** for a center-tab view.
 3. The **status bar** shows daemon connectivity; if the daemon is down the pane
@@ -55,10 +55,10 @@ to add an `engram` server to the workspace `.mcp.json` (it merges, never
 clobbers other servers):
 
 ```json
-{ "mcpServers": { "engram": { "command": "engram", "args": ["mcp", "--db", ".engram/graph.db"] } } }
+{ "mcpServers": { "engram": { "command": "engram-alpha", "args": ["mcp", "--db", ".engram/graph.db"] } } }
 ```
 
-Restart Claude Code to pick it up. Requires the `engram` binary on your PATH.
+Restart Claude Code to pick it up. Requires the `engram-alpha` binary on your PATH.
 
 ## Build
 

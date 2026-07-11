@@ -1,11 +1,11 @@
-# Engram installer for native Windows — fetches engram.exe, then hands repo
+# Engram installer for native Windows — fetches engram-alpha.exe, then hands repo
 # wiring to the binary itself:
 #
 #   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/techtheist/engram/main/install.ps1 | iex"
 #
 # Run it from your project's root. Downloads the Windows binary from GitHub
 # Releases (checksum-verified) into %LOCALAPPDATA%\Engram\bin, adds it to
-# your user PATH, and runs `engram setup` (auto-detects installed AI
+# your user PATH, and runs `engram-alpha setup` (auto-detects installed AI
 # assistants; wiring assets are embedded in the binary).
 #
 # With parameters (download once, then run):
@@ -35,7 +35,7 @@ if (-not $Version) {
     if (-not $Version) { throw "could not resolve the latest release tag" }
 }
 
-$asset = "engram-$Version-x86_64-pc-windows-msvc.exe"
+$asset = "engram-alpha-$Version-x86_64-pc-windows-msvc.exe"
 $url = "https://github.com/$repo/releases/download/$Version/$asset"
 $binDir = if ($env:ENGRAM_BIN_DIR) { $env:ENGRAM_BIN_DIR } else { Join-Path $env:LOCALAPPDATA "Engram\bin" }
 $tmp = Join-Path $env:TEMP "engram-install-$PID"
@@ -51,8 +51,8 @@ try {
     $actual = (Get-FileHash (Join-Path $tmp $asset) -Algorithm SHA256).Hash.ToLower()
     if ($actual -ne $expected) { throw "checksum mismatch - refusing to install" }
 
-    $exe = Join-Path $binDir "engram.exe"
-    Say "installing engram.exe to $binDir"
+    $exe = Join-Path $binDir "engram-alpha.exe"
+    Say "installing engram-alpha.exe to $binDir"
     Move-Item -Force (Join-Path $tmp $asset) $exe
 }
 finally {
@@ -65,18 +65,29 @@ if ($userPath -notlike "*$binDir*") {
     Say "added $binDir to your user PATH (new terminals pick it up)"
 }
 
+# v0.3.0 -> v0.4.0 cleanup: drop a stale pre-rename binary, but only if it is
+# actually OUR engram ("engram" is a contested name). Setup re-points wiring.
+$old = Join-Path $binDir "engram.exe"
+if (Test-Path $old) {
+    $help = (& $old --help 2>$null) | Out-String
+    if ($help -match "Durable graph memory") {
+        Remove-Item -Force $old
+        Say "removed the pre-rename engram.exe (the product binary is engram-alpha since v0.4.0)"
+    }
+}
+
 if ($BinOnly) { Say "done (binary only)"; exit 0 }
 
 $setupArgs = @("setup", "--skill", $Skill)
 if ($Cli) { $setupArgs += @("--cli", $Cli) }
 & $exe @setupArgs
 if ($LASTEXITCODE -ne 0) {
-    Say "no assistants detected - wire one explicitly: engram setup --cli claude"
+    Say "no assistants detected - wire one explicitly: engram-alpha setup --cli claude"
 }
 
 Write-Host ""
 Write-Host "Next steps:"
-Write-Host "  1. start the daemon in this repo:   engram serve"
+Write-Host "  1. start the daemon in this repo:   engram-alpha serve"
 Write-Host "     (first run downloads the local embedding model, ~30 MB)"
 Write-Host "  2. open the pane:                   http://127.0.0.1:8787"
-Write-Host "  3. restart your assistant's session. Later: engram update"
+Write-Host "  3. restart your assistant's session. Later: engram-alpha update"
