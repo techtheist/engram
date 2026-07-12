@@ -348,7 +348,13 @@ async fn pin_revoke_and_confirm_roundtrip() {
     assert!(revoked["approved_at"].is_null());
     assert!(revoked["trust_override"].is_null());
 
-    let (status, _) = req(&app, "POST", "/nodes/ghost/pin", Some(json!({ "value": 1.0 }))).await;
+    let (status, _) = req(
+        &app,
+        "POST",
+        "/nodes/ghost/pin",
+        Some(json!({ "value": 1.0 })),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 

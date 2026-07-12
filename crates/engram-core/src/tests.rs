@@ -504,7 +504,10 @@ fn trust_curves_follow_the_anchor_timestamps() {
     };
     let aged = t0 + policy::VOLATILE_TRUST_WINDOW_SECS + day;
     assert!((trust(&volatile, aged) - policy::TRUST_FLOOR).abs() < 1e-9);
-    assert!(trust(&ti(t0), aged) > policy::TRUST_FLOOR, "episodic outlives volatile");
+    assert!(
+        trust(&ti(t0), aged) > policy::TRUST_FLOOR,
+        "episodic outlives volatile"
+    );
 
     // staleness threshold
     assert!(policy::is_stale(policy::STALE_TRUST - 0.01));
@@ -528,7 +531,10 @@ fn stable_trust_holds_flat_until_evidence_demotes_it() {
         approved_at: Some(t0),
         ..stable
     };
-    assert_eq!(trust(&approved_stable, t0 + 3 * year), policy::TRUST_APPROVED_START);
+    assert_eq!(
+        trust(&approved_stable, t0 + 3 * year),
+        policy::TRUST_APPROVED_START
+    );
 
     // Contradicting evidence starts the ramp — from the event, not creation.
     let demoted = policy::TrustInputs {
@@ -536,7 +542,12 @@ fn stable_trust_holds_flat_until_evidence_demotes_it() {
         ..stable
     };
     assert_eq!(trust(&demoted, t0 + 2 * year), policy::TRUST_UNSEEN_START);
-    assert!(trust(&demoted, t0 + 2 * year + policy::PROVISIONAL_TRUST_WINDOW_SECS) < 0.05);
+    assert!(
+        trust(
+            &demoted,
+            t0 + 2 * year + policy::PROVISIONAL_TRUST_WINDOW_SECS
+        ) < 0.05
+    );
 
     // Pin overrides everything, including demotion.
     let pinned = policy::TrustInputs {
@@ -557,8 +568,14 @@ fn stable_trust_holds_flat_until_evidence_demotes_it() {
         ..ti(t0)
     };
     assert_eq!(trust(&open, t0 + 3 * year), policy::TRUST_UNSEEN_START);
-    assert!(policy::stale_since(&open).is_none(), "open never decays out");
-    assert!(policy::stale_since(&stable).is_none(), "stable never decays out");
+    assert!(
+        policy::stale_since(&open).is_none(),
+        "open never decays out"
+    );
+    assert!(
+        policy::stale_since(&stable).is_none(),
+        "stable never decays out"
+    );
     assert!(
         policy::stale_since(&ti(t0)).is_some(),
         "plain episodic still crosses"
@@ -593,7 +610,10 @@ fn exposure_does_not_preserve_the_false_note() {
         assert!(hits.iter().any(|h| h.id == false_note.id));
     }
     let surfaced = e.get_node(&false_note.id).unwrap().unwrap();
-    assert!(surfaced.last_seen.is_some(), "retrieval is still observable");
+    assert!(
+        surfaced.last_seen.is_some(),
+        "retrieval is still observable"
+    );
     assert!(
         surfaced.confirmed_at.is_none(),
         "…but being findable confirms nothing"
@@ -657,7 +677,11 @@ fn conflict_edges_demote_the_older_endpoint_but_never_pins() {
         .unwrap();
     backdate(&e, &old.id, 30);
     let newer = e
-        .add_node(new_node(NodeType::Decision, "sessions live in postgres", ""))
+        .add_node(new_node(
+            NodeType::Decision,
+            "sessions live in postgres",
+            "",
+        ))
         .unwrap();
 
     e.add_edge(NewEdge {
@@ -699,7 +723,11 @@ fn conflict_edges_demote_the_older_endpoint_but_never_pins() {
     })
     .unwrap();
     assert!(
-        e.get_node(&pinned.id).unwrap().unwrap().demoted_at.is_none(),
+        e.get_node(&pinned.id)
+            .unwrap()
+            .unwrap()
+            .demoted_at
+            .is_none(),
         "evidence surfaces in review, never silently unpins"
     );
 }
@@ -814,8 +842,12 @@ fn claude_replaces_verdict_cannot_archive_a_pinned_node() {
         .unwrap();
     backdate(&e, &pinned.id, 10);
     e.set_trust_override(&pinned.id, Some(1.0)).unwrap();
-    e.add_node(new_node(NodeType::Decision, "ship binaries via github!", ""))
-        .unwrap();
+    e.add_node(new_node(
+        NodeType::Decision,
+        "ship binaries via github!",
+        "",
+    ))
+    .unwrap();
     e.scan_conflicts().unwrap();
     let s = e.suspects().unwrap().remove(0);
     assert_eq!(s.b.id, pinned.id);
@@ -830,7 +862,13 @@ fn claude_replaces_verdict_cannot_archive_a_pinned_node() {
     // The user's own verdict proceeds — a human unsays a human's pin.
     e.resolve_suspect(&s.id, SuspectVerdict::Replaces, Source::User)
         .unwrap();
-    assert!(e.get_node(&pinned.id).unwrap().unwrap().valid_until.is_some());
+    assert!(
+        e.get_node(&pinned.id)
+            .unwrap()
+            .unwrap()
+            .valid_until
+            .is_some()
+    );
 }
 
 #[test]

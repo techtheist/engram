@@ -133,10 +133,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/nodes/{id}/edges", get(node_edges))
         .route("/nodes/{id}/reconfirm", post(reconfirm))
-        .route(
-            "/nodes/{id}/approve",
-            post(approve).delete(revoke_approval),
-        )
+        .route("/nodes/{id}/approve", post(approve).delete(revoke_approval))
         .route("/nodes/{id}/pin", post(pin))
         .route("/nodes/{id}/traverse", get(traverse))
         .route("/edges", post(create_edge))

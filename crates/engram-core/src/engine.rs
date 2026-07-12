@@ -314,7 +314,11 @@ impl Engine {
     pub fn set_trust_override(&self, id: &str, value: Option<f64>) -> Result<Node> {
         let before = self.store.get_node(id)?;
         let node = self.store.set_trust_override(id, value)?;
-        let action = if value.is_some() { "pinned" } else { "unpinned" };
+        let action = if value.is_some() {
+            "pinned"
+        } else {
+            "unpinned"
+        };
         self.audit_node(action, before.as_ref(), Some(&node))?;
         self.notify(ChangeEvent::NodeUpdated(node.clone()));
         Ok(node)
@@ -351,7 +355,10 @@ impl Engine {
     /// inside demote.)
     fn reconcile_conflict_demotion(&self, edge: &Edge) -> Result<()> {
         let live = edge.edge_type == EdgeType::ConflictsWith
-            && !matches!(edge.status, Some(EdgeStatus::Resolved | EdgeStatus::Dismissed));
+            && !matches!(
+                edge.status,
+                Some(EdgeStatus::Resolved | EdgeStatus::Dismissed)
+            );
         if live {
             if let (Some(a), Some(b)) = (
                 self.store.get_node(&edge.from_id)?,
