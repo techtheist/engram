@@ -35,9 +35,16 @@ export interface GraphNode {
     valid_from: number | null
     valid_until: number | null
     status: NodeStatus | null
+    /** Last retrieval surfacing (search/brief). Observability only — trust never reads it. */
     last_seen: number | null
+    /** Last deliberate act (update / "Confirm still true") — the unapproved trust anchor. */
+    confirmed_at: number | null
     approved_at: number | null
-    /** Computed by the backend at read time from the three timestamps. */
+    /** When contradicting evidence landed (judged conflict, drifted refs). */
+    demoted_at: number | null
+    /** User pin: constant trust (1.0 = pinned), decay and demotion off. */
+    trust_override: number | null
+    /** Computed by the backend at read time from the timestamps. */
     trust: number
     stale: boolean
     code_refs: string[]
@@ -180,7 +187,7 @@ export interface TimelineEntry {
 export interface AuditEntry {
     seq: number
     ts: number
-    /** created | updated | approved | archived | deleted | imported */
+    /** created | updated | approved | unapproved | pinned | unpinned | demoted | archived | deleted | imported */
     action: string
     /** node | edge | graph */
     entity: string

@@ -35,7 +35,8 @@ const NO_FILTERS: GraphFilters = {
     showArchived: true,
 }
 
-export function trustLevel(n: GraphNode): 'trusted' | 'provisional' | 'stale' {
+export function trustLevel(n: GraphNode): 'pinned' | 'trusted' | 'provisional' | 'stale' {
+    if (n.trust_override != null) return 'pinned'
     if (n.stale) return 'stale'
     return n.approved_at != null || n.trust >= TRUSTED_TRUST ? 'trusted' : 'provisional'
 }
@@ -284,9 +285,19 @@ export const useGraphStore = defineStore('graph', () => {
         upsertNode(await api.reconfirm(id))
     }
 
-    /** Explicit user approval: trust restarts at 100% on the slow curve. */
+    /** Explicit user approval: trust restarts at 100%. */
     async function approve(id: string): Promise<void> {
         upsertNode(await api.approve(id))
+    }
+
+    /** Withdraw an approval (and any pin): trust falls back to its anchor. */
+    async function revokeApproval(id: string): Promise<void> {
+        upsertNode(await api.revokeApproval(id))
+    }
+
+    /** Set (0..1, pin = 1.0) or clear (null) the constant-trust pin. */
+    async function pin(id: string, value: number | null): Promise<void> {
+        upsertNode(await api.pin(id, value))
     }
 
     async function setEdgeStatus(id: string, status: 'active' | 'resolved' | 'dismissed'): Promise<void> {
@@ -373,6 +384,8 @@ export const useGraphStore = defineStore('graph', () => {
         select,
         reconfirm,
         approve,
+        revokeApproval,
+        pin,
         setEdgeStatus,
         remove,
     }

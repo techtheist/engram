@@ -17,8 +17,11 @@ CREATE TABLE IF NOT EXISTS nodes (
   status      TEXT,
   code_refs   TEXT,
   tags        TEXT,               -- JSON array of user-facing slice labels
-  last_seen   INTEGER,            -- last time retrieval surfaced this node
-  approved_at INTEGER             -- last explicit approval; trust anchors here
+  last_seen   INTEGER,            -- last retrieval surfacing; observability only
+  confirmed_at INTEGER,           -- last deliberate act; the unapproved trust anchor
+  approved_at INTEGER,            -- last explicit approval; trust anchors here
+  demoted_at  INTEGER,            -- when contradicting evidence landed
+  trust_override REAL             -- user pin: constant trust, decay off
 );
 
 CREATE TABLE IF NOT EXISTS edges (
@@ -60,7 +63,7 @@ CREATE TABLE IF NOT EXISTS suspects (
 CREATE TABLE IF NOT EXISTS audit (
   seq         INTEGER PRIMARY KEY AUTOINCREMENT,
   ts          INTEGER NOT NULL,
-  action      TEXT NOT NULL,       -- created | updated | approved | archived | deleted | imported
+  action      TEXT NOT NULL,       -- created | updated | approved | unapproved | pinned | unpinned | demoted | undemoted | archived | deleted | imported
   entity      TEXT NOT NULL,       -- node | edge | graph
   entity_id   TEXT NOT NULL,
   title       TEXT,                -- display label snapshot; survives deletion

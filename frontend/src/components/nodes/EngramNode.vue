@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { Handle, Position, type NodeProps } from '@vue-flow/core'
 import MarkdownView from '@/components/common/MarkdownView.vue'
 import { NODE_ACCENT_VAR } from '@/constants/ontology'
+import { BADGE_TIPS } from '@/constants/trust'
 import type { GraphNode } from '@/types/graph'
 
 const props = defineProps<NodeProps<GraphNode>>()
@@ -12,6 +13,7 @@ const body = computed(() => node.value.body ?? '')
 const accent = computed(() => NODE_ACCENT_VAR[node.value.type])
 
 const archived = computed(() => node.value.valid_until != null)
+const pinned = computed(() => node.value.trust_override != null)
 const trusted = computed(() => node.value.approved_at != null || node.value.trust >= 0.7)
 const isUser = computed(() => node.value.source === 'user')
 </script>
@@ -29,10 +31,11 @@ const isUser = computed(() => node.value.source === 'user')
         <span class="meta-badge">{{ node.durability }}</span>
         <span v-if="node.status" class="meta-badge">{{ node.status }}</span>
         <span class="grow" />
-        <span v-if="node.stale" class="trust-badge trust-stale" title="Trust decayed below the stale threshold — review or re-approve">stale</span>
-        <span v-else-if="isUser" class="trust-badge trust-user" title="User-authored — trusted">user</span>
-        <span v-else-if="trusted" class="trust-badge trust-ok" title="Approved / recently seen — trusted">trusted</span>
-        <span v-else class="trust-badge trust-prov" title="Claude-authored, not yet approved">provisional</span>
+        <span v-if="pinned" class="trust-badge trust-pinned" :title="BADGE_TIPS.pinned">📌 pinned</span>
+        <span v-else-if="node.stale" class="trust-badge trust-stale" :title="BADGE_TIPS.stale">stale</span>
+        <span v-else-if="isUser" class="trust-badge trust-user" :title="BADGE_TIPS.user">user</span>
+        <span v-else-if="trusted" class="trust-badge trust-ok" :title="BADGE_TIPS.trusted">trusted</span>
+        <span v-else class="trust-badge trust-prov" :title="BADGE_TIPS.provisional">provisional</span>
     </header>
 
     <h4 class="node-title">{{ node.title }}</h4>
@@ -191,6 +194,13 @@ const isUser = computed(() => node.value.source === 'user')
     color: var(--trust-trusted);
     background-color: color-mix(in srgb, var(--trust-trusted) 16%, transparent);
     border-color: color-mix(in srgb, var(--trust-trusted) 40%, transparent);
+}
+
+.trust-pinned {
+    color: var(--interactive-primary);
+    background-color: color-mix(in srgb, var(--interactive-primary) 14%, transparent);
+    border-color: color-mix(in srgb, var(--interactive-primary) 40%, transparent);
+    white-space: nowrap;
 }
 
 .refs {

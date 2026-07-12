@@ -83,6 +83,17 @@ export const api = {
     reconfirm: (id: string) => request<GraphNode>(`/nodes/${id}/reconfirm`, { method: 'POST' }),
     approve: (id: string) => request<GraphNode>(`/nodes/${id}/approve`, { method: 'POST' }),
 
+    /** Withdraw an approval (and any pin) — trust falls back to its anchor. */
+    revokeApproval: (id: string) =>
+        request<GraphNode>(`/nodes/${id}/approve`, { method: 'DELETE' }),
+
+    /** Set (a number in 0..1, pin = 1.0) or clear (null) the constant-trust pin. */
+    pin: (id: string, value: number | null) =>
+        request<GraphNode>(`/nodes/${id}/pin`, {
+            method: 'POST',
+            body: JSON.stringify({ value }),
+        }),
+
     patchNode: (id: string, patch: Record<string, unknown>) =>
         request<GraphNode>(`/nodes/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
 

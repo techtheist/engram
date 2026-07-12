@@ -106,6 +106,31 @@ impl Store {
         if !column_exists(conn, "nodes", "tags")? {
             conn.execute_batch("ALTER TABLE nodes ADD COLUMN tags TEXT;")?;
         }
+        // Trust v2 (v0.4.2): retrieval stops certifying its own outputs.
+        // `confirmed_at` becomes the unapproved trust anchor (deliberate acts
+        // only); `last_seen` stays as observability. Backfilled from last_seen
+        // so no node loses trust at the moment of upgrade — the semantics
+        // change only going forward. Volatile nodes get a fresh anchor
+        // instead: v2 also shrinks their window 183d → 30d, and an old anchor
+        // under the new window would back-date their stale crossing past the
+        // decay TTL — silently archiving healthy notes on the next sweep.
+        if !column_exists(conn, "nodes", "confirmed_at")? {
+            conn.execute_batch(
+                "ALTER TABLE nodes ADD COLUMN confirmed_at INTEGER;
+                 UPDATE nodes SET confirmed_at = last_seen;",
+            )?;
+            conn.execute(
+                "UPDATE nodes SET confirmed_at = ?1 \
+                 WHERE durability = 'volatile' AND valid_until IS NULL",
+                params![now()],
+            )?;
+        }
+        if !column_exists(conn, "nodes", "demoted_at")? {
+            conn.execute_batch("ALTER TABLE nodes ADD COLUMN demoted_at INTEGER;")?;
+        }
+        if !column_exists(conn, "nodes", "trust_override")? {
+            conn.execute_batch("ALTER TABLE nodes ADD COLUMN trust_override REAL;")?;
+        }
         Ok(())
     }
 
@@ -254,6 +279,7 @@ impl Store {
                 (n.source == Source::User).then_some(created),
             ],
         )?;
+        // Trust anchors at created_at until a deliberate act confirms the node.
         self.get_node(&id)?.ok_or_else(|| Error::NotFound(id))
     }
 
@@ -297,9 +323,15 @@ impl Store {
             sets.push("tags=?");
             vals.push(Box::new(serde_json::to_string(&normalize_tags(&v))?));
         }
-        // Every update proves the node is still in use: refresh last_seen.
+        // A deliberate update is re-validation: it confirms the node (the
+        // unapproved trust anchor) and clears any evidence demotion. This —
+        // not retrieval — is what refreshes trust.
+        let ts = now();
         sets.push("last_seen=?");
-        vals.push(Box::new(now()));
+        vals.push(Box::new(ts));
+        sets.push("confirmed_at=?");
+        vals.push(Box::new(ts));
+        sets.push("demoted_at=NULL");
 
         let sql = format!("UPDATE nodes SET {} WHERE id=?", sets.join(", "));
         vals.push(Box::new(id.to_string()));
@@ -309,14 +341,60 @@ impl Store {
             .ok_or_else(|| Error::NotFound(id.to_string()))
     }
 
-    /// Stamp an explicit approval: trust restarts at its ceiling and decays
-    /// on the slow approved curve. Re-approving refreshes the stamp.
+    /// Stamp an explicit approval: trust restarts at its ceiling (and holds
+    /// there on stable knowledge until evidence says otherwise). Re-approving
+    /// refreshes the stamp; approval also clears any evidence demotion.
     pub fn approve(&self, id: &str) -> Result<Node> {
         let ts = now();
         self.conn.execute(
-            "UPDATE nodes SET approved_at=?1, last_seen=?2 WHERE id=?3",
-            params![ts, ts, id],
+            "UPDATE nodes SET approved_at=?1, last_seen=?1, confirmed_at=?1, demoted_at=NULL \
+             WHERE id=?2",
+            params![ts, id],
         )?;
+        self.get_node(id)?
+            .ok_or_else(|| Error::NotFound(id.to_string()))
+    }
+
+    /// Withdraw an approval: trust falls back to the confirmed/created anchor.
+    /// Also clears any pin — revoking is the "undo my endorsements" gesture.
+    pub fn revoke_approval(&self, id: &str) -> Result<Node> {
+        self.conn.execute(
+            "UPDATE nodes SET approved_at=NULL, trust_override=NULL WHERE id=?1",
+            [id],
+        )?;
+        self.get_node(id)?
+            .ok_or_else(|| Error::NotFound(id.to_string()))
+    }
+
+    /// Set (or clear, with `None`) the user's constant-trust pin. Values are
+    /// clamped to 0..=1; pin proper is 1.0.
+    pub fn set_trust_override(&self, id: &str, value: Option<f64>) -> Result<Node> {
+        self.conn.execute(
+            "UPDATE nodes SET trust_override=?1 WHERE id=?2",
+            params![value.map(|v| v.clamp(0.0, 1.0)), id],
+        )?;
+        self.get_node(id)?
+            .ok_or_else(|| Error::NotFound(id.to_string()))
+    }
+
+    /// Stamp contradicting evidence on a node — the event that starts the
+    /// decay ramp on stable knowledge. No-op when already demoted (the first
+    /// evidence started the clock) or pinned (a human said "forever"; the
+    /// contradiction still surfaces in review, but only a human demotes a
+    /// pin). Returns whether the stamp landed.
+    pub fn demote(&self, id: &str, ts: i64) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE nodes SET demoted_at=?1 \
+             WHERE id=?2 AND demoted_at IS NULL AND trust_override IS NULL",
+            params![ts, id],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Withdraw a demotion (the evidence that caused it is gone).
+    pub fn clear_demotion(&self, id: &str) -> Result<Node> {
+        self.conn
+            .execute("UPDATE nodes SET demoted_at=NULL WHERE id=?1", [id])?;
         self.get_node(id)?
             .ok_or_else(|| Error::NotFound(id.to_string()))
     }
@@ -364,8 +442,9 @@ impl Store {
         self.conn.execute(
             "INSERT INTO nodes
                (id, type, title, body, durability, source, session_id,
-                created_at, valid_from, valid_until, status, code_refs, tags, last_seen, approved_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
+                created_at, valid_from, valid_until, status, code_refs, tags, last_seen,
+                approved_at, confirmed_at, demoted_at, trust_override)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
              ON CONFLICT(id) DO UPDATE SET
                type=excluded.type, title=excluded.title, body=excluded.body,
                durability=excluded.durability, source=excluded.source,
@@ -373,7 +452,8 @@ impl Store {
                valid_from=excluded.valid_from, valid_until=excluded.valid_until,
                status=excluded.status, code_refs=excluded.code_refs,
                tags=excluded.tags, last_seen=excluded.last_seen,
-               approved_at=excluded.approved_at",
+               approved_at=excluded.approved_at, confirmed_at=excluded.confirmed_at,
+               demoted_at=excluded.demoted_at, trust_override=excluded.trust_override",
             params![
                 n.id,
                 n.node_type.as_str(),
@@ -390,6 +470,9 @@ impl Store {
                 tags,
                 n.last_seen,
                 n.approved_at,
+                n.confirmed_at,
+                n.demoted_at,
+                n.trust_override,
             ],
         )?;
         Ok(())
@@ -522,7 +605,8 @@ impl Store {
             "SELECT n.id, n.type, n.title, \
                     snippet(nodes_fts, -1, '{SNIPPET_OPEN}', '{SNIPPET_CLOSE}', '…', 12) AS snip, \
                     n.durability, n.status, bm25(nodes_fts) AS rank, \
-                    n.created_at, n.last_seen, n.approved_at \
+                    n.created_at, n.confirmed_at, n.approved_at, \
+                    n.demoted_at, n.trust_override \
              FROM nodes_fts JOIN nodes n ON n.rowid = nodes_fts.rowid \
              WHERE nodes_fts MATCH ?1 AND n.valid_until IS NULL",
         );
@@ -541,7 +625,22 @@ impl Store {
             let dur_s: String = row.get(4)?;
             let status_s: Option<String> = row.get(5)?;
             let rank: f64 = row.get(6)?;
-            let trust = crate::policy::trust(row.get(7)?, row.get(8)?, row.get(9)?, now());
+            let durability = conv(4, &dur_s, Durability::parse)?;
+            let status = status_s
+                .map(|s| conv(5, &s, NodeStatus::parse))
+                .transpose()?;
+            let trust = crate::policy::trust(
+                &crate::policy::TrustInputs {
+                    created_at: row.get(7)?,
+                    confirmed_at: row.get(8)?,
+                    approved_at: row.get(9)?,
+                    demoted_at: row.get(10)?,
+                    trust_override: row.get(11)?,
+                    durability,
+                    status,
+                },
+                now(),
+            );
             Ok(SearchHit {
                 id: row.get(0)?,
                 node_type: conv(1, &type_s, NodeType::parse)?,
@@ -549,10 +648,8 @@ impl Store {
                 snippet: row.get(3)?,
                 // bm25 returns smaller = better (negative); flip so higher = better.
                 score: -rank,
-                durability: conv(4, &dur_s, Durability::parse)?,
-                status: status_s
-                    .map(|s| conv(5, &s, NodeStatus::parse))
-                    .transpose()?,
+                durability,
+                status,
                 trust,
                 stale: crate::policy::is_stale(trust),
                 neighbors: Vec::new(),
@@ -919,13 +1016,14 @@ impl Store {
     // ---- decay (PLAN §6B) ----------------------------------------------------
 
     /// Nodes the decay pass would archive at `now_ts`: active, Claude-authored,
-    /// never approved, episodic/volatile, and stale for longer than `ttl_secs`
-    /// (policy::stale_since). Stable durability and user/approved knowledge
-    /// never auto-archive.
+    /// never approved, unpinned, episodic/volatile, and stale for longer than
+    /// `ttl_secs` (policy::stale_since). Stable durability, pins, and
+    /// user/approved knowledge never auto-archive.
     pub fn decay_candidates(&self, ttl_secs: i64, now_ts: i64) -> Result<Vec<Node>> {
         let sql = format!(
             "{NODE_SELECT} WHERE valid_until IS NULL AND source='claude' \
-             AND approved_at IS NULL AND durability IN ('episodic','volatile') \
+             AND approved_at IS NULL AND trust_override IS NULL \
+             AND durability IN ('episodic','volatile') \
              ORDER BY created_at"
         );
         let mut stmt = self.conn.prepare(&sql)?;
@@ -933,9 +1031,7 @@ impl Store {
         let mut out = Vec::new();
         for node in rows {
             let node = node?;
-            let Some(since) =
-                crate::policy::stale_since(node.created_at, node.last_seen, node.approved_at)
-            else {
+            let Some(since) = crate::policy::stale_since(&node.trust_inputs()) else {
                 continue;
             };
             if now_ts - since >= ttl_secs {
@@ -1064,12 +1160,15 @@ impl Store {
         )?)
     }
 
-    /// Current (non-archived) nodes of one type, most trusted first.
+    /// Current (non-archived) nodes of one type, most trusted first. Ordered
+    /// by deliberate-act timestamps, never last_seen — otherwise the brief
+    /// would re-select whatever it briefed yesterday (inclusion stamps
+    /// last_seen), a self-reinforcing loop.
     pub fn nodes_by_type_active(&self, t: NodeType, limit: usize) -> Result<Vec<Node>> {
         let sql = format!(
             "{NODE_SELECT} WHERE valid_until IS NULL AND type=?1 \
-             ORDER BY (approved_at IS NOT NULL) DESC, \
-             COALESCE(approved_at, last_seen, created_at) DESC, rowid DESC LIMIT ?2"
+             ORDER BY (trust_override IS NOT NULL) DESC, (approved_at IS NOT NULL) DESC, \
+             COALESCE(approved_at, confirmed_at, created_at) DESC, rowid DESC LIMIT ?2"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![t.as_str(), limit as i64], row_to_node)?;
@@ -1121,8 +1220,9 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Stamp `last_seen`: being surfaced by retrieval (search hit, brief
-    /// inclusion) is what keeps a node's trust alive.
+    /// Stamp `last_seen`: retrieval surfaced these nodes (search hit, brief
+    /// inclusion). Observability only — retrieval proves a note was findable,
+    /// not that it is true, so trust never reads this stamp.
     pub fn touch(&self, ids: &[String]) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
@@ -1167,6 +1267,14 @@ fn trust_boost(node: &Node) -> f64 {
         Durability::Episodic => {}
         Durability::Volatile => b -= 0.05,
     }
+    // Small type prior: the reasoning canon (why / decided / what-bit-us)
+    // outranks scratch on near-ties. A ranking preference only — type never
+    // touches trust itself, durability is the decay knob.
+    match node.node_type {
+        NodeType::Principle | NodeType::Caution => b += 0.05,
+        NodeType::Decision | NodeType::Insight => b += 0.04,
+        _ => {}
+    }
     b += 0.15 * node.trust;
     b
 }
@@ -1177,7 +1285,8 @@ fn excerpt(node: &Node) -> String {
 }
 
 const NODE_SELECT: &str = "SELECT id, type, title, body, durability, source, session_id, \
-     created_at, valid_from, valid_until, status, code_refs, last_seen, approved_at, tags FROM nodes";
+     created_at, valid_from, valid_until, status, code_refs, last_seen, approved_at, tags, \
+     confirmed_at, demoted_at, trust_override FROM nodes";
 
 const EDGE_SELECT: &str = "SELECT id, type, from_id, to_id, source, created_at, \
      confidence, strength, note, valid_from, valid_until, status FROM edges WHERE id=?1";
@@ -1229,23 +1338,42 @@ fn row_to_node(row: &Row) -> rusqlite::Result<Node> {
     let last_seen: Option<i64> = row.get(12)?;
     let approved_at: Option<i64> = row.get(13)?;
     let tags_s: Option<String> = row.get(14)?;
-    let trust = crate::policy::trust(created_at, last_seen, approved_at, now());
+    let confirmed_at: Option<i64> = row.get(15)?;
+    let demoted_at: Option<i64> = row.get(16)?;
+    let trust_override: Option<f64> = row.get(17)?;
+    let durability = conv(4, &dur_s, Durability::parse)?;
+    let status = status_s
+        .map(|s| conv(10, &s, NodeStatus::parse))
+        .transpose()?;
+    let trust = crate::policy::trust(
+        &crate::policy::TrustInputs {
+            created_at,
+            confirmed_at,
+            approved_at,
+            demoted_at,
+            trust_override,
+            durability,
+            status,
+        },
+        now(),
+    );
     Ok(Node {
         id: row.get(0)?,
         node_type: conv(1, &type_s, NodeType::parse)?,
         title: row.get(2)?,
         body: row.get(3)?,
-        durability: conv(4, &dur_s, Durability::parse)?,
+        durability,
         source: conv(5, &src_s, Source::parse)?,
         session_id: row.get(6)?,
         created_at,
         valid_from: row.get(8)?,
         valid_until: row.get(9)?,
-        status: status_s
-            .map(|s| conv(10, &s, NodeStatus::parse))
-            .transpose()?,
+        status,
         last_seen,
+        confirmed_at,
         approved_at,
+        demoted_at,
+        trust_override,
         trust,
         stale: crate::policy::is_stale(trust),
         code_refs: match refs_s {

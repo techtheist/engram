@@ -270,20 +270,52 @@ impl Engine {
         Ok(node)
     }
 
-    /// Reconfirm a node without changing its content: refreshes `last_seen`,
-    /// restarting trust on the seen curve. Use when a surfaced node proves
-    /// still accurate (PLAN §6A trust model).
+    /// Confirm a node still true without changing its content: stamps
+    /// `confirmed_at` (restarting trust on the confirmed curve) and clears
+    /// any evidence demotion. A deliberate act — the pane's "Confirm still
+    /// true" — unlike retrieval, which never refreshes trust (PLAN §6A).
     pub fn reconfirm(&self, id: &str) -> Result<Node> {
         self.update_node(id, NodePatch::default())
     }
 
-    /// Explicit approval: trust restarts at its ceiling on the slow approved
-    /// curve. User action in the pane, or the assistant **only on explicit
-    /// user demand / verbatim verification** (enforced by skill policy).
+    /// Explicit approval: trust restarts at its ceiling — and on stable
+    /// knowledge holds there until contradicting evidence lands. User action
+    /// in the pane, or the assistant **only on explicit user demand /
+    /// verbatim verification** (enforced by skill policy).
     pub fn approve(&self, id: &str) -> Result<Node> {
         let before = self.store.get_node(id)?;
         let node = self.store.approve(id)?;
         self.audit_node("approved", before.as_ref(), Some(&node))?;
+        self.notify(ChangeEvent::NodeUpdated(node.clone()));
+        Ok(node)
+    }
+
+    /// Withdraw an approval (and any pin): trust falls back to the
+    /// confirmed/created anchor. User-only, like the endorsements it undoes.
+    pub fn revoke_approval(&self, id: &str) -> Result<Node> {
+        let before = self.store.get_node(id)?;
+        let node = self.store.revoke_approval(id)?;
+        // Journal what was actually withdrawn — the pane offers this action
+        // on pinned-but-never-approved nodes too.
+        let action = match &before {
+            Some(b) if b.approved_at.is_some() => "unapproved",
+            Some(b) if b.trust_override.is_some() => "unpinned",
+            _ => return Ok(node), // nothing to withdraw — no-op, no row
+        };
+        self.audit_node(action, before.as_ref(), Some(&node))?;
+        self.notify(ChangeEvent::NodeUpdated(node.clone()));
+        Ok(node)
+    }
+
+    /// Set or clear the constant-trust pin (PLAN §6A trust v2). Pin = 1.0;
+    /// any 0..=1 value is allowed; `None` unpins. Pinned nodes never decay,
+    /// never auto-archive, and evidence events skip them — user-only, the
+    /// durable-memory counterpart of hard delete.
+    pub fn set_trust_override(&self, id: &str, value: Option<f64>) -> Result<Node> {
+        let before = self.store.get_node(id)?;
+        let node = self.store.set_trust_override(id, value)?;
+        let action = if value.is_some() { "pinned" } else { "unpinned" };
+        self.audit_node(action, before.as_ref(), Some(&node))?;
         self.notify(ChangeEvent::NodeUpdated(node.clone()));
         Ok(node)
     }
@@ -306,7 +338,60 @@ impl Engine {
         let edge = self.store.add_edge(e)?;
         self.audit_edge("created", None, Some(&edge))?;
         self.notify(ChangeEvent::EdgeAdded(edge.clone()));
+        self.reconcile_conflict_demotion(&edge)?;
         Ok(edge)
+    }
+
+    /// Keep endpoint demotions in lockstep with the edge's conflict state:
+    /// a live `conflicts-with` is the evidence event that starts decay on the
+    /// older claim — stable knowledge loses trust to evidence, never to time
+    /// — and evidence that is withdrawn (edge resolved, dismissed, retyped,
+    /// deleted) must take its demotion with it, or an innocent node keeps
+    /// decaying after the contradiction is gone. (Pinned nodes are skipped
+    /// inside demote.)
+    fn reconcile_conflict_demotion(&self, edge: &Edge) -> Result<()> {
+        let live = edge.edge_type == EdgeType::ConflictsWith
+            && !matches!(edge.status, Some(EdgeStatus::Resolved | EdgeStatus::Dismissed));
+        if live {
+            if let (Some(a), Some(b)) = (
+                self.store.get_node(&edge.from_id)?,
+                self.store.get_node(&edge.to_id)?,
+            ) {
+                let older = if a.created_at <= b.created_at { a } else { b };
+                self.demote_node(&older, crate::store::now())?;
+            }
+        } else {
+            for id in [&edge.from_id, &edge.to_id] {
+                self.undemote_if_unconflicted(id)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Stamp contradicting evidence on a node, with the journal row and SSE
+    /// update a trust change deserves. No-op when already demoted or pinned.
+    fn demote_node(&self, before: &Node, ts: i64) -> Result<()> {
+        if self.store.demote(&before.id, ts)?
+            && let Some(node) = self.store.get_node(&before.id)?
+        {
+            self.audit_node("demoted", Some(before), Some(&node))?;
+            self.notify(ChangeEvent::NodeUpdated(node));
+        }
+        Ok(())
+    }
+
+    /// Clear a node's demotion once no live `conflicts-with` edge touches it.
+    fn undemote_if_unconflicted(&self, id: &str) -> Result<()> {
+        let Some(before) = self.store.get_node(id)? else {
+            return Ok(());
+        };
+        if before.demoted_at.is_none() || self.store.has_active_conflict(id)? {
+            return Ok(());
+        }
+        let node = self.store.clear_demotion(id)?;
+        self.audit_node("undemoted", Some(&before), Some(&node))?;
+        self.notify(ChangeEvent::NodeUpdated(node));
+        Ok(())
     }
 
     pub fn update_edge(&self, id: &str, p: EdgePatch) -> Result<Edge> {
@@ -314,6 +399,9 @@ impl Engine {
         let edge = self.store.update_edge(id, p)?;
         self.audit_edge("updated", before.as_ref(), Some(&edge))?;
         self.notify(ChangeEvent::EdgeUpdated(edge.clone()));
+        // Retyping to conflicts-with is evidence arriving; resolving,
+        // dismissing, or retyping away is evidence withdrawn.
+        self.reconcile_conflict_demotion(&edge)?;
         Ok(edge)
     }
 
@@ -325,6 +413,13 @@ impl Engine {
         if removed {
             self.audit_edge("deleted", before.as_ref(), None)?;
             self.notify(ChangeEvent::EdgeDeleted(id.to_string()));
+            if let Some(b) = &before
+                && b.edge_type == EdgeType::ConflictsWith
+            {
+                for endpoint in [&b.from_id, &b.to_id] {
+                    self.undemote_if_unconflicted(endpoint)?;
+                }
+            }
         }
         Ok(removed)
     }
@@ -403,6 +498,15 @@ impl Engine {
                 value: graph.version.to_string(),
             });
         }
+        // Pre-trust-v2 exports carry last_seen but no confirmed_at; restore
+        // the same backfill the schema migration applies, or every imported
+        // node's trust anchor collapses to created_at and a healthy backup
+        // comes back stale (and decay-eligible).
+        let mut nodes = graph.nodes;
+        for n in &mut nodes {
+            n.confirmed_at = n.confirmed_at.or(n.last_seen);
+        }
+        let graph = ExportGraph { nodes, ..graph };
         self.store.import_raw(&graph.nodes, &graph.edges)?;
         for n in &graph.nodes {
             self.embed_node(n)?;
@@ -880,9 +984,13 @@ impl Engine {
     /// Verified code refs (PLAN §10): current nodes whose path-shaped
     /// code_refs no longer exist under `root` have drifted — the code moved
     /// or was deleted and the memory didn't follow. A contradiction between
-    /// the graph and reality, surfaced for review like a conflict. Free-text
-    /// responsibility labels (anything with whitespace) are not checkable
-    /// and never drift.
+    /// the graph and reality, surfaced for review like a conflict. Reporting
+    /// only — drift deliberately does NOT demote: the scan runs on every pane
+    /// load against an environment-dependent root (a wrong cwd or a feature
+    /// branch with files temporarily gone would mass-stamp sticky demotions
+    /// across the graph). Judged conflicts are the demotion trigger; drift is
+    /// a review queue. Free-text responsibility labels (anything with
+    /// whitespace) are not checkable and never drift.
     pub fn scan_code_refs(&self, root: &std::path::Path) -> Result<Vec<Drift>> {
         let mut out = Vec::new();
         for node in self.store.all_nodes()? {
@@ -983,6 +1091,19 @@ impl Engine {
                 status: None,
             })?),
             SuspectVerdict::Replaces => {
+                // A pin is the user's "never fade" — an assistant verdict
+                // must not archive it. Surface instead; the user can still
+                // replace it from the pane (a user verdict proceeds).
+                if source == Source::Claude
+                    && let Some(older) = self.store.get_node(&suspect.b_id)?
+                    && older.trust_override.is_some()
+                {
+                    return Err(crate::Error::Pinned(format!(
+                        "\"{}\" ({}) is user-pinned; a replaces verdict would archive it — \
+                         tell the user and let them judge this pair in the pane",
+                        older.title, older.id
+                    )));
+                }
                 let edge = self.add_edge(NewEdge {
                     edge_type: EdgeType::Replaces,
                     from_id: suspect.a_id.clone(),
@@ -1153,6 +1274,9 @@ fn node_line(n: &Node, excerpt_max: usize) -> String {
     if let Some(status) = n.status {
         line.push(' ');
         line.push_str(status.as_str());
+    }
+    if n.trust_override.is_some() {
+        line.push_str(" PINNED");
     }
     if n.stale {
         line.push_str(" STALE");

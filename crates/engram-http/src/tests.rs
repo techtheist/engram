@@ -297,6 +297,62 @@ async fn reconfirm_stamps_last_seen_and_approve_maxes_trust() {
 }
 
 #[tokio::test]
+async fn pin_revoke_and_confirm_roundtrip() {
+    let app = test_app();
+    let (_, n) = req(&app, "POST", "/nodes", Some(decision("Pinnable", "x"))).await;
+    let id = n["id"].as_str().unwrap();
+
+    // Pin: constant trust, stale off, survives everything until unpinned.
+    let (status, pinned) = req(
+        &app,
+        "POST",
+        &format!("/nodes/{id}/pin"),
+        Some(json!({ "value": 1.0 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(pinned["trust_override"].as_f64().unwrap(), 1.0);
+    assert_eq!(pinned["trust"].as_f64().unwrap(), 1.0);
+
+    // Arbitrary constant values are allowed and clamped to 0..=1.
+    let (_, odd) = req(
+        &app,
+        "POST",
+        &format!("/nodes/{id}/pin"),
+        Some(json!({ "value": 1.4 })),
+    )
+    .await;
+    assert_eq!(odd["trust_override"].as_f64().unwrap(), 1.0);
+
+    // null clears the pin.
+    let (_, unpinned) = req(
+        &app,
+        "POST",
+        &format!("/nodes/{id}/pin"),
+        Some(json!({ "value": null })),
+    )
+    .await;
+    assert!(unpinned["trust_override"].is_null());
+
+    // Revoke approval: drops approved_at (and any pin) back to the anchor.
+    req(&app, "POST", &format!("/nodes/{id}/approve"), None).await;
+    req(
+        &app,
+        "POST",
+        &format!("/nodes/{id}/pin"),
+        Some(json!({ "value": 1.0 })),
+    )
+    .await;
+    let (status, revoked) = req(&app, "DELETE", &format!("/nodes/{id}/approve"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(revoked["approved_at"].is_null());
+    assert!(revoked["trust_override"].is_null());
+
+    let (status, _) = req(&app, "POST", "/nodes/ghost/pin", Some(json!({ "value": 1.0 }))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn invalid_node_type_is_400() {
     let app = test_app();
     let (status, _) = req(&app, "GET", "/search?q=x&types=Nonsense", None).await;

@@ -24,8 +24,13 @@ const conflictCount = computed(
 )
 const provisionalCount = computed(
     () =>
-        activeNodes.value.filter((n) => n.source === 'claude' && n.approved_at == null && !n.stale)
-            .length,
+        activeNodes.value.filter(
+            (n) =>
+                n.source === 'claude' &&
+                n.approved_at == null &&
+                n.trust_override == null &&
+                !n.stale,
+        ).length,
 )
 
 const attention = computed(

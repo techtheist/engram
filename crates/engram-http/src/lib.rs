@@ -133,7 +133,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/nodes/{id}/edges", get(node_edges))
         .route("/nodes/{id}/reconfirm", post(reconfirm))
-        .route("/nodes/{id}/approve", post(approve))
+        .route(
+            "/nodes/{id}/approve",
+            post(approve).delete(revoke_approval),
+        )
+        .route("/nodes/{id}/pin", post(pin))
         .route("/nodes/{id}/traverse", get(traverse))
         .route("/edges", post(create_edge))
         .route(
@@ -550,6 +554,41 @@ async fn approve(
     Ok(Json(node))
 }
 
+/// Withdraw an approval (and any pin) — trust falls back to the
+/// confirmed/created anchor.
+async fn revoke_approval(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<Node>, AppError> {
+    let exists = state.engine().get_node(&id)?.is_some();
+    if !exists {
+        return Err(AppError::NotFound);
+    }
+    let node = state.engine().revoke_approval(&id)?;
+    Ok(Json(node))
+}
+
+#[derive(Deserialize)]
+struct PinBody {
+    /// Constant trust in 0..=1 (pin = 1.0); null clears the pin.
+    value: Option<f64>,
+}
+
+/// Set or clear the constant-trust pin (trust v2). User-only, like the
+/// hard delete — the MCP server deliberately exposes no counterpart.
+async fn pin(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<PinBody>,
+) -> Result<Json<Node>, AppError> {
+    let exists = state.engine().get_node(&id)?.is_some();
+    if !exists {
+        return Err(AppError::NotFound);
+    }
+    let node = state.engine().set_trust_override(&id, body.value)?;
+    Ok(Json(node))
+}
+
 async fn export(State(state): State<Arc<AppState>>) -> Result<Json<ExportGraph>, AppError> {
     let graph = state.engine().export()?;
     Ok(Json(graph))
@@ -655,6 +694,7 @@ impl IntoResponse for AppError {
             AppError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
             AppError::Core(Error::NotFound(s)) => (StatusCode::NOT_FOUND, s),
             AppError::Core(e @ Error::Parse { .. }) => (StatusCode::BAD_REQUEST, e.to_string()),
+            AppError::Core(e @ Error::Pinned(_)) => (StatusCode::CONFLICT, e.to_string()),
             AppError::Core(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
             AppError::Serde(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
         };

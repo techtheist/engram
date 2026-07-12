@@ -40,8 +40,16 @@ repair a wrong link with `unlink` / `update_edge`. When the brief lists \
 suspected conflicts, judge them early via `resolve_suspect` (conflict | \
 replaces | dismiss) — the scan only finds candidates; you are the judge. \
 Nodes carry computed \
-`trust` (0..1, from created_at/last_seen/approved_at) and `stale` (trust < \
-0.3 — verify before relying; refresh with `update_node` if still true). \
+`trust` (0..1) and `stale` (trust < 0.3 — verify before relying). Trust reads \
+only deliberate acts: updates (confirmed_at) and approvals; retrieval never \
+refreshes it — being findable proves nothing. Stable-durability knowledge \
+holds its trust flat until a judged conflict demotes it (withdrawing the \
+conflict withdraws the demotion; drift is review-only and never demotes); \
+episodic/volatile knowledge decays with time. If a stale node is still true, \
+say so with `update_node` — that is what restores trust. Pinned nodes \
+(constant trust, set by the user in the pane) are marked PINNED in the brief; \
+pinning and unpinning are user-only gestures, and a `replaces` verdict that \
+would archive a pinned node is refused — surface it to the user instead. \
 Nodes can carry free-form `tags` — how the user slices the graph (phases, \
 concerns). Reuse the recent tags the brief lists before inventing new ones; \
 an unknown tag is simply created. \
@@ -103,8 +111,8 @@ impl Engram {
         description = "Hybrid semantic + keyword search over the memory graph. \
         Hits carry: type, title, snippet, score, trust (computed 0..1), stale \
         (true = decayed trust, verify before relying), status, and 1-hop \
-        neighbors (conflicts-with/replaces first). Being returned refreshes a \
-        node's last_seen."
+        neighbors (conflicts-with/replaces first). Being returned stamps \
+        last_seen for observability only — retrieval never refreshes trust."
     )]
     async fn search(
         &self,
@@ -375,10 +383,11 @@ impl Engram {
         ok_json(&json!({ "ok": true, "edge": edge }))
     }
 
-    #[tool(description = "Approve a node: trust restarts at 100% on the slow \
-        one-year curve. ONLY on explicit user demand, or after verifying the \
-        node's content word-by-word against current reality. Routine \
-        still-relevant signals belong in update_node/reconfirm, not here.")]
+    #[tool(description = "Approve a node: trust restarts at 100% (and holds \
+        there on stable knowledge until contradicting evidence lands). ONLY on \
+        explicit user demand, or after verifying the node's content \
+        word-by-word against current reality. Routine still-relevant signals \
+        belong in update_node, not here.")]
     async fn approve_node(
         &self,
         Parameters(a): Parameters<ApproveArgs>,
@@ -389,10 +398,12 @@ impl Engram {
 
     #[tool(
         description = "Update fields on an existing node (merge / reclassify / \
-        refresh its trust via last_seen). Re-embeds when any indexed field \
-        changes. Read the response like add_note's: `warnings` and `suspects` \
-        carry the same act-now duties (judge suspects via resolve_suspect; \
-        surface real contradictions to the user)."
+        confirm still true). A deliberate update stamps confirmed_at — the \
+        unapproved trust anchor — and clears any evidence demotion; this is \
+        how a verified-still-true stale node gets its trust back. Re-embeds \
+        when any indexed field changes. Read the response like add_note's: \
+        `warnings` and `suspects` carry the same act-now duties (judge \
+        suspects via resolve_suspect; surface real contradictions to the user)."
     )]
     async fn update_node(
         &self,
@@ -473,7 +484,8 @@ impl Engram {
 
     #[tool(description = "Full-fidelity paged read of the graph: complete nodes \
         (whole body, tags, status, durability, code_refs, computed trust) with \
-        optional filters — types, status, tag, include_archived. This is the \
+        optional filters — types, status, tag, include_archived, pinned \
+        (pinned: true reads the user's constant-trust canon). This is the \
         lossless bulk read for reviews and exports: building a decisions.md \
         means paging every Decision with its full body, which search snippets \
         and the budgeted brief cannot provide. Newest first; `total` is the \
@@ -499,6 +511,7 @@ impl Engram {
                 && (types.is_empty() || types.contains(&n.node_type))
                 && status.is_none_or(|s| n.status == Some(s))
                 && tag.as_ref().is_none_or(|t| n.tags.contains(t))
+                && a.pinned.is_none_or(|p| n.trust_override.is_some() == p)
         });
         // Ids are time-sortable, so this is newest-first creation order.
         nodes.sort_by(|x, y| y.id.cmp(&x.id));
@@ -809,6 +822,9 @@ struct ListNodesArgs {
     /// Also return archived (superseded) generations. Default false.
     #[serde(default)]
     include_archived: Option<bool>,
+    /// true = only user-pinned (constant-trust) nodes; false = only unpinned.
+    #[serde(default)]
+    pinned: Option<bool>,
     /// Page size (default 30, max 200).
     #[serde(default)]
     limit: Option<usize>,
@@ -920,7 +936,9 @@ fn hierarchy(
 fn map_err(e: Error) -> ErrorData {
     match e {
         Error::NotFound(s) => ErrorData::invalid_params(format!("not found: {s}"), None),
-        e @ Error::Parse { .. } => ErrorData::invalid_params(e.to_string(), None),
+        e @ (Error::Parse { .. } | Error::Pinned(_)) => {
+            ErrorData::invalid_params(e.to_string(), None)
+        }
         e => ErrorData::internal_error(e.to_string(), None),
     }
 }
@@ -1342,6 +1360,7 @@ mod tool_tests {
                 status: None,
                 tag: None,
                 include_archived: None,
+                pinned: None,
                 limit: None,
                 offset: None,
             }))
@@ -1364,6 +1383,7 @@ mod tool_tests {
                 status: None,
                 tag: Some("hygiene".into()),
                 include_archived: None,
+                pinned: None,
                 limit: None,
                 offset: None,
             }))

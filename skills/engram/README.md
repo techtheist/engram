@@ -6,7 +6,7 @@ The skill that teaches Claude when to read from and write to the Engram graph sh
 |---|---|---|
 | [`relaxed/`](./relaxed/SKILL.md) | Only durable, high-value knowledge: principles, major decisions, genuinely hard problem/resolutions. Fewer, better nodes. | **Recommended default.** |
 | [`normal/`](./normal/SKILL.md) | + cautions, selective insights, finer-grained decisions, intents worth carrying. | You want a fuller graph without the firehose. |
-| [`aggressive/`](./aggressive/SKILL.md) | Everything: every decision, insight, proactive caution, TODO. Engram becomes the spine of the project's decision history; trust decay prunes what never gets reused. | Dogfooding, heavy multi-session projects, or growing a knowledge base fast. |
+| [`aggressive/`](./aggressive/SKILL.md) | Everything: every decision, insight, proactive caution, TODO. Engram becomes the spine of the project's decision history; trust decay prunes episodic scratch that never gets re-confirmed. | Dogfooding, heavy multi-session projects, or growing a knowledge base fast. |
 
 ## Install
 

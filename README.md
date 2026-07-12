@@ -26,7 +26,7 @@
 ![Engram pane in VS Code's secondary sidebar: the memory graph fills in while the assistant explains the project](.screenshots/engram-alpha-vscode.png)
 </details>
 
-Unlike a flat note pile, Engram's graph is *active*: superseded knowledge is archived behind a `replaces` edge instead of silently contradicting the new canon, look-alike claims get flagged and judged, contradictions become visible `conflicts-with` edges, and trust decays on anything that never proves useful. On a medium or large project that is the difference between a memory you still trust after six months and a memory you quietly stop reading.
+Unlike a flat note pile, Engram's graph is *active*: superseded knowledge is archived behind a `replaces` edge instead of silently contradicting the new canon, look-alike claims get flagged and judged, contradictions become visible `conflicts-with` edges, and trust fades on scratch that never gets re-confirmed — while stable decisions hold their trust until actual contradicting evidence lands, and anything you pin never fades at all. On a medium or large project that is the difference between a memory you still trust after six months and a memory you quietly stop reading.
 
 The payoff shows up the second time something goes wrong. When your assistant gets stuck on a problem it has fought before — a flaky build step, a library quirk, a config trap — the graph already holds the artifacts from last time: the **Problem**, the **Resolution** that answered it, and the **Caution** that would have prevented it. Instead of rediscovering the fix from scratch, the assistant recalls it and applies it.
 
@@ -62,7 +62,7 @@ Skyline reads like a history, Nebula shows what clusters, Archipelago separates 
 
 ### Focus on one feature at a time — tags
 
-Nodes carry free-form tags, settable by you in the pane or by the assistant on request (*"tag everything about the auth rewrite"*). The filter menu turns the graph into slices: one click on a tag chip and the canvas shows only that concern; combine it with type, status (`open`/`resolved`/`obsolete`), trust (`provisional`/`trusted`), and durability filters to get views like *"open problems in the retrieval layer"* or *"every unreviewed decision from phase 2"*.
+Nodes carry free-form tags, settable by you in the pane or by the assistant on request (*"tag everything about the auth rewrite"*). The filter menu turns the graph into slices: one click on a tag chip and the canvas shows only that concern; combine it with type, status (`open`/`resolved`/`obsolete`), trust (`pinned`/`provisional`/`trusted`/`stale`), and durability filters to get views like *"open problems in the retrieval layer"* or *"every unreviewed decision from phase 2"*.
 
 <img src=".screenshots/engram-alpha-filter-and-tags-feature.png" width="170" alt="The filter menu: colored type chips, the project's tag vocabulary, and status / trust / durability filters — nine filters active">
 
@@ -201,15 +201,23 @@ Edges read as English sentences: a Decision **because** a Principle, a Resolutio
 
 ## Trust & decay
 
-Memory tools die from noise, so every node's **trust is computed live** from three timestamps — no background process has to run for the graph to stay honest:
+Memory tools die from noise, so every node's **trust is computed live** from its timestamps — no background process has to run for the graph to stay honest. Two rules decide what may move it:
 
-- **Just written** → trust starts at **50%** and fades linearly toward 1% over half a year.
-- **Surfaced by retrieval** (a search hit, the session brief) → the node proved useful; trust restarts at **60%** from that moment, fading on the same half-year curve. Knowledge that keeps getting used keeps itself alive.
-- **Approved** — by you in the pane's review queue, or by the assistant *only on your explicit demand* → trust restarts at **100%** and fades slowly to a 20% floor over a year. Re-approve anytime to reset it.
-- Below **30%** a node is **stale**: badged in the pane, flagged to the assistant in search results and the brief, and queued in Review for your verdict — refresh it, supersede it, or delete it. Nothing is ever silently removed; hard-delete stays yours alone.
-- Search folds this in: results rank by relevance × trust, with a small recency bonus, so fresh, living knowledge wins near-ties against stale look-alikes.
+**Time doesn't validate.** Whether trust fades at all depends on durability:
 
-The net effect: capture can be liberal, because whatever never proves useful quietly fades out of the way.
+- **Stable** knowledge (decisions, principles, cautions) **holds its trust flat forever** — a production constraint that only matters during one migration a year later is exactly as trusted on that day as when you wrote it. It loses trust only to *evidence*: a judged `conflicts-with` against a newer claim. Editing or approving the node clears the demotion — repair is re-validation — and so does withdrawing the conflict itself (dismiss, resolve, or delete the edge). Drifted code refs are surfaced for review but never demote on their own: the drift scan depends on where the daemon runs, and a wrong working directory must not be able to bury your graph.
+- **Episodic** notes fade over about six months, **volatile** ones over about a month. Open Problems and Intents never fade while open — a worklist is not archaeology.
+
+**Exposure doesn't validate.** Retrieval (a search hit, brief inclusion) records `last seen` for observability, but never refreshes trust — being findable proves a note was findable, not that it's true. Trust anchors move only on deliberate acts:
+
+- **Just written** → **50%**.
+- **Confirmed** — any deliberate edit, or one click of *Confirm still true* in the pane → restarts at **60%**.
+- **Approved** — by you in the pane, or by the assistant *only on your explicit demand* → restarts at **100%** (and on stable knowledge holds there until evidence says otherwise).
+- **Pinned** — 📌 in the pane, yours alone → trust locked at 100% (or any constant you set): never decays, never auto-archives, and contradicting evidence can only *flag* it for your review, never silently demote it. Pinned nodes are badged on the canvas and filterable as their own slice.
+
+Below **30%** a node is **stale**: badged in the pane, flagged to the assistant in search results and the brief, and queued in Review for your verdict — refresh it, supersede it, or delete it. Nothing is ever silently removed; hard-delete stays yours alone. Every card explains its own number in plain words ("Confirmed 3 months ago, holding at 60%: stable knowledge does not decay with time"), so *why is trust this?* never needs a manual.
+
+Search folds this in: results rank by relevance × trust, with a small recency bonus, so fresh, living knowledge wins near-ties against stale look-alikes. The net effect: capture can be liberal, because a wrong-but-attractive note can't keep itself alive by being retrieved — it fades or dies of a judged conflict — while the rare true constraint survives its quiet year untouched.
 
 ## Stack
 Rust core (`rmcp`, `rusqlite`, `sqlite-vec`, `fastembed`) · Vue 3 + TypeScript + Vue Flow · JetBrains (JCEF) & VSCode (Webview) wrappers · MIT licensed.

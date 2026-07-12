@@ -449,46 +449,428 @@ fn export_order_is_stable() {
     );
 }
 
+/// Baseline TrustInputs: unconfirmed, unapproved, undemoted, unpinned episodic.
+fn ti(created_at: i64) -> policy::TrustInputs {
+    policy::TrustInputs {
+        created_at,
+        confirmed_at: None,
+        approved_at: None,
+        demoted_at: None,
+        trust_override: None,
+        durability: Durability::Episodic,
+        status: None,
+    }
+}
+
 #[test]
-fn trust_curves_follow_the_three_timestamps() {
+fn trust_curves_follow_the_anchor_timestamps() {
     use crate::policy::{self, trust};
     let day = 24 * 60 * 60;
     let t0 = 1_000_000i64;
 
-    // created-only: 50% now, linear to the floor at half a year
-    assert!((trust(t0, None, None, t0) - policy::TRUST_UNSEEN_START).abs() < 1e-9);
+    // created-only episodic: 50% now, linear to the floor at half a year
+    assert!((trust(&ti(t0), t0) - policy::TRUST_UNSEEN_START).abs() < 1e-9);
     let half_window = t0 + policy::PROVISIONAL_TRUST_WINDOW_SECS / 2;
-    let mid = trust(t0, None, None, half_window);
+    let mid = trust(&ti(t0), half_window);
     assert!((mid - (policy::TRUST_UNSEEN_START + policy::TRUST_FLOOR) / 2.0).abs() < 1e-6);
     assert!(
-        (trust(
-            t0,
-            None,
-            None,
-            t0 + policy::PROVISIONAL_TRUST_WINDOW_SECS + day
-        ) - policy::TRUST_FLOOR)
+        (trust(&ti(t0), t0 + policy::PROVISIONAL_TRUST_WINDOW_SECS + day) - policy::TRUST_FLOOR)
             .abs()
             < 1e-9
     );
 
-    // seen: restarts at 60% from last_seen, beats created-only
-    let seen = trust(t0, Some(t0 + 100 * day), None, t0 + 100 * day);
-    assert!((seen - policy::TRUST_SEEN_START).abs() < 1e-9);
-    assert!(seen > trust(t0, None, None, t0 + 100 * day));
+    // confirmed: restarts at 60% from confirmed_at, beats created-only
+    let confirmed = policy::TrustInputs {
+        confirmed_at: Some(t0 + 100 * day),
+        ..ti(t0)
+    };
+    assert!((trust(&confirmed, t0 + 100 * day) - policy::TRUST_CONFIRMED_START).abs() < 1e-9);
+    assert!(trust(&confirmed, t0 + 100 * day) > trust(&ti(t0), t0 + 100 * day));
 
-    // approved: 100% at approval, floor 20% past a year, wins over last_seen
-    assert!((trust(t0, Some(t0), Some(t0), t0) - policy::TRUST_APPROVED_START).abs() < 1e-9);
-    let old_approval = trust(
-        t0,
-        None,
-        Some(t0),
-        t0 + policy::APPROVED_TRUST_WINDOW_SECS + day,
-    );
-    assert!((old_approval - policy::TRUST_APPROVED_FLOOR).abs() < 1e-9);
+    // approved: 100% at approval, floor 20% past a year, wins over confirmed
+    let approved = policy::TrustInputs {
+        approved_at: Some(t0),
+        confirmed_at: Some(t0),
+        ..ti(t0)
+    };
+    assert!((trust(&approved, t0) - policy::TRUST_APPROVED_START).abs() < 1e-9);
+    let old = trust(&approved, t0 + policy::APPROVED_TRUST_WINDOW_SECS + day);
+    assert!((old - policy::TRUST_APPROVED_FLOOR).abs() < 1e-9);
+
+    // volatile rots on the short window
+    let volatile = policy::TrustInputs {
+        durability: Durability::Volatile,
+        ..ti(t0)
+    };
+    let aged = t0 + policy::VOLATILE_TRUST_WINDOW_SECS + day;
+    assert!((trust(&volatile, aged) - policy::TRUST_FLOOR).abs() < 1e-9);
+    assert!(trust(&ti(t0), aged) > policy::TRUST_FLOOR, "episodic outlives volatile");
 
     // staleness threshold
     assert!(policy::is_stale(policy::STALE_TRUST - 0.01));
     assert!(!policy::is_stale(policy::STALE_TRUST));
+}
+
+#[test]
+fn stable_trust_holds_flat_until_evidence_demotes_it() {
+    use crate::policy::{self, trust};
+    let year = 365 * 24 * 60 * 60;
+    let t0 = 1_000_000i64;
+    let stable = policy::TrustInputs {
+        durability: Durability::Stable,
+        ..ti(t0)
+    };
+
+    // Time alone never moves stable knowledge — the redditor's rare
+    // production constraint survives its quiet year at full anchor value.
+    assert_eq!(trust(&stable, t0 + 3 * year), policy::TRUST_UNSEEN_START);
+    let approved_stable = policy::TrustInputs {
+        approved_at: Some(t0),
+        ..stable
+    };
+    assert_eq!(trust(&approved_stable, t0 + 3 * year), policy::TRUST_APPROVED_START);
+
+    // Contradicting evidence starts the ramp — from the event, not creation.
+    let demoted = policy::TrustInputs {
+        demoted_at: Some(t0 + 2 * year),
+        ..stable
+    };
+    assert_eq!(trust(&demoted, t0 + 2 * year), policy::TRUST_UNSEEN_START);
+    assert!(trust(&demoted, t0 + 2 * year + policy::PROVISIONAL_TRUST_WINDOW_SECS) < 0.05);
+
+    // Pin overrides everything, including demotion.
+    let pinned = policy::TrustInputs {
+        trust_override: Some(1.0),
+        ..demoted
+    };
+    assert_eq!(trust(&pinned, t0 + 3 * year), 1.0);
+    // Constant overrides are clamped to 0..=1.
+    let odd = policy::TrustInputs {
+        trust_override: Some(1.7),
+        ..stable
+    };
+    assert_eq!(trust(&odd, t0), 1.0);
+
+    // Open worklist items are never buried by age.
+    let open = policy::TrustInputs {
+        status: Some(NodeStatus::Open),
+        ..ti(t0)
+    };
+    assert_eq!(trust(&open, t0 + 3 * year), policy::TRUST_UNSEEN_START);
+    assert!(policy::stale_since(&open).is_none(), "open never decays out");
+    assert!(policy::stale_since(&stable).is_none(), "stable never decays out");
+    assert!(
+        policy::stale_since(&ti(t0)).is_some(),
+        "plain episodic still crosses"
+    );
+}
+
+/// The sandbox tester's adversarial scenario: a frequently retrieved false
+/// note vs a rarely retrieved true constraint. Exposure must not preserve the
+/// false one — retrieval never refreshes trust — while the stable constraint
+/// holds without ever being surfaced.
+#[test]
+fn exposure_does_not_preserve_the_false_note() {
+    let e = engine();
+    let false_note = e
+        .add_node(episodic(NodeType::Insight, "attractive but wrong claim"))
+        .unwrap();
+    let constraint = e
+        .add_node(new_node(
+            NodeType::Caution,
+            "rare but true production constraint",
+            "only matters during the yearly migration",
+        ))
+        .unwrap();
+
+    // Age both past the episodic stale crossing + decay TTL.
+    backdate(&e, &false_note.id, 100);
+    backdate(&e, &constraint.id, 100);
+
+    // Broad recurring searches keep surfacing the false note...
+    for _ in 0..5 {
+        let hits = e.search("attractive wrong claim", &[], 5).unwrap();
+        assert!(hits.iter().any(|h| h.id == false_note.id));
+    }
+    let surfaced = e.get_node(&false_note.id).unwrap().unwrap();
+    assert!(surfaced.last_seen.is_some(), "retrieval is still observable");
+    assert!(
+        surfaced.confirmed_at.is_none(),
+        "…but being findable confirms nothing"
+    );
+    assert!(surfaced.stale, "exposure did not keep the false note alive");
+
+    // The decay pass takes the exposed false note and spares the quiet truth.
+    let archived = e.decay(policy::DECAY_TTL_DAYS, false).unwrap();
+    assert_eq!(archived, vec![false_note.id.clone()]);
+    let kept = e.get_node(&constraint.id).unwrap().unwrap();
+    assert!(kept.valid_until.is_none());
+    assert_eq!(kept.trust, policy::TRUST_UNSEEN_START, "stable holds flat");
+}
+
+#[test]
+fn deliberate_acts_confirm_and_clear_demotion() {
+    let e = engine();
+    let n = e
+        .add_node(new_node(NodeType::Decision, "we use postgres", ""))
+        .unwrap();
+    assert!(n.confirmed_at.is_none());
+
+    // Confirm still true (the pane's […] action) stamps the trust anchor.
+    let confirmed = e.reconfirm(&n.id).unwrap();
+    assert!(confirmed.confirmed_at.is_some());
+
+    // Evidence demotes; a later deliberate update clears the demotion.
+    e.store().demote(&n.id, now()).unwrap();
+    let demoted = e.get_node(&n.id).unwrap().unwrap();
+    assert!(demoted.demoted_at.is_some());
+    let repaired = e
+        .update_node(
+            &n.id,
+            NodePatch {
+                body: Some("verified against prod 2026-07".into()),
+                ..NodePatch::default()
+            },
+        )
+        .unwrap();
+    assert!(repaired.demoted_at.is_none(), "repair is re-validation");
+
+    // Approval also clears demotion and restores the ceiling.
+    e.store().demote(&n.id, now()).unwrap();
+    let approved = e.approve(&n.id).unwrap();
+    assert!(approved.demoted_at.is_none());
+    assert!(approved.trust > 0.99);
+
+    // Revoking drops back to the confirmed anchor and clears any pin.
+    e.set_trust_override(&n.id, Some(1.0)).unwrap();
+    let revoked = e.revoke_approval(&n.id).unwrap();
+    assert!(revoked.approved_at.is_none());
+    assert!(revoked.trust_override.is_none());
+    assert!((revoked.trust - policy::TRUST_CONFIRMED_START).abs() < 1e-6);
+}
+
+#[test]
+fn conflict_edges_demote_the_older_endpoint_but_never_pins() {
+    let e = engine();
+    let old = e
+        .add_node(new_node(NodeType::Decision, "sessions live in redis", ""))
+        .unwrap();
+    backdate(&e, &old.id, 30);
+    let newer = e
+        .add_node(new_node(NodeType::Decision, "sessions live in postgres", ""))
+        .unwrap();
+
+    e.add_edge(NewEdge {
+        edge_type: EdgeType::ConflictsWith,
+        from_id: newer.id.clone(),
+        to_id: old.id.clone(),
+        source: Source::Claude,
+        note: None,
+        confidence: None,
+        strength: None,
+        status: None,
+    })
+    .unwrap();
+    let demoted = e.get_node(&old.id).unwrap().unwrap();
+    assert!(demoted.demoted_at.is_some(), "older claim starts decaying");
+    assert!(
+        e.get_node(&newer.id).unwrap().unwrap().demoted_at.is_none(),
+        "newer claim stands"
+    );
+
+    // A pinned node never demotes silently — a human said forever.
+    let pinned = e
+        .add_node(new_node(NodeType::Decision, "auth flows through oauth", ""))
+        .unwrap();
+    backdate(&e, &pinned.id, 30);
+    e.set_trust_override(&pinned.id, Some(1.0)).unwrap();
+    let challenger = e
+        .add_node(new_node(NodeType::Decision, "auth flows through saml", ""))
+        .unwrap();
+    e.add_edge(NewEdge {
+        edge_type: EdgeType::ConflictsWith,
+        from_id: challenger.id.clone(),
+        to_id: pinned.id.clone(),
+        source: Source::Claude,
+        note: None,
+        confidence: None,
+        strength: None,
+        status: None,
+    })
+    .unwrap();
+    assert!(
+        e.get_node(&pinned.id).unwrap().unwrap().demoted_at.is_none(),
+        "evidence surfaces in review, never silently unpins"
+    );
+}
+
+#[test]
+fn pinned_nodes_never_decay_out_and_brief_marks_them() {
+    let e = engine();
+    let pinned = e
+        .add_node(episodic(NodeType::Insight, "pinned scratch note"))
+        .unwrap();
+    e.set_trust_override(&pinned.id, Some(1.0)).unwrap();
+    backdate(&e, &pinned.id, 400);
+
+    assert!(e.decay(policy::DECAY_TTL_DAYS, true).unwrap().is_empty());
+    let n = e.get_node(&pinned.id).unwrap().unwrap();
+    assert_eq!(n.trust, 1.0);
+    assert!(!n.stale);
+    assert!(
+        e.brief(8000).unwrap().contains("PINNED"),
+        "the assistant sees the pin"
+    );
+}
+
+#[test]
+fn drift_scan_reports_but_never_demotes() {
+    let e = engine();
+    let n = e
+        .add_node(NewNode {
+            code_refs: vec!["src/vanished.rs".into()],
+            ..new_node(NodeType::Decision, "refers to moved code", "")
+        })
+        .unwrap();
+    let drifted = e.scan_code_refs(std::path::Path::new(".")).unwrap();
+    assert_eq!(drifted.len(), 1);
+    // The scan runs on every pane load against an environment-dependent
+    // root — a wrong cwd must not be able to mass-demote the graph.
+    let after = e.get_node(&n.id).unwrap().unwrap();
+    assert!(after.demoted_at.is_none(), "drift is review, not evidence");
+}
+
+#[test]
+fn withdrawing_conflict_evidence_withdraws_the_demotion() {
+    let e = engine();
+    let old = e
+        .add_node(new_node(NodeType::Decision, "config lives in toml", ""))
+        .unwrap();
+    backdate(&e, &old.id, 30);
+    let newer = e
+        .add_node(new_node(NodeType::Decision, "config lives in yaml", ""))
+        .unwrap();
+    let conflict = |from: &str, to: &str| NewEdge {
+        edge_type: EdgeType::ConflictsWith,
+        from_id: from.to_string(),
+        to_id: to.to_string(),
+        source: Source::Claude,
+        note: None,
+        confidence: None,
+        strength: None,
+        status: None,
+    };
+
+    // Dismissing the edge clears the demotion it caused.
+    let edge = e.add_edge(conflict(&newer.id, &old.id)).unwrap();
+    assert!(e.get_node(&old.id).unwrap().unwrap().demoted_at.is_some());
+    e.update_edge(
+        &edge.id,
+        EdgePatch {
+            status: Some(EdgeStatus::Dismissed),
+            ..EdgePatch::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        e.get_node(&old.id).unwrap().unwrap().demoted_at.is_none(),
+        "evidence withdrawn — the innocent node stops decaying"
+    );
+
+    // Deleting the edge clears it too.
+    let edge = e.add_edge(conflict(&newer.id, &old.id)).unwrap();
+    assert!(e.get_node(&old.id).unwrap().unwrap().demoted_at.is_some());
+    e.delete_edge(&edge.id).unwrap();
+    assert!(e.get_node(&old.id).unwrap().unwrap().demoted_at.is_none());
+
+    // Retyping an existing edge TO conflicts-with demotes (the documented
+    // mislink-repair path must carry the same evidence semantics as link).
+    let mislink = e
+        .add_edge(NewEdge {
+            edge_type: EdgeType::BuildsOn,
+            ..conflict(&newer.id, &old.id)
+        })
+        .unwrap();
+    assert!(e.get_node(&old.id).unwrap().unwrap().demoted_at.is_none());
+    e.update_edge(
+        &mislink.id,
+        EdgePatch {
+            edge_type: Some(EdgeType::ConflictsWith),
+            ..EdgePatch::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        e.get_node(&old.id).unwrap().unwrap().demoted_at.is_some(),
+        "retype-to-conflict is evidence arriving"
+    );
+}
+
+#[test]
+fn claude_replaces_verdict_cannot_archive_a_pinned_node() {
+    let e = engine();
+    let pinned = e
+        .add_node(new_node(NodeType::Decision, "ship binaries via github", ""))
+        .unwrap();
+    backdate(&e, &pinned.id, 10);
+    e.set_trust_override(&pinned.id, Some(1.0)).unwrap();
+    e.add_node(new_node(NodeType::Decision, "ship binaries via github!", ""))
+        .unwrap();
+    e.scan_conflicts().unwrap();
+    let s = e.suspects().unwrap().remove(0);
+    assert_eq!(s.b.id, pinned.id);
+
+    let err = e
+        .resolve_suspect(&s.id, SuspectVerdict::Replaces, Source::Claude)
+        .unwrap_err();
+    assert!(matches!(err, crate::Error::Pinned(_)), "got: {err:?}");
+    let still = e.get_node(&pinned.id).unwrap().unwrap();
+    assert!(still.valid_until.is_none(), "the pin held");
+
+    // The user's own verdict proceeds — a human unsays a human's pin.
+    e.resolve_suspect(&s.id, SuspectVerdict::Replaces, Source::User)
+        .unwrap();
+    assert!(e.get_node(&pinned.id).unwrap().unwrap().valid_until.is_some());
+}
+
+#[test]
+fn import_backfills_confirmed_at_like_the_migration() {
+    let e = engine();
+    // A pre-trust-v2 export: last_seen kept the node alive, confirmed_at
+    // doesn't exist in the JSON (deserializes to None).
+    let day = 24 * 60 * 60;
+    let seen = now() - 10 * day;
+    let node = Node {
+        id: "aaaaaaaaaaaa".into(),
+        node_type: NodeType::Insight,
+        title: "healthy on v0.4.1".into(),
+        body: None,
+        durability: Durability::Episodic,
+        source: Source::Claude,
+        session_id: None,
+        created_at: now() - 200 * day,
+        valid_from: None,
+        valid_until: None,
+        status: None,
+        last_seen: Some(seen),
+        confirmed_at: None,
+        approved_at: None,
+        demoted_at: None,
+        trust_override: None,
+        trust: 0.0,
+        stale: false,
+        code_refs: vec![],
+        tags: vec![],
+    };
+    e.import(ExportGraph {
+        version: EXPORT_VERSION,
+        nodes: vec![node],
+        edges: vec![],
+    })
+    .unwrap();
+    let restored = e.get_node("aaaaaaaaaaaa").unwrap().unwrap();
+    assert_eq!(restored.confirmed_at, Some(seen), "anchor restored");
+    assert!(!restored.stale, "a healthy backup restores healthy");
 }
 
 #[test]
@@ -864,7 +1246,10 @@ fn legacy_uuid_ids_shrink_with_edges_and_embeddings_intact() {
         valid_until: None,
         status: None,
         last_seen: None,
+        confirmed_at: None,
         approved_at: None,
+        demoted_at: None,
+        trust_override: None,
         trust: 0.0,
         stale: false,
         code_refs: vec![],

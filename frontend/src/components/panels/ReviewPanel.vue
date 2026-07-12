@@ -33,10 +33,16 @@ const conflicts = computed(() =>
 )
 
 // Needs a human eye: never-approved Claude nodes, plus anything whose
-// computed trust has gone stale (stale first, then newest).
+// computed trust has gone stale (stale first, then newest). A pin is an
+// endorsement at least as strong as approval — pinned nodes are reviewed.
 const provisional = computed(() =>
     nodeList.value
-        .filter((n) => active(n) && ((n.source === 'claude' && n.approved_at == null) || n.stale))
+        .filter(
+            (n) =>
+                active(n) &&
+                ((n.source === 'claude' && n.approved_at == null && n.trust_override == null) ||
+                    n.stale),
+        )
         .sort((a, b) => Number(b.stale) - Number(a.stale) || b.created_at - a.created_at),
 )
 

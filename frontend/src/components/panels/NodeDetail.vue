@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, useTemplateRef, watch } from 'vue'
+import { onClickOutside } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import MarkdownView from '@/components/common/MarkdownView.vue'
 import SidePanel from '@/components/common/SidePanel.vue'
 import TagEditor from '@/components/common/TagEditor.vue'
 import { ALL_EDGE_TYPES, EDGE_COLOR, NODE_ACCENT_VAR } from '@/constants/ontology'
+import { BADGE_TIPS, explainTrust } from '@/constants/trust'
 import { api } from '@/services/api'
 import { useGraphStore } from '@/stores/graph'
 import type { EdgeType, GraphEdge, TimelineEntry } from '@/types/graph'
@@ -20,6 +22,45 @@ const missingRefs = computed(() =>
 const busy = ref(false)
 const confirmingDelete = ref(false)
 
+// --- trust actions (trust v2: approve ladder, pin, […] menu) ---------------
+
+const menuOpen = ref(false)
+const settingTrust = ref(false)
+const trustDraft = ref(100)
+const menuRoot = useTemplateRef<HTMLElement>('menuRoot')
+onClickOutside(menuRoot, () => {
+    menuOpen.value = false
+    settingTrust.value = false
+})
+
+const pinned = computed(() => selected.value?.trust_override != null)
+
+async function trustAction(run: () => Promise<void>): Promise<void> {
+    busy.value = true
+    try {
+        await run()
+    } finally {
+        busy.value = false
+        menuOpen.value = false
+        settingTrust.value = false
+    }
+}
+
+const approve = () => trustAction(() => store.approve(selected.value!.id))
+const togglePin = () =>
+    trustAction(() => store.pin(selected.value!.id, pinned.value ? null : 1.0))
+const confirmStillTrue = () => trustAction(() => store.reconfirm(selected.value!.id))
+const revokeApproval = () => trustAction(() => store.revokeApproval(selected.value!.id))
+/* A cleared number input yields '' through v-model.number — never coerce
+   that to "pin at 0%", which would silently bury the node. */
+const trustDraftValid = computed(
+    () => typeof trustDraft.value === 'number' && Number.isFinite(trustDraft.value),
+)
+const applyTrustOverride = () =>
+    trustAction(() =>
+        store.pin(selected.value!.id, Math.min(100, Math.max(0, trustDraft.value)) / 100),
+    )
+
 // --- edit mode (PLAN §10 Phase 1: reclassification / editing UX) ----------
 
 const NODE_TYPES = Object.keys(NODE_ACCENT_VAR)
@@ -34,6 +75,8 @@ watch(
     () => {
         editing.value = false
         confirmingDelete.value = false
+        menuOpen.value = false
+        settingTrust.value = false
     },
 )
 
@@ -150,16 +193,6 @@ function fmtDate(secs: number | null): string {
     })
 }
 
-async function reconfirm(): Promise<void> {
-    if (!selected.value) return
-    busy.value = true
-    try {
-        await store.reconfirm(selected.value.id)
-    } finally {
-        busy.value = false
-    }
-}
-
 async function remove(): Promise<void> {
     if (!selected.value) return
     busy.value = true
@@ -231,18 +264,22 @@ function close(): void {
         <h2 v-if="!editing" class="title">{{ selected.title }}</h2>
 
         <div class="badges">
-            <span class="badge">{{ selected.durability }}</span>
-            <span class="badge">{{ selected.source }}</span>
-            <span v-if="selected.status" class="badge">{{ selected.status }}</span>
-            <span v-if="trustPct != null" class="badge">trust {{ trustPct }}%</span>
-            <span v-if="selected.stale" class="badge stale">stale</span>
+            <span class="badge" :title="BADGE_TIPS.durability[selected.durability]">{{ selected.durability }}</span>
+            <span class="badge" :title="BADGE_TIPS.source[selected.source]">{{ selected.source }}</span>
+            <span v-if="selected.status" class="badge" :title="BADGE_TIPS.status[selected.status]">{{ selected.status }}</span>
+            <span v-if="trustPct != null" class="badge" :title="explainTrust(selected)">trust {{ trustPct }}%</span>
+            <span v-if="pinned" class="badge pinned" :title="BADGE_TIPS.pinned">📌 pinned</span>
+            <span v-if="selected.demoted_at != null && !pinned" class="badge stale" :title="BADGE_TIPS.demoted">demoted</span>
+            <span v-if="selected.stale" class="badge stale" :title="BADGE_TIPS.stale">stale</span>
             <span
                 v-if="missingRefs.length"
                 class="badge drifted"
                 title="Some code refs no longer exist in the project — the code moved, this memory may be stale"
             >drifted</span>
-            <span v-if="archived" class="badge archived">archived</span>
+            <span v-if="archived" class="badge archived" title="Superseded or decayed out — kept for history, hidden from retrieval">archived</span>
         </div>
+
+        <p class="trust-note">{{ explainTrust(selected) }}</p>
 
         <div v-if="selected.tags.length && !editing" class="tag-row">
             <span v-for="t in selected.tags" :key="t" class="tag-chip">#{{ t }}</span>
@@ -334,23 +371,109 @@ function close(): void {
                     <dt>Session</dt>
                     <dd><span class="session-chip">{{ selected.session_id }}</span></dd>
                 </div>
-                <div v-if="selected.last_seen != null" title="Last time retrieval surfaced this node (search hit or brief)">
-                    <dt>Last seen</dt><dd>{{ fmtDate(selected.last_seen) }}</dd>
+                <div v-if="selected.last_seen != null" :title="BADGE_TIPS.lastSeen">
+                    <dt>Last retrieved</dt><dd>{{ fmtDate(selected.last_seen) }}</dd>
                 </div>
-                <div v-if="selected.approved_at != null">
+                <div v-if="selected.confirmed_at != null" :title="BADGE_TIPS.confirmed">
+                    <dt>Confirmed</dt><dd>{{ fmtDate(selected.confirmed_at) }}</dd>
+                </div>
+                <div v-if="selected.approved_at != null" :title="BADGE_TIPS.approved">
                     <dt>Approved</dt><dd>{{ fmtDate(selected.approved_at) }}</dd>
+                </div>
+                <div v-if="selected.demoted_at != null" :title="BADGE_TIPS.demoted">
+                    <dt>Demoted</dt><dd>{{ fmtDate(selected.demoted_at) }}</dd>
                 </div>
                 <div v-if="archived"><dt>Archived</dt><dd>{{ fmtDate(selected.valid_until) }}</dd></div>
             </dl>
         </section>
 
         <footer class="actions">
+            <button
+                class="btn"
+                type="button"
+                :disabled="busy"
+                :title="selected.approved_at != null
+                    ? 'Re-approve: restamp the approval, restarting trust at 100%'
+                    : 'Approve: you vouch for this — trust restarts at 100%'"
+                @click="approve"
+            >
+                {{ selected.approved_at != null ? 'Re-approve' : 'Approve' }}
+            </button>
             <button v-if="!editing" class="btn ghost" type="button" :disabled="busy" @click="startEdit">
                 Edit
             </button>
-            <button class="btn ghost" type="button" :disabled="busy" @click="reconfirm">
-                Reconfirm
+            <button
+                class="btn ghost"
+                type="button"
+                :disabled="busy"
+                :title="pinned
+                    ? 'Unpin: hand trust back to the model (decay and evidence apply again)'
+                    : 'Pin: lock trust at 100% forever — for the rare constraint that must never fade'"
+                @click="togglePin"
+            >
+                {{ pinned ? 'Unpin' : '📌 Pin' }}
             </button>
+
+            <div ref="menuRoot" class="menu-wrap">
+                <button
+                    class="btn ghost"
+                    type="button"
+                    :disabled="busy"
+                    title="More trust actions"
+                    aria-label="More trust actions"
+                    @click="menuOpen = !menuOpen"
+                >
+                    …
+                </button>
+                <div v-if="menuOpen" class="menu glass-panel">
+                    <button
+                        class="menu-item"
+                        type="button"
+                        :disabled="busy"
+                        title="Stamp this node as verified still true — restarts unapproved trust at 60% and clears any evidence demotion"
+                        @click="confirmStillTrue"
+                    >
+                        Confirm still true
+                    </button>
+                    <button
+                        class="menu-item"
+                        type="button"
+                        :disabled="busy || (selected.approved_at == null && !pinned)"
+                        title="Withdraw your approval and any pin — trust falls back to its last confirmed anchor"
+                        @click="revokeApproval"
+                    >
+                        Revoke approval
+                    </button>
+                    <button
+                        class="menu-item"
+                        type="button"
+                        :disabled="busy"
+                        title="Freeze trust at an exact percentage — a partial pin for knowledge you half-believe"
+                        @click="settingTrust = !settingTrust"
+                    >
+                        Set constant trust %
+                    </button>
+                    <div v-if="settingTrust" class="trust-set-row">
+                        <input
+                            v-model.number="trustDraft"
+                            class="trust-input"
+                            type="number"
+                            min="0"
+                            max="100"
+                            aria-label="Constant trust percentage"
+                        />
+                        <button
+                            class="btn"
+                            type="button"
+                            :disabled="busy || !trustDraftValid"
+                            @click="applyTrustOverride"
+                        >
+                            Set
+                        </button>
+                    </div>
+                </div>
+            </div>
+
             <template v-if="confirmingDelete">
                 <button class="btn danger" type="button" :disabled="busy" @click="remove">
                     Confirm delete
@@ -359,7 +482,14 @@ function close(): void {
                     Cancel
                 </button>
             </template>
-            <button v-else class="btn ghost danger-text" type="button" :disabled="busy" @click="confirmingDelete = true">
+            <button
+                v-else
+                class="btn ghost danger-text"
+                type="button"
+                :disabled="busy"
+                title="Hard delete — removes the node and its connections permanently (user-only; the assistant can never do this)"
+                @click="confirmingDelete = true"
+            >
                 Delete
             </button>
         </footer>
@@ -475,6 +605,73 @@ function close(): void {
 .badge.drifted {
     color: var(--node-caution);
     background-color: color-mix(in srgb, var(--node-caution) 14%, transparent);
+}
+
+.badge.pinned {
+    color: var(--interactive-primary);
+    background-color: color-mix(in srgb, var(--interactive-primary) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--interactive-primary) 40%, transparent);
+}
+
+/* The plain-words answer to "why is trust this number". */
+.trust-note {
+    font-size: var(--text-caption);
+    line-height: var(--leading-normal);
+    color: var(--text-tertiary);
+}
+
+.menu-wrap {
+    position: relative;
+}
+
+.menu {
+    position: absolute;
+    bottom: calc(100% + 0.6rem);
+    left: 0;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    min-width: 22rem;
+    padding: 0.6rem;
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+}
+
+.menu-item {
+    padding: 0.7rem 0.9rem;
+    border: none;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-primary);
+    font-size: var(--text-body-sm);
+    text-align: left;
+    cursor: pointer;
+}
+
+.menu-item:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.menu-item:hover:not(:disabled) {
+    background-color: var(--interactive-ghost-hover);
+}
+
+.trust-set-row {
+    display: flex;
+    gap: 0.6rem;
+    padding: 0.4rem 0.9rem 0.6rem;
+}
+
+.trust-input {
+    width: 8rem;
+    padding: 0.5rem 0.7rem;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+    background-color: var(--surface-sunken);
+    color: var(--text-primary);
+    font-size: var(--text-body-sm);
 }
 
 .body {

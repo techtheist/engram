@@ -8,6 +8,10 @@ pub enum Error {
     NotFound(String),
     #[error("invalid {kind}: {value:?}")]
     Parse { kind: &'static str, value: String },
+    /// The operation would override a user pin — pinned knowledge is
+    /// user-managed; the assistant must surface it instead of acting.
+    #[error("pinned: {0}")]
+    Pinned(String),
     #[error("embedding: {0}")]
     Embedding(String),
 }

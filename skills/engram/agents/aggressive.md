@@ -18,7 +18,7 @@ journal. For whole-graph reviews or exports (a decisions.md), page
 captures go through `update_nodes` / `add_notes`. A hit marked `stale: true` has decayed trust: verify it before
 relying on it, and refresh it with `update_node` if it's still accurate.
 
-**Capture.** Capture liberally — every real decision with its reason, every convention, gotcha, resolved problem, non-obvious insight, and open TODO. Engram is the spine of the project's decision history; trust decay prunes whatever never gets reused, so an unneeded node costs little and a missing one costs a repeated mistake.
+**Capture.** Capture liberally — every real decision with its reason, every convention, gotcha, resolved problem, non-obvious insight, and open TODO. Engram is the spine of the project's decision history; trust decay prunes episodic scratch that never gets re-confirmed, so an unneeded node costs little and a missing one costs a repeated mistake.
 Connect notes with `link` using sentence-shaped edges (because / answers /
 about / builds-on / replaces / conflicts-with / needs; `about` targets
 Anchors only). Every write's response is a verdict, not a receipt: on

@@ -106,10 +106,24 @@ pub struct Node {
     pub valid_until: Option<i64>,
     pub status: Option<NodeStatus>,
     /// Last time retrieval surfaced this node (search hit / brief inclusion).
+    /// Observability only — trust never reads it (exposure is not evidence).
     pub last_seen: Option<i64>,
+    /// Last deliberate act that vouched for the node: an update or an explicit
+    /// "Confirm still true". The unapproved trust anchor.
+    #[serde(default)]
+    pub confirmed_at: Option<i64>,
     /// Last explicit approval — user action, or assistant on user demand.
     pub approved_at: Option<i64>,
-    /// Computed at read time from the three timestamps (policy::trust);
+    /// When contradicting evidence landed (judged conflict, drifted refs) —
+    /// starts the decay ramp on otherwise-flat stable knowledge. Cleared by
+    /// any deliberate update or approval (repair = re-validation).
+    #[serde(default)]
+    pub demoted_at: Option<i64>,
+    /// User-set constant trust (the pane's pin = 1.0). Overrides the computed
+    /// value entirely; pinned nodes never decay, auto-archive, or demote.
+    #[serde(default)]
+    pub trust_override: Option<f64>,
+    /// Computed at read time from the timestamps (policy::trust);
     /// never stored. Defaults exist only so old exports still import.
     #[serde(default)]
     pub trust: f64,
@@ -121,6 +135,21 @@ pub struct Node {
     /// is about. Normalized to kebab-case on write.
     #[serde(default)]
     pub tags: Vec<String>,
+}
+
+impl Node {
+    /// The trust-relevant view of this node (see policy module docs).
+    pub fn trust_inputs(&self) -> crate::policy::TrustInputs {
+        crate::policy::TrustInputs {
+            created_at: self.created_at,
+            confirmed_at: self.confirmed_at,
+            approved_at: self.approved_at,
+            demoted_at: self.demoted_at,
+            trust_override: self.trust_override,
+            durability: self.durability,
+            status: self.status,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -362,7 +391,8 @@ pub struct WriteWarning {
 pub struct AuditEntry {
     pub seq: i64,
     pub ts: i64,
-    /// created | updated | approved | archived | deleted | imported
+    /// created | updated | approved | unapproved | pinned | unpinned |
+    /// demoted | undemoted | archived | deleted | imported
     pub action: String,
     /// node | edge | graph
     pub entity: String,

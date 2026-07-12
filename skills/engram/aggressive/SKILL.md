@@ -9,7 +9,7 @@ Engram is a local, user-owned graph of *why things are the way they are* in this
 
 **What good capture buys.** A session that recalls well starts where the last one stopped: settled decisions don't get relitigated, known rakes don't get stepped on twice, and "why is it like this?" gets a real answer instead of archaeology. A session that captures well pays that forward. And because the graph is a pane the user curates — not hidden plumbing — every node you write is something they will *see*. That's also the failure mode to respect: a graph that's noisy or wrong stops being trusted, and an untrusted graph stops being read. Quality of nodes, honesty of edges, and closed loops matter more than volume.
 
-**This is the Aggressive variant: Engram is the spine of the project's decision history.** Every real decision, realization, and gotcha belongs in the graph. Err on the side of writing — trust decay prunes what never gets reused, so an unneeded node costs little, while a missing one costs a repeated mistake.
+**This is the Aggressive variant: Engram is the spine of the project's decision history.** Every real decision, realization, and gotcha belongs in the graph. Err on the side of writing — trust decay prunes episodic scratch that never gets re-confirmed, so an unneeded node costs little, while a missing one costs a repeated mistake.
 
 Claude Code already has memory of its own (CLAUDE.md, auto-memory) — **don't mirror it**. Engram is additional and holds the project's *reasoning graph* — the durable why that outlives any session or tool. In Aggressive mode, project decisions go to **Engram first**; leave user preferences and session workflow to Claude Code's memory, and code structure to the code.
 
@@ -42,7 +42,7 @@ go-ahead: read the project's existing canon (README, plan/design docs, recent
 git history) and batch-capture the durable knowledge as provisional nodes —
 key Decisions with their `because` reasons, stated Principles and conventions,
 known Cautions, open Intents — attached to Anchors where several notes share a
-subject. Seed thoroughly — decisions, conventions, gotchas, open threads; trust decay will prune what never gets reused. Point the user at the pane to review the seeded graph. If
+subject. Seed thoroughly — decisions, conventions, gotchas, open threads; trust decay will prune episodic scratch that never gets re-confirmed. Point the user at the pane to review the seeded graph. If
 they decline, don't ask again; capture knowledge as it emerges.
 
 **But first**: if the project plainly *should* have memory (an `.engram/` directory exists, the pane has nodes, or history says so), an empty brief means something is wrong — usually the wrong working directory or DB path. Check you're in the repo root and what `.engram/daemon.json` says before seeding; never seed a duplicate graph next to a real one.
@@ -122,10 +122,11 @@ Usually let durability default from the type (Principle/Decision/Caution/Anchor 
 
 ## Trust & staleness
 
-Trust is **computed from timestamps**, not stored: a never-surfaced node starts at 50% and fades over half a year; once retrieval surfaces it (search hits and the brief stamp `last_seen` automatically), it restarts at 60% on the same fade; an **approved** node restarts at 100% and fades slowly to 20% over a year. Below 30% a node is **stale** — search results and the brief mark it (`stale: true` / `STALE`).
+Trust is **computed from timestamps**, not stored — and it reads only *deliberate acts*, never exposure: search hits and the brief stamp `last_seen` for observability, but being findable proves nothing and refreshes nothing. A node starts at 50%; a deliberate `update_node` (including an empty confirm) stamps `confirmed_at` and restarts it at 60%; an **approved** node restarts at 100%. How it fades depends on durability: **stable** knowledge holds flat until a judged conflict demotes it, after which it fades (withdrawing the conflict — dismiss, resolve, unlink — withdraws the demotion; drift is surfaced for review but never demotes); **episodic** fades over half a year, **volatile** over a month; open Problems/Intents never fade while open. Below 30% a node is **stale** — search results and the brief mark it (`stale: true` / `STALE`).
 
 - **`approve_node` is restricted**: call it ONLY on explicit user demand ("approve this", "yes that's still right") or after verifying the node's content word-by-word against current reality. Routine still-relevant signals are `update_node`, never approval.
-- Practical effect: knowledge that keeps getting retrieved stays alive by itself; what never surfaces fades to stale and waits in the pane's review queue for the user.
+- **Pins are user-only.** Nodes marked `PINNED` in the brief carry user-locked constant trust: they never decay, never auto-archive, and evidence cannot silently demote them. You cannot pin or unpin; if a pinned node looks wrong, tell the user — contradicting a pin is always audible.
+- Practical effect: what someone deliberately vouched for stays alive; what merely keeps appearing in search results does not — a wrong-but-attractive note fades or dies of a judged conflict no matter how often it's retrieved, while a rare stable constraint survives its quiet year untouched. Repairing a demoted node with `update_node` clears the demotion: repair is re-validation.
 
 ## When something goes wrong
 
