@@ -628,6 +628,45 @@ fn exposure_does_not_preserve_the_false_note() {
     assert_eq!(kept.trust, policy::TRUST_UNSEEN_START, "stable holds flat");
 }
 
+/// The sandbox tester's negative control, verbatim (v0.4.1 feedback thread):
+/// two unapproved nodes with equal initial trust and age; retrieve A a
+/// hundred times and never B; approve, update, or verify neither; advance
+/// the clock — A may RANK higher for its query, but its TRUST must equal
+/// B's. Retrieval frequency is telemetry, never evidence quality.
+#[test]
+fn retrieval_frequency_is_not_evidence() {
+    let e = engine();
+    let a = e
+        .add_node(episodic(NodeType::Insight, "cache warming strategy alpha"))
+        .unwrap();
+    let b = e
+        .add_node(episodic(
+            NodeType::Insight,
+            "database vacuum schedule omega",
+        ))
+        .unwrap();
+    // Equal age, past enough of the ramp that a refreshed clock would show.
+    backdate(&e, &a.id, 60);
+    backdate(&e, &b.id, 60);
+
+    // 100 retrievals of A (touch is the exact stamp every search hit and
+    // brief inclusion applies), zero of B.
+    for _ in 0..100 {
+        e.store().touch(std::slice::from_ref(&a.id)).unwrap();
+    }
+
+    let a2 = e.get_node(&a.id).unwrap().unwrap();
+    let b2 = e.get_node(&b.id).unwrap().unwrap();
+    assert!(a2.last_seen.is_some(), "exposure stays observable");
+    assert!(b2.last_seen.is_none());
+    assert!(
+        (a2.trust - b2.trust).abs() < 1e-6,
+        "equal trust despite 100:0 exposure — got {} vs {}",
+        a2.trust,
+        b2.trust
+    );
+}
+
 #[test]
 fn deliberate_acts_confirm_and_clear_demotion() {
     let e = engine();
