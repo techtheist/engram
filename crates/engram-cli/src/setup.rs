@@ -22,6 +22,9 @@ const MARK_END: &str = "<!-- engram:end -->";
 const CLAUDE_RELAXED: &str = include_str!("../../../skills/engram/relaxed/SKILL.md");
 const CLAUDE_NORMAL: &str = include_str!("../../../skills/engram/normal/SKILL.md");
 const CLAUDE_AGGRESSIVE: &str = include_str!("../../../skills/engram/aggressive/SKILL.md");
+// The digest skill (PLAN §7B) has no variants: one explicit-invocation
+// ingestion doc, installed alongside whichever capture variant was chosen.
+const CLAUDE_DIGEST: &str = include_str!("../../../skills/engram/digest/SKILL.md");
 // Harness-neutral variants for AGENTS.md / GEMINI.md / rules files.
 const AGENT_RELAXED: &str = include_str!("../../../skills/engram/agents/relaxed.md");
 const AGENT_NORMAL: &str = include_str!("../../../skills/engram/agents/normal.md");
@@ -266,6 +269,14 @@ impl Setup {
             "claude: installed the '{}' skill to .claude/skills/engram",
             self.variant
         ));
+        let digest_dir = self.repo.join(".claude/skills/engram-digest");
+        if is_symlink(&digest_dir) || is_symlink(&digest_dir.join("SKILL.md")) {
+            say("claude: .claude/skills/engram-digest is a symlink — leaving it untouched");
+        } else {
+            fs::create_dir_all(&digest_dir)?;
+            fs::write(digest_dir.join("SKILL.md"), CLAUDE_DIGEST)?;
+            say("claude: installed the digest skill to .claude/skills/engram-digest");
+        }
         self.install_claude_brief_hook()
     }
 
@@ -441,6 +452,15 @@ mod tests {
         assert_eq!(
             plugin, CLAUDE_RELAXED,
             "claude-plugin/skills/engram/SKILL.md drifted from skills/engram/relaxed/SKILL.md — re-copy it"
+        );
+    }
+
+    #[test]
+    fn plugin_digest_skill_matches_canonical() {
+        let plugin = include_str!("../../../claude-plugin/skills/engram-digest/SKILL.md");
+        assert_eq!(
+            plugin, CLAUDE_DIGEST,
+            "claude-plugin/skills/engram-digest/SKILL.md drifted from skills/engram/digest/SKILL.md — re-copy it"
         );
     }
 

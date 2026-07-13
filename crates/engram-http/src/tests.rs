@@ -702,3 +702,36 @@ async fn system_reports_version_store_and_wiring() {
     assert!(v["wiring"].is_array());
     assert!(v["daemon"]["pid"].as_u64().unwrap() > 0);
 }
+
+#[tokio::test]
+async fn digest_scan_walks_the_repo_root_derived_from_the_db_path() {
+    // The daemon derives the scan root from the served DB path
+    // (<root>/.engram/graph.db), same as drift.
+    let root = std::env::temp_dir().join(format!("engram-http-digest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join(".gitignore"), "gen/\n").unwrap();
+    std::fs::create_dir_all(root.join("gen")).unwrap();
+    std::fs::write(root.join("gen/out.rs"), "// FIXME ignored\n").unwrap();
+    std::fs::write(root.join("src/lib.rs"), "// FIXME empty input crashes\n").unwrap();
+
+    let engine = Engine::new(
+        Store::open_in_memory().unwrap(),
+        Box::new(FakeEmbedder::default()),
+    );
+    let app = crate::router_shared_with_db(
+        std::sync::Arc::new(std::sync::Mutex::new(engine)),
+        root.join(".engram/graph.db").display().to_string(),
+    );
+
+    let (status, body) = req(&app, "POST", "/digest/scan", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let candidates = body["candidates"].as_array().unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0]["marker"], "FIXME");
+    assert_eq!(candidates[0]["suggested_type"], "Problem");
+    assert_eq!(candidates[0]["file"], "src/lib.rs");
+    assert_eq!(body["truncated"], false);
+
+    let _ = std::fs::remove_dir_all(&root);
+}

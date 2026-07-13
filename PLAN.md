@@ -184,6 +184,31 @@ The daemon grows a stack of small local ONNX models — every layer converts an 
 
 **Deferred organs:** GLiNER-small (zero-shot entities → tag/Anchor/`about` suggestions); a SetFit-style memory-worthiness head on bge embeddings — the librarian's ambient-capture gate (§6), trained on our own graphs (captured nodes = positives). Explicitly not: a GNN (per-repo graphs are hundreds of nodes; neighborhood-as-text + NLI covers it legibly).
 
+## 7B. Digestion — project ingestion (shipped 2026-07-13, v0.5.1)
+
+*Status:* implemented and verified by a first live digest run. Tier 1 shipped as `engram_core::digest::scan` (the `ignore` crate walks gitignore-aware with `require_git(false)`, skips `log`/`logs`/`tmp`/`temp` dirs, binary/oversized/unreadable files are counted skips — never errors; caps: 1 MB/file, 500 candidates with `truncated` reported, 200-char redacted texts) behind `POST /digest/scan` (runs off the engine lock; root derived from the DB path like `/drift`). Tier 2 shipped as the `engram-digest` skill (`skills/engram/digest/SKILL.md`, no variants) with the 8 worked examples; plugin ships a verbatim copy + `/engram:digest` (sync-tested), `engram-alpha setup` installs it alongside the capture variant, and this repo symlinks it via `.claude/skills/engram-digest`. Ingest writes are marked `session_id: digest-<date>` (the reviewable-batch guardrail; full session quarantine remains a separate §10 item).
+
+Engram still **bootstraps empty** (§6A locked). Digestion is a **user-invoked, opt-in** way to seed a graph from an existing project — never automatic, never on install. It does **not** violate empty-start; it is an explicit "ingest this project" action. Two tiers, deliberately separate, because fully-offline *rich* ingestion is not achievable with our micromodels: they embed / rank / classify / segment but **do not generate**, so authoring a well-typed, sentence-shaped node (title, `because`, durability) needs the assistant's LLM. This is the §7A **models-nominate / assistant-and-human-judge** split applied to bootstrapping — the offline stack nominates, the LLM authors, the user curates.
+
+**Tier 1 — offline code scan (the foundation; build first, keep it small).**
+- Scope for v1 is **only `FIXME` / `TODO` markers in code** → candidate `Intent` (TODO) / `Problem` (FIXME) nodes. Nothing broader yet (no Anchors-from-dirs, no ADR mining, no README extraction) — the user cut that: too much noise for a first cut.
+- **Must be `.gitignore`-aware** — ignore everything gitignored (node_modules and the thousands of transient paths). This is the load-bearing complexity of tier 1. Also treat `/log/`-style dirs as trash (drop by default; "useful with intelligence" is a later, LLM-side concern, not tier 1).
+- **Robustness is a hard requirement:** a malformed/huge/binary/oddly-encoded file, a permission error, a symlink loop — none may crash the daemon or CLI. Rust's `Result` plumbing should make this natural: skip the offending file, log, continue. A file-walk flaw must never take down the app.
+- **No new MCP tool for this.** Expose it as an **HTTP endpoint** (like the `/audit/*` buttons) that the digest skill calls; it doesn't warrant its own MCP surface. Not a standalone CLI command either — it lives behind the skill.
+
+**Tier 2 — the digest skill (separate skill file; the real value).**
+- A **distinct skill**, not part of the always-on `engram` capture skill — invoked **explicitly** ("ingest/digest this project", `/engram:digest`). Rationale: skill bodies load on demand (progressive disclosure); a heavyweight, occasional ingestion doc must **not** sit in every session's context and burn tokens. Keeping it out of the always-on path is the point.
+- **Default target = the current branch's working-tree snapshot** — the code and files that exist *now*. Code is the primary material; git history is only *supporting* (the "why" behind a change), not a deep archaeological crawl of thousands of commits. Startup ingestion = digest the current codebase, not the repo's whole past.
+- **Teach the ontology by worked examples — one per node type, each also teaching a different feature** (Principle→durability+`because`; Decision→the `Decision because Principle` triple; Caution→extract the *why*+tags; Problem→open status; Resolution→`answers`+supersession; Insight→`builds-on`; Intent→volatile deferred work; Anchor→code_refs+drift+`about`). Doubles as canonical ontology documentation.
+- **Examples must be copy-paste-safe.** Assume a weak model: on skill call the agent plans, searches the examples, and (if weak) copies them with minimal edits. The examples must be written so that copy-paste-with-minimal-changes still yields *correct, well-formed* nodes — leave no room to produce garbage by imitation.
+- **Every insert runs the usual write-time checks** — the standard `add_note` same-type dedup, `warnings`, and `suspects` verdicts apply to ingestion exactly as to normal capture; batch inserts (`add_notes`/`update_nodes`) too. No bypass just because we're bulk-filling. The examples must *force* these checks, since ingestion's job is to fill the whole ontology at once.
+
+**Guardrails (carry into implementation):**
+- **Trust contamination** — ingested nodes start **provisional/low-trust** like any Claude-authored node and earn trust by later reconfirmation; a bulk ingest must never become instant high-trust canon. Digestion should mark its writes as **one session** so a bad ingest is reviewable/reversible — **this is the killer use case for the existing session-quarantine intent; ship them together.**
+- **Redaction** — git history and old docs contain secrets; the existing secret/PII redaction pass must run on every ingested item.
+- **Noise bias** — ingestion must lean hard toward the *reasoning* types (Decision / Principle / Insight / Caution) and away from volatile implementation trivia. Engram is **not** a code-structure graph (§1A) — quality over coverage.
+- **Idempotency** — re-running must not duplicate; same-type dedup covers most, a stored marker (e.g. last-scanned state) makes re-runs incremental.
+
 ---
 
 ## 8. Tech stack (locked: Rust + Vue, local-first)

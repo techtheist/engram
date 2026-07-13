@@ -1,3 +1,4 @@
+pub mod digest;
 mod engine;
 mod error;
 pub mod harness;

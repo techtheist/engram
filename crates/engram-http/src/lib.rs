@@ -151,6 +151,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/audit/duplicates", post(audit_duplicates))
         .route("/audit/answered", post(audit_answered))
         .route("/drift", get(drift))
+        .route("/digest/scan", post(digest_scan))
         .route("/nodes/{id}/timeline", get(timeline))
         .route("/decay", post(decay))
         .route("/brief", get(brief))
@@ -455,6 +456,20 @@ async fn drift(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Drift>>, A
     let root = state.repo_root();
     let drifted = state.engine().scan_code_refs(&root)?;
     Ok(Json(drifted))
+}
+
+/// Digestion tier 1 (PLAN §7B): the gitignore-aware FIXME/TODO scan of the
+/// working tree. Candidates only — the digest skill judges them and writes
+/// through the normal node path. Runs outside the engine lock: it never
+/// touches the store. Deliberately HTTP-only, no MCP tool.
+async fn digest_scan(State(state): State<Arc<AppState>>) -> Json<engram_core::digest::DigestScan> {
+    let root = state.repo_root();
+    // The walk is filesystem-bound; keep it off the async workers.
+    Json(
+        tokio::task::spawn_blocking(move || engram_core::digest::scan(&root))
+            .await
+            .expect("digest scan never panics — every file error is a skip"),
+    )
 }
 
 /// Timeline (PLAN §10): the node's `replaces` chain, oldest first.

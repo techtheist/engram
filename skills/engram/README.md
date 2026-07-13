@@ -23,3 +23,11 @@ mkdir -p ~/.claude/skills && cp -R skills/engram/relaxed ~/.claude/skills/engram
 Switch modes by replacing the installed copy with another variant. `engram-alpha setup --cli claude --skill <variant>` does this for you (relaxed by default).
 
 All variants share the same recall behavior, ontology rules, secret/PII prohibition, and silent-batched write etiquette — they differ only in how much is worth a node.
+
+## The digest skill
+
+[`digest/`](./digest/SKILL.md) is a separate, variant-less skill (`engram-digest`) for one job: explicitly ingesting an existing project into a fresh or thin graph (PLAN §7B). It is invoked on demand ("digest this project", `/engram:digest` with the plugin) — deliberately not folded into the capture skill, so its heavyweight ontology examples don't sit in every session's context. Install it alongside whichever capture variant you chose (`engram-alpha setup` does both):
+
+```sh
+mkdir -p .claude/skills && cp -R skills/engram/digest .claude/skills/engram-digest
+```
