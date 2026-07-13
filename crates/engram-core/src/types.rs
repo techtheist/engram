@@ -344,6 +344,10 @@ pub struct Suspect {
     pub similarity: f64,
     pub created_at: i64,
     pub status: SuspectStatus,
+    /// Local-cortex triage hint: contradiction | entailment | neutral.
+    /// A nomination for the judge, never a verdict (PLAN §7A).
+    pub nli_label: Option<String>,
+    pub nli_score: Option<f64>,
 }
 
 /// A pending suspect joined with what the judge (pane or Claude) needs to see.
@@ -352,6 +356,11 @@ pub struct SuspectView {
     pub id: String,
     pub similarity: f64,
     pub created_at: i64,
+    /// Triage hint from the local NLI layer (suggests, never judges).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nli_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nli_score: Option<f64>,
     pub a: SuspectEndpoint,
     pub b: SuspectEndpoint,
 }
@@ -362,6 +371,60 @@ pub struct SuspectEndpoint {
     #[serde(rename = "type")]
     pub node_type: NodeType,
     pub title: String,
+}
+
+/// One node's NLI verdict against a checked claim (PLAN §7A check_claim).
+#[derive(Debug, Clone, Serialize)]
+pub struct ClaimVerdict {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub node_type: NodeType,
+    pub title: String,
+    pub trust: f64,
+    pub stale: bool,
+    pub entailment: f32,
+    pub neutral: f32,
+    pub contradiction: f32,
+}
+
+/// The canon's answer to "is this claim true here": which nodes support it,
+/// which contradict it, and which are merely nearby but silent. A gap (all
+/// silent) is a capture opportunity, not an error.
+#[derive(Debug, Clone, Serialize)]
+pub struct ClaimReport {
+    pub claim: String,
+    pub supports: Vec<ClaimVerdict>,
+    pub contradicts: Vec<ClaimVerdict>,
+    pub silent: Vec<ClaimVerdict>,
+}
+
+/// What an audit sweep did: pairs it examined with NLI, suspects it queued,
+/// and whether the pair budget cut it short (PLAN §7A: no silent caps).
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditSweep {
+    pub queued: usize,
+    pub examined: usize,
+    pub truncated: bool,
+}
+
+/// A nomination that an open Problem/Intent may already be answered by an
+/// existing node — the judge links `answers` and resolves, or ignores.
+#[derive(Debug, Clone, Serialize)]
+pub struct AnsweredHint {
+    pub problem: SuspectEndpoint,
+    pub candidate: SuspectEndpoint,
+    pub entailment: f64,
+}
+
+/// What a checked node update did — the same-turn verdict set every write
+/// returns (PLAN §6A/§7A): near-canon warnings, freshly queued look-alike
+/// suspects, and code_refs that don't resolve in the repo.
+#[derive(Debug, Clone)]
+pub struct CheckedUpdate {
+    pub node: Node,
+    pub warnings: Vec<WriteWarning>,
+    pub suspects: Vec<SuspectView>,
+    pub missing_refs: Vec<String>,
 }
 
 /// One tag with its usage stats — the pane's dropdown and the brief's
@@ -429,9 +492,18 @@ pub enum WriteOutcome {
         /// session's brief (PLAN §7: detection is local, judgment is the
         /// assistant's).
         suspects: Vec<SuspectView>,
+        /// Path-shaped code_refs that don't resolve right now — the
+        /// write-time half of the drift check, caught in the same turn.
+        missing_refs: Vec<String>,
     },
     Matched {
         node: Node,
         similarity: f64,
+        /// NLI verdict on (new text, existing node) — at duplicate-level
+        /// similarity co-reference holds, so a `contradiction` here means a
+        /// NEGATED near-duplicate ("use X" vs "don't use X"): the one case
+        /// where merging blindly would corrupt the canon.
+        nli_label: Option<String>,
+        nli_score: Option<f64>,
     },
 }

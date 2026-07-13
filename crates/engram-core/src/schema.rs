@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS suspects (
   similarity  REAL NOT NULL,
   created_at  INTEGER NOT NULL,
   status      TEXT NOT NULL DEFAULT 'suspected',
+  nli_label   TEXT,               -- local-cortex hint: contradiction | entailment | neutral
+  nli_score   REAL,               -- probability behind the hint (models don't validate)
   UNIQUE(a_id, b_id)
 );
 

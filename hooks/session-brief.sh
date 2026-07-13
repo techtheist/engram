@@ -52,6 +52,6 @@ fi
 # Fallback: read the DB directly (WAL — safe beside a daemon). The brief
 # never embeds anything, so --fake-embeddings just skips the ONNX model load
 # that would otherwise slow session start.
-BIN="$(command -v engram-alpha || command -v engram)" 2>/dev/null || exit 0
+BIN="$(command -v engram-alpha)" 2>/dev/null || exit 0
 "$BIN" brief --db "$DB" --max-chars "$MAX_CHARS" --fake-embeddings 2>/dev/null || true
 exit 0

@@ -231,7 +231,7 @@ fn check_claude(r: &mut Report, repo: &Path, db_abs: &Path) {
             }
             if prerename_mcp_json(&raw) {
                 r.warn(
-                    "claude: .mcp.json launches the pre-rename `engram` binary — re-run `engram-alpha setup --cli claude --mcp-only` to re-point it (legacy-named release assets go away in v0.5)",
+                    "claude: .mcp.json launches the pre-rename `engram` binary — re-run `engram-alpha setup --cli claude --mcp-only` to re-point it (pre-rename support ended in v0.5.0)",
                 );
             }
         }

@@ -14,11 +14,12 @@ export const INSTALL_COMMAND =
     'curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh | sh'
 
 /**
- * PATH first, then the two conventional install locations. The binary is
- * `engram-alpha` since v0.4.0; a pre-rename `engram` install still counts.
+ * PATH first, then the two conventional install locations. Only the
+ * `engram-alpha` binary counts — pre-rename `engram` support ended in v0.5.0
+ * (the install one-liner migrates such setups).
  */
 export function findBinary(): string | undefined {
-    const names = process.platform === 'win32' ? ['engram-alpha.exe', 'engram.exe'] : ['engram-alpha', 'engram']
+    const names = process.platform === 'win32' ? ['engram-alpha.exe'] : ['engram-alpha']
     const home = process.env.HOME ?? process.env.USERPROFILE ?? ''
     const candidates = names.flatMap((exe) => [
         ...(process.env.PATH ?? '')

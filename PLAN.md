@@ -160,11 +160,37 @@ Staged: passive first, active later.
 
 ---
 
+## 7A. The local cortex (decided 2026-07-13; reranker shipped v0.5.0)
+
+The daemon grows a stack of small local ONNX models — every layer converts an LLM judgment into offline, zero-token compute. Competitors (Mem0, Letta, Zep) run LLM judges for all of these operations; **nobody in the category ships a local consistency classifier**. The daemon-never-calls-an-LLM rule (§7) holds throughout.
+
+**Four layers, one question each:**
+
+| Layer | Question | Model | Status |
+|---|---|---|---|
+| Recall | what might be relevant? | `bge-small-en-v1.5` (34 MB) | shipped v0.1 |
+| Precision | which of these actually is? | `jina-reranker-v1-turbo-en` cross-encoder (38M) | **shipped v0.5.0** — search over-fetches 3×, reranks title+snippet, trust still modulates (relevance dominates, trust breaks ties); optional: absent model degrades to hybrid order |
+| Logic | do these two claims agree, disagree, duplicate? | `finecat-nli-m` (100M, ModernBERT-base distillation, 8k ctx) — head-to-head Phase-A eval vs `tasksource/ModernBERT-base-nli` first | eval harness shipped v0.5.0 (`scripts/nli-eval.py`) |
+| Decomposition | what are the atomic claims in this text? | rule-based splitter first; `wtpsplit/SaT` (~30 MB) when quality demands | planned |
+
+**Governing principle — models don't validate** (third rule after "time doesn't validate" and "exposure doesn't validate", §6A): no model verdict ever moves a trust field or archives a node. Models NOMINATE (order the suspects queue, rank merge/split candidates, suggest edge verbs, annotate claims); JUDGMENTS move trust (a human or the assistant creates the edge, approves the operation, clicks the verdict). Model outputs render as telemetry chips, like `last_seen` — visible, never load-bearing.
+
+**Features this unlocks (build order):**
+1. **NLI conflict triage** — classify scan candidates (contradiction / mutual-entailment / neutral), order the suspects queue by contradiction probability, show suggested-verdict chips in Review and the brief. **Co-reference caveat (dogfooded 2026-07-13):** MNLI-class models presuppose that both sentences describe the same situation — below the ~0.85 similarity band, unrelated same-shaped titles read as *confident* contradictions (140 junk pairs at a 0.8 gate on the dogfood graph, canonical MNLI pairs meanwhile perfect). So hints run only at the standing 0.85 floor; reaching the paraphrased-contradiction band below it waits for a domain-calibrated model from the judged-suspects corpus. The strongest live validation of "models don't validate" yet.
+2. **`check_claim` / verify-against-canon** — MCP tool + pane Audit panel: split input into claims (decomposition layer), NLI each against top-k retrieved nodes → `{supports, contradicts, silent}` with node ids. NLI beats grounding detectors here because it distinguishes "the canon disagrees" (a conflict) from "the canon doesn't know" (a gap worth capturing).
+3. **Audit panel** — one-click canned passes instead of a blank query box: find hidden conflicts (lowered threshold + NLI), find duplicates (mutual entailment), find bloated nodes (body claims cluster into >1 group), suggest missing links (edge-verb templates over the sentence-shaped ontology — "does A entail 'this exists because of B'?"), check open problems (does any node entail an answer?), structural hygiene (no ML: decisions without a `because`, islands). Every button emits *proposals* into the existing review flow.
+4. **Offline split/merge** — extractive, no generation: split = segment body → cluster claim embeddings → NLI-verify clusters are distinct → parts titled by their most central sentence verbatim, original archived behind fan-out `replaces`, edges re-attached by endpoint similarity; merge = canonical keeps its body + appends only non-entailed sentences from the other, edges re-pointed, loser archived. Fidelity over fluency — every word traceable; pane preview + approve; pinned nodes never auto-proposed. Split parts don't inherit approval (it vouched for the whole).
+5. **The NLI eval loop is self-improving:** every judged suspect (conflict/replaces/dismiss) is a labeled NLI example on real project prose — `scripts/nli-eval.py` scores candidate models on it, and accumulated verdicts become fine-tune data later. Model quality grows with product usage, locally.
+
+**Deferred organs:** GLiNER-small (zero-shot entities → tag/Anchor/`about` suggestions); a SetFit-style memory-worthiness head on bge embeddings — the librarian's ambient-capture gate (§6), trained on our own graphs (captured nodes = positives). Explicitly not: a GNN (per-repo graphs are hundreds of nodes; neighborhood-as-text + NLI covers it legibly).
+
+---
+
 ## 8. Tech stack (locked: Rust + Vue, local-first)
 
 The stable contract is the *interface* (local HTTP + MCP + SQLite).
 
-- **Backend (Rust):** `rmcp` (MCP), `rusqlite` bundled + **FTS5** + `sqlite-vec`, `fastembed` (ONNX, bge-small class), `axum` (HTTP + SSE).
+- **Backend (Rust):** `rmcp` (MCP), `rusqlite` bundled + **FTS5** + `sqlite-vec`, `fastembed` (ONNX: bge-small embeddings + jina-turbo reranker; the §7A cortex grows here), `axum` (HTTP + SSE).
 - **Frontend:** Vue 3.5 + TS + Vite + **Bun**; Pinia, vue-router, Tailwind 4, **Vue Flow**, vueuse, markdown-it + dompurify; ESLint (flat) + Stylelint. Renders the full graph (scaling deferred).
 - **IDE wrappers (built):** VSCode extension (Webview, secondary sidebar) and JetBrains plugin (JCEF tool window, `dev.techtheist.engram`).
 - **Distribution staging:** core loop as a plain local binary → **thin marketplace plugin** (skill + commands + config; the skill bootstraps a checksum-verified binary download from GitHub Releases after a one-time consent prompt) → full **`cargo-dist`** pipeline (installers must also install the chosen skill variant). GitHub is the single root of trust: Releases + `SHA256SUMS`, `install.sh` one-liner. All onboarding paths (JetBrains-only, VSCode-only, GitHub page, plugin-without-daemon) converge on binary→daemon→MCP→skill (later: the IDE plugins manage the daemon lifecycle themselves instead of setup cards); **no-plugin usage is first-class** (Claude Code runs everything; skill points users at the localhost pane).
@@ -218,6 +244,7 @@ The stable contract is the *interface* (local HTTP + MCP + SQLite).
 - **System info pane view** — Settings → System info drawer rendering `GET /system`: binary version, daemon uptime/pid/repo, store health (integrity, WAL, vector/FTS coverage, embed composition), model cache, and per-assistant wiring with pre-rename flags; probes shared via `engram_core::harness`.
 
 **Next (near-term):**
+- **Local cortex phases (§7A):** Phase-A NLI eval on the dogfood corpus → conflict triage → `check_claim`/verify + Audit panel → edge-verb suggestion → offline split/merge.
 - **Bundle skill + `.mcp.json` bootstrap into the IDE plugins**; `runIde`/`verifyPlugin` for JetBrains.
 - **MCP transport migration** to daemon-hosted streamable HTTP (current stdio `engram-alpha mcp` is a deliberate divergence; user owns this migration).
 - **Session quarantine** — exclude a session's writes from retrieval without deleting them (journal substrate shipped; quarantined-sessions table + retrieval filter + pane toggle).

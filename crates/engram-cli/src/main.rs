@@ -325,13 +325,13 @@ fn scopeguard(dir: PathBuf) -> impl Drop {
 }
 
 fn run_brief(args: BriefArgs) -> anyhow::Result<()> {
-    let engine = build_engine(&args.db, args.fake_embeddings)?;
+    let engine = build_engine(&args.db, args.fake_embeddings, false)?;
     println!("{}", engine.brief(args.max_chars)?);
     Ok(())
 }
 
 fn run_export(args: ExportArgs) -> anyhow::Result<()> {
-    let engine = build_engine(&args.db, args.fake_embeddings)?;
+    let engine = build_engine(&args.db, args.fake_embeddings, false)?;
     let snapshot = engine.export()?;
     let json = serde_json::to_string_pretty(&snapshot)?;
     match args.out {
@@ -353,7 +353,7 @@ fn run_import(args: ImportArgs) -> anyhow::Result<()> {
     let data = std::fs::read_to_string(&args.file)
         .with_context(|| format!("reading {}", args.file.display()))?;
     let graph: ExportGraph = serde_json::from_str(&data).context("parsing export JSON")?;
-    let mut engine = build_engine(&args.db, args.fake_embeddings)?;
+    let mut engine = build_engine(&args.db, args.fake_embeddings, false)?;
     engine.set_audit_origin(engram_core::AuditOrigin::cli());
     let summary = engine.import(graph)?;
     tracing::info!(
@@ -366,7 +366,9 @@ fn run_import(args: ImportArgs) -> anyhow::Result<()> {
 }
 
 /// Open the store and pick an embedder — shared by `serve` and `mcp`.
-fn build_engine(db: &Path, fake_embeddings: bool) -> anyhow::Result<Engine> {
+/// `cortex` loads the local-cortex models (PLAN §7A: reranker + NLI) — only
+/// the search-serving commands ask for them; brief/export/import skip the load.
+fn build_engine(db: &Path, fake_embeddings: bool, cortex: bool) -> anyhow::Result<Engine> {
     if let Some(dir) = db.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
@@ -378,7 +380,33 @@ fn build_engine(db: &Path, fake_embeddings: bool) -> anyhow::Result<Engine> {
         tracing::info!("loading local embedding model…");
         Box::new(FastEmbedder::new().context("initializing fastembed model")?)
     };
-    let engine = Engine::new(store, embedder);
+    let mut engine = Engine::new(store, embedder);
+    // Write-time code_ref checks resolve against the repo the DB lives in
+    // (<root>/.engram/graph.db), falling back to the launch cwd.
+    let root = db
+        .canonicalize()
+        .ok()
+        .and_then(|p| {
+            let dir = p.parent()?;
+            (dir.file_name()? == ".engram").then(|| dir.parent().map(|r| r.to_path_buf()))?
+        })
+        .or_else(|| std::env::current_dir().ok());
+    if let Some(root) = root {
+        engine.set_repo_root(root);
+    }
+    if cortex && !fake_embeddings {
+        // The cortex is an upgrade, never a dependency: any failed load
+        // (first run offline, cache wiped) degrades that layer away.
+        match engram_core::FastReranker::new() {
+            Ok(r) => engine.set_reranker(Box::new(r)),
+            Err(e) => tracing::warn!("reranker unavailable, search keeps hybrid order: {e}"),
+        }
+        ensure_nli_model();
+        match engram_core::FastNli::new() {
+            Ok(n) => engine.set_nli(Box::new(n)),
+            Err(e) => tracing::warn!("NLI unavailable, cortex hints disabled: {e}"),
+        }
+    }
     // One-time vector upgrade when the embedding composition changed (e.g.
     // tags/code_refs joined title+body in v0.4.0). Never fatal at startup.
     match engine.ensure_embed_composition() {
@@ -389,15 +417,64 @@ fn build_engine(db: &Path, fake_embeddings: bool) -> anyhow::Result<Engine> {
     Ok(engine)
 }
 
+/// Best-effort download of the NLI model (curl, exactly like self-update;
+/// direct from Hugging Face — the user's chosen distribution). Atomic per
+/// file (.part + rename); any failure leaves the cortex hint-less, never
+/// blocks startup.
+fn ensure_nli_model() {
+    let Some(dir) = engram_core::nli::nli_model_dir() else {
+        return;
+    };
+    if engram_core::nli::NLI_MODEL_FILES
+        .iter()
+        .all(|f| dir.join(f).is_file())
+    {
+        return;
+    }
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    const BASE: &str = "https://huggingface.co/Xenova/nli-deberta-v3-small/resolve/main";
+    let sources = [
+        ("model.onnx", format!("{BASE}/onnx/model_quantized.onnx")),
+        ("tokenizer.json", format!("{BASE}/tokenizer.json")),
+        ("config.json", format!("{BASE}/config.json")),
+    ];
+    tracing::info!("downloading the NLI model (one-time, ~35 MB)…");
+    for (name, url) in sources {
+        let target = dir.join(name);
+        if target.is_file() {
+            continue;
+        }
+        let part = dir.join(format!("{name}.part"));
+        let ok = std::process::Command::new("curl")
+            .args(["-fsSL", "-o"])
+            .arg(&part)
+            .arg(&url)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok || std::fs::rename(&part, &target).is_err() {
+            let _ = std::fs::remove_file(&part);
+            tracing::warn!("NLI model download failed ({url}); cortex hints stay off");
+            return;
+        }
+    }
+}
+
 async fn run_mcp(args: McpArgs) -> anyhow::Result<()> {
-    let engine = build_engine(&args.db, args.fake_embeddings)?;
+    let engine = build_engine(&args.db, args.fake_embeddings, true)?;
     tracing::info!("MCP server ready on stdio (db: {})", args.db.display());
     engram_mcp::serve_stdio(engine).await
 }
 
 async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     ensure_gitignored(&args.db);
-    let engine = Arc::new(Mutex::new(build_engine(&args.db, args.fake_embeddings)?));
+    let engine = Arc::new(Mutex::new(build_engine(
+        &args.db,
+        args.fake_embeddings,
+        true,
+    )?));
 
     // HTTP + SSE on a background task; both interfaces share `engine`, so a
     // write from Claude (MCP) streams to the pane and vice versa.

@@ -65,10 +65,16 @@ pub const STALE_TRUST: f64 = 0.3;
 pub const DUPLICATE_SIMILARITY: f64 = 0.90;
 /// Cosine similarity at/above which two *unlinked* nodes become a suspected
 /// conflict (PLAN §7 conflict scan): close enough to be about the same thing,
-/// below the duplicate bar. Judgment stays with Claude or the user. Tuned on
-/// the dogfood graph: 0.75 flagged every topical cluster (136 pairs / ~50
-/// nodes); real look-alikes sit ≥ 0.85 with bge-small.
-pub const CONFLICT_SUSPECT_SIMILARITY: f64 = 0.85;
+/// below the duplicate bar. Judgment stays with Claude or the user. Retuned on
+/// the dogfood graph twice: 0.75 flagged every topical cluster (136 pairs / ~50
+/// nodes), so it moved to 0.85; but same-genre notes share so much domain
+/// vocabulary that bge-small parks topically-distinct pairs at 0.85–0.87, and
+/// the judged-suspects history bore it out — 27 verdicts, 26 dismissed (all
+/// ≤ 0.883) and the single confirmed conflict at 0.916, a 96% false-positive
+/// rate with a clean gap above the noise. Raised to 0.88 (2026-07-13): drops
+/// every observed false positive, keeps the real one. Positive class is thin
+/// (n=1), so widen only after the judged-suspects corpus grows.
+pub const CONFLICT_SUSPECT_SIMILARITY: f64 = 0.88;
 /// How long a node must sit below [`STALE_TRUST`] before the decay pass
 /// archives it (PLAN §6B: stale provisional episodic nodes decay out).
 pub const DECAY_TTL_DAYS: i64 = 14;
@@ -94,6 +100,18 @@ pub const SEARCH_RELATIVE_CUT: f64 = 0.25;
 pub const SEARCH_RECENCY_BOOST: f64 = 0.15;
 /// Age at which the newness bonus has halved.
 pub const SEARCH_RECENCY_HALF_LIFE_SECS: i64 = 30 * 24 * 60 * 60; // 30 days
+/// How much trust modulates a reranked hit's score (mirrors the trust weight
+/// inside the hybrid blend): relevance dominates, trust breaks near-ties.
+pub const RERANK_TRUST_WEIGHT: f64 = 0.15;
+/// Minimum NLI confidence before an audit sweep queues a pair. One of two
+/// guards learned on the dogfood graph (2026-07-13): MNLI-class models
+/// presuppose co-reference, so below the ~0.85 similarity band unrelated
+/// same-shaped titles read as CONFIDENT contradictions (140 junk pairs even
+/// at this gate, most at 0.99–1.00) — which is why the conflict sweep also
+/// keeps [`CONFLICT_SUSPECT_SIMILARITY`] as its floor. A sweep that floods
+/// the judge is worse than one that misses; calibrate on the judged-suspects
+/// corpus (scripts/nli-eval.py) before loosening either guard.
+pub const NLI_SWEEP_MIN_CONFIDENCE: f32 = 0.8;
 
 /// Everything the trust computation reads off a node. `last_seen` is
 /// deliberately absent: retrieval is observability, not evidence.

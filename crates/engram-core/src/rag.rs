@@ -75,6 +75,16 @@ fn normalize(v: &mut [f32]) {
     }
 }
 
+/// The precision layer of the local cortex (PLAN §7A): a cross-encoder that
+/// re-scores retrieval candidates against the query. Bi-encoder recall
+/// (bge-small) casts the net; this sharpens the top of it. Optional — the
+/// engine falls back to plain hybrid order when absent (tests, offline
+/// first run, `--fake-embeddings`).
+pub trait Reranker: Send + Sync {
+    /// Raw relevance logits, one per document, higher = more relevant.
+    fn rank(&self, query: &str, documents: &[String]) -> Result<Vec<f32>>;
+}
+
 #[cfg(feature = "fastembed")]
 mod fast {
     use std::path::{Path, PathBuf};
@@ -174,7 +184,85 @@ mod fast {
         crate::Error::Embedding(e.to_string())
     }
 
-    fn model_dir() -> Option<PathBuf> {
+    /// Local ONNX cross-encoder reranking (`jina-reranker-v1-turbo-en`, 38M —
+    /// small enough for CPU, English-only like bge-small-en). Same loading
+    /// order as the embedder: an explicit model directory wins (deterministic,
+    /// offline — `ENGRAM_RERANKER_DIR`, else
+    /// `~/.cache/engram/jina-reranker-v1-turbo-en`), `hf_hub` download is the
+    /// fallback. Init failure is the caller's to soften (the engine simply
+    /// keeps hybrid order without a reranker).
+    pub struct FastReranker {
+        model: Mutex<fastembed::TextRerank>,
+    }
+
+    impl FastReranker {
+        pub fn new() -> Result<Self> {
+            let model = match reranker_model_dir().filter(|d| has_all_files(d)) {
+                Some(dir) => Self::from_dir(&dir)?,
+                None => {
+                    let mut opts = fastembed::RerankInitOptions::new(
+                        fastembed::RerankerModel::JINARerankerV1TurboEn,
+                    )
+                    .with_show_download_progress(false);
+                    if let Some(cache) = shared_cache_dir() {
+                        opts = opts.with_cache_dir(cache);
+                    }
+                    fastembed::TextRerank::try_new(opts).map_err(emb_err)?
+                }
+            };
+            Ok(Self {
+                model: Mutex::new(model),
+            })
+        }
+
+        fn from_dir(dir: &Path) -> Result<fastembed::TextRerank> {
+            let read = |name: &str| {
+                std::fs::read(dir.join(name))
+                    .map_err(|e| crate::Error::Embedding(format!("reading {name}: {e}")))
+            };
+            let model = fastembed::UserDefinedRerankingModel::new(
+                read("model.onnx")?,
+                TokenizerFiles {
+                    tokenizer_file: read("tokenizer.json")?,
+                    config_file: read("config.json")?,
+                    special_tokens_map_file: read("special_tokens_map.json")?,
+                    tokenizer_config_file: read("tokenizer_config.json")?,
+                },
+            );
+            fastembed::TextRerank::try_new_from_user_defined(
+                model,
+                fastembed::RerankInitOptionsUserDefined::default(),
+            )
+            .map_err(emb_err)
+        }
+    }
+
+    /// Where the reranker model lives (`ENGRAM_RERANKER_DIR` override).
+    pub fn reranker_model_dir() -> Option<PathBuf> {
+        if let Ok(dir) = std::env::var("ENGRAM_RERANKER_DIR") {
+            return Some(PathBuf::from(dir));
+        }
+        home().map(|h| h.join(".cache/engram/jina-reranker-v1-turbo-en"))
+    }
+
+    impl Reranker for FastReranker {
+        fn rank(&self, query: &str, documents: &[String]) -> Result<Vec<f32>> {
+            let docs: Vec<&str> = documents.iter().map(String::as_str).collect();
+            let mut results = self
+                .model
+                .lock()
+                .expect("reranker mutex")
+                .rerank(query, docs, false, None)
+                .map_err(emb_err)?;
+            // fastembed returns best-first; restore input order for the caller.
+            results.sort_by_key(|r| r.index);
+            Ok(results.into_iter().map(|r| r.score).collect())
+        }
+    }
+
+    /// Where the embedding model lives (`ENGRAM_MODEL_DIR` override) — also
+    /// reported by `/system` so the pane can show real paths.
+    pub fn model_dir() -> Option<PathBuf> {
         if let Ok(dir) = std::env::var("ENGRAM_MODEL_DIR") {
             return Some(PathBuf::from(dir));
         }
@@ -199,7 +287,7 @@ mod fast {
 }
 
 #[cfg(feature = "fastembed")]
-pub use fast::FastEmbedder;
+pub use fast::{FastEmbedder, FastReranker, model_dir, reranker_model_dir};
 
 #[cfg(test)]
 mod tests {

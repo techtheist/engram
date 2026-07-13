@@ -97,7 +97,7 @@ Recent tags (reuse before inventing new ones): phase-2, hooks, pane-crud, retrie
 - engram-alpha serve must start in the repo root — a relative --db silently creates a fresh DB anywhere else
 ```
 
-Mid-session, the assistant recalls on demand: hybrid search (FTS5 + local vectors, ranked by relevance × trust) returns each hit with its 1-hop neighbors — **conflicts and supersessions first**, so contradicting a standing decision is hard to do by accident. Writes are guarded too: a near-duplicate note is merged into the existing node instead of created, and a write that lands next to superseded or conflicted knowledge comes back with a warning. You can read the same brief anytime in the pane (Memory Lens).
+Mid-session, the assistant recalls on demand: hybrid search (FTS5 + local vectors, sharpened by a local cross-encoder reranker, ranked by relevance × trust) returns each hit with its 1-hop neighbors — **conflicts and supersessions first**, so contradicting a standing decision is hard to do by accident. Writes are guarded too: a near-duplicate note is merged into the existing node instead of created, and a write that lands next to superseded or conflicted knowledge comes back with a warning. You can read the same brief anytime in the pane (Memory Lens).
 
 ### Silent writes, visible review
 
@@ -106,6 +106,18 @@ Capture is batched and silent — no *"I've saved a note!"* chatter in your chat
 <img src=".screenshots/engram-alpha-review-feature.png" width="243" alt="The Review drawer: a suspected-conflict pair at 86% similarity awaiting a Conflict / Replaces / Dismiss verdict, above the approval queue with per-node trust">
 
 Above the queue sits the conflict worklist. A local scan flags unlinked look-alike pairs as **suspected conflicts**, and each pair gets a judgment — from you in the pane, or from the assistant at the start of its next session: **Conflict** (they contradict; record it), **Replaces** (the newer supersedes; the older is archived into history), or **Dismiss** (fine together). The scan only finds candidates; a person or an AI is always the judge.
+
+### Interrogate the canon — Checkup
+
+Beyond finding what the graph *says*, you can ask whether it *agrees*. The **Checkup** panel runs a small local NLI model (natural-language inference — entailment / neutral / contradiction) over your own knowledge, zero tokens, fully offline. Type a claim and the canon answers with receipts:
+
+<img src=".screenshots/engram-alpha-checkup-feature.png" width="243" alt="The Checkup panel: one-click sweeps above a claim check — the claim 'graph is cloud saved' comes back CONTRADICTS with three principles at 100%, local-first and user-owned among them">
+
+That's a real run against this repo's graph: the claim *"graph is cloud saved"* comes back **contradicts**, with the principles that disagree — local-first, user-owned — each one click from its full node. A claim the canon *supports* lists its backing nodes the same way, and **silent** is an answer too: nearby nodes with no verdict means the graph simply doesn't know, which is usually something worth capturing.
+
+Above the claim box sit one-click sweeps over the whole graph: **Find hidden conflicts** (look-alike pairs the model reads as contradictions), **Find duplicates** (pairs that state the same thing — judge as Replaces to merge their histories), and **Check open problems** (does an existing Decision or Resolution already answer an open Problem?). Below, instant structural checks with no models at all: Decisions missing a recorded reason, nodes with no connections. Everything a sweep finds lands as a *nomination* in the Review drawer — the models suggest, a person or an AI always judges, and no model output ever moves a trust score.
+
+Your assistant gets the same power as the `check_claim` MCP tool — *"does the canon contradict this plan?"* before acting, no tokens spent — and every write it makes comes back with the full verdict set in the same turn: near-duplicates (including the **negated duplicate**, where the "duplicate" actually says the opposite — the one case where merging blindly would corrupt the canon), proximity to conflicted or superseded knowledge, and code refs that don't resolve in the repo.
 
 ### Every change is on the record
 
@@ -121,7 +133,7 @@ Nodes can point at code (`code_refs`). When the code moves, the memory doesn't g
 
 ### All of it runs offline
 
-The scans that keep the graph honest run in the local daemon, on local embeddings: the conflict scan at write time plus a six-hourly sweep (or **Scan now** in the pane), the drift check over code refs, and the decay pass that archives stale never-approved scratch notes (see [Trust & decay](#trust--decay)). No API calls, no telemetry, nothing leaves your machine — the whole loop works on a plane.
+The scans that keep the graph honest run in the local daemon, on local models — embeddings, a cross-encoder reranker, and the [Checkup](#interrogate-the-canon--checkup) NLI classifier: the conflict scan at write time plus a six-hourly sweep (or **Scan now** in the pane), the drift check over code refs, and the decay pass that archives stale never-approved scratch notes (see [Trust & decay](#trust--decay)). No API calls, no telemetry, nothing leaves your machine — the whole loop works on a plane.
 
 **Status:** early development, heavily dogfooded. See [`PLAN.md`](./PLAN.md) for the full spec and roadmap.
 
@@ -220,7 +232,7 @@ Below **30%** a node is **stale**: badged in the pane, flagged to the assistant 
 Search folds this in: results rank by relevance × trust, with a small recency bonus, so fresh, living knowledge wins near-ties against stale look-alikes. The net effect: capture can be liberal, because a wrong-but-attractive note can't keep itself alive by being retrieved — it fades or dies of a judged conflict — while the rare true constraint survives its quiet year untouched.
 
 ## Stack
-Rust core (`rmcp`, `rusqlite`, `sqlite-vec`, `fastembed`) · Vue 3 + TypeScript + Vue Flow · JetBrains (JCEF) & VSCode (Webview) wrappers · MIT licensed.
+Rust core (`rmcp`, `rusqlite`, `sqlite-vec`, `fastembed` — local ONNX embeddings + reranker, an NLI layer next; no LLM ever runs in the daemon) · Vue 3 + TypeScript + Vue Flow · JetBrains (JCEF) & VSCode (Webview) wrappers · MIT licensed.
 
 ## License
 [MIT](./LICENSE)

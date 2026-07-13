@@ -3,7 +3,8 @@
 //! the retrieval surface (hybrid search) so callers never touch vectors
 //! directly.
 
-use crate::rag::Embedder;
+use crate::nli::Nli;
+use crate::rag::{Embedder, Reranker};
 use crate::types::*;
 use crate::{Result, Store};
 
@@ -92,6 +93,15 @@ impl Default for AuditOrigin {
 pub struct Engine {
     store: Store,
     embedder: Box<dyn Embedder>,
+    /// The precision layer (PLAN §7A): optional cross-encoder re-scoring of
+    /// search candidates. Absent in tests, under `--fake-embeddings`, and
+    /// when the model can't load — search then keeps plain hybrid order.
+    reranker: Option<Box<dyn Reranker>>,
+    /// The logic layer (PLAN §7A): optional local NLI. Nominations only —
+    /// suspect hints, claim checks, audit sweeps; never touches trust.
+    nli: Option<Box<dyn Nli>>,
+    /// Repo root for write-time code_ref checks (serve/mcp set it).
+    repo_root: Option<std::path::PathBuf>,
     listener: Option<Listener>,
     audit_origin: AuditOrigin,
     /// Binary-side context captured once per process — the enrichment every
@@ -106,6 +116,9 @@ impl Engine {
         Self {
             store,
             embedder,
+            reranker: None,
+            nli: None,
+            repo_root: None,
             listener: None,
             audit_origin: AuditOrigin::default(),
             audit_cwd: std::env::current_dir()
@@ -119,6 +132,51 @@ impl Engine {
     /// Install the single change listener (the daemon wires this to SSE).
     pub fn set_listener(&mut self, listener: Listener) {
         self.listener = Some(listener);
+    }
+
+    /// Install the optional reranker (serve/mcp with real embeddings).
+    pub fn set_reranker(&mut self, reranker: Box<dyn Reranker>) {
+        self.reranker = Some(reranker);
+    }
+
+    /// Whether search runs the precision layer (surfaced by `/system`).
+    pub fn has_reranker(&self) -> bool {
+        self.reranker.is_some()
+    }
+
+    /// Install the optional NLI layer (serve/mcp with real embeddings).
+    pub fn set_nli(&mut self, nli: Box<dyn Nli>) {
+        self.nli = Some(nli);
+    }
+
+    /// Whether the logic layer is loaded (surfaced by `/system`).
+    pub fn has_nli(&self) -> bool {
+        self.nli.is_some()
+    }
+
+    /// Whether search runs on fake (deterministic, non-semantic) vectors —
+    /// surfaced by `/system` so the pane can say so.
+    pub fn embeddings_are_fake(&self) -> bool {
+        self.embedder.is_fake()
+    }
+
+    /// Where write-time code_ref checks resolve paths (set by serve/mcp from
+    /// the DB location). Unset = ref checks are skipped, never guessed.
+    pub fn set_repo_root(&mut self, root: std::path::PathBuf) {
+        self.repo_root = Some(root);
+    }
+
+    /// Path-shaped code_refs that don't resolve against the repo root right
+    /// now — the write-time half of the drift check, so the writer learns in
+    /// the same turn instead of at the next drift scan.
+    fn missing_refs(&self, refs: &[String]) -> Vec<String> {
+        let Some(root) = &self.repo_root else {
+            return Vec::new();
+        };
+        refs.iter()
+            .filter(|r| ref_is_path(r) && !root.join(r.as_str()).exists())
+            .cloned()
+            .collect()
     }
 
     /// Stamp who the following writes belong to. Front-ends sharing this
@@ -533,20 +591,62 @@ impl Engine {
         Ok(ImportSummary { nodes, edges })
     }
 
-    /// Hybrid retrieval: embed the query, fuse keyword + vector hits, then
-    /// attach each hit's 1-hop neighbors (conflicts/supersessions first) so
-    /// contradictions surface passively with the match (PLAN §6A).
+    /// Hybrid retrieval: embed the query, fuse keyword + vector hits, run the
+    /// precision layer when present (over-fetch candidates, cross-encode them
+    /// against the query, re-order), then attach each hit's 1-hop neighbors
+    /// (conflicts/supersessions first) so contradictions surface passively
+    /// with the match (PLAN §6A / §7A).
     pub fn search(&self, query: &str, types: &[NodeType], limit: usize) -> Result<Vec<SearchHit>> {
         let qv = self.embedder.embed_one(query)?;
-        let mut hits = self.store.search_hybrid(query, Some(&qv), types, limit)?;
+        let fetch = match &self.reranker {
+            Some(_) => (limit * 3).clamp(12, 50),
+            None => limit,
+        };
+        let mut hits = self.store.search_hybrid(query, Some(&qv), types, fetch)?;
+        if let Some(reranker) = &self.reranker
+            && hits.len() > 1
+        {
+            self.rerank(reranker.as_ref(), query, &mut hits);
+        }
+        hits.truncate(limit);
         for hit in &mut hits {
             hit.neighbors = self.store.neighbors(&hit.id, NEIGHBOR_CAP)?;
         }
-        // Being surfaced is the trust signal: stamp last_seen on every hit
-        // (after scoring, so the stamp doesn't influence this query's ranks).
+        // Observability stamp on what was actually returned — never the
+        // over-fetched candidates the reranker discarded. (Trust doesn't
+        // read this either way; see policy.)
         let ids: Vec<String> = hits.iter().map(|h| h.id.clone()).collect();
         self.store.touch(&ids)?;
         Ok(hits)
+    }
+
+    /// Re-score candidates with the cross-encoder: relevance comes from the
+    /// reranker logit (sigmoid-squashed), trust modulates it the same way it
+    /// modulates the hybrid blend — relevance dominates, trust breaks ties
+    /// (PLAN §6A). A reranker failure keeps hybrid order: precision is an
+    /// upgrade, never a dependency.
+    fn rerank(&self, reranker: &dyn Reranker, query: &str, hits: &mut [SearchHit]) {
+        let docs: Vec<String> = hits
+            .iter()
+            .map(|h| {
+                let snippet = h.snippet.replace(
+                    [crate::store::SNIPPET_OPEN, crate::store::SNIPPET_CLOSE],
+                    "",
+                );
+                format!("{}\n{}", h.title, snippet)
+            })
+            .collect();
+        let Ok(scores) = reranker.rank(query, &docs) else {
+            return;
+        };
+        if scores.len() != hits.len() {
+            return;
+        }
+        for (hit, logit) in hits.iter_mut().zip(scores) {
+            let relevance = 1.0 / (1.0 + (-logit as f64).exp());
+            hit.score = relevance * (1.0 + crate::policy::RERANK_TRUST_WEIGHT * hit.trust);
+        }
+        hits.sort_by(|a, b| b.score.total_cmp(&a.score));
     }
 
     /// Claude-side note write with the PLAN §6A safety net: if a same-type,
@@ -573,10 +673,36 @@ impl Engine {
                 && node.node_type == n.node_type
                 && node.valid_until.is_none()
             {
-                return Ok(WriteOutcome::Matched { node, similarity });
+                // At duplicate similarity co-reference holds, so an NLI
+                // contradiction is trustworthy — it flags the negated
+                // near-duplicate a cosine score can't see.
+                let (nli_label, nli_score) = match &self.nli {
+                    Some(nli) => {
+                        let text = match &scrubbed_body {
+                            Some(b) => format!("{scrubbed_title}. {b}"),
+                            None => scrubbed_title.clone(),
+                        };
+                        let excerpt: String = text.chars().take(400).collect();
+                        match nli.judge_pair(&excerpt, &claim(&node)) {
+                            Ok(sym) => {
+                                let (l, s) = sym.hint();
+                                (Some(l.to_string()), Some(s as f64))
+                            }
+                            Err(_) => (None, None),
+                        }
+                    }
+                    None => (None, None),
+                };
+                return Ok(WriteOutcome::Matched {
+                    node,
+                    similarity,
+                    nli_label,
+                    nli_score,
+                });
             }
         }
 
+        let missing_refs = self.missing_refs(&n.code_refs);
         let node = self.add_node(n)?;
         let warnings = self.write_warnings(&vec, &node.id)?;
         let suspects = if self.record_suspects(&vec, &node.id)? > 0 {
@@ -588,21 +714,19 @@ impl Engine {
             node,
             warnings,
             suspects,
+            missing_refs,
         })
     }
 
     /// `update_node` plus conflict warnings and freshly-queued suspects when
     /// any embedded field changed.
-    pub fn update_node_checked(
-        &self,
-        id: &str,
-        patch: NodePatch,
-    ) -> Result<(Node, Vec<WriteWarning>, Vec<SuspectView>)> {
+    pub fn update_node_checked(&self, id: &str, patch: NodePatch) -> Result<CheckedUpdate> {
         let touches_text = patch.title.is_some()
             || patch.body.is_some()
             || patch.tags.is_some()
             || patch.code_refs.is_some();
         let node = self.update_node(id, patch)?;
+        let missing_refs = self.missing_refs(&node.code_refs);
         let (warnings, suspects) = if touches_text {
             let vec = self.embedder.embed_one(&embed_text(
                 &node.title,
@@ -619,7 +743,12 @@ impl Engine {
         } else {
             (Vec::new(), Vec::new())
         };
-        Ok((node, warnings, suspects))
+        Ok(CheckedUpdate {
+            node,
+            warnings,
+            suspects,
+            missing_refs,
+        })
     }
 
     /// Pending suspects that involve this node — the judgeable form of what a
@@ -733,9 +862,15 @@ impl Engine {
             }
 
             let mut suspects = self.store.suspects_pending()?;
-            // Strongest first, capped: the brief is a digest, the full queue
-            // lives in list_suspects / the pane.
-            suspects.sort_by(|x, y| y.similarity.total_cmp(&x.similarity));
+            // NLI-hinted contradictions first (the pairs most worth the
+            // judge's attention), then strongest similarity; capped — the
+            // brief is a digest, the full queue lives in list_suspects/pane.
+            suspects.sort_by(|x, y| {
+                let contra = |s: &SuspectView| s.nli_label.as_deref() == Some("contradiction");
+                contra(y)
+                    .cmp(&contra(x))
+                    .then(y.similarity.total_cmp(&x.similarity))
+            });
             let overflow = suspects.len().saturating_sub(BRIEF_SUSPECT_CAP);
             suspects.truncate(BRIEF_SUSPECT_CAP);
             if !suspects.is_empty() {
@@ -747,8 +882,14 @@ impl Engine {
                     break 'assemble;
                 }
                 for s in suspects {
+                    let hint = match (&s.nli_label, s.nli_score) {
+                        (Some(label), Some(score)) => {
+                            format!("; hint: {label} {:.0}%", score * 100.0)
+                        }
+                        _ => String::new(),
+                    };
                     let line = format!(
-                        "- {}: \"{}\" [{} {}] vs \"{}\" [{} {}] ({:.0}% similar)",
+                        "- {}: \"{}\" [{} {}] vs \"{}\" [{} {}] ({:.0}% similar{hint})",
                         s.id,
                         s.a.title,
                         s.a.node_type.as_str(),
@@ -921,6 +1062,211 @@ impl Engine {
         Ok(added)
     }
 
+    // ---- local cortex, logic layer (PLAN §7A). All read-only nominations:
+    // sweeps queue suspects for judgment, claim checks annotate — no trust
+    // field moves here.
+
+    /// Verify a claim against the canon: retrieve the nearest nodes, judge
+    /// each (node claim as premise, input as hypothesis), and bucket into
+    /// supports / contradicts / silent. NLI beats a similarity list here
+    /// because "the canon disagrees" and "the canon doesn't know" are
+    /// different answers — one is a conflict, the other a gap worth capturing.
+    pub fn check_claim(&self, text: &str, limit: usize) -> Result<ClaimReport> {
+        let Some(nli) = &self.nli else {
+            return Err(crate::Error::Embedding(
+                "the NLI model is not loaded — claim checks need the local logic layer".into(),
+            ));
+        };
+        let qv = self.embedder.embed_one(text)?;
+        let hits = self
+            .store
+            .search_hybrid(text, Some(&qv), &[], limit.clamp(4, 16))?;
+        let mut nodes = Vec::new();
+        for h in &hits {
+            if let Some(n) = self.store.get_node(&h.id)? {
+                nodes.push(n);
+            }
+        }
+        let pairs: Vec<(String, String)> =
+            nodes.iter().map(|n| (claim(n), text.to_string())).collect();
+        let judgments = nli.judge(&pairs)?;
+
+        let mut report = ClaimReport {
+            claim: text.to_string(),
+            supports: Vec::new(),
+            contradicts: Vec::new(),
+            silent: Vec::new(),
+        };
+        for (node, j) in nodes.into_iter().zip(judgments) {
+            let verdict = ClaimVerdict {
+                id: node.id,
+                node_type: node.node_type,
+                title: node.title,
+                trust: node.trust,
+                stale: node.stale,
+                entailment: j.entailment,
+                neutral: j.neutral,
+                contradiction: j.contradiction,
+            };
+            match j.label() {
+                "entailment" => report.supports.push(verdict),
+                "contradiction" => report.contradicts.push(verdict),
+                _ => report.silent.push(verdict),
+            }
+        }
+        report
+            .contradicts
+            .sort_by(|a, b| b.contradiction.total_cmp(&a.contradiction));
+        report
+            .supports
+            .sort_by(|a, b| b.entailment.total_cmp(&a.entailment));
+        Ok(report)
+    }
+
+    /// Conflict sweep (the Checkup panel's "Find hidden conflicts"): rescan
+    /// at the standing similarity threshold, queueing only pairs the NLI
+    /// layer marks as contradictions. The floor stays at 0.85 deliberately:
+    /// MNLI-class models presuppose co-reference, and below that band
+    /// unrelated same-shaped titles read as confident contradictions (see
+    /// the dogfood finding of 2026-07-13 — 140 junk pairs at a 0.8 gate).
+    /// Reaching lower waits for a domain-calibrated model via the
+    /// judged-suspects eval corpus.
+    pub fn audit_conflicts(&self) -> Result<AuditSweep> {
+        self.audit_sweep("contradiction", crate::policy::CONFLICT_SUSPECT_SIMILARITY)
+    }
+
+    /// Duplicate sweep (the Audit panel's "Find duplicates"): mutual
+    /// entailment above a 0.80 similarity floor — two nodes stating the same
+    /// thing. Queued as suspects; the judge's `replaces` verdict is the merge.
+    pub fn audit_duplicates(&self) -> Result<AuditSweep> {
+        self.audit_sweep("entailment", 0.80)
+    }
+
+    /// Shared sweep: nominate unlinked, unraised look-alike pairs whose NLI
+    /// hint matches `target`. NLI pair budget capped — an audit that takes a
+    /// minute under the engine lock is worse than one that says "truncated,
+    /// run me again".
+    fn audit_sweep(&self, target: &'static str, floor: f64) -> Result<AuditSweep> {
+        const NLI_PAIR_BUDGET: usize = 300;
+        if self.nli.is_none() {
+            return Err(crate::Error::Embedding(
+                "the NLI model is not loaded — audit sweeps need the local logic layer".into(),
+            ));
+        }
+        let mut sweep = AuditSweep {
+            queued: 0,
+            examined: 0,
+            truncated: false,
+        };
+        'nodes: for node in self.store.scannable_nodes()? {
+            let Some(vec) = self.store.embedding_of(&node.id)? else {
+                continue;
+            };
+            for (id, distance) in self.store.search_vec(&vec, 12)? {
+                let similarity = 1.0 - distance;
+                if id == node.id {
+                    continue;
+                }
+                if similarity < floor {
+                    break; // distance-ordered
+                }
+                let Some(other) = self.store.get_node(&id)? else {
+                    continue;
+                };
+                if other.node_type == NodeType::Anchor
+                    || other.valid_until.is_some()
+                    || self.store.pair_linked(&node.id, &other.id)?
+                    || self.store.suspect_between(&node.id, &other.id)?
+                {
+                    continue;
+                }
+                if sweep.examined >= NLI_PAIR_BUDGET {
+                    sweep.truncated = true;
+                    break 'nodes;
+                }
+                sweep.examined += 1;
+                let Some((label, score)) = self.nli_hint(&node, &other) else {
+                    continue;
+                };
+                if label != target || score < crate::policy::NLI_SWEEP_MIN_CONFIDENCE as f64 {
+                    continue;
+                }
+                let (newer, older) = if node.created_at >= other.created_at {
+                    (&node.id, &other.id)
+                } else {
+                    (&other.id, &node.id)
+                };
+                self.store
+                    .add_suspect(newer, older, similarity, Some((label, score)))?;
+                sweep.queued += 1;
+            }
+        }
+        if sweep.queued > 0 {
+            self.notify(ChangeEvent::SuspectsChanged);
+        }
+        Ok(sweep)
+    }
+
+    /// "Check open problems": does any current node entail an answer to an
+    /// open Problem/Intent? Returns nominations — the human (or assistant)
+    /// still links `answers` and resolves.
+    pub fn audit_answered(&self) -> Result<Vec<AnsweredHint>> {
+        const NLI_PAIR_BUDGET: usize = 150;
+        let Some(nli) = &self.nli else {
+            return Err(crate::Error::Embedding(
+                "the NLI model is not loaded — audit sweeps need the local logic layer".into(),
+            ));
+        };
+        let mut hints = Vec::new();
+        let mut examined = 0;
+        for problem in self.store.list_open(&[])? {
+            let Some(vec) = self.store.embedding_of(&problem.id)? else {
+                continue;
+            };
+            for (id, distance) in self.store.search_vec(&vec, 8)? {
+                if id == problem.id || 1.0 - distance < 0.6 {
+                    continue;
+                }
+                let Some(candidate) = self.store.get_node(&id)? else {
+                    continue;
+                };
+                if candidate.valid_until.is_some()
+                    || !matches!(
+                        candidate.node_type,
+                        NodeType::Resolution | NodeType::Decision | NodeType::Insight
+                    )
+                {
+                    continue;
+                }
+                if examined >= NLI_PAIR_BUDGET {
+                    return Ok(hints);
+                }
+                examined += 1;
+                let Ok(j) = nli.judge(&[(claim(&candidate), claim(&problem))]) else {
+                    continue;
+                };
+                let entailment = j[0].entailment;
+                if entailment >= 0.6 {
+                    hints.push(AnsweredHint {
+                        problem: SuspectEndpoint {
+                            id: problem.id.clone(),
+                            node_type: problem.node_type,
+                            title: problem.title.clone(),
+                        },
+                        candidate: SuspectEndpoint {
+                            id: candidate.id,
+                            node_type: candidate.node_type,
+                            title: candidate.title,
+                        },
+                        entailment: entailment as f64,
+                    });
+                }
+            }
+        }
+        hints.sort_by(|a, b| b.entailment.total_cmp(&a.entailment));
+        Ok(hints)
+    }
+
     /// Timeline (PLAN §10): the chronological story of one piece of
     /// knowledge — every generation connected to `id` through `replaces`
     /// edges, oldest first. A node that was never part of a supersession
@@ -1053,10 +1399,26 @@ impl Engine {
             } else {
                 (&other.id, &node.id)
             };
-            self.store.add_suspect(newer, older, similarity)?;
+            let hint = self.nli_hint(node, &other);
+            self.store.add_suspect(
+                newer,
+                older,
+                similarity,
+                hint.as_ref().map(|(l, s)| (*l, *s)),
+            )?;
             added += 1;
         }
         Ok(added)
+    }
+
+    /// The logic layer's triage hint for a candidate pair — a nomination for
+    /// the judge, never a verdict (PLAN §7A: models don't validate). `None`
+    /// when the NLI model isn't loaded or judgment fails (hints are best-effort).
+    fn nli_hint(&self, a: &Node, b: &Node) -> Option<(&'static str, f64)> {
+        let nli = self.nli.as_ref()?;
+        let sym = nli.judge_pair(&claim(a), &claim(b)).ok()?;
+        let (label, score) = sym.hint();
+        Some((label, score as f64))
     }
 
     /// The pending queue, ready for judgment.
@@ -1226,6 +1588,29 @@ fn generation<'a>(
         .unwrap_or(0);
     memo.insert(id, g);
     g
+}
+
+/// A node's canonical claim for NLI judgment (PLAN §7A): the declarative,
+/// skill-enforced title, plus the body's first sentence when it adds context.
+/// Claim-level on purpose — whole multi-claim bodies dilute a sentence-pair
+/// model past usefulness, however large its context window.
+fn claim(node: &Node) -> String {
+    let mut text = node.title.trim().to_string();
+    if let Some(body) = node.body.as_deref() {
+        let first = body
+            .trim()
+            .replace('\n', " ")
+            .split(". ")
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if !first.is_empty() && !text.to_lowercase().contains(&first.to_lowercase()) {
+            text.push_str(". ");
+            text.push_str(&first);
+        }
+    }
+    text.chars().take(400).collect()
 }
 
 /// A code_ref reads as a checkable path when it has no whitespace and looks

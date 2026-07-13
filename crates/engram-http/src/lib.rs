@@ -13,9 +13,9 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use engram_core::{
-    AuditOrigin, AuditPage, ChangeEvent, Drift, Edge, EdgePatch, EdgeType, Engine, Error,
-    ExportGraph, ImportSummary, NewEdge, NewNode, Node, NodePatch, NodeType, SearchHit,
-    SuspectVerdict, SuspectView, TagStat, TimelineEntry,
+    AnsweredHint, AuditOrigin, AuditPage, AuditSweep, ChangeEvent, ClaimReport, Drift, Edge,
+    EdgePatch, EdgeType, Engine, Error, ExportGraph, ImportSummary, NewEdge, NewNode, Node,
+    NodePatch, NodeType, SearchHit, SuspectVerdict, SuspectView, TagStat, TimelineEntry,
 };
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
@@ -146,6 +146,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/conflicts/suspects", get(list_suspects))
         .route("/conflicts/suspects/{id}/resolve", post(resolve_suspect))
         .route("/conflicts/scan", post(scan_conflicts))
+        .route("/claims/check", post(check_claim))
+        .route("/audit/conflicts", post(audit_conflicts))
+        .route("/audit/duplicates", post(audit_duplicates))
+        .route("/audit/answered", post(audit_answered))
         .route("/drift", get(drift))
         .route("/nodes/{id}/timeline", get(timeline))
         .route("/decay", post(decay))
@@ -230,6 +234,11 @@ async fn system(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let model_cached = engram_core::harness::home_file(".cache/engram").is_some_and(|dir| {
         std::fs::read_dir(&dir).is_ok_and(|mut entries| entries.next().is_some())
     });
+    let dir_str =
+        |d: Option<std::path::PathBuf>| d.map(|p| p.display().to_string()).unwrap_or_default();
+    let embed_dir = dir_str(engram_core::rag::model_dir());
+    let rerank_dir = dir_str(engram_core::rag::reranker_model_dir());
+    let nli_dir = dir_str(engram_core::nli::nli_model_dir());
     let db_size = state
         .db_path
         .as_deref()
@@ -269,6 +278,29 @@ async fn system(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
             "embed_composition_current": embed_version >= engram_core::EMBED_COMPOSITION,
         },
         "model_cached": model_cached,
+        "reranker": engine.has_reranker(),
+        "nli": engine.has_nli(),
+        // The local cortex (PLAN §7A), one row per model with its on-disk home.
+        "models": [
+            {
+                "name": "bge-small-en-v1.5",
+                "role": "embeddings — recall (384-dim vectors, hybrid search)",
+                "path": embed_dir,
+                "active": !engine.embeddings_are_fake(),
+            },
+            {
+                "name": "jina-reranker-v1-turbo-en",
+                "role": "reranker — search precision (cross-encoder)",
+                "path": rerank_dir,
+                "active": engine.has_reranker(),
+            },
+            {
+                "name": "nli-deberta-v3-small",
+                "role": "NLI — logic (conflict hints, claim checks, Checkup sweeps)",
+                "path": nli_dir,
+                "active": engine.has_nli(),
+            },
+        ],
         "wiring": wiring,
     }))
 }
@@ -432,6 +464,44 @@ async fn timeline(
 ) -> Result<Json<Vec<TimelineEntry>>, AppError> {
     let chain = state.engine().timeline(&id)?;
     Ok(Json(chain))
+}
+
+#[derive(Deserialize)]
+struct CheckClaimBody {
+    text: String,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// Verify a claim against the canon (PLAN §7A): supports / contradicts /
+/// silent, each with the judging node. Requires the local NLI model.
+async fn check_claim(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<CheckClaimBody>,
+) -> Result<Json<ClaimReport>, AppError> {
+    let report = state
+        .engine()
+        .check_claim(&body.text, body.limit.unwrap_or(8))?;
+    Ok(Json(report))
+}
+
+/// Audit-panel sweep: deep conflict pass (lower similarity floor, NLI-gated).
+async fn audit_conflicts(State(state): State<Arc<AppState>>) -> Result<Json<AuditSweep>, AppError> {
+    Ok(Json(state.engine().audit_conflicts()?))
+}
+
+/// Audit-panel sweep: mutual-entailment duplicates.
+async fn audit_duplicates(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<AuditSweep>, AppError> {
+    Ok(Json(state.engine().audit_duplicates()?))
+}
+
+/// Audit-panel check: open Problems/Intents that an existing node may answer.
+async fn audit_answered(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<AnsweredHint>>, AppError> {
+    Ok(Json(state.engine().audit_answered()?))
 }
 
 /// Run the local candidate sweep on demand (the pane's "Scan now").

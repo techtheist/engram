@@ -131,6 +131,13 @@ impl Store {
         if !column_exists(conn, "nodes", "trust_override")? {
             conn.execute_batch("ALTER TABLE nodes ADD COLUMN trust_override REAL;")?;
         }
+        // Local cortex (v0.5.0): suspects carry an optional NLI hint.
+        if !column_exists(conn, "suspects", "nli_label")? {
+            conn.execute_batch(
+                "ALTER TABLE suspects ADD COLUMN nli_label TEXT;
+                 ALTER TABLE suspects ADD COLUMN nli_score REAL;",
+            )?;
+        }
         Ok(())
     }
 
@@ -934,13 +941,29 @@ impl Store {
         Ok(n > 0)
     }
 
-    /// Queue a suspected pair (caller orders newer-first: a = newer).
-    pub fn add_suspect(&self, a_id: &str, b_id: &str, similarity: f64) -> Result<Suspect> {
+    /// Queue a suspected pair (caller orders newer-first: a = newer). The
+    /// optional NLI hint rides along for queue triage — it suggests, never
+    /// judges.
+    pub fn add_suspect(
+        &self,
+        a_id: &str,
+        b_id: &str,
+        similarity: f64,
+        hint: Option<(&str, f64)>,
+    ) -> Result<Suspect> {
         let id = crate::id::new_id();
         self.conn.execute(
-            "INSERT INTO suspects (id, a_id, b_id, similarity, created_at, status)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'suspected')",
-            params![id, a_id, b_id, similarity, now()],
+            "INSERT INTO suspects (id, a_id, b_id, similarity, created_at, status, nli_label, nli_score)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'suspected', ?6, ?7)",
+            params![
+                id,
+                a_id,
+                b_id,
+                similarity,
+                now(),
+                hint.map(|(l, _)| l),
+                hint.map(|(_, s)| s)
+            ],
         )?;
         self.get_suspect(&id)?.ok_or(Error::NotFound(id))
     }
@@ -949,7 +972,7 @@ impl Store {
         Ok(self
             .conn
             .query_row(
-                "SELECT id, a_id, b_id, similarity, created_at, status \
+                "SELECT id, a_id, b_id, similarity, created_at, status, nli_label, nli_score \
                  FROM suspects WHERE id=?1",
                 [id],
                 row_to_suspect,
@@ -971,7 +994,7 @@ impl Store {
     /// the question.
     pub fn suspects_pending(&self) -> Result<Vec<SuspectView>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.id, s.similarity, s.created_at,
+            "SELECT s.id, s.similarity, s.created_at, s.nli_label, s.nli_score,
                     a.id, a.type, a.title, b.id, b.type, b.title
              FROM suspects s
              JOIN nodes a ON a.id = s.a_id
@@ -981,21 +1004,23 @@ impl Store {
              ORDER BY s.created_at DESC",
         )?;
         let rows = stmt.query_map([], |r| {
-            let a_type: String = r.get(4)?;
-            let b_type: String = r.get(7)?;
+            let a_type: String = r.get(6)?;
+            let b_type: String = r.get(9)?;
             Ok(SuspectView {
                 id: r.get(0)?,
                 similarity: r.get(1)?,
                 created_at: r.get(2)?,
+                nli_label: r.get(3)?,
+                nli_score: r.get(4)?,
                 a: SuspectEndpoint {
-                    id: r.get(3)?,
-                    node_type: conv(4, &a_type, NodeType::parse)?,
-                    title: r.get(5)?,
+                    id: r.get(5)?,
+                    node_type: conv(6, &a_type, NodeType::parse)?,
+                    title: r.get(7)?,
                 },
                 b: SuspectEndpoint {
-                    id: r.get(6)?,
-                    node_type: conv(7, &b_type, NodeType::parse)?,
-                    title: r.get(8)?,
+                    id: r.get(8)?,
+                    node_type: conv(9, &b_type, NodeType::parse)?,
+                    title: r.get(10)?,
                 },
             })
         })?;
@@ -1426,6 +1451,8 @@ fn row_to_suspect(row: &Row) -> rusqlite::Result<Suspect> {
         similarity: row.get(3)?,
         created_at: row.get(4)?,
         status: conv(5, &status_s, SuspectStatus::parse)?,
+        nli_label: row.get(6)?,
+        nli_score: row.get(7)?,
     })
 }
 

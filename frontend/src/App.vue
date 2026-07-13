@@ -5,6 +5,7 @@ import { storeToRefs } from 'pinia'
 import GraphCanvas from '@/components/GraphCanvas.vue'
 import EngramMark from '@/components/common/EngramMark.vue'
 import AuditPanel from '@/components/panels/AuditPanel.vue'
+import CheckupPanel from '@/components/panels/CheckupPanel.vue'
 import SearchBar from '@/components/panels/SearchBar.vue'
 import FilterMenu from '@/components/panels/FilterMenu.vue'
 import HealthStrip from '@/components/panels/HealthStrip.vue'
@@ -79,6 +80,7 @@ onBeforeUnmount(() => store.disconnect())
                 </button>
                 <FilterMenu />
                 <ReviewPanel />
+                <CheckupPanel />
             </div>
             <SettingsMenu />
         </div>

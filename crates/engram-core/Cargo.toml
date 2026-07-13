@@ -14,6 +14,11 @@ thiserror = { workspace = true }
 getrandom = "0.4"
 sqlite-vec = "0.1.9"
 fastembed = { version = "5.17.2", optional = true }
+# The NLI layer runs on the same ONNX/tokenizer stack fastembed already
+# links — versions pinned to fastembed 5.17.2's own, so one runtime is built.
+ort = { version = "=2.0.0-rc.12", optional = true, default-features = false }
+tokenizers = { version = "0.22.2", optional = true, default-features = false, features = ["onig"] }
+ndarray = { version = "0.17.2", optional = true, default-features = false }
 
 [features]
-fastembed = ["dep:fastembed"]
+fastembed = ["dep:fastembed", "dep:ort", "dep:tokenizers", "dep:ndarray"]

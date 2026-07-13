@@ -118,6 +118,9 @@ export interface SuspectView {
     id: string
     similarity: number
     created_at: number
+    /** Local-NLI triage hint: contradiction | entailment | neutral. A suggestion, never a verdict. */
+    nli_label?: string
+    nli_score?: number
     a: SuspectEndpoint
     b: SuspectEndpoint
 }
@@ -163,6 +166,12 @@ export interface SystemInfo {
         embed_composition_current: boolean
     }
     model_cached: boolean
+    /** The search precision layer (cross-encoder reranker) is loaded. */
+    reranker: boolean
+    /** The logic layer (local NLI) is loaded — powers Checkup sweeps and claim checks. */
+    nli: boolean
+    /** The local cortex, one row per model with its on-disk home. */
+    models: { name: string; role: string; path: string; active: boolean }[]
     wiring: { agent: string; wired: boolean; prerename: boolean }[]
 }
 
@@ -218,4 +227,38 @@ export interface SearchHit {
     score: number
     durability: Durability
     status: NodeStatus | null
+}
+
+/** One node's NLI verdict against a checked claim (POST /claims/check). */
+export interface ClaimVerdict {
+    id: string
+    type: NodeType
+    title: string
+    trust: number
+    stale: boolean
+    entailment: number
+    neutral: number
+    contradiction: number
+}
+
+/** The canon's answer to "is this claim true here". All-silent is a gap, not an error. */
+export interface ClaimReport {
+    claim: string
+    supports: ClaimVerdict[]
+    contradicts: ClaimVerdict[]
+    silent: ClaimVerdict[]
+}
+
+/** What a Checkup sweep did (POST /audit/conflicts | /audit/duplicates). */
+export interface AuditSweep {
+    queued: number
+    examined: number
+    truncated: boolean
+}
+
+/** A nomination that an open Problem may already be answered (POST /audit/answered). */
+export interface AnsweredHint {
+    problem: SuspectEndpoint
+    candidate: SuspectEndpoint
+    entailment: number
 }

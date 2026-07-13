@@ -247,6 +247,48 @@ fn engine() -> Engine {
     )
 }
 
+/// Deterministic stand-in for the precision layer: strongly prefers any
+/// document containing "WINNER", scoring the rest at a large negative logit.
+struct FavorWinner;
+
+impl crate::rag::Reranker for FavorWinner {
+    fn rank(&self, _query: &str, documents: &[String]) -> crate::Result<Vec<f32>> {
+        Ok(documents
+            .iter()
+            .map(|d| if d.contains("WINNER") { 8.0 } else { -8.0 })
+            .collect())
+    }
+}
+
+#[test]
+fn reranker_reorders_hits_and_touches_only_what_is_returned() {
+    let mut e = engine();
+    e.set_reranker(Box::new(FavorWinner));
+    assert!(e.has_reranker());
+
+    let filler_a = e
+        .add_node(new_node(NodeType::Insight, "keyword filler alpha", ""))
+        .unwrap();
+    let filler_b = e
+        .add_node(new_node(NodeType::Insight, "keyword filler beta", ""))
+        .unwrap();
+    let winner = e
+        .add_node(new_node(NodeType::Insight, "keyword WINNER gamma", ""))
+        .unwrap();
+
+    let hits = e.search("keyword", &[], 1).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, winner.id, "cross-encoder verdict wins the tie");
+    assert!(hits[0].score > 0.0);
+
+    // Over-fetched candidates the reranker discarded are not "seen" — the
+    // observability stamp covers only what the caller actually received.
+    assert!(e.get_node(&winner.id).unwrap().unwrap().last_seen.is_some());
+    for id in [&filler_a.id, &filler_b.id] {
+        assert!(e.get_node(id).unwrap().unwrap().last_seen.is_none());
+    }
+}
+
 #[test]
 fn vector_knn_finds_nearest() {
     let s = store();
@@ -665,6 +707,199 @@ fn retrieval_frequency_is_not_evidence() {
         a2.trust,
         b2.trust
     );
+}
+
+// ---- local cortex, logic layer (PLAN §7A) ---------------------------------
+
+fn engine_with_nli() -> Engine {
+    let mut e = engine();
+    e.set_nli(Box::new(crate::nli::FakeNli));
+    e
+}
+
+#[test]
+fn write_time_suspects_carry_nli_hints() {
+    let e = engine_with_nli();
+    // FakeNli: both texts containing "contra" → contradiction hint.
+    e.add_node(new_node(
+        NodeType::Decision,
+        "contra: sessions in redis",
+        "",
+    ))
+    .unwrap();
+    e.add_node(new_node(
+        NodeType::Decision,
+        "contra: sessions in redis!",
+        "",
+    ))
+    .unwrap();
+    e.scan_conflicts().unwrap();
+    let s = e.suspects().unwrap().remove(0);
+    assert_eq!(s.nli_label.as_deref(), Some("contradiction"));
+    assert!(s.nli_score.unwrap() > 0.5, "hint carries its probability");
+
+    // The brief surfaces the hint next to the pair.
+    let brief = e.brief(8000).unwrap();
+    assert!(brief.contains("hint: contradiction"), "got: {brief}");
+}
+
+#[test]
+fn check_claim_buckets_supports_contradicts_silent() {
+    let e = engine_with_nli();
+    e.add_node(new_node(
+        NodeType::Decision,
+        "contra: we store sessions in cookies",
+        "",
+    ))
+    .unwrap();
+    e.add_node(new_node(NodeType::Insight, "the parser uses nom", ""))
+        .unwrap();
+
+    // FakeNli reads shared "contra" as contradiction.
+    let report = e
+        .check_claim("contra: sessions live in localStorage", 8)
+        .unwrap();
+    assert_eq!(report.contradicts.len(), 1, "{report:?}");
+    assert!(report.contradicts[0].title.contains("cookies"));
+
+    // Entailment: the claim is contained in a node's claim text.
+    let report = e.check_claim("the parser uses nom", 8).unwrap();
+    assert_eq!(report.supports.len(), 1, "{report:?}");
+
+    // Without the NLI layer the check refuses instead of guessing.
+    let bare = engine();
+    assert!(bare.check_claim("anything", 8).is_err());
+}
+
+#[test]
+fn audit_sweeps_queue_only_their_target_label() {
+    let e = engine_with_nli();
+    // A contradiction pair (shared "contra" marker) and a duplicate pair
+    // (identical text, different type so the dupe guard doesn't collapse it).
+    e.add_node(new_node(NodeType::Decision, "contra: deploy via ftp", ""))
+        .unwrap();
+    e.add_node(new_node(NodeType::Caution, "contra: deploy via ftp!", ""))
+        .unwrap();
+    e.add_node(new_node(
+        NodeType::Decision,
+        "release trains ship monthly",
+        "",
+    ))
+    .unwrap();
+    e.add_node(new_node(
+        NodeType::Insight,
+        "release trains ship monthly",
+        "",
+    ))
+    .unwrap();
+
+    let conflicts = e.audit_conflicts().unwrap();
+    assert_eq!(
+        conflicts.queued, 1,
+        "only the contradiction pair: {conflicts:?}"
+    );
+    let duplicates = e.audit_duplicates().unwrap();
+    assert_eq!(
+        duplicates.queued, 1,
+        "only the duplicate pair: {duplicates:?}"
+    );
+    assert!(!conflicts.truncated && !duplicates.truncated);
+
+    let suspects = e.suspects().unwrap();
+    assert_eq!(suspects.len(), 2);
+    // Re-running queues nothing (raised pairs are never re-raised).
+    assert_eq!(e.audit_conflicts().unwrap().queued, 0);
+}
+
+#[test]
+fn writes_report_missing_code_refs_in_the_same_turn() {
+    let mut e = engine();
+    e.set_repo_root(std::env::current_dir().unwrap());
+    let outcome = e
+        .add_node_checked(NewNode {
+            code_refs: vec!["Cargo.toml".into(), "src/vanished.rs".into()],
+            ..new_node(NodeType::Decision, "refs checked at write time", "")
+        })
+        .unwrap();
+    let WriteOutcome::Created {
+        node, missing_refs, ..
+    } = outcome
+    else {
+        panic!("expected creation");
+    };
+    assert_eq!(
+        missing_refs,
+        vec!["src/vanished.rs"],
+        "caught at write time"
+    );
+
+    // Repairing through the checked update reports the fix the same way.
+    let repaired = e
+        .update_node_checked(
+            &node.id,
+            NodePatch {
+                code_refs: Some(vec!["Cargo.toml".into()]),
+                ..NodePatch::default()
+            },
+        )
+        .unwrap();
+    assert!(repaired.missing_refs.is_empty());
+}
+
+#[test]
+fn negated_duplicate_gets_a_contradiction_hint_on_match() {
+    let e = engine_with_nli();
+    e.add_node(new_node(
+        NodeType::Decision,
+        "contra: use tabs for indentation",
+        "",
+    ))
+    .unwrap();
+    // Same type + near-identical text trips the dupe guard; FakeNli reads the
+    // shared "contra" marker as contradiction — the negated-duplicate case.
+    let outcome = e
+        .add_node_checked(new_node(
+            NodeType::Decision,
+            "contra: use tabs for indentation",
+            "",
+        ))
+        .unwrap();
+    let WriteOutcome::Matched {
+        nli_label,
+        nli_score,
+        ..
+    } = outcome
+    else {
+        panic!("expected the dupe guard");
+    };
+    assert_eq!(nli_label.as_deref(), Some("contradiction"));
+    assert!(nli_score.unwrap() > 0.5);
+}
+
+#[test]
+fn audit_answered_nominates_but_never_resolves() {
+    let e = engine_with_nli();
+    let problem = e
+        .add_node(NewNode {
+            status: Some(NodeStatus::Open),
+            ..new_node(NodeType::Problem, "ci cache misses on macos", "")
+        })
+        .unwrap();
+    // FakeNli entailment: candidate claim contains the problem claim.
+    e.add_node(new_node(
+        NodeType::Resolution,
+        "ci cache misses on macos: fixed by keyed restore paths",
+        "",
+    ))
+    .unwrap();
+
+    let hints = e.audit_answered().unwrap();
+    assert_eq!(hints.len(), 1, "{hints:?}");
+    assert_eq!(hints[0].problem.id, problem.id);
+    assert!(hints[0].entailment > 0.5);
+    // Nomination only: the problem is still open.
+    let still = e.get_node(&problem.id).unwrap().unwrap();
+    assert_eq!(still.status, Some(NodeStatus::Open));
 }
 
 #[test]
@@ -1109,7 +1344,9 @@ fn add_node_checked_short_circuits_same_type_duplicates() {
         ))
         .unwrap()
     {
-        WriteOutcome::Matched { node, similarity } => {
+        WriteOutcome::Matched {
+            node, similarity, ..
+        } => {
             assert_eq!(node.id, first.id);
             assert!(similarity >= crate::policy::DUPLICATE_SIMILARITY);
         }

@@ -142,13 +142,16 @@ function wiringStatus(w: { wired: boolean; prerename: boolean }): { status: Stat
         </section>
 
         <section class="block">
-            <h3 class="block-title">Embedding model</h3>
+            <h3 class="block-title">Local models — the cortex</h3>
             <dl class="rows">
-                <div>
-                    <dt>Local cache</dt>
-                    <dd>
-                        <span class="dot" :data-status="info.model_cached ? 'ok' : 'warn'" />
-                        {{ info.model_cached ? 'downloaded (~/.cache/engram)' : 'not downloaded yet — first real-embedding run fetches it (~30 MB)' }}
+                <div v-for="m in info.models" :key="m.name" :title="m.role">
+                    <dt>{{ m.name }}</dt>
+                    <dd class="model-cell">
+                        <span class="model-status">
+                            <span class="dot" :data-status="m.active ? 'ok' : 'warn'" />
+                            {{ m.active ? m.role : 'not loaded — downloads on daemon startup, feature degrades gracefully until then' }}
+                        </span>
+                        <code class="model-path">{{ m.path }}</code>
                     </dd>
                 </div>
             </dl>
@@ -303,5 +306,27 @@ function wiringStatus(w: { wired: boolean; prerename: boolean }): { status: Stat
 .refresh:hover:not(:disabled) {
     color: var(--text-primary);
     background-color: var(--interactive-ghost-hover);
+}
+
+.model-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    min-width: 0;
+}
+
+.model-status {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+}
+
+.model-path {
+    max-width: 100%;
+    font-family: var(--font-mono);
+    font-size: var(--text-caption);
+    color: var(--text-tertiary);
+    overflow-x: auto;
+    white-space: nowrap;
 }
 </style>

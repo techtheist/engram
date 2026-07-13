@@ -164,6 +164,12 @@ async function scanNow(): Promise<void> {
                         {{ s.b.title }}
                     </button>
                     <span class="trust">{{ Math.round(s.similarity * 100) }}%</span>
+                    <span
+                        v-if="s.nli_label"
+                        class="nli-hint"
+                        :class="s.nli_label"
+                        :title="`Local NLI hint (${Math.round((s.nli_score ?? 0) * 100)}%) — a suggestion for your judgment, never a verdict`"
+                    >{{ s.nli_label }}</span>
                 </div>
                 <div class="row-actions">
                     <button class="mini" type="button" :disabled="busyId === s.id" title="They contradict — record a conflicts-with edge" @click="judge(s.id, 'conflict')">
@@ -459,5 +465,25 @@ async function scanNow(): Promise<void> {
 .empty {
     font-size: var(--text-body-sm);
     color: var(--text-tertiary);
+}
+
+.nli-hint {
+    flex: none;
+    padding: 0.1rem 0.6rem;
+    border-radius: var(--radius-full);
+    font-size: var(--text-caption);
+    font-weight: 600;
+    color: var(--text-tertiary);
+    background-color: var(--surface-muted);
+}
+
+.nli-hint.contradiction {
+    color: var(--node-problem);
+    background-color: color-mix(in srgb, var(--node-problem) 14%, transparent);
+}
+
+.nli-hint.entailment {
+    color: var(--trust-trusted);
+    background-color: color-mix(in srgb, var(--trust-trusted) 14%, transparent);
 }
 </style>

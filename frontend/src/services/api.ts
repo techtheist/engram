@@ -1,5 +1,8 @@
 import type {
+    AnsweredHint,
     AuditPage,
+    AuditSweep,
+    ClaimReport,
     DriftEntry,
     ExportGraph,
     Graph,
@@ -107,6 +110,22 @@ export const api = {
 
     /** Run the candidate sweep now; returns how many new suspects were queued. */
     scanConflicts: () => request<{ added: number }>('/conflicts/scan', { method: 'POST' }),
+
+    /** Verify a claim against the canon via the local NLI model. */
+    checkClaim: (text: string, limit = 8) =>
+        request<ClaimReport>('/claims/check', {
+            method: 'POST',
+            body: JSON.stringify({ text, limit }),
+        }),
+
+    /** Checkup: deep conflict sweep (lower similarity floor, NLI-gated). */
+    auditConflicts: () => request<AuditSweep>('/audit/conflicts', { method: 'POST' }),
+
+    /** Checkup: mutual-entailment duplicate sweep. */
+    auditDuplicates: () => request<AuditSweep>('/audit/duplicates', { method: 'POST' }),
+
+    /** Checkup: open Problems an existing node may already answer. */
+    auditAnswered: () => request<AnsweredHint[]>('/audit/answered', { method: 'POST' }),
 
     /** Nodes whose path-shaped code_refs no longer exist in the project. */
     drift: () => request<DriftEntry[]>('/drift'),

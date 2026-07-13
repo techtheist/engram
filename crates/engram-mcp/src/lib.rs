@@ -53,6 +53,9 @@ would archive a pinned node is refused — surface it to the user instead. \
 Nodes can carry free-form `tags` — how the user slices the graph (phases, \
 concerns). Reuse the recent tags the brief lists before inventing new ones; \
 an unknown tag is simply created. \
+`check_claim` verifies a statement against the canon via the local NLI \
+model ({supports, contradicts, silent}) — use it before acting on an \
+assumption; its verdicts are hints, never judgments. \
 For history questions: `timeline` walks a node's replaces chain (\"how did \
 this decision evolve\"), `audit` pages the mutation journal (\"what changed, \
 who wrote this\"). `list_drift` finds nodes whose code_refs no longer exist \
@@ -187,12 +190,14 @@ impl Engram {
 
     #[tool(
         description = "Create a memory node (source = claude, starts provisional). \
-        ALWAYS read the response, it is a verdict, not a receipt: {matched, created: false} \
-        = a same-type near-duplicate exists, merge via update_node instead; `warnings` = the \
-        note landed near contradicted or superseded knowledge, check you are not re-treading \
-        settled ground; `suspects` = the write queued unjudged look-alike pairs, judge each \
-        with resolve_suspect in this same turn and tell the user if one is a genuine \
-        contradiction."
+        ALWAYS read the response, it is a verdict, not a receipt — every check runs in this \
+        same turn: {matched, created: false} = a same-type near-duplicate exists, merge via \
+        update_node (if it carries nli_label=contradiction it is a NEGATED duplicate — read \
+        before merging, likely a conflicts-with instead); `warnings` = the note landed near \
+        contradicted or superseded knowledge; `missing_code_refs` = paths that don't resolve \
+        in the repo, fix or drop them; `suspects` = queued look-alike pairs (each may carry \
+        an nli hint), judge each with resolve_suspect now and tell the user if one is a \
+        genuine contradiction."
     )]
     async fn add_note(
         &self,
@@ -232,10 +237,17 @@ impl Engram {
                 node,
                 warnings,
                 suspects,
+                missing_refs,
             } => {
                 let mut out = json!({ "id": node.id, "created": true });
                 if !warnings.is_empty() {
                     out["warnings"] = json!(warnings);
+                }
+                if !missing_refs.is_empty() {
+                    out["missing_code_refs"] = json!(missing_refs);
+                    out["refs_note"] = json!(
+                        "these code_refs don't resolve in the repo right now — fix the paths or drop them"
+                    );
                 }
                 if !suspects.is_empty() {
                     out["suspects"] = json!(suspects);
@@ -243,12 +255,32 @@ impl Engram {
                 }
                 out
             }
-            WriteOutcome::Matched { node, similarity } => json!({
-                "matched": node.id,
-                "created": false,
-                "title": node.title,
-                "similarity": similarity,
-            }),
+            WriteOutcome::Matched {
+                node,
+                similarity,
+                nli_label,
+                nli_score,
+            } => {
+                let mut out = json!({
+                    "matched": node.id,
+                    "created": false,
+                    "title": node.title,
+                    "similarity": similarity,
+                });
+                if let (Some(label), Some(score)) = (&nli_label, nli_score) {
+                    out["nli_label"] = json!(label);
+                    out["nli_score"] = json!(score);
+                    if label == "contradiction" {
+                        out["action_required"] = json!(
+                            "The near-duplicate may CONTRADICT your text (negated duplicate — \
+                             'use X' vs 'don't use X'). Read the matched node before merging; \
+                             if it genuinely disagrees, capture yours as a new node and link \
+                             conflicts-with instead of updating the match."
+                        );
+                    }
+                }
+                out
+            }
         })
     }
 
@@ -358,8 +390,30 @@ impl Engram {
     }
 
     #[tool(
+        description = "Verify a claim against the memory graph using the local \
+        NLI model: returns {supports, contradicts, silent} — nodes that entail \
+        the claim, nodes that contradict it, and nearby nodes with no verdict. \
+        Use before acting on an assumption ('does the canon contradict this \
+        plan?'). Contradicts-hits are conflicts to surface; all-silent on a \
+        real topic is a gap worth capturing. Verdicts are hints from a small \
+        local model — judgment stays with you."
+    )]
+    async fn check_claim(
+        &self,
+        Parameters(a): Parameters<CheckClaimArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let report = self
+            .engine()
+            .check_claim(&a.claim, a.limit.unwrap_or(8))
+            .map_err(map_err)?;
+        ok_json(&report)
+    }
+
+    #[tool(
         description = "Pending suspected conflicts from the local scan: unlinked \
-        look-alike node pairs awaiting judgment. Judge each with resolve_suspect."
+        look-alike node pairs awaiting judgment (each may carry an nli_label / \
+        nli_score triage hint from the local model — a suggestion, not a \
+        verdict). Judge each with resolve_suspect."
     )]
     async fn list_suspects(&self) -> Result<CallToolResult, ErrorData> {
         let suspects = self.engine().suspects().map_err(map_err)?;
@@ -437,13 +491,24 @@ impl Engram {
             code_refs: a.code_refs,
             tags: a.tags,
         };
-        let (node, warnings, suspects) = self
+        let engram_core::CheckedUpdate {
+            node,
+            warnings,
+            suspects,
+            missing_refs,
+        } = self
             .engine()
             .update_node_checked(&a.id, patch)
             .map_err(map_err)?;
         let mut out = json!({ "ok": true, "id": node.id });
         if !warnings.is_empty() {
             out["warnings"] = json!(warnings);
+        }
+        if !missing_refs.is_empty() {
+            out["missing_code_refs"] = json!(missing_refs);
+            out["refs_note"] = json!(
+                "these code_refs don't resolve in the repo right now — fix the paths or drop them"
+            );
         }
         if !suspects.is_empty() {
             out["suspects"] = json!(suspects);
@@ -836,6 +901,15 @@ struct ListNodesArgs {
 #[derive(Deserialize, JsonSchema)]
 struct ApproveArgs {
     id: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct CheckClaimArgs {
+    /// The claim to verify, as one declarative sentence.
+    claim: String,
+    /// How many nearby nodes to judge (default 8, max 16).
+    #[serde(default)]
+    limit: Option<usize>,
 }
 
 #[derive(Deserialize, JsonSchema)]
