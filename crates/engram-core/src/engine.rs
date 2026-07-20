@@ -1582,14 +1582,28 @@ impl Engine {
             if stored.is_none() {
                 self.store.set_embed_model(&active)?;
             }
-            return Ok(0);
+            // Same identity, but a swap that died mid-loop may have left
+            // gaps — backfill any node without a vector so every open heals.
+            let mut healed = 0;
+            for n in self.store.all_nodes()? {
+                if self.store.embedding_of(&n.id)?.is_none() {
+                    self.embed_node(&n)?;
+                    healed += 1;
+                }
+            }
+            return Ok(healed);
         }
         self.store.reset_vectors(active.dim)?;
+        // Record the new identity BEFORE the loop: the TepinDB backend stamps
+        // each written vector with the store's recorded model, and the file
+        // pins itself to whatever the first write says — stamping after the
+        // loop would pin the file under the OLD name and poison every later
+        // write with embedder_mismatch (bit us live on the first real swap).
+        self.store.set_embed_model(&active)?;
         let nodes = self.store.all_nodes()?;
         for n in &nodes {
             self.embed_node(n)?;
         }
-        self.store.set_embed_model(&active)?;
         // A full re-embed is by definition the current composition too.
         self.store.set_embed_version(EMBED_COMPOSITION)?;
         Ok(nodes.len())

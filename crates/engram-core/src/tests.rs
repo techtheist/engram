@@ -3619,3 +3619,66 @@ fn tepin_engine_stays_consistent_under_threaded_access() {
     let page = e.store().audit_page(None, None, 1).unwrap();
     assert_eq!(page.total, 120, "one journal row per write, none lost");
 }
+
+#[test]
+fn tepin_embed_model_swap_keeps_writes_working() {
+    // The v0.6.0 live bug: tepin pins each vector write with the store's
+    // RECORDED model name, so stamping the new identity after the re-embed
+    // loop pinned the file under the old name — and every later write died
+    // with embedder_mismatch. The guard now stamps before it re-embeds.
+    let mut e = Engine::new(
+        TepinStore::open_in_memory().unwrap(),
+        Box::new(NamedEmbedder {
+            model: "bge-small-en-v1.5",
+            width: 8,
+        }),
+    );
+    e.ensure_embed_model().unwrap();
+    e.add_node(new_node(NodeType::Decision, "before the swap", ""))
+        .unwrap();
+
+    // The killer case: same width, different name (bge-small → bge-base).
+    e.set_embedder(Box::new(NamedEmbedder {
+        model: "bge-base-en-v1.5",
+        width: 8,
+    }));
+    assert_eq!(e.ensure_embed_model().unwrap(), 1);
+    let after = e
+        .add_node(new_node(NodeType::Decision, "after the swap", ""))
+        .unwrap();
+    assert!(
+        e.store().embedding_of(&after.id).unwrap().is_some(),
+        "writes keep embedding under the new identity"
+    );
+    let stored = e.store().embed_model().unwrap().unwrap();
+    assert_eq!(stored.name, "bge-base-en-v1.5");
+
+    // And the matching-identity path backfills any vector gaps (mid-swap
+    // crash healing): simulate a gap via a raw import (no vectors written).
+    let orphan = Node {
+        id: "00gaplessnode".into(),
+        node_type: NodeType::Insight,
+        title: "imported without a vector".into(),
+        body: None,
+        durability: Durability::Stable,
+        source: Source::Claude,
+        session_id: None,
+        created_at: 1,
+        valid_from: Some(1),
+        valid_until: None,
+        status: None,
+        last_seen: None,
+        confirmed_at: None,
+        approved_at: None,
+        demoted_at: None,
+        trust_override: None,
+        trust: 0.0,
+        stale: false,
+        code_refs: vec![],
+        tags: vec![],
+    };
+    e.store().import_raw(&[orphan], &[]).unwrap();
+    assert!(e.store().embedding_of("00gaplessnode").unwrap().is_none());
+    assert_eq!(e.ensure_embed_model().unwrap(), 1, "heals exactly the gap");
+    assert!(e.store().embedding_of("00gaplessnode").unwrap().is_some());
+}
