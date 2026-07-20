@@ -1,7 +1,7 @@
 use crate::*;
 
-fn store() -> Store {
-    Store::open_in_memory().unwrap()
+fn store() -> SqliteStore {
+    SqliteStore::open_in_memory().unwrap()
 }
 
 fn new_node(t: NodeType, title: &str, body: &str) -> NewNode {
@@ -242,7 +242,7 @@ fn redaction_applies_on_write() {
 
 fn engine() -> Engine {
     Engine::new(
-        Store::open_in_memory().unwrap(),
+        SqliteStore::open_in_memory().unwrap(),
         Box::new(FakeEmbedder::default()),
     )
 }
@@ -1255,7 +1255,7 @@ fn node_json_uses_canonical_strings() {
 
 // ---- retrieval upgrade / brief / checked writes / edge repair -------------
 
-fn link(s: &Store, t: EdgeType, from: &str, to: &str) -> Edge {
+fn link(s: &dyn Store, t: EdgeType, from: &str, to: &str) -> Edge {
     s.add_edge(NewEdge {
         edge_type: t,
         from_id: from.to_string(),
@@ -1621,13 +1621,7 @@ fn legacy_uuid_ids_shrink_with_edges_and_embeddings_intact() {
 
 fn backdate(e: &Engine, id: &str, days: i64) {
     let ts = now() - days * 24 * 60 * 60;
-    e.store()
-        .conn()
-        .execute(
-            "UPDATE nodes SET created_at=?1, valid_from=?1 WHERE id=?2",
-            rusqlite::params![ts, id],
-        )
-        .unwrap();
+    e.store().backdate_node(id, ts).unwrap();
 }
 
 #[test]
@@ -2002,7 +1996,7 @@ fn legacy_db_gains_tags_column_and_fts_rebuild() {
         .unwrap();
     }
 
-    let s = Store::open(&path).unwrap();
+    let s = SqliteStore::open(&path).unwrap();
     let legacy = s.get_node("aaaaaaaaaaaa").unwrap().unwrap();
     assert!(legacy.tags.is_empty(), "pre-tags rows read as untagged");
 
@@ -2471,7 +2465,10 @@ fn embed_composition_upgrade_reembeds_only_with_real_vectors() {
     }
 
     // Seed a node, then rewind the version marker to legacy.
-    let e = Engine::new(Store::open(&db).unwrap(), Box::new(FakeEmbedder::default()));
+    let e = Engine::new(
+        SqliteStore::open(&db).unwrap(),
+        Box::new(FakeEmbedder::default()),
+    );
     let mut n = new_node(NodeType::Decision, "composed", "");
     n.code_refs = vec!["crates/engram-core/src/rag.rs".into()];
     e.add_node(n).unwrap();
@@ -2484,7 +2481,7 @@ fn embed_composition_upgrade_reembeds_only_with_real_vectors() {
 
     // A real one upgrades every node and stamps the version.
     let e = Engine::new(
-        Store::open(&db).unwrap(),
+        SqliteStore::open(&db).unwrap(),
         Box::new(NotFake(FakeEmbedder::default())),
     );
     assert_eq!(e.ensure_embed_composition().unwrap(), 1);
@@ -2586,4 +2583,1039 @@ fn digest_scan_redacts_marker_text() {
     assert!(!text.contains("hunter2"));
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+// ---- multi-project hub (PLAN §7C) -----------------------------------------
+
+/// One test on purpose: it sandboxes ENGRAM_HOME (process-wide env), so the
+/// whole federation story runs sequentially inside it — registry, lazy opens,
+/// provenance, all-write refusal, the home brief section, and promotions.
+#[test]
+fn hub_federation_end_to_end() {
+    let tmp = std::env::temp_dir().join(format!("engram-hub-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    unsafe { std::env::set_var("ENGRAM_HOME", tmp.join("enghome")) };
+
+    let factory: EngineFactory = Box::new(|db: &std::path::Path| {
+        if let Some(dir) = db.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| Error::Io(e.to_string()))?;
+        }
+        Ok(Engine::new(
+            SqliteStore::open(db)?,
+            Box::new(FakeEmbedder::default()),
+        ))
+    });
+
+    // A sibling project "beta" on the machine registry.
+    let beta_root = tmp.join("beta");
+    std::fs::create_dir_all(&beta_root).unwrap();
+    let beta_db = beta_root.join(".engram/graph.db");
+    let entry = registry::register(&beta_root, &beta_db).unwrap();
+    assert_eq!(entry.name, "beta");
+    // Re-registration keeps the id: upsert by root, never a duplicate.
+    assert_eq!(
+        registry::register(&beta_root, &beta_db).unwrap().id,
+        entry.id
+    );
+
+    // The current project "alpha".
+    let alpha_root = tmp.join("alpha");
+    let alpha_db = alpha_root.join(".engram/graph.db");
+    std::fs::create_dir_all(alpha_db.parent().unwrap()).unwrap();
+    let alpha = registry::register(&alpha_root, &alpha_db).unwrap();
+    let current = Engine::new(
+        SqliteStore::open(&alpha_db).unwrap(),
+        Box::new(FakeEmbedder::default()),
+    );
+    let hub = Hub::new(
+        std::sync::Arc::new(std::sync::Mutex::new(current)),
+        Some(alpha),
+        Some(factory),
+    );
+
+    // Seed both graphs.
+    hub.current_engine()
+        .lock()
+        .unwrap()
+        .add_node(new_node(
+            NodeType::Decision,
+            "alpha uses tokio for its async runtime",
+            "local canon",
+        ))
+        .unwrap();
+    let beta_engine = hub.get("beta").unwrap();
+    beta_engine
+        .lock()
+        .unwrap()
+        .add_node(new_node(
+            NodeType::Decision,
+            "beta uses redb as its storage engine core",
+            "sibling canon",
+        ))
+        .unwrap();
+
+    // Cross-project read: the foreign hit carries provenance.
+    let (hits, skipped) = hub.search_all("beta redb storage engine", &[], 8).unwrap();
+    assert!(skipped.is_empty(), "{skipped:?}");
+    let foreign = hits
+        .iter()
+        .find(|h| h.project.as_deref() == Some("beta"))
+        .expect("the beta hit rides along with provenance");
+    assert!(foreign.title.contains("redb"));
+
+    // `all` never resolves to one engine — the refusal points at home.
+    let err = hub
+        .get("all")
+        .err()
+        .expect("all must not resolve")
+        .to_string();
+    assert!(err.contains("home"), "got: {err}");
+    // An unknown selector names what exists.
+    let err = hub.get("nope").err().expect("unknown selector").to_string();
+    assert!(err.contains("beta"), "got: {err}");
+
+    // The home graph: created on first access, briefed into every project.
+    let home = hub.get("home").unwrap();
+    home.lock()
+        .unwrap()
+        .add_node(new_node(
+            NodeType::Principle,
+            "never store secrets anywhere",
+            "user-level canon",
+        ))
+        .unwrap();
+    let brief = hub.brief(16000).unwrap();
+    assert!(brief.contains("## Home graph"), "got: {brief}");
+    assert!(brief.contains("never store secrets"), "got: {brief}");
+    // The roster names every other reachable graph, home last.
+    assert!(
+        brief.contains("## Other project graphs on this machine"),
+        "got: {brief}"
+    );
+    assert!(brief.contains("beta, home"), "got: {brief}");
+
+    // Promotions: the same Principle in alpha and beta nominates…
+    hub.current_engine()
+        .lock()
+        .unwrap()
+        .add_node(new_node(
+            NodeType::Principle,
+            "always run clippy with warnings denied",
+            "shared habit",
+        ))
+        .unwrap();
+    beta_engine
+        .lock()
+        .unwrap()
+        .add_node(new_node(
+            NodeType::Principle,
+            "always run clippy with warnings denied",
+            "shared habit",
+        ))
+        .unwrap();
+    let (candidates, skipped) = hub.promotion_candidates().unwrap();
+    assert!(skipped.is_empty(), "{skipped:?}");
+    let cand = candidates
+        .iter()
+        .find(|c| c.node.title.contains("clippy"))
+        .expect("recurring Principle nominates for promotion");
+    assert_eq!(cand.matches[0].project, "beta");
+    // …and a home copy suppresses the nomination (already promoted).
+    home.lock()
+        .unwrap()
+        .add_node(new_node(
+            NodeType::Principle,
+            "always run clippy with warnings denied",
+            "promoted",
+        ))
+        .unwrap();
+    let (candidates, _) = hub.promotion_candidates().unwrap();
+    assert!(
+        !candidates.iter().any(|c| c.node.title.contains("clippy")),
+        "a home copy suppresses the nomination"
+    );
+
+    // projects() lists everything with the right flags.
+    let projects = hub.projects();
+    assert!(projects.iter().any(|p| p.current && p.name == "alpha"));
+    assert!(projects.iter().any(|p| p.home));
+    assert!(projects.iter().any(|p| p.name == "beta" && p.open));
+
+    unsafe { std::env::remove_var("ENGRAM_HOME") };
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+// ---- Store-trait conformance: both backends, one battery (PLAN §7C) --------
+//
+// The trait's contract is what the migration relies on: whatever passed on
+// SQLite must pass unchanged on TepinDB. Backend-specific behavior (WAL,
+// legacy-id shortening, PRAGMAs) stays in the per-backend tests above.
+
+fn store_battery(s: &dyn Store, backend: &str) {
+    // -- nodes: create / read / update semantics
+    let mut spec = new_node(NodeType::Decision, "use sqlite WAL mode", "because readers");
+    spec.tags = vec!["Phase 2".into(), "phase-2".into()];
+    spec.code_refs = vec!["crates/engram-core/src/store.rs".into()];
+    let a = s.add_node(spec).unwrap();
+    assert_eq!(a.tags, vec!["phase-2"], "tags normalize + dedupe on write");
+    assert!(a.valid_from.is_some());
+    assert!(a.approved_at.is_none(), "claude nodes start unapproved");
+
+    let user = {
+        let mut n = new_node(NodeType::Principle, "user knows best", "");
+        n.source = Source::User;
+        s.add_node(n).unwrap()
+    };
+    assert!(
+        user.approved_at.is_some(),
+        "user nodes approved by construction"
+    );
+
+    let secret = s
+        .add_node(new_node(
+            NodeType::Insight,
+            "key AKIAIOSFODNN7EXAMPLE leaked",
+            "",
+        ))
+        .unwrap();
+    assert!(
+        !secret.title.contains("AKIA"),
+        "redaction runs on {backend}"
+    );
+
+    let updated = s
+        .update_node(
+            &a.id,
+            NodePatch {
+                title: Some("use sqlite WAL journaling".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(updated.title, "use sqlite WAL journaling");
+    assert!(
+        updated.confirmed_at.is_some(),
+        "update stamps the trust anchor"
+    );
+
+    // -- approve / revoke / pin / demote / backdate
+    let approved = s.approve(&a.id).unwrap();
+    assert!(approved.approved_at.is_some());
+    let revoked = s.revoke_approval(&a.id).unwrap();
+    assert!(revoked.approved_at.is_none());
+    let pinned = s.set_trust_override(&a.id, Some(2.0)).unwrap();
+    assert_eq!(pinned.trust_override, Some(1.0), "pin clamps to 0..=1");
+    assert!(
+        !s.demote(&a.id, now()).unwrap(),
+        "pinned nodes never demote"
+    );
+    s.set_trust_override(&a.id, None).unwrap();
+    assert!(s.demote(&a.id, now()).unwrap());
+    assert!(
+        !s.demote(&a.id, now()).unwrap(),
+        "second demotion is a no-op"
+    );
+    let cleared = s.clear_demotion(&a.id).unwrap();
+    assert!(cleared.demoted_at.is_none());
+    s.backdate_node(&a.id, 1000).unwrap();
+    assert_eq!(s.get_node(&a.id).unwrap().unwrap().created_at, 1000);
+
+    // -- edges
+    let e1 = s
+        .add_edge(NewEdge {
+            edge_type: EdgeType::Because,
+            from_id: a.id.clone(),
+            to_id: user.id.clone(),
+            source: Source::Claude,
+            confidence: None,
+            strength: None,
+            note: Some("triple reads as a sentence".into()),
+            status: None,
+        })
+        .unwrap();
+    assert!(
+        s.add_edge(NewEdge {
+            edge_type: EdgeType::About,
+            from_id: a.id.clone(),
+            to_id: "missing-node".into(),
+            source: Source::Claude,
+            confidence: None,
+            strength: None,
+            note: None,
+            status: None,
+        })
+        .is_err(),
+        "dangling endpoints refused on {backend}"
+    );
+    assert_eq!(s.edges_out(&a.id).unwrap().len(), 1);
+    assert_eq!(s.edges_in(&user.id).unwrap().len(), 1);
+    assert!(s.pair_linked(&a.id, &user.id).unwrap());
+    assert!(s.pair_linked(&user.id, &a.id).unwrap());
+    assert!(!s.pair_linked(&a.id, &secret.id).unwrap());
+
+    let conflict = s
+        .add_edge(NewEdge {
+            edge_type: EdgeType::ConflictsWith,
+            from_id: secret.id.clone(),
+            to_id: a.id.clone(),
+            source: Source::Claude,
+            confidence: None,
+            strength: None,
+            note: None,
+            status: Some(EdgeStatus::Active),
+        })
+        .unwrap();
+    assert!(s.has_active_conflict(&a.id).unwrap());
+    assert_eq!(s.active_conflict_edges().unwrap().len(), 1);
+    assert_eq!(s.nodes_in_active_conflicts().unwrap().len(), 2);
+    let resolved = s
+        .update_edge(
+            &conflict.id,
+            EdgePatch {
+                status: Some(EdgeStatus::Resolved),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(resolved.status, Some(EdgeStatus::Resolved));
+    assert!(!s.has_active_conflict(&a.id).unwrap());
+    let neighbors = s.neighbors(&a.id, 5).unwrap();
+    assert_eq!(neighbors.len(), 2);
+    assert!(s.delete_edge(&conflict.id).unwrap());
+    assert!(!s.delete_edge(&conflict.id).unwrap());
+    assert_eq!(
+        s.get_edge(&e1.id).unwrap().unwrap().note.as_deref(),
+        Some("triple reads as a sentence")
+    );
+
+    // -- traversal
+    let (t_nodes, t_edges) = s.traverse(&a.id, &[], 2).unwrap();
+    assert_eq!(t_nodes.len(), 2);
+    assert_eq!(t_edges.len(), 1);
+
+    // -- keyword search: full-field composition + sentinel snippets
+    let tagged = {
+        let mut n = new_node(NodeType::Caution, "quirky behavior", "plain text body");
+        n.tags = vec!["zanzibar-quirk".into()];
+        n.code_refs = vec!["crates/engram-http/src/lib.rs".into()];
+        s.add_node(n).unwrap()
+    };
+    let by_title = s.search_fts("journaling", &[], 10).unwrap();
+    assert_eq!(by_title.len(), 1, "title match on {backend}");
+    assert!(
+        by_title[0].snippet.contains(SNIPPET_OPEN),
+        "snippet marks matches"
+    );
+    let by_tag = s.search_fts("zanzibar", &[], 10).unwrap();
+    assert_eq!(by_tag.len(), 1, "tags are indexed on {backend}");
+    assert_eq!(by_tag[0].id, tagged.id);
+    let typed = s
+        .search_fts("journaling", &[NodeType::Insight], 10)
+        .unwrap();
+    assert!(typed.is_empty(), "type filter applies");
+
+    // -- vectors: 384-wide like the default model
+    let emb = FakeEmbedder::default();
+    let va = emb.embed_one("use sqlite WAL journaling").unwrap();
+    let vb = emb.embed_one("completely unrelated topic zebra").unwrap();
+    s.upsert_embedding(&a.id, &va).unwrap();
+    s.upsert_embedding(&secret.id, &vb).unwrap();
+    let knn = s.search_vec(&va, 2).unwrap();
+    assert_eq!(knn[0].0, a.id, "nearest neighbor first on {backend}");
+    assert!(knn[0].1 < knn[1].1, "distances ascend");
+    assert_eq!(s.embedding_of(&a.id).unwrap().unwrap().len(), 384);
+    let hybrid = s.search_hybrid("journaling", Some(&va), &[], 5).unwrap();
+    assert_eq!(hybrid[0].id, a.id);
+
+    // -- archived nodes vanish from reads
+    s.archive_nodes(std::slice::from_ref(&tagged.id), now())
+        .unwrap();
+    assert!(s.search_fts("zanzibar", &[], 10).unwrap().is_empty());
+    assert!(
+        s.get_node(&tagged.id)
+            .unwrap()
+            .unwrap()
+            .valid_until
+            .is_some(),
+        "archive keeps history"
+    );
+
+    // -- suspects
+    let sus = s
+        .add_suspect(&a.id, &secret.id, 0.91, Some(("contradiction", 0.88)))
+        .unwrap();
+    assert!(
+        s.suspect_between(&secret.id, &a.id).unwrap(),
+        "either order"
+    );
+    let pending = s.suspects_pending().unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].nli_label.as_deref(), Some("contradiction"));
+    let judged = s
+        .set_suspect_status(&sus.id, SuspectStatus::Dismissed)
+        .unwrap();
+    assert_eq!(judged.status, SuspectStatus::Dismissed);
+    assert!(s.suspects_pending().unwrap().is_empty());
+
+    // -- audit journal
+    for i in 0..3 {
+        s.add_audit(&AuditEntry {
+            seq: 0,
+            ts: 100 + i,
+            action: "created".into(),
+            entity: "node".into(),
+            entity_id: if i == 2 { "other".into() } else { a.id.clone() },
+            title: None,
+            before: None,
+            after: Some(serde_json::json!({"i": i})),
+            origin: "library".into(),
+            session_id: None,
+            cwd: None,
+            pid: None,
+            version: None,
+        })
+        .unwrap();
+    }
+    let page = s.audit_page(None, None, 2).unwrap();
+    assert_eq!(page.total, 3);
+    assert_eq!(page.entries.len(), 2);
+    assert!(page.entries[0].seq > page.entries[1].seq, "newest first");
+    let next = s.audit_page(Some(page.entries[1].seq), None, 10).unwrap();
+    assert_eq!(next.entries.len(), 1);
+    let filtered = s.audit_page(None, Some("other"), 10).unwrap();
+    assert_eq!(filtered.total, 1);
+
+    // -- worklists / brief reads
+    let open = {
+        let mut n = new_node(NodeType::Problem, "flaky test", "");
+        n.status = Some(NodeStatus::Open);
+        s.add_node(n).unwrap()
+    };
+    assert_eq!(s.list_open(&[]).unwrap().len(), 1);
+    assert_eq!(s.count_by_type_active(NodeType::Problem).unwrap(), 1);
+    assert_eq!(
+        s.nodes_by_type_active(NodeType::Principle, 5).unwrap()[0].id,
+        user.id
+    );
+    assert!(s.recent_nodes(2).unwrap().len() == 2);
+    assert!(
+        s.scannable_nodes()
+            .unwrap()
+            .iter()
+            .all(|n| n.node_type != NodeType::Anchor)
+    );
+
+    // -- decay: an old, stale, claude-authored episodic note is a candidate
+    let dusty = {
+        let mut n = new_node(NodeType::Insight, "temporary observation", "");
+        n.durability = Durability::Episodic;
+        s.add_node(n).unwrap()
+    };
+    s.backdate_node(&dusty.id, now() - 400 * 24 * 3600).unwrap();
+    let candidates = s.decay_candidates(14 * 24 * 3600, now()).unwrap();
+    assert!(candidates.iter().any(|n| n.id == dusty.id));
+    assert!(
+        !candidates.iter().any(|n| n.id == open.id),
+        "stable nodes never decay"
+    );
+
+    // -- tag stats (archived nodes excluded)
+    let stats = s.tag_stats(10).unwrap();
+    assert!(!stats.iter().any(|t| t.tag == "zanzibar-quirk"));
+
+    // -- store metadata
+    assert_eq!(s.embed_version().unwrap(), 0);
+    s.set_embed_version(2).unwrap();
+    assert_eq!(s.embed_version().unwrap(), 2);
+    assert!(s.embed_model().unwrap().is_none());
+    s.set_embed_model(&EmbedModelId {
+        name: "bge-small-en-v1.5".into(),
+        dim: 384,
+    })
+    .unwrap();
+    assert_eq!(s.embed_model().unwrap().unwrap().dim, 384);
+    let stats = s.stats().unwrap();
+    assert_eq!(stats.backend, backend);
+    assert!(stats.nodes >= 5);
+    assert_eq!(stats.embedded, 2);
+    assert!(s.health().unwrap().integrity_ok);
+
+    // -- reset_vectors: the model-swap path — vectors gone, new width accepted
+    s.reset_vectors(4).unwrap();
+    assert!(
+        s.embedding_of(&a.id).unwrap().is_none(),
+        "reset drops vectors"
+    );
+    assert_eq!(
+        s.get_node(&a.id).unwrap().unwrap().title,
+        "use sqlite WAL journaling",
+        "reset keeps documents"
+    );
+    s.upsert_embedding(&a.id, &[0.5, 0.5, 0.5, 0.5]).unwrap();
+    assert_eq!(s.embedding_of(&a.id).unwrap().unwrap().len(), 4);
+    assert_eq!(s.search_vec(&[0.5, 0.5, 0.5, 0.5], 1).unwrap()[0].0, a.id);
+
+    // -- hard delete cascades edges + suspects
+    assert!(s.delete_node(&a.id).unwrap());
+    assert!(s.get_node(&a.id).unwrap().is_none());
+    assert!(s.edges_out(&a.id).unwrap().is_empty());
+    assert!(s.edges_in(&user.id).unwrap().is_empty());
+    assert!(!s.suspect_between(&a.id, &secret.id).unwrap());
+    assert!(!s.delete_node(&a.id).unwrap());
+}
+
+#[test]
+fn sqlite_store_conformance() {
+    store_battery(&SqliteStore::open_in_memory().unwrap(), "sqlite");
+}
+
+#[test]
+fn tepin_store_conformance() {
+    store_battery(&TepinStore::open_in_memory().unwrap(), "tepindb");
+}
+
+#[test]
+fn tepin_store_survives_reopen_and_rebuild_on_disk() {
+    let dir = std::env::temp_dir().join(format!("engram-tepin-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("graph.tepin");
+    let _ = std::fs::remove_file(&path);
+    assert!(is_tepin_path(&path));
+
+    let id = {
+        let s = TepinStore::open(&path).unwrap();
+        let n = s
+            .add_node(new_node(NodeType::Decision, "durable across reopen", ""))
+            .unwrap();
+        s.upsert_embedding(
+            &n.id,
+            &FakeEmbedder::default().embed_one("durable").unwrap(),
+        )
+        .unwrap();
+        n.id
+    };
+    {
+        let s = TepinStore::open(&path).unwrap();
+        assert!(s.get_node(&id).unwrap().is_some());
+        assert!(s.embedding_of(&id).unwrap().is_some());
+        // The on-disk rebuild path: file swapped in place, handle stays live.
+        s.reset_vectors(8).unwrap();
+        assert!(s.embedding_of(&id).unwrap().is_none());
+        assert!(s.get_node(&id).unwrap().is_some());
+        s.upsert_embedding(&id, &[1.0; 8]).unwrap();
+    }
+    let s = TepinStore::open(&path).unwrap();
+    assert_eq!(s.embedding_of(&id).unwrap().unwrap().len(), 8);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn export_import_moves_a_graph_between_backends() {
+    // The §7C step-5 migration vehicle in miniature: JSON out of SQLite,
+    // into TepinDB, embeddings regenerated by the importing engine.
+    let src = engine();
+    let a = src
+        .add_node(new_node(NodeType::Decision, "adopt tepindb", "driver swap"))
+        .unwrap();
+    let b = src
+        .add_node(new_node(
+            NodeType::Principle,
+            "storage is an open-time choice",
+            "",
+        ))
+        .unwrap();
+    link(src.store(), EdgeType::Because, &a.id, &b.id);
+    let graph = src.export().unwrap();
+
+    let dst = Engine::new(
+        TepinStore::open_in_memory().unwrap(),
+        Box::new(FakeEmbedder::default()),
+    );
+    let summary = dst.import(graph).unwrap();
+    assert_eq!(summary.nodes, 2);
+    assert_eq!(summary.edges, 1);
+
+    let hits = dst.search("tepindb driver", &[], 5).unwrap();
+    assert_eq!(hits[0].id, a.id);
+    assert!(
+        hits[0].neighbors.iter().any(|n| n.id == b.id),
+        "edges survive the backend move"
+    );
+    // Round-trip back out: the export is backend-independent.
+    let back = dst.export().unwrap();
+    assert_eq!(back.nodes.len(), 2);
+    assert_eq!(back.edges.len(), 1);
+}
+
+#[test]
+fn resolve_db_prefers_a_migrated_tepin_sibling() {
+    let dir = std::env::temp_dir().join(format!("engram-resolve-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("graph.db");
+    assert_eq!(resolve_db_path(&db), db, "no sibling: the .db path stands");
+    std::fs::write(dir.join("graph.tepin"), b"x").unwrap();
+    assert_eq!(
+        resolve_db_path(&db),
+        dir.join("graph.tepin"),
+        "a migrated sibling wins without touching any wiring"
+    );
+    let explicit = dir.join("graph.tepin");
+    assert_eq!(resolve_db_path(&explicit), explicit);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- embedding-model guard (PLAN §7A model selection) ----------------------
+
+/// A real-shaped (non-fake) embedder with a chosen identity and width.
+struct NamedEmbedder {
+    model: &'static str,
+    width: usize,
+}
+
+impl Embedder for NamedEmbedder {
+    fn dim(&self) -> usize {
+        self.width
+    }
+    fn name(&self) -> &str {
+        self.model
+    }
+    fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        Ok(texts
+            .iter()
+            .map(|t| {
+                let mut v = vec![0.1f32; self.width];
+                for &b in t.as_bytes() {
+                    v[b as usize % self.width] += 1.0;
+                }
+                v
+            })
+            .collect())
+    }
+}
+
+#[test]
+fn embed_model_guard_rebuilds_vectors_on_model_swap() {
+    let mut e = Engine::new(
+        SqliteStore::open_in_memory().unwrap(),
+        Box::new(NamedEmbedder {
+            model: "model-a",
+            width: 8,
+        }),
+    );
+    // Non-default active model over a virgin store: vector storage reshapes
+    // before any write, identity is stamped.
+    e.ensure_embed_model().unwrap();
+    assert_eq!(e.store().embed_model().unwrap().unwrap().name, "model-a");
+    let n = e
+        .add_node(new_node(NodeType::Decision, "guarded vectors", ""))
+        .unwrap();
+    assert_eq!(e.store().embedding_of(&n.id).unwrap().unwrap().len(), 8);
+
+    // Swap the model: the guard rebuilds and re-embeds the whole graph once.
+    e.set_embedder(Box::new(NamedEmbedder {
+        model: "model-b",
+        width: 4,
+    }));
+    assert_eq!(e.ensure_embed_model().unwrap(), 1);
+    let stored = e.store().embed_model().unwrap().unwrap();
+    assert_eq!((stored.name.as_str(), stored.dim), ("model-b", 4));
+    assert_eq!(e.store().embedding_of(&n.id).unwrap().unwrap().len(), 4);
+    assert_eq!(
+        e.ensure_embed_model().unwrap(),
+        0,
+        "idempotent once stamped"
+    );
+}
+
+#[test]
+fn fake_embedder_skips_the_model_guard_entirely() {
+    let e = engine();
+    e.add_node(new_node(NodeType::Insight, "fake vectors", ""))
+        .unwrap();
+    assert_eq!(e.ensure_embed_model().unwrap(), 0);
+    assert!(
+        e.store().embed_model().unwrap().is_none(),
+        "a fake open must never stamp or rebuild"
+    );
+}
+
+#[test]
+fn cortex_config_defaults_and_presets() {
+    use crate::cortex::{CortexConfig, Role, presets, spec_files};
+    let cfg = CortexConfig::default();
+    assert_eq!(
+        cfg.effective(Role::Embedding).name,
+        rag::DEFAULT_EMBED_MODEL
+    );
+    assert_eq!(cfg.effective(Role::Embedding).dim, Some(384));
+    assert_eq!(
+        cfg.effective(Role::Reranker).name,
+        "jina-reranker-v1-turbo-en"
+    );
+    assert_eq!(cfg.effective(Role::Nli).name, "nli-deberta-v3-small");
+    // NLI needs three files, the fastembed-loaded roles five.
+    assert_eq!(spec_files(Role::Nli, &presets(Role::Nli)[0]).len(), 3);
+    assert_eq!(
+        spec_files(Role::Embedding, &presets(Role::Embedding)[0]).len(),
+        5
+    );
+    // A custom selection round-trips through JSON with the default model_file.
+    let spec: crate::cortex::ModelSpec = serde_json::from_str(
+        r#"{"name":"my-model","base_url":"https://example.com/m","dim":512,"pooling":"mean"}"#,
+    )
+    .unwrap();
+    assert_eq!(spec.model_file, "onnx/model_quantized.onnx");
+    assert_eq!(spec.dim, Some(512));
+}
+
+// ---- TepinDB capability checks -----------------------------------------
+//
+// The db-level behaviors the driver leans on, exercised the way real use
+// exercises them: index-served lookups at volume, sequences of writes and
+// reads across reopens, counter/meta durability, and serialized multi-thread
+// access. The conformance battery proves API parity; these prove the file
+// underneath keeps its promises.
+
+#[test]
+fn tepin_edge_indexes_answer_correctly_at_volume() {
+    let s = TepinStore::open_in_memory().unwrap();
+    let nodes: Vec<Node> = (0..40)
+        .map(|i| {
+            s.add_node(new_node(
+                NodeType::Decision,
+                &format!("volume node {i}"),
+                "",
+            ))
+            .unwrap()
+        })
+        .collect();
+    // A chain (builds-on) plus a hub (everything about node 0): the shape
+    // that makes the from_id/to_id equality indexes earn their keep.
+    for i in 1..40 {
+        s.add_edge(NewEdge {
+            edge_type: EdgeType::BuildsOn,
+            from_id: nodes[i].id.clone(),
+            to_id: nodes[i - 1].id.clone(),
+            source: Source::Claude,
+            confidence: None,
+            strength: None,
+            note: None,
+            status: None,
+        })
+        .unwrap();
+        s.add_edge(NewEdge {
+            edge_type: EdgeType::About,
+            from_id: nodes[i].id.clone(),
+            to_id: nodes[0].id.clone(),
+            source: Source::Claude,
+            confidence: None,
+            strength: None,
+            note: None,
+            status: None,
+        })
+        .unwrap();
+    }
+    // Index-served reads must agree exactly with a full scan.
+    let all = s.all_edges().unwrap();
+    assert_eq!(all.len(), 78);
+    for n in [&nodes[0], &nodes[5], &nodes[39]] {
+        let scan_in = all.iter().filter(|e| e.to_id == n.id).count();
+        let scan_out = all.iter().filter(|e| e.from_id == n.id).count();
+        assert_eq!(s.edges_in(&n.id).unwrap().len(), scan_in, "to_id index");
+        assert_eq!(s.edges_out(&n.id).unwrap().len(), scan_out, "from_id index");
+    }
+    assert_eq!(s.edges_in(&nodes[0].id).unwrap().len(), 40); // 39 about + 1 builds-on
+    assert_eq!(s.edges_out(&nodes[5].id).unwrap().len(), 2);
+    // Traversal over the indexed edges reaches the whole chain.
+    let (t_nodes, t_edges) = s.traverse(&nodes[0].id, &[EdgeType::BuildsOn], 39).unwrap();
+    assert_eq!(t_nodes.len(), 40);
+    assert_eq!(t_edges.len(), 39);
+}
+
+#[test]
+fn tepin_write_read_sequences_hold_across_reopen() {
+    let dir = std::env::temp_dir().join(format!("engram-tepin-seq-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("graph.tepin");
+    let _ = std::fs::remove_file(&path);
+
+    let (a_id, b_id, suspect_id);
+    {
+        let s = TepinStore::open(&path).unwrap();
+        let a = s
+            .add_node(new_node(NodeType::Decision, "alpha decision", "first body"))
+            .unwrap();
+        let b = s
+            .add_node(new_node(NodeType::Principle, "beta principle", ""))
+            .unwrap();
+        s.add_edge(NewEdge {
+            edge_type: EdgeType::Because,
+            from_id: a.id.clone(),
+            to_id: b.id.clone(),
+            source: Source::Claude,
+            confidence: None,
+            strength: None,
+            note: None,
+            status: None,
+        })
+        .unwrap();
+        for i in 0..2 {
+            s.add_audit(&AuditEntry {
+                seq: 0,
+                ts: 100 + i,
+                action: "created".into(),
+                entity: "node".into(),
+                entity_id: a.id.clone(),
+                title: None,
+                before: None,
+                after: None,
+                origin: "library".into(),
+                session_id: None,
+                cwd: None,
+                pid: None,
+                version: None,
+            })
+            .unwrap();
+        }
+        s.set_embed_version(2).unwrap();
+        s.set_embed_model(&EmbedModelId {
+            name: "bge-small-en-v1.5".into(),
+            dim: 384,
+        })
+        .unwrap();
+        let sus = s.add_suspect(&a.id, &b.id, 0.9, None).unwrap();
+        s.set_suspect_status(&sus.id, SuspectStatus::Dismissed)
+            .unwrap();
+        // A text update re-indexes keywords synchronously, same txn.
+        s.update_node(
+            &a.id,
+            NodePatch {
+                title: Some("alpha decision revised".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(s.search_fts("revised", &[], 5).unwrap().len(), 1);
+        (a_id, b_id, suspect_id) = (a.id.clone(), b.id.clone(), sus.id.clone());
+    }
+    {
+        // Reopen 1: every write is there, the audit counter continues.
+        let s = TepinStore::open(&path).unwrap();
+        assert_eq!(s.all_nodes().unwrap().len(), 2);
+        assert_eq!(
+            s.get_node(&a_id).unwrap().unwrap().title,
+            "alpha decision revised"
+        );
+        assert_eq!(s.edges_out(&a_id).unwrap().len(), 1);
+        assert_eq!(s.embed_version().unwrap(), 2);
+        assert_eq!(s.embed_model().unwrap().unwrap().dim, 384);
+        assert_eq!(
+            s.get_suspect(&suspect_id).unwrap().unwrap().status,
+            SuspectStatus::Dismissed
+        );
+        assert!(
+            s.suspect_between(&b_id, &a_id).unwrap(),
+            "judgment memory survives"
+        );
+        assert_eq!(s.search_fts("revised", &[], 5).unwrap().len(), 1);
+
+        let page = s.audit_page(None, None, 10).unwrap();
+        assert_eq!(page.total, 2);
+        s.add_audit(&AuditEntry {
+            seq: 0,
+            ts: 300,
+            action: "updated".into(),
+            entity: "node".into(),
+            entity_id: a_id.clone(),
+            title: None,
+            before: None,
+            after: None,
+            origin: "library".into(),
+            session_id: None,
+            cwd: None,
+            pid: None,
+            version: None,
+        })
+        .unwrap();
+        let page = s.audit_page(None, None, 10).unwrap();
+        assert_eq!(
+            page.entries[0].seq, 3,
+            "seq continues after reopen, never reuses"
+        );
+        assert!(s.delete_node(&a_id).unwrap());
+        assert!(s.search_fts("revised", &[], 5).unwrap().is_empty());
+    }
+    {
+        // Reopen 2: the delete and its cascade are durable.
+        let s = TepinStore::open(&path).unwrap();
+        assert!(s.get_node(&a_id).unwrap().is_none());
+        assert!(s.get_node(&b_id).unwrap().is_some());
+        assert!(s.edges_in(&b_id).unwrap().is_empty());
+        assert_eq!(s.audit_page(None, None, 10).unwrap().total, 3);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn tepin_interleaved_updates_keep_search_and_vectors_consistent() {
+    // Engine-level (embed + index on every write), mirroring the sqlite
+    // re-embed-on-update behavior on the tepin backend.
+    let e = Engine::new(
+        TepinStore::open_in_memory().unwrap(),
+        Box::new(FakeEmbedder::default()),
+    );
+    let a = e
+        .add_node(new_node(
+            NodeType::Decision,
+            "cache invalidation policy",
+            "ttl",
+        ))
+        .unwrap();
+    let b = e
+        .add_node(new_node(NodeType::Insight, "zebra crossing patterns", ""))
+        .unwrap();
+    assert_eq!(e.search("invalidation", &[], 5).unwrap()[0].id, a.id);
+
+    // Update the text: keyword index and vector must both follow.
+    let before = e.store().embedding_of(&a.id).unwrap().unwrap();
+    e.update_node(
+        &a.id,
+        NodePatch {
+            title: Some("memoization eviction strategy".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let after = e.store().embedding_of(&a.id).unwrap().unwrap();
+    assert_ne!(before, after, "text update re-embeds on tepin");
+    // Keyword primitive: the old title's terms are gone from the index
+    // (hybrid may still surface the node semantically — that's the vector
+    // half doing its job, not staleness).
+    assert!(
+        e.store()
+            .search_fts("invalidation", &[], 5)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        e.search("memoization eviction", &[], 5).unwrap()[0].id,
+        a.id
+    );
+
+    // Archive: vector still stored, but no read surface shows the node.
+    e.store()
+        .archive_nodes(std::slice::from_ref(&a.id), now())
+        .unwrap();
+    assert!(e.store().embedding_of(&a.id).unwrap().is_some());
+    assert!(e.search("memoization eviction", &[], 5).unwrap().is_empty());
+
+    // Delete: the doc takes its vectors with it.
+    e.store().delete_node(&b.id).unwrap();
+    assert!(e.store().embedding_of(&b.id).unwrap().is_none());
+}
+
+#[test]
+fn tepin_import_is_idempotent_at_volume() {
+    let mk_node = |i: usize| Node {
+        id: format!("00volnode{i:03}"),
+        node_type: NodeType::Insight,
+        title: format!("imported insight number {i}"),
+        body: Some(format!("body of note {i}")),
+        durability: Durability::Stable,
+        source: Source::Claude,
+        session_id: Some("bulk".into()),
+        created_at: 1_000_000 + i as i64,
+        valid_from: Some(1_000_000 + i as i64),
+        valid_until: None,
+        status: None,
+        last_seen: None,
+        confirmed_at: None,
+        approved_at: None,
+        demoted_at: None,
+        trust_override: None,
+        trust: 0.0,
+        stale: false,
+        code_refs: vec![],
+        tags: vec!["bulk".into()],
+    };
+    let nodes: Vec<Node> = (0..120).map(mk_node).collect();
+    let edges: Vec<Edge> = (1..120)
+        .map(|i| Edge {
+            id: format!("00voledge{i:03}"),
+            edge_type: EdgeType::BuildsOn,
+            from_id: nodes[i].id.clone(),
+            to_id: nodes[i - 1].id.clone(),
+            source: Source::Claude,
+            created_at: 1_000_000,
+            confidence: None,
+            strength: None,
+            note: None,
+            valid_from: None,
+            valid_until: None,
+            status: None,
+        })
+        .collect();
+
+    let e = Engine::new(
+        TepinStore::open_in_memory().unwrap(),
+        Box::new(FakeEmbedder::default()),
+    );
+    for round in 0..2 {
+        let summary = e
+            .import(ExportGraph {
+                version: 1,
+                nodes: nodes.clone(),
+                edges: edges.clone(),
+            })
+            .unwrap();
+        assert_eq!((summary.nodes, summary.edges), (120, 119), "round {round}");
+        let stats = e.store().stats().unwrap();
+        assert_eq!(
+            (stats.nodes, stats.edges),
+            (120, 119),
+            "no dupes on re-import"
+        );
+        assert_eq!(stats.embedded, 120, "every import round re-embeds all");
+    }
+    assert_eq!(e.search("imported insight", &[], 5).unwrap().len(), 5);
+    assert_eq!(e.store().tag_stats(5).unwrap()[0].count, 120);
+}
+
+#[test]
+fn tepin_engine_stays_consistent_under_threaded_access() {
+    // The daemon serializes every engine behind a mutex; hammer that shape
+    // from many threads — interleaved writes, reads, searches — and the
+    // counts must come out exact.
+    use std::sync::{Arc, Mutex};
+    let engine = Arc::new(Mutex::new(Engine::new(
+        TepinStore::open_in_memory().unwrap(),
+        Box::new(FakeEmbedder::default()),
+    )));
+    let mut handles = Vec::new();
+    for t in 0..8 {
+        let engine = Arc::clone(&engine);
+        handles.push(std::thread::spawn(move || {
+            for i in 0..15 {
+                let e = engine.lock().unwrap();
+                let n = e
+                    .add_node(new_node(
+                        NodeType::Insight,
+                        &format!("thread {t} note {i}"),
+                        "",
+                    ))
+                    .unwrap();
+                assert!(!e.search(&format!("thread {t}"), &[], 3).unwrap().is_empty());
+                e.store().touch(std::slice::from_ref(&n.id)).unwrap();
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+    let e = engine.lock().unwrap();
+    let stats = e.store().stats().unwrap();
+    assert_eq!(stats.nodes, 120);
+    assert_eq!(stats.embedded, 120);
+    let page = e.store().audit_page(None, None, 1).unwrap();
+    assert_eq!(page.total, 120, "one journal row per write, none lost");
 }

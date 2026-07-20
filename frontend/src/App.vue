@@ -12,6 +12,7 @@ import HealthStrip from '@/components/panels/HealthStrip.vue'
 import MemoryLensPanel from '@/components/panels/MemoryLensPanel.vue'
 import NodeCreatePanel from '@/components/panels/NodeCreatePanel.vue'
 import NodeDetail from '@/components/panels/NodeDetail.vue'
+import ProjectSwitcher from '@/components/panels/ProjectSwitcher.vue'
 import ReviewPanel from '@/components/panels/ReviewPanel.vue'
 import SettingsMenu from '@/components/panels/SettingsMenu.vue'
 import SystemInfoPanel from '@/components/panels/SystemInfoPanel.vue'
@@ -53,6 +54,7 @@ onBeforeUnmount(() => store.disconnect())
     <header class="topbar">
         <div class="brand">
             <EngramMark class="brand-mark" />
+            <ProjectSwitcher />
             <span class="conn" :class="{ live: connected }" :title="connected ? 'Live' : 'Disconnected'">
                 {{ connected ? 'live' : 'offline' }}
             </span>

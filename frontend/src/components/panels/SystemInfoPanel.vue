@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import SidePanel from '@/components/common/SidePanel.vue'
 import { api } from '@/services/api'
 import { useSystemInfo } from '@/composables/useSystemInfo'
-import type { SystemInfo } from '@/types/graph'
+import { useProjectsStore } from '@/stores/projects'
+import type { ModelRoleInfo, ModelSelection, ProjectInfo, SystemInfo } from '@/types/graph'
 
 /**
  * Settings → System info: the daemon-side half of `engram-alpha doctor`,
@@ -16,20 +18,107 @@ const info = ref<SystemInfo | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
 
+// The machine registry (PLAN §7C) — ~/.engram/registry.json, via the hub.
+const projectsStore = useProjectsStore()
+const { projects } = storeToRefs(projectsStore)
+
 watch(open, (isOpen) => {
-    if (isOpen) void reload()
+    if (isOpen) {
+        void reload()
+        void projectsStore.loadProjects()
+    }
 })
+
+function projectLabel(p: ProjectInfo): string {
+    if (p.home) return 'home graph'
+    return p.name
+}
+
+async function forget(p: ProjectInfo): Promise<void> {
+    await projectsStore.unregister(p.id)
+}
 
 async function reload(): Promise<void> {
     loading.value = true
     error.value = null
     try {
         info.value = await api.system()
+        selection.value = await api.models().catch(() => null)
+        syncPicks()
     } catch (e) {
         error.value = e instanceof Error ? e.message : String(e)
         info.value = null
     } finally {
         loading.value = false
+    }
+}
+
+// ---- model selection (PLAN §7A): pick per role, custom by URL --------------
+
+const selection = ref<ModelSelection | null>(null)
+/** Per-role UI state: the picked preset name, or 'custom'. */
+const picks = ref<Record<string, string>>({})
+const customUrl = ref<Record<string, string>>({})
+const customName = ref<Record<string, string>>({})
+const customDim = ref<Record<string, string>>({})
+const customMean = ref<Record<string, boolean>>({})
+const applying = ref<string | null>(null)
+const applyNote = ref<Record<string, string>>({})
+
+const roles = computed<ModelRoleInfo[]>(() => selection.value?.roles ?? [])
+
+function syncPicks(): void {
+    for (const r of roles.value) {
+        picks.value[r.role] = r.presets.some((p) => p.name === r.active) ? r.active : 'custom'
+        if (r.custom) {
+            customName.value[r.role] = r.custom.name
+            customUrl.value[r.role] = r.custom.base_url
+            customDim.value[r.role] = r.custom.dim ? String(r.custom.dim) : ''
+            customMean.value[r.role] = r.custom.pooling === 'mean'
+        }
+    }
+}
+
+function dirty(r: ModelRoleInfo): boolean {
+    const pick = picks.value[r.role]
+    if (pick === 'custom') return true
+    return pick !== r.active
+}
+
+async function apply(r: ModelRoleInfo): Promise<void> {
+    const pick = picks.value[r.role]
+    const body: { role: string; preset?: string; custom?: object } = { role: r.role }
+    if (pick === 'custom') {
+        const name = customName.value[r.role]?.trim()
+        const base_url = customUrl.value[r.role]?.trim()
+        if (!name || !base_url) {
+            applyNote.value[r.role] = 'a custom model needs a name and a base URL'
+            return
+        }
+        body.custom = {
+            name,
+            base_url,
+            ...(r.role === 'embedding' && {
+                dim: Number(customDim.value[r.role]) || undefined,
+                pooling: customMean.value[r.role] ? 'mean' : 'cls',
+            }),
+        }
+    } else {
+        body.preset = pick
+    }
+    applying.value = r.role
+    applyNote.value[r.role] = ''
+    try {
+        const result = await api.applyModel(body)
+        applyNote.value[r.role] =
+            result.reembedded_nodes > 0
+                ? `switched to ${result.applied} — re-embedded ${result.reembedded_nodes} nodes`
+                : `switched to ${result.applied}`
+        await reload()
+    } catch (e) {
+        applyNote.value[r.role] = e instanceof Error ? e.message : String(e)
+    } finally {
+        applying.value = null
     }
 }
 
@@ -103,27 +192,31 @@ function wiringStatus(w: { wired: boolean; prerename: boolean }): { status: Stat
             <h3 class="block-title">Graph store</h3>
             <dl class="rows">
                 <div><dt>Database</dt><dd class="mono">{{ info.store.db ?? '—' }}</dd></div>
+                <div>
+                    <dt>Backend</dt>
+                    <dd>{{ info.store.backend === 'tepindb' ? 'TepinDB (redb single-file)' : 'SQLite' }}</dd>
+                </div>
                 <div><dt>Size</dt><dd>{{ fmtBytes(info.store.size_bytes) }}</dd></div>
                 <div><dt>Contents</dt><dd>{{ info.store.nodes }} nodes · {{ info.store.edges }} edges</dd></div>
                 <div>
                     <dt>Integrity</dt>
                     <dd>
                         <span class="dot" :data-status="info.store.integrity_ok ? 'ok' : 'bad'" />
-                        {{ info.store.integrity_ok ? 'quick_check passed' : 'quick_check FAILED' }}
+                        {{ info.store.integrity_ok ? 'integrity check passed' : 'integrity check FAILED' }}
                     </dd>
                 </div>
                 <div>
                     <dt>Journal</dt>
                     <dd>
-                        <span class="dot" :data-status="info.store.journal_mode === 'wal' ? 'ok' : 'warn'" />
-                        {{ info.store.journal_mode }}
+                        <span class="dot" :data-status="!info.store.journal_mode || info.store.journal_mode === 'wal' ? 'ok' : 'warn'" />
+                        {{ info.store.journal_mode || 'fsync per commit (redb)' }}
                     </dd>
                 </div>
                 <div>
                     <dt>Vectors</dt>
                     <dd>
                         <span class="dot" :data-status="embeddingStatus(info).status" />
-                        {{ embeddingStatus(info).text }} · {{ info.store.fts }} in the FTS index
+                        {{ embeddingStatus(info).text }}
                     </dd>
                 </div>
                 <div>
@@ -155,6 +248,88 @@ function wiringStatus(w: { wired: boolean; prerename: boolean }): { status: Stat
                     </dd>
                 </div>
             </dl>
+
+            <template v-if="selection?.available && roles.length">
+                <h4 class="sub-title">Choose models</h4>
+                <p v-if="selection.fake_embeddings" class="state">
+                    This daemon runs fake embeddings — restart it with real embeddings to switch models.
+                </p>
+                <div v-for="r in roles" :key="r.role" class="pick">
+                    <label class="pick-role" :for="`model-pick-${r.role}`">{{ r.role }}</label>
+                    <div class="pick-body">
+                        <select :id="`model-pick-${r.role}`" v-model="picks[r.role]" class="pick-select">
+                            <option v-for="p in r.presets" :key="p.name" :value="p.name">
+                                {{ p.name }}{{ p.name === r.default ? ' (default)' : '' }}
+                            </option>
+                            <option value="custom">custom — by URL…</option>
+                        </select>
+                        <template v-if="picks[r.role] === 'custom'">
+                            <input
+                                v-model="customName[r.role]"
+                                class="pick-input"
+                                type="text"
+                                placeholder="model name (its cache folder)"
+                            />
+                            <input
+                                v-model="customUrl[r.role]"
+                                class="pick-input"
+                                type="text"
+                                placeholder="base URL, e.g. https://huggingface.co/<org>/<repo>/resolve/main"
+                            />
+                            <div v-if="r.role === 'embedding'" class="pick-inline">
+                                <input
+                                    v-model="customDim[r.role]"
+                                    class="pick-input dim"
+                                    type="text"
+                                    placeholder="dim (e.g. 384)"
+                                />
+                                <label class="pick-check">
+                                    <input v-model="customMean[r.role]" type="checkbox" />
+                                    mean pooling (default: CLS)
+                                </label>
+                            </div>
+                        </template>
+                        <p v-if="r.role === 'embedding' && dirty(r)" class="pick-warning">
+                            Switching the embedding model re-embeds every node in all open graphs
+                            (blocking, one-time) and un-calibrates the tuned similarity thresholds —
+                            duplicate/conflict detection quality is unvalidated until re-tuned.
+                        </p>
+                        <div class="pick-actions">
+                            <button
+                                class="refresh"
+                                type="button"
+                                :disabled="applying !== null || !dirty(r) || selection.fake_embeddings"
+                                @click="apply(r)"
+                            >
+                                {{ applying === r.role ? 'Downloading + applying…' : 'Apply' }}
+                            </button>
+                            <span v-if="applyNote[r.role]" class="pick-note">{{ applyNote[r.role] }}</span>
+                        </div>
+                    </div>
+                </div>
+            </template>
+        </section>
+
+        <section v-if="projects.length" class="block">
+            <h3 class="block-title">Projects on this machine — the registry</h3>
+            <div v-for="p in projects" :key="p.id" class="project-line">
+                <span class="project-name">
+                    {{ projectLabel(p) }}
+                    <span v-if="p.current" class="tag">this repo</span>
+                    <span v-else-if="p.home" class="tag">shared</span>
+                    <span v-else-if="p.open" class="tag">open</span>
+                </span>
+                <span class="mono project-path">{{ p.root ?? p.db }}</span>
+                <button
+                    v-if="!p.current && !p.home"
+                    class="forget"
+                    type="button"
+                    title="Remove from the registry (the project's graph itself is untouched)"
+                    @click="forget(p)"
+                >
+                    forget
+                </button>
+            </div>
         </section>
 
         <section class="block">
@@ -328,5 +503,133 @@ function wiringStatus(w: { wired: boolean; prerename: boolean }): { status: Stat
     color: var(--text-tertiary);
     overflow-x: auto;
     white-space: nowrap;
+}
+
+.sub-title {
+    margin-top: 0.4rem;
+    font-size: var(--text-caption);
+    font-weight: 600;
+    color: var(--text-tertiary);
+}
+
+.pick {
+    display: grid;
+    grid-template-columns: 10rem 1fr;
+    gap: 0.8rem;
+    align-items: start;
+    padding: 0.3rem 0;
+}
+
+.pick-role {
+    font-size: var(--text-caption);
+    color: var(--text-tertiary);
+    text-transform: capitalize;
+    padding-top: 0.4rem;
+}
+
+.pick-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    min-width: 0;
+}
+
+.pick-select,
+.pick-input {
+    width: 100%;
+    padding: 0.35rem 0.6rem;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md, 0.4rem);
+    background: transparent;
+    color: var(--text-primary);
+    font-size: var(--text-body-sm);
+}
+
+.pick-inline {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+}
+
+.pick-input.dim {
+    width: 9rem;
+}
+
+.pick-check {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: var(--text-caption);
+    color: var(--text-secondary);
+}
+
+.pick-warning {
+    font-size: var(--text-caption);
+    color: var(--node-caution);
+}
+
+.pick-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+}
+
+.pick-note {
+    font-size: var(--text-caption);
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+}
+
+.project-line {
+    display: flex;
+    align-items: baseline;
+    gap: 0.8rem;
+    min-width: 0;
+    padding: 0.3rem 0;
+}
+
+.project-name {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex: none;
+    color: var(--text-primary);
+    font-size: var(--text-body-sm);
+    font-weight: 600;
+}
+
+.project-line .tag {
+    padding: 0.05rem 0.5rem;
+    border-radius: var(--radius-full);
+    font-size: var(--text-caption);
+    font-weight: 600;
+    color: var(--text-tertiary);
+    background-color: var(--surface-muted);
+}
+
+.project-path {
+    min-width: 0;
+    font-size: var(--text-caption);
+    color: var(--text-tertiary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.forget {
+    flex: none;
+    margin-left: auto;
+    padding: 0.2rem 0.7rem;
+    border-radius: var(--radius-full);
+    border: 1px solid var(--border-default);
+    background: transparent;
+    color: var(--text-tertiary);
+    font-size: var(--text-caption);
+    cursor: pointer;
+}
+
+.forget:hover {
+    color: var(--node-problem);
+    border-color: color-mix(in srgb, var(--node-problem) 55%, transparent);
 }
 </style>

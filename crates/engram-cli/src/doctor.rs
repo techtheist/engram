@@ -74,21 +74,33 @@ pub fn run(db: &Path) -> anyhow::Result<()> {
 }
 
 fn check_store(r: &mut Report, db: &Path) {
-    let store = match engram_core::Store::open(db) {
+    // Thin client (PLAN §7C): when a healthy daemon owns this store — on
+    // TepinDB it is the ONLY process allowed to — read the same facts from
+    // its /system instead of opening the file underneath it.
+    if daemon_store_report(r, db) {
+        return;
+    }
+    let store = match engram_core::open_store(db) {
         Ok(s) => s,
         Err(e) => return r.fail(&format!("cannot open {}: {e}", db.display())),
     };
-    let conn = store.conn();
-    let text = |sql: &str| conn.query_row(sql, [], |row| row.get::<_, String>(0));
-    match text("PRAGMA journal_mode") {
-        Ok(m) if m.eq_ignore_ascii_case("wal") => r.ok("journal_mode = wal"),
-        Ok(m) => r.fail(&format!("journal_mode is {m}, expected wal")),
-        Err(e) => r.fail(&format!("PRAGMA journal_mode: {e}")),
-    }
-    match text("PRAGMA quick_check") {
-        Ok(v) if v == "ok" => r.ok("integrity quick_check passed"),
-        Ok(v) => r.fail(&format!("quick_check: {v}")),
-        Err(e) => r.fail(&format!("quick_check: {e}")),
+    match store.health() {
+        Ok(h) => {
+            match h.journal_mode.as_deref() {
+                Some(m) if m.eq_ignore_ascii_case("wal") => r.ok("journal_mode = wal"),
+                Some(m) => r.fail(&format!("journal_mode is {m}, expected wal")),
+                None => r.ok("backend has no journal mode (redb: fsync-per-commit)"),
+            }
+            if h.integrity_ok {
+                r.ok("store integrity check passed");
+            } else {
+                r.fail(&format!(
+                    "integrity check: {}",
+                    h.detail.as_deref().unwrap_or("failed")
+                ));
+            }
+        }
+        Err(e) => r.fail(&format!("store health: {e}")),
     }
     match store.embed_version() {
         Ok(v) if v >= engram_core::EMBED_COMPOSITION => {
@@ -99,30 +111,65 @@ fn check_store(r: &mut Report, db: &Path) {
         ),
         Err(e) => r.fail(&format!("embed version: {e}")),
     }
-    let count = |sql: &str| conn.query_row(sql, [], |row| row.get::<_, i64>(0));
-    match (
-        count("SELECT count(*) FROM nodes"),
-        count("SELECT count(*) FROM vec_nodes"),
-        count("SELECT count(*) FROM nodes_fts"),
-    ) {
-        (Ok(n), Ok(v), Ok(f)) => {
-            r.ok(&format!("{n} nodes ({v} embedded, {f} in the FTS index)"));
-            if v < n {
+    match store.stats() {
+        Ok(s) => {
+            r.ok(&format!(
+                "{} nodes ({} embedded) on the {} backend",
+                s.nodes, s.embedded, s.backend
+            ));
+            if s.embedded < s.nodes {
                 r.warn(&format!(
                     "{} node(s) lack embeddings — semantic search misses them",
-                    n - v
+                    s.nodes - s.embedded
                 ));
             }
-            if f != n {
-                r.warn(&format!("FTS index has {f} rows for {n} nodes"));
-            }
         }
-        (n, v, f) => {
-            for e in [n.err(), v.err(), f.err()].into_iter().flatten() {
-                r.fail(&format!("table count failed: {e}"));
-            }
-        }
+        Err(e) => r.fail(&format!("store stats failed: {e}")),
     }
+}
+
+/// The daemon-served version of `check_store`, reporting from `/system` so
+/// doctor never contends for the file. Returns whether it handled the check.
+fn daemon_store_report(r: &mut Report, db: &Path) -> bool {
+    let Some(port) = crate::daemon_for(db) else {
+        return false;
+    };
+    let Some(system) = http_get(port, "/system")
+        .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+    else {
+        return false;
+    };
+    let store = &system["store"];
+    let backend = store["backend"].as_str().unwrap_or("unknown");
+    match store["journal_mode"].as_str().unwrap_or_default() {
+        "" => r.ok("backend has no journal mode (redb: fsync-per-commit)"),
+        m if m.eq_ignore_ascii_case("wal") => r.ok("journal_mode = wal"),
+        m => r.fail(&format!("journal_mode is {m}, expected wal")),
+    }
+    if store["integrity_ok"].as_bool() == Some(true) {
+        r.ok("store integrity check passed (via the owning daemon)");
+    } else {
+        r.fail("integrity check failed (via the owning daemon)");
+    }
+    if store["embed_composition_current"].as_bool() == Some(true) {
+        r.ok("embeddings use the current composition (title/body/tags/code_refs)");
+    } else {
+        r.warn("stored embeddings predate the full-field composition — restart the daemon with real embeddings to reindex");
+    }
+    let (nodes, embedded) = (
+        store["nodes"].as_i64().unwrap_or(-1),
+        store["embedded"].as_i64().unwrap_or(-1),
+    );
+    r.ok(&format!(
+        "{nodes} nodes ({embedded} embedded) on the {backend} backend"
+    ));
+    if embedded >= 0 && embedded < nodes {
+        r.warn(&format!(
+            "{} node(s) lack embeddings — semantic search misses them",
+            nodes - embedded
+        ));
+    }
+    true
 }
 
 fn check_model(r: &mut Report) {
@@ -171,8 +218,9 @@ fn check_daemon(r: &mut Report, db: &Path) {
 }
 
 /// Minimal localhost GET. HTTP/1.0 keeps the reply un-chunked, so everything
-/// after the blank line is the body.
-fn http_get(port: u16, path: &str) -> Option<String> {
+/// after the blank line is the body. Shared with the thin-client resolution
+/// in main.rs (mcp bridge, daemon-aware brief).
+pub(crate) fn http_get(port: u16, path: &str) -> Option<String> {
     use std::io::{Read, Write};
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     let mut stream = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).ok()?;

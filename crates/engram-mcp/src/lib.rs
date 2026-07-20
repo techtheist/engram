@@ -6,8 +6,8 @@
 use std::sync::{Arc, Mutex};
 
 use engram_core::{
-    Durability, EdgePatch, EdgeStatus, EdgeType, Engine, Error, NewEdge, NewNode, Node, NodePatch,
-    NodeStatus, NodeType, Source, SuspectVerdict, WriteOutcome,
+    Durability, EdgePatch, EdgeStatus, EdgeType, Engine, Error, Hub, NewEdge, NewNode, Node,
+    NodePatch, NodeStatus, NodeType, Source, SuspectVerdict, WriteOutcome, registry,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
@@ -64,6 +64,14 @@ For whole-graph work, use the bulk tools: `list_nodes` pages complete nodes \
 (full bodies — the lossless read behind \"export every Decision to a \
 decisions.md\"), `update_nodes` applies many patches in one call (curation \
 sweeps), `add_notes` batch-creates with the same dupe checks as add_note. \
+Most tools take an optional `project`: omit it for this project; a name/id \
+(see `list_projects`) reads or writes THAT project's graph — capturing an \
+insight about a sibling project into its own graph is deliberate and \
+encouraged; `home` is the user-level graph for knowledge that transcends \
+projects (global principles, preferences — write there on \"remember this \
+globally\"); `search`/`check_claim` accept `project: \"all\"` to read across \
+every graph (foreign hits carry provenance and a locality prior). Writes to \
+`all` are refused — one insight lives in one graph, not N copies. \
 Never store secrets or volatile implementation detail.";
 
 /// Upper bound on items per batch tool call — big enough for any real
@@ -80,6 +88,11 @@ write supersedes the older claim, `dismiss` if they are fine together.";
 
 #[derive(Clone)]
 pub struct Engram {
+    /// The multi-project hub (PLAN §7C). Single-project constructions get a
+    /// factory-less hub, so cross-project selectors fail with a clear message.
+    hub: Arc<Hub>,
+    /// The launch project's engine (== `hub.current()`), cached for the
+    /// unscoped fast path.
     engine: Arc<Mutex<Engine>>,
     /// Fallback session id when the client omits one: minted once per server
     /// process, which over stdio is one Claude session. Superseded by the
@@ -90,13 +103,19 @@ pub struct Engram {
 #[tool_router]
 impl Engram {
     pub fn new(engine: Engine) -> Self {
-        Self::with_shared(Arc::new(Mutex::new(engine)))
+        Self::with_hub(Arc::new(Hub::single(engine)))
     }
 
     /// Build over an engine shared with the HTTP server (same DB + listener).
     pub fn with_shared(engine: Arc<Mutex<Engine>>) -> Self {
+        Self::with_hub(Arc::new(Hub::single_shared(engine)))
+    }
+
+    /// The full multi-project form: the same hub the HTTP server holds.
+    pub fn with_hub(hub: Arc<Hub>) -> Self {
         Self {
-            engine,
+            engine: hub.current_engine(),
+            hub,
             session_id: format!("mcp-{}", engram_core::id::new_id()).into(),
         }
     }
@@ -110,30 +129,54 @@ impl Engram {
         guard
     }
 
+    /// Resolve a tool's optional `project` selector: omitted = the current
+    /// project, a name/id = that registered project, `home` = the user-level
+    /// home graph. `all` never resolves to one engine — the hub's refusal
+    /// explains where fan-out reads and shared writes belong.
+    fn engine_for(&self, project: &Option<String>) -> Result<Arc<Mutex<Engine>>, ErrorData> {
+        match project.as_deref() {
+            None => Ok(self.engine.clone()),
+            Some(sel) => self.hub.get(sel).map_err(map_err),
+        }
+    }
+
+    /// Lock a scoped engine with this session stamped as the writer.
+    fn mcp<'a>(&self, engine: &'a Arc<Mutex<Engine>>) -> std::sync::MutexGuard<'a, Engine> {
+        let mut guard = engine.lock().unwrap();
+        guard.set_audit_origin(engram_core::AuditOrigin::mcp(self.session_id.to_string()));
+        guard
+    }
+
     #[tool(
         description = "Hybrid semantic + keyword search over the memory graph. \
         Hits carry: type, title, snippet, score, trust (computed 0..1), stale \
         (true = decayed trust, verify before relying), status, and 1-hop \
         neighbors (conflicts-with/replaces first). Being returned stamps \
-        last_seen for observability only — retrieval never refreshes trust."
+        last_seen for observability only — retrieval never refreshes trust. \
+        `project: \"all\"` searches every registered project plus the home \
+        graph — foreign hits carry `project` provenance and rank under a \
+        locality prior, so the local canon wins ties."
     )]
     async fn search(
         &self,
         Parameters(a): Parameters<SearchArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let types = node_types(&a.types)?;
-        let mut hits = self
-            .engine()
-            .search(&a.query, &types, a.limit.unwrap_or(8))
-            .map_err(map_err)?;
-        // The store marks matches with private-use sentinels (the pane's
-        // highlight markers); assistants read plain brackets instead.
-        for h in &mut hits {
-            h.snippet = h
-                .snippet
-                .replace(engram_core::SNIPPET_OPEN, "[")
-                .replace(engram_core::SNIPPET_CLOSE, "]");
+        let limit = a.limit.unwrap_or(8);
+        if a.project.as_deref() == Some(registry::ALL_PROJECTS) {
+            let (mut hits, skipped) = self
+                .hub
+                .search_all(&a.query, &types, limit)
+                .map_err(map_err)?;
+            hits.iter_mut().for_each(debracket);
+            return ok_json(&json!({ "hits": hits, "skipped": skipped }));
         }
+        let engine = self.engine_for(&a.project)?;
+        let mut hits = self
+            .mcp(&engine)
+            .search(&a.query, &types, limit)
+            .map_err(map_err)?;
+        hits.iter_mut().for_each(debracket);
         ok_json(&hits)
     }
 
@@ -149,7 +192,8 @@ impl Engram {
         &self,
         Parameters(a): Parameters<GetNodeArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let engine = self.engine();
+        let engine = self.engine_for(&a.project)?;
+        let engine = self.mcp(&engine);
         let Some(node) = engine.get_node(&a.id).map_err(map_err)? else {
             return Err(ErrorData::invalid_params(
                 format!("node not found: {}", a.id),
@@ -181,8 +225,9 @@ impl Engram {
         Parameters(a): Parameters<TraverseArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let edge_types = edge_types(&a.edge_types)?;
+        let engine = self.engine_for(&a.project)?;
         let (nodes, edges) = self
-            .engine()
+            .mcp(&engine)
             .traverse(&a.from, &edge_types, a.depth.unwrap_or(2))
             .map_err(map_err)?;
         ok_json(&json!({ "nodes": nodes, "edges": edges }))
@@ -207,7 +252,9 @@ impl Engram {
         ok_json(&payload)
     }
 
-    /// The add_note core, shared with the batch form.
+    /// The add_note core, shared with the batch form. Each note resolves its
+    /// own `project` — a write addressed to `all` is refused by the hub with
+    /// the home-graph pointer (PLAN §7C: fan-out writes are replication).
     fn create_note(&self, a: AddNoteArgs) -> Result<serde_json::Value, ErrorData> {
         let node_type = NodeType::parse(&a.node_type).map_err(map_err)?;
         let durability = match a.durability {
@@ -218,8 +265,9 @@ impl Engram {
             NodeType::Problem | NodeType::Intent => Some(NodeStatus::Open),
             _ => None,
         };
+        let engine = self.engine_for(&a.project)?;
         let outcome = self
-            .engine()
+            .mcp(&engine)
             .add_node_checked(NewNode {
                 node_type,
                 title: a.title,
@@ -321,20 +369,26 @@ impl Engram {
         &self,
         Parameters(a): Parameters<BriefArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let text = self
-            .engine()
-            .brief(
-                a.max_chars
-                    .unwrap_or(engram_core::policy::DEFAULT_BRIEF_CHARS),
-            )
-            .map_err(map_err)?;
+        let max_chars = a
+            .max_chars
+            .unwrap_or(engram_core::policy::DEFAULT_BRIEF_CHARS);
+        // Unscoped = the current project plus the home-graph section; a
+        // scoped project (or `home`) briefs that graph alone.
+        let text = match &a.project {
+            None => self.hub.brief(max_chars).map_err(map_err)?,
+            Some(_) => {
+                let engine = self.engine_for(&a.project)?;
+                self.mcp(&engine).brief(max_chars).map_err(map_err)?
+            }
+        };
         Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
     }
 
     #[tool(description = "Delete one edge by id — for repairing a mislink. \
         Nodes are never deleted this way (hard node delete is user-only).")]
     async fn unlink(&self, Parameters(a): Parameters<IdArg>) -> Result<CallToolResult, ErrorData> {
-        let removed = self.engine().delete_edge(&a.id).map_err(map_err)?;
+        let engine = self.engine_for(&a.project)?;
+        let removed = self.mcp(&engine).delete_edge(&a.id).map_err(map_err)?;
         if !removed {
             return Err(ErrorData::invalid_params(
                 format!("edge not found: {}", a.id),
@@ -365,7 +419,11 @@ impl Engram {
             confidence: a.confidence,
             strength: None,
         };
-        let edge = self.engine().update_edge(&a.id, patch).map_err(map_err)?;
+        let engine = self.engine_for(&a.project)?;
+        let edge = self
+            .mcp(&engine)
+            .update_edge(&a.id, patch)
+            .map_err(map_err)?;
         ok_json(&json!({ "ok": true, "id": edge.id }))
     }
 
@@ -373,8 +431,9 @@ impl Engram {
         (about, because, answers, builds-on, replaces, conflicts-with, needs).")]
     async fn link(&self, Parameters(a): Parameters<LinkArgs>) -> Result<CallToolResult, ErrorData> {
         let edge_type = EdgeType::parse(&a.edge_type).map_err(map_err)?;
+        let engine = self.engine_for(&a.project)?;
         let edge = self
-            .engine()
+            .mcp(&engine)
             .add_edge(NewEdge {
                 edge_type,
                 from_id: a.from,
@@ -402,9 +461,17 @@ impl Engram {
         &self,
         Parameters(a): Parameters<CheckClaimArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        let limit = a.limit.unwrap_or(8);
+        if a.project.as_deref() == Some(registry::ALL_PROJECTS) {
+            let (report, skipped) = self.hub.check_claim_all(&a.claim, limit).map_err(map_err)?;
+            let mut out = json!(report);
+            out["skipped"] = json!(skipped);
+            return ok_json(&out);
+        }
+        let engine = self.engine_for(&a.project)?;
         let report = self
-            .engine()
-            .check_claim(&a.claim, a.limit.unwrap_or(8))
+            .mcp(&engine)
+            .check_claim(&a.claim, limit)
             .map_err(map_err)?;
         ok_json(&report)
     }
@@ -415,8 +482,12 @@ impl Engram {
         nli_score triage hint from the local model — a suggestion, not a \
         verdict). Judge each with resolve_suspect."
     )]
-    async fn list_suspects(&self) -> Result<CallToolResult, ErrorData> {
-        let suspects = self.engine().suspects().map_err(map_err)?;
+    async fn list_suspects(
+        &self,
+        Parameters(a): Parameters<ProjectArg>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let engine = self.engine_for(&a.project)?;
+        let suspects = self.mcp(&engine).suspects().map_err(map_err)?;
         ok_json(&json!({ "suspects": suspects }))
     }
 
@@ -430,8 +501,9 @@ impl Engram {
         Parameters(a): Parameters<ResolveSuspectArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let verdict = SuspectVerdict::parse(&a.verdict).map_err(map_err)?;
+        let engine = self.engine_for(&a.project)?;
         let edge = self
-            .engine()
+            .mcp(&engine)
             .resolve_suspect(&a.id, verdict, Source::Claude)
             .map_err(map_err)?;
         ok_json(&json!({ "ok": true, "edge": edge }))
@@ -446,7 +518,8 @@ impl Engram {
         &self,
         Parameters(a): Parameters<ApproveArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let node = self.engine().approve(&a.id).map_err(map_err)?;
+        let engine = self.engine_for(&a.project)?;
+        let node = self.mcp(&engine).approve(&a.id).map_err(map_err)?;
         ok_json(&json!({ "ok": true, "id": node.id, "trust": node.trust }))
     }
 
@@ -491,13 +564,14 @@ impl Engram {
             code_refs: a.code_refs,
             tags: a.tags,
         };
+        let engine = self.engine_for(&a.project)?;
         let engram_core::CheckedUpdate {
             node,
             warnings,
             suspects,
             missing_refs,
         } = self
-            .engine()
+            .mcp(&engine)
             .update_node_checked(&a.id, patch)
             .map_err(map_err)?;
         let mut out = json!({ "ok": true, "id": node.id });
@@ -570,7 +644,8 @@ impl Engram {
             .tag
             .map(|t| engram_core::normalize_tags(&[t]))
             .and_then(|mut v| v.pop());
-        let (mut nodes, _) = self.engine().graph().map_err(map_err)?;
+        let engine = self.engine_for(&a.project)?;
+        let (mut nodes, _) = self.mcp(&engine).graph().map_err(map_err)?;
         nodes.retain(|n| {
             (a.include_archived.unwrap_or(false) || n.valid_until.is_none())
                 && (types.is_empty() || types.contains(&n.node_type))
@@ -593,8 +668,9 @@ impl Engram {
         Parameters(a): Parameters<ListOpenArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let types = node_types(&a.types)?;
+        let engine = self.engine_for(&a.project)?;
         let nodes = self
-            .engine()
+            .mcp(&engine)
             .worklist(&types, a.include_conflicts.unwrap_or(true))
             .map_err(map_err)?;
         ok_json(&nodes)
@@ -610,7 +686,8 @@ impl Engram {
         &self,
         Parameters(a): Parameters<IdArg>,
     ) -> Result<CallToolResult, ErrorData> {
-        let chain = self.engine().timeline(&a.id).map_err(map_err)?;
+        let engine = self.engine_for(&a.project)?;
+        let chain = self.mcp(&engine).timeline(&a.id).map_err(map_err)?;
         ok_json(&json!({ "timeline": chain }))
     }
 
@@ -618,10 +695,20 @@ impl Engram {
         the project — the code moved and the memory didn't (drifted). Review \
         each: fix the refs via update_node, and check whether the knowledge \
         itself is still true (supersede or conflicts-with it if not).")]
-    async fn list_drift(&self) -> Result<CallToolResult, ErrorData> {
-        let root =
-            std::env::current_dir().map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        let drifted = self.engine().scan_code_refs(&root).map_err(map_err)?;
+    async fn list_drift(
+        &self,
+        Parameters(a): Parameters<ProjectArg>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let engine = self.engine_for(&a.project)?;
+        let engine = self.mcp(&engine);
+        // A scoped project's refs resolve against *its* repo root; the cwd is
+        // only the launch project's fallback.
+        let root = match engine.repo_root() {
+            Some(r) => r.to_path_buf(),
+            None => std::env::current_dir()
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+        };
+        let drifted = engine.scan_code_refs(&root).map_err(map_err)?;
         ok_json(&json!({ "drifted": drifted }))
     }
 
@@ -634,8 +721,9 @@ impl Engram {
         &self,
         Parameters(a): Parameters<AuditArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        let engine = self.engine_for(&a.project)?;
         let page = self
-            .engine()
+            .mcp(&engine)
             .audit_log(
                 a.before,
                 a.entity_id.as_deref(),
@@ -643,6 +731,17 @@ impl Engram {
             )
             .map_err(map_err)?;
         ok_json(&page)
+    }
+
+    #[tool(description = "Every project this memory hub can reach: the current \
+        project, the user-level home graph, and the machine registry \
+        (~/.engram/registry.json — populated by every engram-alpha serve/mcp \
+        run). Use the names here as the `project` argument other tools accept: \
+        omit = current, a name = that project (reads AND writes), 'home' = \
+        the shared user-level graph, 'all' = fan a search/check_claim out \
+        across everything (reads only).")]
+    async fn list_projects(&self) -> Result<CallToolResult, ErrorData> {
+        ok_json(&json!({ "projects": self.hub.projects() }))
     }
 }
 
@@ -752,13 +851,107 @@ pub async fn serve_stdio_shared(engine: Arc<Mutex<Engine>>) -> anyhow::Result<()
     serve(Engram::with_shared(engine)).await
 }
 
+/// Serve over stdio with the full multi-project hub (PLAN §7C) — the hub the
+/// daemon's HTTP server shares, or a standalone one for `engram-alpha mcp`.
+pub async fn serve_stdio_hub(hub: Arc<Hub>) -> anyhow::Result<()> {
+    serve(Engram::with_hub(hub)).await
+}
+
 async fn serve(server: Engram) -> anyhow::Result<()> {
     let service = server.serve(rmcp::transport::io::stdio()).await?;
     service.waiting().await?;
     Ok(())
 }
 
+// ---- daemon-hosted MCP (PLAN §0 transport migration / §7C thin clients) ----
+
+/// The daemon's `/mcp` endpoint: MCP over streamable HTTP as a tower service
+/// for the daemon router. Stateful — each connected client becomes one
+/// session with its own [`Engram`] instance over the shared hub, so
+/// per-session audit attribution works exactly as one stdio process did.
+pub fn streamable_http_service(
+    hub: Arc<Hub>,
+) -> rmcp::transport::StreamableHttpService<
+    Engram,
+    rmcp::transport::streamable_http_server::session::local::LocalSessionManager,
+> {
+    rmcp::transport::StreamableHttpService::new(
+        move || Ok(Engram::with_hub(hub.clone())),
+        Arc::new(Default::default()),
+        Default::default(),
+    )
+}
+
+/// The stdio side of the thin client: a verbatim MCP passthrough from a stdio
+/// client (Claude Code and friends launch us this way) to the daemon's `/mcp`
+/// endpoint. Exists because redb allows one process per store — the daemon
+/// holds the file; everything else, including this bridge, talks HTTP.
+struct Passthrough {
+    upstream: rmcp::service::Peer<rmcp::RoleClient>,
+    info: rmcp::model::ServerInfo,
+}
+
+fn proxy_err(e: rmcp::ServiceError) -> ErrorData {
+    match e {
+        rmcp::ServiceError::McpError(data) => data,
+        other => ErrorData::internal_error(format!("daemon bridge: {other}"), None),
+    }
+}
+
+impl rmcp::Service<rmcp::RoleServer> for Passthrough {
+    async fn handle_request(
+        &self,
+        request: rmcp::model::ClientRequest,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ServerResult, ErrorData> {
+        self.upstream.send_request(request).await.map_err(proxy_err)
+    }
+
+    async fn handle_notification(
+        &self,
+        notification: rmcp::model::ClientNotification,
+        _context: rmcp::service::NotificationContext<rmcp::RoleServer>,
+    ) -> Result<(), ErrorData> {
+        self.upstream
+            .send_notification(notification)
+            .await
+            .map_err(proxy_err)
+    }
+
+    fn get_info(&self) -> rmcp::model::ServerInfo {
+        // Mirror what the daemon negotiated, so the stdio client sees the
+        // real server — same name, version, instructions, capabilities.
+        self.info.clone()
+    }
+}
+
+/// Serve stdio by bridging every message to the daemon's MCP endpoint
+/// (`http://127.0.0.1:<port>/mcp`) until the stdio client disconnects.
+pub async fn serve_stdio_proxy(url: &str) -> anyhow::Result<()> {
+    let transport = rmcp::transport::StreamableHttpClientTransport::from_uri(url.to_string());
+    let client = ().serve(transport).await?;
+    let info = client
+        .peer()
+        .peer_info()
+        .map(|i| (*i).clone())
+        .ok_or_else(|| anyhow::anyhow!("daemon MCP handshake returned no server info"))?;
+    let proxy = Passthrough {
+        upstream: client.peer().clone(),
+        info,
+    };
+    let service = proxy.serve(rmcp::transport::io::stdio()).await?;
+    service.waiting().await?;
+    let _ = client.cancel().await;
+    Ok(())
+}
+
 // ---- argument schemas ---------------------------------------------------
+//
+// Every scoped tool takes the same optional `project` selector (PLAN §7C):
+// omitted = the current project; a registered name/id = that project (reads
+// AND writes — capturing into a sibling repo's graph is deliberate); "home" =
+// the user-level home graph; "all" = every project, reads only (search /
+// check_claim). `list_projects` names what exists.
 
 #[derive(Deserialize, JsonSchema)]
 struct SearchArgs {
@@ -767,11 +960,25 @@ struct SearchArgs {
     types: Vec<String>,
     #[serde(default)]
     limit: Option<usize>,
+    /// Omit = current project; name/id = that project; "home"; "all" =
+    /// every project + home with provenance (reads only).
+    #[serde(default)]
+    project: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 struct IdArg {
     id: String,
+    /// Omit = current project; name/id = that project; "home".
+    #[serde(default)]
+    project: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct ProjectArg {
+    /// Omit = current project; name/id = that project; "home".
+    #[serde(default)]
+    project: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -786,6 +993,9 @@ struct AuditArgs {
     /// Restrict to one node/edge id's history.
     #[serde(default)]
     entity_id: Option<String>,
+    /// Omit = current project; name/id = that project; "home".
+    #[serde(default)]
+    project: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -797,6 +1007,9 @@ struct GetNodeArgs {
     /// Levels of child hierarchy to include (nodes pointing at this one), 0-3.
     #[serde(default)]
     children: Option<usize>,
+    /// Omit = current project; name/id = that project; "home".
+    #[serde(default)]
+    project: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -806,6 +1019,9 @@ struct TraverseArgs {
     edge_types: Vec<String>,
     #[serde(default)]
     depth: Option<usize>,
+    /// Omit = current project; name/id = that project; "home".
+    #[serde(default)]
+    project: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -826,6 +1042,11 @@ struct AddNoteArgs {
     /// implicitly.
     #[serde(default)]
     tags: Vec<String>,
+    /// Omit = current project; a name/id writes into THAT project's graph
+    /// (deliberate cross-project capture); "home" = the user-level graph.
+    /// "all" is refused — a fanned-out write is replication.
+    #[serde(default)]
+    project: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -838,6 +1059,10 @@ struct LinkArgs {
     note: Option<String>,
     #[serde(default)]
     confidence: Option<f64>,
+    /// Omit = current project; name/id = that project (both endpoints must
+    /// live there — edges never cross graphs); "home".
+    #[serde(default)]
+    project: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -859,6 +1084,9 @@ struct UpdateArgs {
     /// Replaces the node's tag list when set (kebab-cased on write).
     #[serde(default)]
     tags: Option<Vec<String>>,
+    /// Omit = current project; name/id = that project; "home".
+    #[serde(default)]
+    project: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -896,11 +1124,17 @@ struct ListNodesArgs {
     /// Skip this many (after filtering, newest first).
     #[serde(default)]
     offset: Option<usize>,
+    /// Omit = current project; name/id = that project; "home".
+    #[serde(default)]
+    project: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 struct ApproveArgs {
     id: String,
+    /// Omit = current project; name/id = that project; "home".
+    #[serde(default)]
+    project: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -910,6 +1144,10 @@ struct CheckClaimArgs {
     /// How many nearby nodes to judge (default 8, max 16).
     #[serde(default)]
     limit: Option<usize>,
+    /// Omit = current project; name/id = that project; "home"; "all" =
+    /// judge across every project + home with provenance.
+    #[serde(default)]
+    project: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -918,6 +1156,9 @@ struct ResolveSuspectArgs {
     id: String,
     /// "conflict" | "replaces" | "dismiss"
     verdict: String,
+    /// Omit = current project; name/id = that project; "home".
+    #[serde(default)]
+    project: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -926,6 +1167,9 @@ struct ListOpenArgs {
     types: Vec<String>,
     #[serde(default)]
     include_conflicts: Option<bool>,
+    /// Omit = current project; name/id = that project; "home".
+    #[serde(default)]
+    project: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -933,6 +1177,10 @@ struct BriefArgs {
     /// Character budget for the digest (default ~16000, about 4k tokens).
     #[serde(default)]
     max_chars: Option<usize>,
+    /// Omit = current project's brief plus the home-graph section; a name/id
+    /// (or "home") briefs that graph alone.
+    #[serde(default)]
+    project: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -944,9 +1192,21 @@ struct UpdateEdgeArgs {
     note: Option<String>,
     #[serde(default)]
     confidence: Option<f64>,
+    /// Omit = current project; name/id = that project; "home".
+    #[serde(default)]
+    project: Option<String>,
 }
 
 // ---- helpers ------------------------------------------------------------
+
+/// The store marks matches with private-use sentinels (the pane's highlight
+/// markers); assistants read plain brackets instead.
+fn debracket(hit: &mut engram_core::SearchHit) {
+    hit.snippet = hit
+        .snippet
+        .replace(engram_core::SNIPPET_OPEN, "[")
+        .replace(engram_core::SNIPPET_CLOSE, "]");
+}
 
 fn ok_json<T: Serialize>(v: &T) -> Result<CallToolResult, ErrorData> {
     let text = serde_json::to_string_pretty(v)
@@ -1010,7 +1270,7 @@ fn hierarchy(
 fn map_err(e: Error) -> ErrorData {
     match e {
         Error::NotFound(s) => ErrorData::invalid_params(format!("not found: {s}"), None),
-        e @ (Error::Parse { .. } | Error::Pinned(_)) => {
+        e @ (Error::Parse { .. } | Error::Pinned(_) | Error::Project(_)) => {
             ErrorData::invalid_params(e.to_string(), None)
         }
         e => ErrorData::internal_error(e.to_string(), None),
@@ -1063,9 +1323,9 @@ mod tests {
 
     #[tokio::test]
     async fn add_note_and_search_via_tools() {
-        use engram_core::{FakeEmbedder, Store};
+        use engram_core::{FakeEmbedder, SqliteStore};
         let engine = Engine::new(
-            Store::open_in_memory().unwrap(),
+            SqliteStore::open_in_memory().unwrap(),
             Box::new(FakeEmbedder::default()),
         );
         let server = Engram::new(engine);
@@ -1079,6 +1339,7 @@ mod tests {
                 session_id: None,
                 code_refs: vec![],
                 tags: vec![],
+                project: None,
             }))
             .await
             .unwrap();
@@ -1089,6 +1350,7 @@ mod tests {
                 query: "sqlite".into(),
                 types: vec![],
                 limit: None,
+                project: None,
             }))
             .await
             .unwrap();
@@ -1102,11 +1364,11 @@ mod tests {
 #[cfg(test)]
 mod tool_tests {
     use super::*;
-    use engram_core::{FakeEmbedder, Store};
+    use engram_core::{FakeEmbedder, SqliteStore};
 
     fn server() -> Engram {
         Engram::new(Engine::new(
-            Store::open_in_memory().unwrap(),
+            SqliteStore::open_in_memory().unwrap(),
             Box::new(FakeEmbedder::default()),
         ))
     }
@@ -1130,6 +1392,7 @@ mod tool_tests {
             session_id: None,
             code_refs: vec![],
             tags: vec![],
+            project: None,
         }
     }
 
@@ -1192,6 +1455,7 @@ mod tool_tests {
                 session_id: None,
                 code_refs: vec![],
                 tags: vec![],
+                project: None,
             }))
             .await
             .unwrap(),
@@ -1210,6 +1474,7 @@ mod tool_tests {
                 session_id: None,
                 code_refs: vec![],
                 tags: vec![],
+                project: None,
             }))
             .await
             .unwrap(),
@@ -1221,6 +1486,7 @@ mod tool_tests {
             edge_type: "because".into(),
             note: None,
             confidence: None,
+            project: None,
         }))
         .await
         .unwrap();
@@ -1230,6 +1496,7 @@ mod tool_tests {
             edge_type: "about".into(),
             note: None,
             confidence: None,
+            project: None,
         }))
         .await
         .unwrap();
@@ -1239,6 +1506,7 @@ mod tool_tests {
                 id: decision.clone(),
                 parents: Some(2),
                 children: Some(2),
+                project: None,
             }))
             .await
             .unwrap();
@@ -1263,7 +1531,10 @@ mod tool_tests {
             .await
             .unwrap();
         let res = s
-            .brief(Parameters(BriefArgs { max_chars: None }))
+            .brief(Parameters(BriefArgs {
+                max_chars: None,
+                project: None,
+            }))
             .await
             .unwrap();
         let text = text_of(&res);
@@ -1298,6 +1569,7 @@ mod tool_tests {
                 edge_type: "conflicts-with".into(),
                 note: None,
                 confidence: None,
+                project: None,
             }))
             .await
             .unwrap();
@@ -1309,6 +1581,7 @@ mod tool_tests {
                 status: Some("resolved".into()),
                 note: None,
                 confidence: None,
+                project: None,
             }))
             .await
             .unwrap();
@@ -1317,11 +1590,19 @@ mod tool_tests {
         let gone = s
             .unlink(Parameters(IdArg {
                 id: edge_id.clone(),
+                project: None,
             }))
             .await
             .unwrap();
         assert!(text_of(&gone).contains("\\\"ok\\\": true"));
-        assert!(s.unlink(Parameters(IdArg { id: edge_id })).await.is_err());
+        assert!(
+            s.unlink(Parameters(IdArg {
+                id: edge_id,
+                project: None,
+            }))
+            .await
+            .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1349,18 +1630,29 @@ mod tool_tests {
             edge_type: "replaces".into(),
             note: Some("cookies broke on mobile".into()),
             confidence: None,
+            project: None,
         }))
         .await
         .unwrap();
 
-        let t = text_of(&s.timeline(Parameters(IdArg { id: new })).await.unwrap());
+        let t = text_of(
+            &s.timeline(Parameters(IdArg {
+                id: new,
+                project: None,
+            }))
+            .await
+            .unwrap(),
+        );
         let (v1, v2) = (t.find("auth v1").unwrap(), t.find("auth v2").unwrap());
         assert!(v1 < v2, "oldest first: {t}");
         assert!(t.contains("cookies broke on mobile"));
         assert!(
-            s.timeline(Parameters(IdArg { id: "nope".into() }))
-                .await
-                .is_err()
+            s.timeline(Parameters(IdArg {
+                id: "nope".into(),
+                project: None,
+            }))
+            .await
+            .is_err()
         );
     }
 
@@ -1373,7 +1665,11 @@ mod tool_tests {
         }))
         .await
         .unwrap();
-        let t = text_of(&s.list_drift().await.unwrap());
+        let t = text_of(
+            &s.list_drift(Parameters(ProjectArg { project: None }))
+                .await
+                .unwrap(),
+        );
         assert!(t.contains("src/vanished.rs"), "got: {t}");
         assert!(
             !t.contains("Cargo.toml"),
@@ -1390,6 +1686,7 @@ mod tool_tests {
                 limit: None,
                 before: None,
                 entity_id: Some(id),
+                project: None,
             }))
             .await
             .unwrap(),
@@ -1437,6 +1734,7 @@ mod tool_tests {
                 pinned: None,
                 limit: None,
                 offset: None,
+                project: None,
             }))
             .await
             .unwrap();
@@ -1460,6 +1758,7 @@ mod tool_tests {
                 pinned: None,
                 limit: None,
                 offset: None,
+                project: None,
             }))
             .await
             .unwrap();
@@ -1485,6 +1784,7 @@ mod tool_tests {
             status: None,
             code_refs: None,
             tags: None,
+            project: None,
         };
         let res = s
             .update_nodes(Parameters(UpdateNodesArgs {
@@ -1510,6 +1810,7 @@ mod tool_tests {
                 id,
                 parents: None,
                 children: None,
+                project: None,
             }))
             .await
             .unwrap();
@@ -1527,6 +1828,7 @@ mod tool_tests {
                 query: "sentinel".into(),
                 types: vec![],
                 limit: None,
+                project: None,
             }))
             .await
             .unwrap();
@@ -1540,14 +1842,73 @@ mod tool_tests {
 }
 
 #[cfg(test)]
+mod project_tests {
+    use super::*;
+    use engram_core::{FakeEmbedder, SqliteStore};
+
+    fn server() -> Engram {
+        Engram::new(Engine::new(
+            SqliteStore::open_in_memory().unwrap(),
+            Box::new(FakeEmbedder::default()),
+        ))
+    }
+
+    #[tokio::test]
+    async fn all_writes_are_refused_with_the_home_pointer() {
+        let s = server();
+        let err = s
+            .add_note(Parameters(AddNoteArgs {
+                node_type: "Decision".into(),
+                title: "fan out".into(),
+                body: None,
+                durability: None,
+                session_id: None,
+                code_refs: vec![],
+                tags: vec![],
+                project: Some("all".into()),
+            }))
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("home"), "got: {}", err.message);
+    }
+
+    #[tokio::test]
+    async fn unknown_project_selector_is_invalid_params() {
+        let s = server();
+        let err = s
+            .search(Parameters(SearchArgs {
+                query: "anything".into(),
+                types: vec![],
+                limit: None,
+                project: Some("definitely-not-registered-xyz".into()),
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("definitely-not-registered-xyz"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn list_projects_reports_the_current_project() {
+        let s = server();
+        let t = format!("{:?}", s.list_projects().await.unwrap().content);
+        assert!(t.contains("projects"), "got: {t}");
+        assert!(t.contains("current"), "got: {t}");
+    }
+}
+
+#[cfg(test)]
 mod suspect_tests {
     use super::*;
-    use engram_core::{FakeEmbedder, Store};
+    use engram_core::{FakeEmbedder, SqliteStore};
 
     #[tokio::test]
     async fn brief_lists_suspects_and_resolve_judges_them() {
         let s = Engram::new(Engine::new(
-            Store::open_in_memory().unwrap(),
+            SqliteStore::open_in_memory().unwrap(),
             Box::new(FakeEmbedder::default()),
         ));
         let mk = |t: &str, ty: &str| AddNoteArgs {
@@ -1558,6 +1919,7 @@ mod suspect_tests {
             session_id: None,
             code_refs: vec![],
             tags: vec![],
+            project: None,
         };
         s.add_note(Parameters(mk("cache invalidation via ttl", "Decision")))
             .await
@@ -1567,10 +1929,19 @@ mod suspect_tests {
             .await
             .unwrap();
 
-        let listed = format!("{:?}", s.list_suspects().await.unwrap().content);
+        let listed = format!(
+            "{:?}",
+            s.list_suspects(Parameters(ProjectArg { project: None }))
+                .await
+                .unwrap()
+                .content
+        );
         assert!(listed.contains("suspects"), "got: {listed}");
         let brief = s
-            .brief(Parameters(BriefArgs { max_chars: None }))
+            .brief(Parameters(BriefArgs {
+                max_chars: None,
+                project: None,
+            }))
             .await
             .unwrap();
         let brief_text = format!("{:?}", brief.content);
@@ -1584,6 +1955,7 @@ mod suspect_tests {
             .resolve_suspect(Parameters(ResolveSuspectArgs {
                 id: sid,
                 verdict: "conflict".into(),
+                project: None,
             }))
             .await
             .unwrap();
@@ -1594,7 +1966,7 @@ mod suspect_tests {
     #[tokio::test]
     async fn write_response_surfaces_freshly_queued_suspects() {
         let s = Engram::new(Engine::new(
-            Store::open_in_memory().unwrap(),
+            SqliteStore::open_in_memory().unwrap(),
             Box::new(FakeEmbedder::default()),
         ));
         let mk = |t: &str, ty: &str| AddNoteArgs {
@@ -1605,6 +1977,7 @@ mod suspect_tests {
             session_id: None,
             code_refs: vec![],
             tags: vec![],
+            project: None,
         };
         let first = s
             .add_note(Parameters(mk(
@@ -1630,6 +2003,103 @@ mod suspect_tests {
         assert!(
             text.contains("action_required") && text.contains("resolve_suspect"),
             "the response tells the writer what to do: {text}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    use engram_core::{FakeEmbedder, SqliteStore};
+    use rmcp::model::CallToolRequestParams;
+
+    /// The §7C thin-client chain, end to end and in-process: a daemon-style
+    /// axum server hosting /mcp, a direct streamable-HTTP client against it,
+    /// and a full stdio-shaped bridge (Passthrough over an in-memory duplex)
+    /// relaying a second client through it.
+    #[tokio::test]
+    async fn streamable_http_daemon_and_stdio_bridge_end_to_end() {
+        let engine = Engine::new(
+            SqliteStore::open_in_memory().unwrap(),
+            Box::new(FakeEmbedder::default()),
+        );
+        let hub = Arc::new(Hub::single(engine));
+        let app = axum::Router::new().route_service("/mcp", streamable_http_service(hub.clone()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let url = format!("http://{addr}/mcp");
+
+        // Direct client: handshake + a real tool call against the endpoint.
+        let direct = ()
+            .serve(rmcp::transport::StreamableHttpClientTransport::from_uri(
+                url.clone(),
+            ))
+            .await
+            .unwrap();
+        let tools = direct.peer().list_all_tools().await.unwrap();
+        assert!(tools.iter().any(|t| t.name == "brief"));
+        assert!(tools.iter().any(|t| t.name == "add_note"));
+        let noted = direct
+            .peer()
+            .call_tool(
+                CallToolRequestParams::new("add_note").with_arguments(
+                    serde_json::json!({
+                        "type": "Decision",
+                        "title": "served over the daemon transport",
+                        "durability": "stable"
+                    })
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_ne!(noted.is_error, Some(true));
+
+        // The bridge: stdio-shaped duplex → Passthrough → the same endpoint.
+        let upstream = ()
+            .serve(rmcp::transport::StreamableHttpClientTransport::from_uri(
+                url,
+            ))
+            .await
+            .unwrap();
+        let info = upstream.peer().peer_info().map(|i| (*i).clone()).unwrap();
+        let proxy = Passthrough {
+            upstream: upstream.peer().clone(),
+            info,
+        };
+        let (bridge_io, client_io) = tokio::io::duplex(1 << 16);
+        tokio::spawn(async move {
+            let server = proxy.serve(bridge_io).await.unwrap();
+            let _ = server.waiting().await;
+        });
+        let bridged = ().serve(client_io).await.unwrap();
+        assert_eq!(
+            bridged.peer().peer_info().unwrap().server_info.name,
+            "engram",
+            "the bridge mirrors the daemon's identity"
+        );
+        let hits = bridged
+            .peer()
+            .call_tool(
+                CallToolRequestParams::new("search").with_arguments(
+                    serde_json::json!({ "query": "daemon transport" })
+                        .as_object()
+                        .cloned()
+                        .unwrap(),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_ne!(hits.is_error, Some(true));
+        let text = format!("{:?}", hits.content);
+        assert!(
+            text.contains("served over the daemon transport"),
+            "a write through the direct client is visible through the bridge: {text}"
         );
     }
 }

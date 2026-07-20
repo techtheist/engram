@@ -59,6 +59,14 @@ pub trait Nli: Send + Sync {
     }
 }
 
+/// Shared NLI runtime across stores (PLAN §7C hub) — same `Arc` sharing as
+/// the embedder and reranker.
+impl<T: Nli + ?Sized> Nli for std::sync::Arc<T> {
+    fn judge(&self, pairs: &[(String, String)]) -> Result<Vec<NliJudgment>> {
+        (**self).judge(pairs)
+    }
+}
+
 /// Both directions of one pair, for callers that need entailment asymmetry
 /// (duplicate vs supersession) on top of symmetric contradiction.
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -127,7 +135,7 @@ impl Nli for FakeNli {
 
 #[cfg(feature = "fastembed")]
 mod fast {
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::sync::Mutex;
 
     use ndarray::Array;
@@ -136,13 +144,6 @@ mod fast {
     use tokenizers::Tokenizer;
 
     use super::*;
-
-    /// The three files FastNli loads. `model.onnx` is Xenova's
-    /// `model_quantized.onnx` saved under the plain name.
-    pub const NLI_MODEL_FILES: [&str; 3] = ["model.onnx", "tokenizer.json", "config.json"];
-    /// Where the CLI downloads the model to and FastNli loads it from
-    /// (overridable via `ENGRAM_NLI_DIR`).
-    pub const NLI_MODEL_NAME: &str = "nli-deberta-v3-small";
 
     /// Local ONNX NLI over the same `ort` runtime fastembed links. Loads only
     /// from a local directory — downloading is the CLI's job (curl, like
@@ -278,24 +279,29 @@ mod fast {
         }
     }
 
-    /// `ENGRAM_NLI_DIR`, else `~/.cache/engram/nli-deberta-v3-small`.
-    pub fn nli_model_dir() -> Option<PathBuf> {
-        if let Ok(dir) = std::env::var("ENGRAM_NLI_DIR") {
-            return Some(PathBuf::from(dir));
-        }
-        std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .ok()
-            .map(|h| PathBuf::from(h).join(".cache/engram").join(NLI_MODEL_NAME))
-    }
-
     fn nli_err(e: impl std::fmt::Display) -> crate::Error {
         crate::Error::Embedding(format!("nli: {e}"))
     }
 }
 
 #[cfg(feature = "fastembed")]
-pub use fast::{FastNli, NLI_MODEL_FILES, NLI_MODEL_NAME, nli_model_dir};
+pub use fast::FastNli;
+
+/// The three files FastNli loads. `model.onnx` is Xenova's
+/// `model_quantized.onnx` saved under the plain name.
+pub const NLI_MODEL_FILES: [&str; 3] = ["model.onnx", "tokenizer.json", "config.json"];
+/// Where the CLI downloads the model to and FastNli loads it from
+/// (overridable via `ENGRAM_NLI_DIR`).
+pub const NLI_MODEL_NAME: &str = "nli-deberta-v3-small";
+
+/// `ENGRAM_NLI_DIR`, else `~/.cache/engram/nli-deberta-v3-small`. Pure path
+/// logic, outside the `fastembed` gate so the HTTP crate builds alone.
+pub fn nli_model_dir() -> Option<std::path::PathBuf> {
+    if let Ok(dir) = std::env::var("ENGRAM_NLI_DIR") {
+        return Some(std::path::PathBuf::from(dir));
+    }
+    crate::rag::home().map(|h| h.join(".cache/engram").join(NLI_MODEL_NAME))
+}
 
 #[cfg(test)]
 mod tests {

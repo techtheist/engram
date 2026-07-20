@@ -156,10 +156,12 @@ export interface SystemInfo {
     store: {
         db: string | null
         size_bytes: number | null
+        /** Which storage driver backs this graph: 'sqlite' | 'tepindb'. */
+        backend: string
         nodes: number
         edges: number
         embedded: number
-        fts: number
+        /** SQLite's journal mode; empty on backends without one (redb). */
         journal_mode: string
         integrity_ok: boolean
         embed_composition: number
@@ -172,7 +174,42 @@ export interface SystemInfo {
     nli: boolean
     /** The local cortex, one row per model with its on-disk home. */
     models: { name: string; role: string; path: string; active: boolean }[]
+    /** Whether this daemon exposes /models (model selection, PLAN §7A). */
+    model_selection: boolean
     wiring: { agent: string; wired: boolean; prerename: boolean }[]
+}
+
+/** One provisionable cortex model (PLAN §7A model selection). */
+export interface ModelSpec {
+    name: string
+    base_url: string
+    model_file: string
+    dim?: number | null
+    pooling?: string | null
+}
+
+export interface ModelRoleInfo {
+    role: 'embedding' | 'reranker' | 'nli'
+    /** The model currently in force for this role. */
+    active: string
+    default: string
+    presets: ModelSpec[]
+    /** A recorded selection that is not one of the presets. */
+    custom?: ModelSpec | null
+}
+
+/** GET /models — the machine-level selection, or available:false. */
+export interface ModelSelection {
+    available: boolean
+    fake_embeddings?: boolean
+    roles?: ModelRoleInfo[]
+}
+
+/** POST /models result: what got applied and what it cost. */
+export interface ModelApplyResult {
+    role: string
+    applied: string
+    reembedded_nodes: number
 }
 
 /**
@@ -261,4 +298,59 @@ export interface AnsweredHint {
     problem: SuspectEndpoint
     candidate: SuspectEndpoint
     entailment: number
+}
+
+/** One row of the hub's project listing (PLAN §7C): current + home + registry. */
+export interface ProjectInfo {
+    id: string
+    name: string
+    root?: string
+    db: string
+    /** The project this daemon was launched in. */
+    current: boolean
+    /** The reserved user-level home graph. */
+    home: boolean
+    /** An engine for this project is open in the daemon. */
+    open: boolean
+    last_seen?: number
+}
+
+/** A registry entry as written by POST /projects. */
+export interface ProjectEntry {
+    id: string
+    name: string
+    root: string
+    db: string
+    last_seen: number
+}
+
+export interface PromotionMatch {
+    project: string
+    id: string
+    title: string
+    similarity: number
+}
+
+/** A Principle/Caution recurring across project graphs — a nomination to
+ * promote into the home graph. The user approves; nothing self-applies. */
+export interface PromotionCandidate {
+    node: GraphNode
+    matches: PromotionMatch[]
+}
+
+/** One row of the daemon-backed folder picker (GET /fs/dirs). */
+export interface FsDir {
+    name: string
+    path: string
+    /** Already carries an .engram graph. */
+    engram: boolean
+    /** Is a git repository. */
+    git: boolean
+}
+
+export interface FsListing {
+    path: string
+    parent: string | null
+    home: string | null
+    dirs: FsDir[]
 }

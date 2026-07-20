@@ -91,7 +91,7 @@ impl Default for AuditOrigin {
 }
 
 pub struct Engine {
-    store: Store,
+    store: Box<dyn Store>,
     embedder: Box<dyn Embedder>,
     /// The precision layer (PLAN §7A): optional cross-encoder re-scoring of
     /// search candidates. Absent in tests, under `--fake-embeddings`, and
@@ -112,7 +112,12 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn new(store: Store, embedder: Box<dyn Embedder>) -> Self {
+    pub fn new(store: impl Store + 'static, embedder: Box<dyn Embedder>) -> Self {
+        Self::with_store(Box::new(store), embedder)
+    }
+
+    /// Backend-agnostic form for callers that went through [`crate::open_store`].
+    pub fn with_store(store: Box<dyn Store>, embedder: Box<dyn Embedder>) -> Self {
         Self {
             store,
             embedder,
@@ -160,10 +165,31 @@ impl Engine {
         self.embedder.is_fake()
     }
 
+    /// The active embedding model's identity (PLAN §7A model selection).
+    pub fn embed_model_id(&self) -> EmbedModelId {
+        EmbedModelId {
+            name: self.embedder.name().to_string(),
+            dim: self.embedder.dim(),
+        }
+    }
+
+    /// Swap the embedding model on a live engine (model selection). The
+    /// caller must follow with [`Engine::ensure_embed_model`] — vectors from
+    /// two models must never mix.
+    pub fn set_embedder(&mut self, embedder: Box<dyn Embedder>) {
+        self.embedder = embedder;
+    }
+
     /// Where write-time code_ref checks resolve paths (set by serve/mcp from
     /// the DB location). Unset = ref checks are skipped, never guessed.
     pub fn set_repo_root(&mut self, root: std::path::PathBuf) {
         self.repo_root = Some(root);
+    }
+
+    /// The repo this engine's store belongs to, when known — drift scans on a
+    /// scoped project must use *its* root, never the daemon's cwd.
+    pub fn repo_root(&self) -> Option<&std::path::Path> {
+        self.repo_root.as_deref()
     }
 
     /// Path-shaped code_refs that don't resolve against the repo root right
@@ -191,8 +217,8 @@ impl Engine {
         }
     }
 
-    pub fn store(&self) -> &Store {
-        &self.store
+    pub fn store(&self) -> &dyn Store {
+        self.store.as_ref()
     }
 
     // ---- audit journal (PLAN §10): every mutation appends one row with
@@ -1107,6 +1133,7 @@ impl Engine {
                 entailment: j.entailment,
                 neutral: j.neutral,
                 contradiction: j.contradiction,
+                project: None,
             };
             match j.label() {
                 "entailment" => report.supports.push(verdict),
@@ -1532,6 +1559,42 @@ impl Engine {
         self.store.upsert_embedding(&node.id, &vec)
     }
 
+    /// Bring stored vectors in line with the ACTIVE embedding model (PLAN §7A
+    /// model selection), returning how many nodes were re-embedded. A store
+    /// records the identity its vectors were computed with; when the active
+    /// model differs — different name or width — vector storage is rebuilt
+    /// for the new width and the whole graph re-embeds. Skipped entirely
+    /// under a fake embedder (fake vectors must never replace real ones), so
+    /// a `--fake-embeddings` open can never mass-destroy a graph's vectors.
+    pub fn ensure_embed_model(&self) -> Result<usize> {
+        if self.embedder.is_fake() {
+            return Ok(0);
+        }
+        let active = self.embed_model_id();
+        let stored = self.store.embed_model()?;
+        // Stores that predate model selection carry no identity: they are the
+        // default model by construction — stamp, don't re-embed.
+        let effective = stored.clone().unwrap_or(EmbedModelId {
+            name: crate::rag::DEFAULT_EMBED_MODEL.to_string(),
+            dim: crate::rag::EMBED_DIM,
+        });
+        if effective == active {
+            if stored.is_none() {
+                self.store.set_embed_model(&active)?;
+            }
+            return Ok(0);
+        }
+        self.store.reset_vectors(active.dim)?;
+        let nodes = self.store.all_nodes()?;
+        for n in &nodes {
+            self.embed_node(n)?;
+        }
+        self.store.set_embed_model(&active)?;
+        // A full re-embed is by definition the current composition too.
+        self.store.set_embed_version(EMBED_COMPOSITION)?;
+        Ok(nodes.len())
+    }
+
     /// Bring stored vectors up to the current [`EMBED_COMPOSITION`], returning
     /// how many nodes were re-embedded (0 = already current or skipped).
     /// Skipped with a fake embedder over a non-empty graph — fake vectors must
@@ -1652,7 +1715,7 @@ fn embed_text(title: &str, body: Option<&str>, tags: &[String], code_refs: &[Str
 /// graph: at 240 the budget died mid-Cautions; ~140 still carries the leading
 /// sentence and lets every section (and its overflow counts) surface —
 /// breadth over depth, since the full node is one `search` away.
-const EXCERPT_CHARS: usize = 140;
+pub(crate) const EXCERPT_CHARS: usize = 140;
 /// The Decisions section runs shorter excerpts: decision titles are already
 /// declarative sentences, so the body preview only needs to hint at the why.
 const DECISION_EXCERPT_CHARS: usize = 80;
@@ -1661,7 +1724,7 @@ const DECISION_EXCERPT_CHARS: usize = 80;
 /// `- Title [Type id status STALE] — excerpt`. Every record carries its id so
 /// the assistant can act on it directly (`get_node`, `traverse`,
 /// `update_node`) without a `search` round-trip.
-fn node_line(n: &Node, excerpt_max: usize) -> String {
+pub(crate) fn node_line(n: &Node, excerpt_max: usize) -> String {
     let mut line = format!("- {} [{} {}", n.title, n.node_type.as_str(), n.id);
     if let Some(status) = n.status {
         line.push(' ');

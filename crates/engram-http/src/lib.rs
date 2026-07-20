@@ -1,21 +1,32 @@
-//! Thin axum API over `engram_core::Engine`: CRUD + hybrid search + the
+//! Thin axum API over `engram_core::Hub`: CRUD + hybrid search + the
 //! whole-graph read the pane renders, plus a Server-Sent-Events stream that
 //! pushes every mutation so the pane updates live (PLAN §6B).
+//!
+//! Project scoping (PLAN §7C): every graph route also exists under
+//! `/projects/{id-or-name}/…` — a rewrite layer strips the prefix and stashes
+//! the selector, so one handler set serves both forms. The bare routes are
+//! the launch project (back-compat for existing panes and plugins). `home`
+//! addresses the user-level home graph; registry meta ops live at
+//! `/projects`.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{Path, Query, State};
+use axum::extract::{FromRequestParts, Path, Query, Request, State};
 use axum::http::StatusCode;
+use axum::http::request::Parts;
+use axum::middleware;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use engram_core::{
     AnsweredHint, AuditOrigin, AuditPage, AuditSweep, ChangeEvent, ClaimReport, Drift, Edge,
-    EdgePatch, EdgeType, Engine, Error, ExportGraph, ImportSummary, NewEdge, NewNode, Node,
-    NodePatch, NodeType, SearchHit, SuspectVerdict, SuspectView, TagStat, TimelineEntry,
+    EdgePatch, EdgeType, Engine, Error, ExportGraph, Hub, ImportSummary, NewEdge, NewNode, Node,
+    NodePatch, NodeType, ProjectInfo, SuspectVerdict, SuspectView, TagStat, TimelineEntry,
+    registry,
 };
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
@@ -25,57 +36,91 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 use tower_http::cors::CorsLayer;
 
-/// Shared server state: the engine (serialized behind a `Mutex`, since the
-/// SQLite connection is `!Sync`) and the live-update broadcast channel.
+type EventMap = Arc<Mutex<HashMap<String, broadcast::Sender<String>>>>;
+
+/// Shared server state: the hub (each engine serialized behind its own
+/// `Mutex`, since a SQLite connection is `!Sync`) and one live-update
+/// broadcast channel per project.
+/// The daemon-side hands that `/models` needs (PLAN §7A model selection):
+/// describing the current selection and applying a new one — downloading
+/// files, loading the model, swapping it into every open engine, re-embedding
+/// where the embedding identity changed. Implemented by the CLI (downloads
+/// are its job; this crate stays curl-free), absent in library embeddings.
+pub trait ModelAdmin: Send + Sync {
+    fn describe(&self) -> serde_json::Value;
+    /// `request`: `{"role": "embedding"|"reranker"|"nli", "preset": name}` or
+    /// `{"role": …, "custom": ModelSpec}`.
+    fn apply(&self, request: serde_json::Value) -> engram_core::Result<serde_json::Value>;
+}
+
 pub struct AppState {
-    engine: Arc<Mutex<Engine>>,
-    events: broadcast::Sender<String>,
-    /// The database this daemon serves, reported by `/health` so a client that
-    /// discovered a port can verify it belongs to *this* repo's daemon.
+    hub: Arc<Hub>,
+    events: EventMap,
+    /// The database this daemon was launched on, reported by `/health` so a
+    /// client that discovered a port can verify it belongs to *this* repo.
     db_path: Option<String>,
     /// Daemon start time, for `/system`'s uptime.
     started: std::time::Instant,
+    /// Model selection hands, when a daemon provides them.
+    model_admin: Option<Arc<dyn ModelAdmin>>,
 }
 
 impl AppState {
     pub fn new(engine: Engine) -> Self {
-        Self::shared(Arc::new(Mutex::new(engine)))
+        Self::from_hub(Arc::new(Hub::single(engine)), None)
     }
 
     /// Build state around a shared engine and install the change listener that
     /// turns every mutation — from this API *or* from Claude over MCP — into an
     /// SSE message.
     pub fn shared(engine: Arc<Mutex<Engine>>) -> Self {
-        Self::shared_with_db(engine, None)
+        Self::from_hub(Arc::new(Hub::single_shared(engine)), None)
     }
 
     pub fn shared_with_db(engine: Arc<Mutex<Engine>>, db_path: Option<String>) -> Self {
-        let (events, _) = broadcast::channel(256);
-        let tx = events.clone();
-        engine.lock().unwrap().set_listener(Box::new(move |ev| {
-            let _ = tx.send(encode_event(&ev));
+        Self::from_hub(Arc::new(Hub::single_shared(engine)), db_path)
+    }
+
+    /// The full multi-project form: every engine the hub opens (now or later)
+    /// gets a listener feeding that project's SSE channel.
+    pub fn from_hub(hub: Arc<Hub>, db_path: Option<String>) -> Self {
+        let events: EventMap = Arc::default();
+        let ev = events.clone();
+        hub.set_listener_factory(Box::new(move |project_id: &str| {
+            let tx = channel(&ev, project_id);
+            Box::new(move |change| {
+                let _ = tx.send(encode_event(&change));
+            })
         }));
         Self {
-            engine,
+            hub,
             events,
             db_path,
             started: std::time::Instant::now(),
+            model_admin: None,
         }
     }
 
-    /// Lock the engine and stamp the pane as the writer. Handlers go through
-    /// this instead of locking directly: MCP may share the engine, so audit
-    /// attribution has to be re-stamped under the lock on every operation.
-    fn engine(&self) -> std::sync::MutexGuard<'_, Engine> {
-        let mut guard = self.engine.lock().unwrap();
+    /// The launch project's engine, pane-stamped (see [`pane`]).
+    fn engine(&self) -> MutexGuard<'_, Engine> {
+        let mut guard = self.hub.current().engine.lock().unwrap();
         guard.set_audit_origin(AuditOrigin::pane());
         guard
     }
 
-    /// The repo root code_refs resolve against: derived from the served DB
-    /// path (`<root>/.engram/graph.db`), so a daemon launched from another
-    /// directory doesn't flag the whole graph as drifted. Cwd is only the
-    /// fallback for custom DB locations outside a `.engram` dir.
+    /// Resolve the request's project scope to an engine. `all` never lands
+    /// here — the two fan-out reads (search, check_claim) special-case it
+    /// before resolving; everywhere else the hub's refusal explains the rule.
+    fn engine_arc(&self, scope: &Scope) -> Result<Arc<Mutex<Engine>>, AppError> {
+        match &scope.0 {
+            None => Ok(self.hub.current().engine.clone()),
+            Some(sel) => Ok(self.hub.get(sel)?),
+        }
+    }
+
+    /// The repo root code_refs resolve against. Scoped requests use the
+    /// scoped engine's own root (set when its store was opened); the launch
+    /// project falls back to the served DB path, then cwd.
     fn repo_root(&self) -> std::path::PathBuf {
         self.db_path
             .as_deref()
@@ -90,6 +135,32 @@ impl AppState {
             .map(std::path::Path::to_path_buf)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()))
     }
+
+    fn scoped_root(&self, engine: &Arc<Mutex<Engine>>) -> std::path::PathBuf {
+        engine
+            .lock()
+            .unwrap()
+            .repo_root()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| self.repo_root())
+    }
+}
+
+/// Lock a scoped engine and stamp the pane as the writer. Front-ends sharing
+/// an engine re-stamp under the lock on every operation (MCP does the same).
+fn pane(engine: &Arc<Mutex<Engine>>) -> MutexGuard<'_, Engine> {
+    let mut guard = engine.lock().unwrap();
+    guard.set_audit_origin(AuditOrigin::pane());
+    guard
+}
+
+fn channel(events: &EventMap, project_id: &str) -> broadcast::Sender<String> {
+    events
+        .lock()
+        .unwrap()
+        .entry(project_id.to_string())
+        .or_insert_with(|| broadcast::channel(256).0)
+        .clone()
 }
 
 fn encode_event(ev: &ChangeEvent) -> String {
@@ -103,6 +174,51 @@ fn encode_event(ev: &ChangeEvent) -> String {
         ChangeEvent::SuspectsChanged => ("suspects_changed", json!({})),
     };
     json!({ "type": kind, "data": data }).to_string()
+}
+
+// ---- project scoping ----------------------------------------------------
+
+/// The selector a `/projects/{sel}/…` URL carried, stashed by the rewrite
+/// layer; absent on bare routes (= the launch project).
+#[derive(Clone)]
+struct ScopeSel(String);
+
+struct Scope(Option<String>);
+
+impl<S: Send + Sync> FromRequestParts<S> for Scope {
+    type Rejection = Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        Ok(Scope(
+            parts.extensions.get::<ScopeSel>().map(|s| s.0.clone()),
+        ))
+    }
+}
+
+/// Rewrite `/projects/{sel}/rest…` to `/rest…` + a [`ScopeSel`] extension,
+/// so the whole graph API exists once and serves every project. Two-segment
+/// paths (`/projects`, `/projects/{id}`) are registry meta ops and pass
+/// through untouched. Runs *before* routing: middleware attached with
+/// `Router::layer` runs after the route has matched, so this one wraps the
+/// whole router through an outer `fallback_service` instead.
+async fn project_scope_rewrite(mut req: Request) -> Request {
+    let path = req.uri().path();
+    if let Some(rest) = path.strip_prefix("/projects/")
+        && let Some((sel, tail)) = rest.split_once('/')
+        && !tail.is_empty()
+        && !sel.is_empty()
+    {
+        let sel = sel.to_string();
+        let new_path_q = match req.uri().query() {
+            Some(q) => format!("/{tail}?{q}"),
+            None => format!("/{tail}"),
+        };
+        if let Ok(new_uri) = new_path_q.parse() {
+            req.extensions_mut().insert(ScopeSel(sel));
+            *req.uri_mut() = new_uri;
+        }
+    }
+    req
 }
 
 /// Build the full router from an already-constructed engine.
@@ -122,10 +238,30 @@ pub fn router_shared_with_db(engine: Arc<Mutex<Engine>>, db_path: String) -> Rou
     router(Arc::new(AppState::shared_with_db(engine, Some(db_path))))
 }
 
-pub fn router(state: Arc<AppState>) -> Router {
+/// The multi-project daemon (PLAN §7C): one router over a hub.
+pub fn router_hub(hub: Arc<Hub>, db_path: Option<String>) -> Router {
+    router(Arc::new(AppState::from_hub(hub, db_path)))
+}
+
+/// [`router_hub`] plus the daemon's model-selection hands (PLAN §7A).
+pub fn router_hub_with_models(
+    hub: Arc<Hub>,
+    db_path: Option<String>,
+    admin: Arc<dyn ModelAdmin>,
+) -> Router {
+    let mut state = AppState::from_hub(hub, db_path);
+    state.model_admin = Some(admin);
+    router(Arc::new(state))
+}
+
+fn api_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/system", get(system))
+        .route("/models", get(models_describe).post(models_apply))
+        .route("/projects", get(list_projects).post(register_project))
+        .route("/projects/{id}", axum::routing::delete(unregister_project))
+        .route("/fs/dirs", get(fs_dirs))
         .route("/nodes", post(create_node))
         .route(
             "/nodes/{id}",
@@ -150,6 +286,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/audit/conflicts", post(audit_conflicts))
         .route("/audit/duplicates", post(audit_duplicates))
         .route("/audit/answered", post(audit_answered))
+        .route("/audit/promotions", post(audit_promotions))
         .route("/drift", get(drift))
         .route("/digest/scan", post(digest_scan))
         .route("/nodes/{id}/timeline", get(timeline))
@@ -167,6 +304,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .fallback(static_pane)
         .layer(CorsLayer::permissive())
         .with_state(state)
+}
+
+pub fn router(state: Arc<AppState>) -> Router {
+    // The scope rewrite must see the URI before any route matches, so it
+    // wraps the whole API router: the outer router routes nothing itself.
+    Router::new()
+        .fallback_service(api_router(state))
+        .layer(middleware::map_request(project_scope_rewrite))
 }
 
 /// The production frontend, embedded at build time (read from disk in debug).
@@ -225,21 +370,74 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     }))
 }
 
+/// The current model selection + presets, or `{"available": false}` when this
+/// process has no model-selection hands (library/test embeddings).
+async fn models_describe(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    match &state.model_admin {
+        Some(admin) => Json(admin.describe()),
+        None => Json(json!({ "available": false })),
+    }
+}
+
+/// Apply a model selection: `{"role", "preset"}` or `{"role", "custom"}`.
+/// Blocking by design — the response arrives after the download, the load,
+/// the live swap, and (for embeddings) the full re-embed have all happened.
+async fn models_apply(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let Some(admin) = state.model_admin.clone() else {
+        return Err(AppError::Core(Error::Project(
+            "model selection needs the daemon (engram-alpha serve)".into(),
+        )));
+    };
+    let result = tokio::task::spawn_blocking(move || admin.apply(request))
+        .await
+        .map_err(|e| AppError::Core(Error::Io(e.to_string())))??;
+    Ok(Json(result))
+}
+
 /// The pane's System info (Settings → System): the doctor's daemon-side facts
 /// as structured JSON — binary version, store health, model cache, and which
 /// assistants are wired to this repo. Everything is best-effort: a partial
-/// report beats a 500 on a diagnostics screen.
+/// report beats a 500 on a diagnostics screen. Always the launch project —
+/// per-project store facts are one `/projects/{id}/system`-shaped question
+/// the registry view doesn't need yet.
 async fn system(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let repo = state.repo_root();
     let wiring = engram_core::harness::wiring(&repo);
     let model_cached = engram_core::harness::home_file(".cache/engram").is_some_and(|dir| {
         std::fs::read_dir(&dir).is_ok_and(|mut entries| entries.next().is_some())
     });
+    // Active model identities come from the machine-level selection
+    // (~/.engram/models.json); a role without a selection is the default,
+    // whose path keeps honoring its ENGRAM_*_DIR override.
+    let cortex_cfg = engram_core::cortex::load();
     let dir_str =
         |d: Option<std::path::PathBuf>| d.map(|p| p.display().to_string()).unwrap_or_default();
-    let embed_dir = dir_str(engram_core::rag::model_dir());
-    let rerank_dir = dir_str(engram_core::rag::reranker_model_dir());
-    let nli_dir = dir_str(engram_core::nli::nli_model_dir());
+    let role_info = |role: engram_core::cortex::Role,
+                     default_dir: Option<std::path::PathBuf>|
+     -> (String, String) {
+        let spec = cortex_cfg.effective(role);
+        let dir = if cortex_cfg.get(role).is_none() {
+            default_dir
+        } else {
+            engram_core::cortex::cache_dir(&spec.name)
+        };
+        (spec.name, dir_str(dir))
+    };
+    let (embed_name, embed_dir) = role_info(
+        engram_core::cortex::Role::Embedding,
+        engram_core::rag::model_dir(),
+    );
+    let (rerank_name, rerank_dir) = role_info(
+        engram_core::cortex::Role::Reranker,
+        engram_core::rag::reranker_model_dir(),
+    );
+    let (nli_name, nli_dir) = role_info(
+        engram_core::cortex::Role::Nli,
+        engram_core::nli::nli_model_dir(),
+    );
     let db_size = state
         .db_path
         .as_deref()
@@ -248,15 +446,8 @@ async fn system(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
 
     let engine = state.engine();
     let store = engine.store();
-    let conn = store.conn();
-    let count = |sql: &str| {
-        conn.query_row(sql, [], |row| row.get::<_, i64>(0))
-            .unwrap_or(-1)
-    };
-    let pragma = |sql: &str| {
-        conn.query_row(sql, [], |row| row.get::<_, String>(0))
-            .unwrap_or_default()
-    };
+    let stats = store.stats().ok();
+    let health = store.health().ok();
     let embed_version = store.embed_version().unwrap_or(0);
 
     Json(json!({
@@ -269,12 +460,12 @@ async fn system(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
         "store": {
             "db": state.db_path,
             "size_bytes": db_size,
-            "nodes": count("SELECT count(*) FROM nodes"),
-            "edges": count("SELECT count(*) FROM edges"),
-            "embedded": count("SELECT count(*) FROM vec_nodes"),
-            "fts": count("SELECT count(*) FROM nodes_fts"),
-            "journal_mode": pragma("PRAGMA journal_mode"),
-            "integrity_ok": pragma("PRAGMA quick_check") == "ok",
+            "backend": stats.as_ref().map(|s| s.backend).unwrap_or("unknown"),
+            "nodes": stats.as_ref().map(|s| s.nodes).unwrap_or(-1),
+            "edges": stats.as_ref().map(|s| s.edges).unwrap_or(-1),
+            "embedded": stats.as_ref().map(|s| s.embedded).unwrap_or(-1),
+            "journal_mode": health.as_ref().and_then(|h| h.journal_mode.clone()).unwrap_or_default(),
+            "integrity_ok": health.as_ref().is_some_and(|h| h.integrity_ok),
             "embed_composition": embed_version,
             "embed_composition_current": embed_version >= engram_core::EMBED_COMPOSITION,
         },
@@ -284,53 +475,178 @@ async fn system(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
         // The local cortex (PLAN §7A), one row per model with its on-disk home.
         "models": [
             {
-                "name": "bge-small-en-v1.5",
-                "role": "embeddings — recall (384-dim vectors, hybrid search)",
+                "name": embed_name,
+                "role": format!(
+                    "embeddings — recall ({}-dim vectors, hybrid search)",
+                    engine.embed_model_id().dim
+                ),
                 "path": embed_dir,
                 "active": !engine.embeddings_are_fake(),
             },
             {
-                "name": "jina-reranker-v1-turbo-en",
+                "name": rerank_name,
                 "role": "reranker — search precision (cross-encoder)",
                 "path": rerank_dir,
                 "active": engine.has_reranker(),
             },
             {
-                "name": "nli-deberta-v3-small",
+                "name": nli_name,
                 "role": "NLI — logic (conflict hints, claim checks, Checkup sweeps)",
                 "path": nli_dir,
                 "active": engine.has_nli(),
             },
         ],
+        "model_selection": state.model_admin.is_some(),
         "wiring": wiring,
     }))
+}
+
+// ---- project registry (PLAN §7C) ----------------------------------------
+
+/// Every project the hub can reach: current, home, registry — the pane's
+/// switcher and the Settings registry view both read this.
+async fn list_projects(State(state): State<Arc<AppState>>) -> Json<Vec<ProjectInfo>> {
+    Json(state.hub.projects())
+}
+
+#[derive(Deserialize)]
+struct RegisterBody {
+    /// Absolute path of the repo to register (its `.engram/graph.db` is
+    /// created lazily on first access).
+    path: String,
+}
+
+async fn register_project(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<RegisterBody>,
+) -> Result<Json<registry::ProjectEntry>, AppError> {
+    let root = std::path::PathBuf::from(&body.path);
+    if !root.is_dir() {
+        return Err(AppError::Core(Error::Project(format!(
+            "not a directory: {}",
+            body.path
+        ))));
+    }
+    let db = root.join(".engram/graph.db");
+    let entry = registry::register(&root, &db)?;
+    // The daemon this pane talks to serves the list — refresh is one GET away.
+    let _ = state;
+    Ok(Json(entry))
+}
+
+/// Withdraw a project from the registry — awareness only; its data stays
+/// where it lives. The current project and the home graph are not entries.
+async fn unregister_project(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    if id == registry::HOME_PROJECT
+        || id == state.hub.current().id
+        || id == state.hub.current().name
+    {
+        return Err(AppError::Core(Error::Project(
+            "the current project and the home graph are not registry entries".into(),
+        )));
+    }
+    let removed = registry::unregister(&id)?;
+    if !removed {
+        return Err(AppError::NotFound);
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct FsDirsParams {
+    /// Absolute directory to list; omitted = the user's home directory.
+    path: Option<String>,
+}
+
+/// Directory listing for the pane's folder picker (PLAN §7C add-by-path):
+/// a browser can never reveal an absolute filesystem path, so the daemon —
+/// which owns the filesystem anyway — serves the navigation. Directories
+/// only, dot-dirs hidden, unreadable entries skipped; each row says whether
+/// it already carries an `.engram` graph or is a git repo.
+async fn fs_dirs(Query(p): Query<FsDirsParams>) -> Result<Json<serde_json::Value>, AppError> {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()
+        .map(std::path::PathBuf::from);
+    let start = p
+        .path
+        .map(std::path::PathBuf::from)
+        .or_else(|| home.clone())
+        .ok_or_else(|| AppError::Core(Error::Project("no home directory".into())))?;
+    let listing = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, Error> {
+        let path = start
+            .canonicalize()
+            .map_err(|e| Error::Project(format!("not a readable directory: {e}")))?;
+        if !path.is_dir() {
+            return Err(Error::Project(format!(
+                "not a directory: {}",
+                path.display()
+            )));
+        }
+        let mut dirs = Vec::new();
+        for entry in std::fs::read_dir(&path)
+            .map_err(|e| Error::Project(format!("can't list {}: {e}", path.display())))?
+            .flatten()
+        {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') || !entry.path().is_dir() {
+                continue;
+            }
+            let p = entry.path();
+            dirs.push(json!({
+                "name": name,
+                "path": p.display().to_string(),
+                "engram": p.join(".engram/graph.db").is_file(),
+                "git": p.join(".git").exists(),
+            }));
+        }
+        dirs.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        Ok(json!({
+            "path": path.display().to_string(),
+            "parent": path.parent().map(|p| p.display().to_string()),
+            "home": home.map(|h| h.display().to_string()),
+            "dirs": dirs,
+        }))
+    })
+    .await
+    .expect("directory listing never panics — every entry error is a skip")?;
+    Ok(Json(listing))
 }
 
 // ---- node handlers ------------------------------------------------------
 
 async fn create_node(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
     Json(input): Json<NewNode>,
 ) -> Result<Json<Node>, AppError> {
-    let node = state.engine().add_node(input)?;
+    let engine = state.engine_arc(&scope)?;
+    let node = pane(&engine).add_node(input)?;
     Ok(Json(node))
 }
 
 async fn get_node(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
     Path(id): Path<String>,
 ) -> Result<Json<Node>, AppError> {
-    let node = state.engine().get_node(&id)?;
+    let engine = state.engine_arc(&scope)?;
+    let node = pane(&engine).get_node(&id)?;
     node.map(Json).ok_or(AppError::NotFound)
 }
 
 async fn patch_node(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
     Path(id): Path<String>,
     Json(patch): Json<NodePatch>,
 ) -> Result<Json<Node>, AppError> {
+    let engine = state.engine_arc(&scope)?;
     let node = {
-        let engine = state.engine();
+        let engine = pane(&engine);
         if engine.get_node(&id)?.is_none() {
             return Err(AppError::NotFound);
         }
@@ -341,9 +657,11 @@ async fn patch_node(
 
 async fn delete_node(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    let removed = state.engine().delete_node(&id)?;
+    let engine = state.engine_arc(&scope)?;
+    let removed = pane(&engine).delete_node(&id)?;
     if removed {
         Ok(StatusCode::NO_CONTENT)
     } else {
@@ -353,9 +671,11 @@ async fn delete_node(
 
 async fn node_edges(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
     Path(id): Path<String>,
 ) -> Result<Json<EdgesResponse>, AppError> {
-    let engine = state.engine();
+    let engine = state.engine_arc(&scope)?;
+    let engine = pane(&engine);
     if engine.get_node(&id)?.is_none() {
         return Err(AppError::NotFound);
     }
@@ -367,16 +687,14 @@ async fn node_edges(
 
 async fn traverse(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
     Path(id): Path<String>,
     Query(p): Query<TraverseParams>,
 ) -> Result<Json<GraphResponse>, AppError> {
     let edge_types = parse_edge_types(p.edge_types.as_deref())?;
     let depth = p.depth.unwrap_or(2);
-    let (nodes, edges) = state
-        .engine
-        .lock()
-        .unwrap()
-        .traverse(&id, &edge_types, depth)?;
+    let engine = state.engine_arc(&scope)?;
+    let (nodes, edges) = engine.lock().unwrap().traverse(&id, &edge_types, depth)?;
     Ok(Json(GraphResponse { nodes, edges }))
 }
 
@@ -384,10 +702,12 @@ async fn traverse(
 
 async fn create_edge(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
     Json(input): Json<NewEdge>,
 ) -> Result<Json<Edge>, AppError> {
+    let engine = state.engine_arc(&scope)?;
     let edge = {
-        let engine = state.engine();
+        let engine = pane(&engine);
         // Surface dangling endpoints as 404 rather than an opaque FK failure.
         if engine.get_node(&input.from_id)?.is_none() || engine.get_node(&input.to_id)?.is_none() {
             return Err(AppError::NotFound);
@@ -399,18 +719,22 @@ async fn create_edge(
 
 async fn patch_edge(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
     Path(id): Path<String>,
     Json(patch): Json<EdgePatch>,
 ) -> Result<Json<Edge>, AppError> {
-    let edge = state.engine().update_edge(&id, patch)?;
+    let engine = state.engine_arc(&scope)?;
+    let edge = pane(&engine).update_edge(&id, patch)?;
     Ok(Json(edge))
 }
 
 async fn delete_edge(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    let removed = state.engine().delete_edge(&id)?;
+    let engine = state.engine_arc(&scope)?;
+    let removed = pane(&engine).delete_edge(&id)?;
     if removed {
         Ok(StatusCode::NO_CONTENT)
     } else {
@@ -422,22 +746,32 @@ async fn delete_edge(
 
 async fn search(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
     Query(p): Query<SearchParams>,
-) -> Result<Json<Vec<SearchHit>>, AppError> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let types = parse_node_types(p.types.as_deref())?;
     let limit = p.limit.unwrap_or(8);
-    let hits = state.engine().search(&p.q, &types, limit)?;
-    Ok(Json(hits))
+    // `all` is the one read fan-out: current project at full weight, every
+    // sibling + home under the locality prior, provenance on foreign hits.
+    if scope.0.as_deref() == Some(registry::ALL_PROJECTS) {
+        let (hits, skipped) = state.hub.search_all(&p.q, &types, limit)?;
+        return Ok(Json(json!({ "hits": hits, "skipped": skipped })));
+    }
+    let engine = state.engine_arc(&scope)?;
+    let hits = pane(&engine).search(&p.q, &types, limit)?;
+    Ok(Json(json!(hits)))
 }
 
 /// Tags in use on current nodes, freshest first — feeds the pane's tag
 /// dropdown and filter chips (PLAN §10 tags).
 async fn tags(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
     Query(p): Query<TagsParams>,
 ) -> Result<Json<Vec<TagStat>>, AppError> {
     let limit = p.limit.unwrap_or(200);
-    let tags = state.engine().tags(limit)?;
+    let engine = state.engine_arc(&scope)?;
+    let tags = pane(&engine).tags(limit)?;
     Ok(Json(tags))
 }
 
@@ -445,16 +779,22 @@ async fn tags(
 
 async fn list_suspects(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
 ) -> Result<Json<Vec<SuspectView>>, AppError> {
-    let suspects = state.engine().suspects()?;
+    let engine = state.engine_arc(&scope)?;
+    let suspects = pane(&engine).suspects()?;
     Ok(Json(suspects))
 }
 
 /// Verified code refs (PLAN §10): nodes whose path-shaped refs no longer
-/// exist under the repo root (see [`AppState::repo_root`]).
-async fn drift(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Drift>>, AppError> {
-    let root = state.repo_root();
-    let drifted = state.engine().scan_code_refs(&root)?;
+/// exist under the scoped project's root.
+async fn drift(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+) -> Result<Json<Vec<Drift>>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    let root = state.scoped_root(&engine);
+    let drifted = pane(&engine).scan_code_refs(&root)?;
     Ok(Json(drifted))
 }
 
@@ -462,22 +802,28 @@ async fn drift(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Drift>>, A
 /// working tree. Candidates only — the digest skill judges them and writes
 /// through the normal node path. Runs outside the engine lock: it never
 /// touches the store. Deliberately HTTP-only, no MCP tool.
-async fn digest_scan(State(state): State<Arc<AppState>>) -> Json<engram_core::digest::DigestScan> {
-    let root = state.repo_root();
+async fn digest_scan(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+) -> Result<Json<engram_core::digest::DigestScan>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    let root = state.scoped_root(&engine);
     // The walk is filesystem-bound; keep it off the async workers.
-    Json(
+    Ok(Json(
         tokio::task::spawn_blocking(move || engram_core::digest::scan(&root))
             .await
             .expect("digest scan never panics — every file error is a skip"),
-    )
+    ))
 }
 
 /// Timeline (PLAN §10): the node's `replaces` chain, oldest first.
 async fn timeline(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<TimelineEntry>>, AppError> {
-    let chain = state.engine().timeline(&id)?;
+    let engine = state.engine_arc(&scope)?;
+    let chain = pane(&engine).timeline(&id)?;
     Ok(Json(chain))
 }
 
@@ -490,40 +836,73 @@ struct CheckClaimBody {
 
 /// Verify a claim against the canon (PLAN §7A): supports / contradicts /
 /// silent, each with the judging node. Requires the local NLI model.
+/// Scope `all` judges across every reachable graph with provenance.
 async fn check_claim(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
     Json(body): Json<CheckClaimBody>,
-) -> Result<Json<ClaimReport>, AppError> {
-    let report = state
-        .engine()
-        .check_claim(&body.text, body.limit.unwrap_or(8))?;
-    Ok(Json(report))
+) -> Result<Json<serde_json::Value>, AppError> {
+    let limit = body.limit.unwrap_or(8);
+    if scope.0.as_deref() == Some(registry::ALL_PROJECTS) {
+        let (report, skipped) = state.hub.check_claim_all(&body.text, limit)?;
+        let mut out = json!(report);
+        out["skipped"] = json!(skipped);
+        return Ok(Json(out));
+    }
+    let engine = state.engine_arc(&scope)?;
+    let report: ClaimReport = pane(&engine).check_claim(&body.text, limit)?;
+    Ok(Json(json!(report)))
 }
 
 /// Audit-panel sweep: deep conflict pass (lower similarity floor, NLI-gated).
-async fn audit_conflicts(State(state): State<Arc<AppState>>) -> Result<Json<AuditSweep>, AppError> {
-    Ok(Json(state.engine().audit_conflicts()?))
+async fn audit_conflicts(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+) -> Result<Json<AuditSweep>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    let sweep = pane(&engine).audit_conflicts()?;
+    Ok(Json(sweep))
 }
 
 /// Audit-panel sweep: mutual-entailment duplicates.
 async fn audit_duplicates(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
 ) -> Result<Json<AuditSweep>, AppError> {
-    Ok(Json(state.engine().audit_duplicates()?))
+    let engine = state.engine_arc(&scope)?;
+    let sweep = pane(&engine).audit_duplicates()?;
+    Ok(Json(sweep))
 }
 
 /// Audit-panel check: open Problems/Intents that an existing node may answer.
 async fn audit_answered(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
 ) -> Result<Json<Vec<AnsweredHint>>, AppError> {
-    Ok(Json(state.engine().audit_answered()?))
+    let engine = state.engine_arc(&scope)?;
+    let hints = pane(&engine).audit_answered()?;
+    Ok(Json(hints))
+}
+
+/// Promotion nominations (PLAN §7C): current-project Principles/Cautions
+/// recurring in other projects, not yet represented in the home graph.
+/// Read-only — the pane promotes via `POST /projects/home/nodes`.
+async fn audit_promotions(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let (candidates, skipped) = state.hub.promotion_candidates()?;
+    Ok(Json(
+        json!({ "candidates": candidates, "skipped": skipped }),
+    ))
 }
 
 /// Run the local candidate sweep on demand (the pane's "Scan now").
 async fn scan_conflicts(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let added = state.engine().scan_conflicts()?;
+    let engine = state.engine_arc(&scope)?;
+    let added = pane(&engine).scan_conflicts()?;
     Ok(Json(json!({ "added": added })))
 }
 
@@ -536,12 +915,12 @@ struct ResolveBody {
 /// are user-sourced.
 async fn resolve_suspect(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
     Path(id): Path<String>,
     Json(body): Json<ResolveBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let edge = state
-        .engine()
-        .resolve_suspect(&id, body.verdict, engram_core::Source::User)?;
+    let engine = state.engine_arc(&scope)?;
+    let edge = pane(&engine).resolve_suspect(&id, body.verdict, engram_core::Source::User)?;
     Ok(Json(json!({ "edge": edge })))
 }
 
@@ -554,11 +933,12 @@ struct DecayParams {
 /// The decay pass (PLAN §6B). `dry_run=true` previews what would archive.
 async fn decay(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
     Query(p): Query<DecayParams>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let ttl = p.ttl_days.unwrap_or(engram_core::policy::DECAY_TTL_DAYS);
-    let ids = state
-        .engine
+    let engine = state.engine_arc(&scope)?;
+    let ids = engine
         .lock()
         .unwrap()
         .decay(ttl, p.dry_run.unwrap_or(false))?;
@@ -566,14 +946,23 @@ async fn decay(
 }
 
 /// The session-start digest, as `text/markdown` (PLAN §6A retrieval trigger).
+/// Unscoped = the launch project plus the home-graph section; a scoped
+/// project (or `home`) briefs that graph alone.
 async fn brief(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
     Query(p): Query<BriefParams>,
 ) -> Result<Response, AppError> {
     let max_chars = p
         .max_chars
         .unwrap_or(engram_core::policy::DEFAULT_BRIEF_CHARS);
-    let text = state.engine().brief(max_chars)?;
+    let text = match &scope.0 {
+        None => state.hub.brief(max_chars)?,
+        Some(_) => {
+            let engine = state.engine_arc(&scope)?;
+            pane(&engine).brief(max_chars)?
+        }
+    };
     Ok((
         [(
             axum::http::header::CONTENT_TYPE,
@@ -589,50 +978,60 @@ async fn brief(
 /// narrows to one node/edge's history.
 async fn audit(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
     Query(p): Query<AuditParams>,
 ) -> Result<Json<AuditPage>, AppError> {
     let limit = p.limit.unwrap_or(50).min(200);
-    let page = state
-        .engine()
-        .audit_log(p.before, p.entity_id.as_deref(), limit)?;
+    let engine = state.engine_arc(&scope)?;
+    let page = pane(&engine).audit_log(p.before, p.entity_id.as_deref(), limit)?;
     Ok(Json(page))
 }
 
 async fn list_open(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
     Query(p): Query<TypesParam>,
 ) -> Result<Json<Vec<Node>>, AppError> {
     let types = parse_node_types(p.types.as_deref())?;
-    let nodes = state.engine().list_open(&types)?;
+    let engine = state.engine_arc(&scope)?;
+    let nodes = pane(&engine).list_open(&types)?;
     Ok(Json(nodes))
 }
 
-async fn graph(State(state): State<Arc<AppState>>) -> Result<Json<GraphResponse>, AppError> {
-    let (nodes, edges) = state.engine().graph()?;
+async fn graph(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+) -> Result<Json<GraphResponse>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    let (nodes, edges) = pane(&engine).graph()?;
     Ok(Json(GraphResponse { nodes, edges }))
 }
 
 async fn reconfirm(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
     Path(id): Path<String>,
 ) -> Result<Json<Node>, AppError> {
-    let exists = state.engine().get_node(&id)?.is_some();
-    if !exists {
+    let engine = state.engine_arc(&scope)?;
+    let engine = pane(&engine);
+    if engine.get_node(&id)?.is_none() {
         return Err(AppError::NotFound);
     }
-    let node = state.engine().reconfirm(&id)?;
+    let node = engine.reconfirm(&id)?;
     Ok(Json(node))
 }
 
 async fn approve(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
     Path(id): Path<String>,
 ) -> Result<Json<Node>, AppError> {
-    let exists = state.engine().get_node(&id)?.is_some();
-    if !exists {
+    let engine = state.engine_arc(&scope)?;
+    let engine = pane(&engine);
+    if engine.get_node(&id)?.is_none() {
         return Err(AppError::NotFound);
     }
-    let node = state.engine().approve(&id)?;
+    let node = engine.approve(&id)?;
     Ok(Json(node))
 }
 
@@ -640,13 +1039,15 @@ async fn approve(
 /// confirmed/created anchor.
 async fn revoke_approval(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
     Path(id): Path<String>,
 ) -> Result<Json<Node>, AppError> {
-    let exists = state.engine().get_node(&id)?.is_some();
-    if !exists {
+    let engine = state.engine_arc(&scope)?;
+    let engine = pane(&engine);
+    if engine.get_node(&id)?.is_none() {
         return Err(AppError::NotFound);
     }
-    let node = state.engine().revoke_approval(&id)?;
+    let node = engine.revoke_approval(&id)?;
     Ok(Json(node))
 }
 
@@ -660,36 +1061,54 @@ struct PinBody {
 /// hard delete — the MCP server deliberately exposes no counterpart.
 async fn pin(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
     Path(id): Path<String>,
     Json(body): Json<PinBody>,
 ) -> Result<Json<Node>, AppError> {
-    let exists = state.engine().get_node(&id)?.is_some();
-    if !exists {
+    let engine = state.engine_arc(&scope)?;
+    let engine = pane(&engine);
+    if engine.get_node(&id)?.is_none() {
         return Err(AppError::NotFound);
     }
-    let node = state.engine().set_trust_override(&id, body.value)?;
+    let node = engine.set_trust_override(&id, body.value)?;
     Ok(Json(node))
 }
 
-async fn export(State(state): State<Arc<AppState>>) -> Result<Json<ExportGraph>, AppError> {
-    let graph = state.engine().export()?;
+async fn export(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+) -> Result<Json<ExportGraph>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    let graph = pane(&engine).export()?;
     Ok(Json(graph))
 }
 
 async fn import(
     State(state): State<Arc<AppState>>,
+    scope: Scope,
     Json(graph): Json<ExportGraph>,
 ) -> Result<Json<ImportSummary>, AppError> {
-    let summary = state.engine().import(graph)?;
+    let engine = state.engine_arc(&scope)?;
+    let summary = pane(&engine).import(graph)?;
     Ok(Json(summary))
 }
 
 async fn sse(
     State(state): State<Arc<AppState>>,
-) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
-    let stream = BroadcastStream::new(state.events.subscribe())
+    scope: Scope,
+) -> Result<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>, AppError> {
+    let project_id = match &scope.0 {
+        None => state.hub.current().id.clone(),
+        Some(sel) => {
+            // Opening the engine installs its listener, so the channel is
+            // live before the first subscriber attaches.
+            state.hub.get(sel)?;
+            state.hub.resolve_id(sel)?
+        }
+    };
+    let stream = BroadcastStream::new(channel(&state.events, &project_id).subscribe())
         .filter_map(|msg| msg.ok().map(|s| Ok(Event::default().data(s))));
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 // ---- query params -------------------------------------------------------
@@ -775,7 +1194,9 @@ impl IntoResponse for AppError {
         let (status, msg) = match self {
             AppError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
             AppError::Core(Error::NotFound(s)) => (StatusCode::NOT_FOUND, s),
-            AppError::Core(e @ Error::Parse { .. }) => (StatusCode::BAD_REQUEST, e.to_string()),
+            AppError::Core(e @ (Error::Parse { .. } | Error::Project(_))) => {
+                (StatusCode::BAD_REQUEST, e.to_string())
+            }
             AppError::Core(e @ Error::Pinned(_)) => (StatusCode::CONFLICT, e.to_string()),
             AppError::Core(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
             AppError::Serde(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),

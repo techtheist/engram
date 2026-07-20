@@ -2,6 +2,8 @@
 pub enum Error {
     #[error("sqlite: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error("tepindb: {0}")]
+    Tepin(#[from] tepindb::TepinError),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
     #[error("not found: {0}")]
@@ -14,6 +16,13 @@ pub enum Error {
     Pinned(String),
     #[error("embedding: {0}")]
     Embedding(String),
+    #[error("io: {0}")]
+    Io(String),
+    /// A project selector the hub can't serve — unknown name/id, a write
+    /// addressed to `all`, or multi-project access outside the daemon.
+    /// Client error (400 / invalid_params), with the fix in the message.
+    #[error("{0}")]
+    Project(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

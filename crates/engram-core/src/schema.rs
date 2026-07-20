@@ -79,6 +79,14 @@ CREATE TABLE IF NOT EXISTS audit (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit(entity_id);
+
+-- Store-level key/value facts (embedding model identity, vector width) that
+-- must survive independently of any one node — the SQLite analog of TepinDB's
+-- file-pinned model metadata.
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 "#;
 
 /// The FTS5 mirror and the triggers that keep it in sync. Dropped and re-run

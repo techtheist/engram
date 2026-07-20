@@ -112,6 +112,18 @@ pub const RERANK_TRUST_WEIGHT: f64 = 0.15;
 /// the judge is worse than one that misses; calibrate on the judged-suspects
 /// corpus (scripts/nli-eval.py) before loosening either guard.
 pub const NLI_SWEEP_MIN_CONFIDENCE: f32 = 0.8;
+/// Locality prior on cross-project reads (PLAN §7C): hits from other
+/// projects' graphs are multiplied by this so the local canon wins ties —
+/// provenance-aware ranking, not exclusion.
+pub const CROSS_PROJECT_PRIOR: f64 = 0.85;
+/// Same-type cosine similarity at/above which a Principle/Caution recurring
+/// in another project's graph becomes a promotion nomination for the home
+/// graph (PLAN §7C). Borrowed from the suspect band — recalibrate with it.
+pub const PROMOTION_SIMILARITY: f64 = 0.85;
+/// Character budget carved out of the brief for the home-graph section
+/// (PLAN §7C): user-level canon rides along with every project brief but
+/// must never starve the project's own sections.
+pub const HOME_BRIEF_RESERVE: usize = 1500;
 
 /// Everything the trust computation reads off a node. `last_seen` is
 /// deliberately absent: retrieval is observability, not evidence.

@@ -1,7 +1,7 @@
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use engram_core::{Engine, FakeEmbedder, Store};
+use engram_core::{Engine, FakeEmbedder, SqliteStore};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -10,7 +10,7 @@ use crate::app;
 
 fn test_app() -> Router {
     let engine = Engine::new(
-        Store::open_in_memory().unwrap(),
+        SqliteStore::open_in_memory().unwrap(),
         Box::new(FakeEmbedder::default()),
     );
     app(engine)
@@ -685,7 +685,7 @@ async fn audit_endpoint_pages_the_journal_with_pane_origin() {
 async fn system_reports_version_store_and_wiring() {
     // Mirror real daemon startup: build_engine stamps the embed composition.
     let engine = Engine::new(
-        Store::open_in_memory().unwrap(),
+        SqliteStore::open_in_memory().unwrap(),
         Box::new(FakeEmbedder::default()),
     );
     engine.ensure_embed_composition().unwrap();
@@ -716,7 +716,7 @@ async fn digest_scan_walks_the_repo_root_derived_from_the_db_path() {
     std::fs::write(root.join("src/lib.rs"), "// FIXME empty input crashes\n").unwrap();
 
     let engine = Engine::new(
-        Store::open_in_memory().unwrap(),
+        SqliteStore::open_in_memory().unwrap(),
         Box::new(FakeEmbedder::default()),
     );
     let app = crate::router_shared_with_db(
@@ -734,4 +734,305 @@ async fn digest_scan_walks_the_repo_root_derived_from_the_db_path() {
     assert_eq!(body["truncated"], false);
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+// ---- project scoping (PLAN §7C) -------------------------------------------
+
+mod projects {
+    use super::*;
+    use engram_core::{EngineFactory, Hub, registry};
+    use std::sync::{Arc, Mutex};
+
+    fn hub_app(tmp: &std::path::Path) -> Router {
+        let factory: EngineFactory = Box::new(|db: &std::path::Path| {
+            if let Some(dir) = db.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| engram_core::Error::Io(e.to_string()))?;
+            }
+            Ok(Engine::new(
+                SqliteStore::open(db)?,
+                Box::new(FakeEmbedder::default()),
+            ))
+        });
+        let alpha_root = tmp.join("alpha");
+        let alpha_db = alpha_root.join(".engram/graph.db");
+        std::fs::create_dir_all(alpha_db.parent().unwrap()).unwrap();
+        let alpha = registry::register(&alpha_root, &alpha_db).unwrap();
+        let engine = Engine::new(
+            SqliteStore::open(&alpha_db).unwrap(),
+            Box::new(FakeEmbedder::default()),
+        );
+        crate::router_hub(
+            Arc::new(Hub::new(
+                Arc::new(Mutex::new(engine)),
+                Some(alpha),
+                Some(factory),
+            )),
+            None,
+        )
+    }
+
+    /// One test on purpose: ENGRAM_HOME is process-wide, so the scoped-route
+    /// story runs sequentially inside its sandbox.
+    #[tokio::test]
+    async fn scoped_routes_reach_other_projects_and_all_stays_read_only() {
+        let tmp = std::env::temp_dir().join(format!("engram-http-hub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        unsafe { std::env::set_var("ENGRAM_HOME", tmp.join("enghome")) };
+        let beta_root = tmp.join("beta");
+        std::fs::create_dir_all(&beta_root).unwrap();
+        registry::register(&beta_root, &beta_root.join(".engram/graph.db")).unwrap();
+        let app = hub_app(&tmp);
+
+        // The registry listing carries current + home + siblings.
+        let (status, projects) = req(&app, "GET", "/projects", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let names: Vec<String> = projects
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap().to_string())
+            .collect();
+        assert!(names.contains(&"alpha".into()), "got: {names:?}");
+        assert!(names.contains(&"beta".into()), "got: {names:?}");
+        assert!(names.contains(&"home".into()), "got: {names:?}");
+
+        // A scoped write lands in the sibling's graph, not the current one.
+        let (status, _) = req(
+            &app,
+            "POST",
+            "/projects/beta/nodes",
+            Some(decision("beta scoped note", "written through the hub")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, graph) = req(&app, "GET", "/projects/beta/graph", None).await;
+        assert!(
+            graph["nodes"]
+                .as_array()
+                .unwrap_or_else(|| panic!("beta graph response: {graph}"))
+                .iter()
+                .any(|n| n["title"] == "beta scoped note")
+        );
+        let (_, graph) = req(&app, "GET", "/graph", None).await;
+        assert!(
+            !graph["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|n| n["title"] == "beta scoped note"),
+            "the current project must not see the sibling's write"
+        );
+
+        // The home graph accepts deliberate writes.
+        let (status, _) = req(
+            &app,
+            "POST",
+            "/projects/home/nodes",
+            Some(json!({
+                "type": "Principle",
+                "title": "user-level canon lives at home",
+                "durability": "stable",
+                "source": "user"
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // `all` reads fan out with provenance…
+        let (status, res) = req(
+            &app,
+            "GET",
+            "/projects/all/search?q=beta%20scoped%20note",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            res["hits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|h| h["project"] == "beta"),
+            "got: {res}"
+        );
+
+        // …and `all` writes are refused, pointing at home.
+        let (status, err) = req(
+            &app,
+            "POST",
+            "/projects/all/nodes",
+            Some(decision("fan out", "nope")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            err["error"].as_str().unwrap().contains("home"),
+            "got: {err}"
+        );
+
+        // Unregistering withdraws awareness only.
+        let (status, _) = req(&app, "DELETE", "/projects/beta", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, projects) = req(&app, "GET", "/projects", None).await;
+        assert!(
+            !projects
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["name"] == "beta")
+        );
+        assert!(
+            beta_root.join(".engram/graph.db").is_file(),
+            "the data itself is untouched"
+        );
+
+        unsafe { std::env::remove_var("ENGRAM_HOME") };
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
+
+#[tokio::test]
+async fn fs_dirs_lists_directories_for_the_folder_picker() {
+    let tmp = std::env::temp_dir().join(format!("engram-fsdirs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(tmp.join("visible")).unwrap();
+    std::fs::create_dir_all(tmp.join(".hidden")).unwrap();
+    std::fs::create_dir_all(tmp.join("proj/.engram")).unwrap();
+    std::fs::write(tmp.join("proj/.engram/graph.db"), b"").unwrap();
+    std::fs::write(tmp.join("a-file.txt"), b"not a dir").unwrap();
+
+    let app = test_app();
+    let (status, listing) = req(
+        &app,
+        "GET",
+        &format!("/fs/dirs?path={}", urlencode(&tmp.display().to_string())),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let names: Vec<&str> = listing["dirs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["proj", "visible"],
+        "sorted dirs only, no dot-dirs, no files"
+    );
+    let proj = &listing["dirs"][0];
+    assert_eq!(proj["engram"], true, "existing graphs are flagged");
+    assert!(listing["parent"].is_string());
+
+    let (status, err) = req(&app, "GET", "/fs/dirs?path=/definitely/not/a/dir", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "got: {err}");
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+fn urlencode(s: &str) -> String {
+    s.bytes()
+        .flat_map(|b| {
+            if b.is_ascii_alphanumeric() || b"-_./~".contains(&b) {
+                vec![b as char]
+            } else {
+                format!("%{b:02X}").chars().collect()
+            }
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn tepin_backend_serves_the_full_api_surface() {
+    // The §7C regression gate in http form: the same router, a TepinDB store.
+    let engine = Engine::new(
+        engram_core::TepinStore::open_in_memory().unwrap(),
+        Box::new(FakeEmbedder::default()),
+    );
+    let app = app(engine);
+
+    let (status, node) = req(
+        &app,
+        "POST",
+        "/nodes",
+        Some(decision(
+            "served from tepindb",
+            "driver swap behind the trait",
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let id = node["id"].as_str().unwrap().to_string();
+
+    let (status, hits) = req(&app, "GET", "/search?q=tepindb", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(hits.as_array().unwrap()[0]["id"], json!(id));
+
+    let (status, system) = req(&app, "GET", "/system", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(system["store"]["backend"], json!("tepindb"));
+    assert_eq!(system["store"]["nodes"], json!(1));
+
+    let (status, audit) = req(&app, "GET", "/audit", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        audit["total"].as_i64().unwrap() >= 1,
+        "writes journal on tepin"
+    );
+}
+
+// ---- model selection endpoints (PLAN §7A) --------------------------------
+
+/// A canned admin so the endpoint tests need no real downloads or models.
+struct FakeAdmin;
+
+impl crate::ModelAdmin for FakeAdmin {
+    fn describe(&self) -> Value {
+        json!({ "available": true, "roles": [{ "role": "nli", "active": "fake-nli" }] })
+    }
+    fn apply(&self, request: Value) -> engram_core::Result<Value> {
+        match request["role"].as_str() {
+            Some("nli") => Ok(json!({ "role": "nli", "applied": "fake-nli-2" })),
+            other => Err(engram_core::Error::Project(format!(
+                "unknown role {other:?}"
+            ))),
+        }
+    }
+}
+
+#[tokio::test]
+async fn models_endpoint_without_admin_reports_unavailable() {
+    // Library/test embeddings have no model-selection hands: GET degrades
+    // honestly, POST refuses with a client error.
+    let app = test_app();
+    let (status, body) = req(&app, "GET", "/models", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["available"], json!(false));
+    let (status, _) = req(&app, "POST", "/models", Some(json!({ "role": "nli" }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn models_endpoint_with_admin_describes_and_applies() {
+    let engine = Engine::new(
+        SqliteStore::open_in_memory().unwrap(),
+        Box::new(FakeEmbedder::default()),
+    );
+    let hub = std::sync::Arc::new(engram_core::Hub::single(engine));
+    let app = crate::router_hub_with_models(hub, None, std::sync::Arc::new(FakeAdmin));
+
+    let (status, body) = req(&app, "GET", "/models", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["available"], json!(true));
+    assert_eq!(body["roles"][0]["active"], json!("fake-nli"));
+
+    let (status, body) = req(&app, "POST", "/models", Some(json!({ "role": "nli" }))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["applied"], json!("fake-nli-2"));
+
+    // The admin's refusal maps to a 400, not a 500 — it's the user's input.
+    let (status, body) = req(&app, "POST", "/models", Some(json!({ "role": "bogus" }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("unknown role"));
 }

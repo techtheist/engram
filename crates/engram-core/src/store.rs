@@ -1,32 +1,18 @@
+//! The storage boundary (PLAN §7C step 5). [`Store`] is the trait every
+//! backend implements; `SqliteStore` (store_sqlite) is the reference
+//! implementation and `TepinStore` (store_tepin) the TepinDB driver. Engine
+//! and Hub talk only to this trait — which backend a graph file uses is an
+//! open-time decision ([`open_store`]), never an application-logic change.
+//!
+//! Composite reads that are pure Rust over the primitives — hybrid fusion,
+//! neighbor collection, traversal, decay filtering — live here as provided
+//! methods so every backend shares one behavior; backends may override them
+//! only to say the same thing faster.
+
 use std::path::Path;
-use std::sync::Once;
 
-use rusqlite::types::Type;
-use rusqlite::{Connection, OptionalExtension, Row, ToSql, params};
-
-use crate::rag::EMBED_DIM;
-use crate::schema::{FTS_SCHEMA, SCHEMA};
+use crate::Result;
 use crate::types::*;
-use crate::{Error, Result};
-
-/// Register sqlite-vec as an auto-extension exactly once. Auto-extensions only
-/// affect connections opened *after* registration, so this must run before any
-/// `Connection::open`.
-fn ensure_vec_extension() {
-    use rusqlite::ffi;
-    type EntryPoint = unsafe extern "C" fn(
-        *mut ffi::sqlite3,
-        *mut *mut std::os::raw::c_char,
-        *const ffi::sqlite3_api_routines,
-    ) -> std::os::raw::c_int;
-
-    static INIT: Once = Once::new();
-    INIT.call_once(|| unsafe {
-        let init =
-            std::mem::transmute::<*const (), EntryPoint>(sqlite_vec::sqlite3_vec_init as *const ());
-        ffi::sqlite3_auto_extension(Some(init));
-    });
-}
 
 /// Unix seconds. The single clock for created_at / valid_from.
 pub fn now() -> i64 {
@@ -44,717 +30,336 @@ pub fn now() -> i64 {
 pub const SNIPPET_OPEN: char = '\u{e000}';
 pub const SNIPPET_CLOSE: char = '\u{e001}';
 
-/// The graph store: one SQLite connection bound to one repo's `.engram/graph.db`.
-/// Writes are serialized by `&mut`-free design + the daemon's single writer; WAL
-/// gives concurrent reads (PLAN §6B).
-pub struct Store {
-    conn: Connection,
+/// Open the store backing `path`, picking the backend by file identity:
+/// a `.tepin` file (or path) gets the TepinDB driver, everything else the
+/// SQLite reference implementation. The cutover (PLAN §7C step 5) is exactly
+/// this dispatch — application code above never branches on backend.
+pub fn open_store(path: impl AsRef<Path>) -> Result<Box<dyn Store>> {
+    let path = resolve_db_path(path.as_ref());
+    if crate::store_tepin::is_tepin_path(&path) {
+        return Ok(Box::new(crate::store_tepin::TepinStore::open(&path)?));
+    }
+    Ok(Box::new(crate::store_sqlite::SqliteStore::open(&path)?))
 }
 
-impl Store {
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        ensure_vec_extension();
-        let conn = Connection::open(path)?;
-        Self::init(conn)
+/// The post-migration path dance: wiring everywhere (hooks, `.mcp.json`, the
+/// registry, clap defaults) names `graph.db`, but a migrated repo's graph
+/// lives in `graph.tepin` next to it. A `.db` path whose `.tepin` sibling
+/// exists resolves there — so every pre-migration wiring survives the cutover
+/// untouched, and the old SQLite file stays behind as the backup it is.
+pub fn resolve_db_path(path: &Path) -> std::path::PathBuf {
+    if path.extension().is_some_and(|e| e == "db") {
+        let tepin = path.with_extension("tepin");
+        if tepin.is_file() {
+            return tepin;
+        }
     }
+    path.to_path_buf()
+}
 
-    pub fn open_in_memory() -> Result<Self> {
-        ensure_vec_extension();
-        Self::init(Connection::open_in_memory()?)
-    }
-
-    fn init(conn: Connection) -> Result<Self> {
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
-        conn.execute_batch(SCHEMA)?;
-        Self::migrate(&conn)?;
-        Self::ensure_fts(&conn)?;
-        conn.execute_batch(&format!(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS vec_nodes USING vec0(
-               node_id TEXT PRIMARY KEY,
-               embedding float[{EMBED_DIM}] distance_metric=cosine
-             );"
-        ))?;
-        let store = Self { conn };
-        store.shorten_legacy_ids()?;
-        Ok(store)
-    }
-
-    /// Forward-only migrations for databases created before a column existed.
-    fn migrate(conn: &Connection) -> Result<()> {
-        // Computed-trust model (v0.1.15): last_confirmed becomes last_seen,
-        // approvals get their own timestamp. The old stored-confidence column
-        // stays in legacy DBs (harmless, unread) rather than risking a
-        // DROP COLUMN on user data.
-        if column_exists(conn, "nodes", "last_confirmed")? {
-            conn.execute_batch("ALTER TABLE nodes RENAME COLUMN last_confirmed TO last_seen;")?;
-        }
-        if !column_exists(conn, "nodes", "last_seen")? {
-            conn.execute_batch("ALTER TABLE nodes ADD COLUMN last_seen INTEGER;")?;
-        }
-        if !column_exists(conn, "nodes", "approved_at")? {
-            conn.execute_batch("ALTER TABLE nodes ADD COLUMN approved_at INTEGER;")?;
-            // Data migration: user-authored nodes and heavily-reconfirmed
-            // Claude nodes were trusted under the stored-confidence model —
-            // carry that over as an approval so their trust doesn't collapse.
-            if column_exists(conn, "nodes", "confidence")? {
-                conn.execute_batch(
-                    "UPDATE nodes SET approved_at = COALESCE(last_seen, created_at)
-                     WHERE source = 'user' OR COALESCE(confidence, 0) >= 0.9;",
-                )?;
-            }
-        }
-        if !column_exists(conn, "nodes", "tags")? {
-            conn.execute_batch("ALTER TABLE nodes ADD COLUMN tags TEXT;")?;
-        }
-        // Trust v2 (v0.4.2): retrieval stops certifying its own outputs.
-        // `confirmed_at` becomes the unapproved trust anchor (deliberate acts
-        // only); `last_seen` stays as observability. Backfilled from last_seen
-        // so no node loses trust at the moment of upgrade — the semantics
-        // change only going forward. Volatile nodes get a fresh anchor
-        // instead: v2 also shrinks their window 183d → 30d, and an old anchor
-        // under the new window would back-date their stale crossing past the
-        // decay TTL — silently archiving healthy notes on the next sweep.
-        if !column_exists(conn, "nodes", "confirmed_at")? {
-            conn.execute_batch(
-                "ALTER TABLE nodes ADD COLUMN confirmed_at INTEGER;
-                 UPDATE nodes SET confirmed_at = last_seen;",
-            )?;
-            conn.execute(
-                "UPDATE nodes SET confirmed_at = ?1 \
-                 WHERE durability = 'volatile' AND valid_until IS NULL",
-                params![now()],
-            )?;
-        }
-        if !column_exists(conn, "nodes", "demoted_at")? {
-            conn.execute_batch("ALTER TABLE nodes ADD COLUMN demoted_at INTEGER;")?;
-        }
-        if !column_exists(conn, "nodes", "trust_override")? {
-            conn.execute_batch("ALTER TABLE nodes ADD COLUMN trust_override REAL;")?;
-        }
-        // Local cortex (v0.5.0): suspects carry an optional NLI hint.
-        if !column_exists(conn, "suspects", "nli_label")? {
-            conn.execute_batch(
-                "ALTER TABLE suspects ADD COLUMN nli_label TEXT;
-                 ALTER TABLE suspects ADD COLUMN nli_score REAL;",
-            )?;
-        }
-        Ok(())
-    }
-
-    /// Keep `nodes_fts` in lockstep with [`FTS_SCHEMA`]: when a database's FTS
-    /// mirror predates a column (tags, code_refs), drop it — triggers included
-    /// — and recreate + rebuild from the content table. Fresh databases just
-    /// create.
-    fn ensure_fts(conn: &Connection) -> Result<()> {
-        let fts_exists: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='nodes_fts'",
-            [],
-            |r| r.get(0),
-        )?;
-        let outdated = fts_exists > 0
-            && (!column_exists(conn, "nodes_fts", "tags")?
-                || !column_exists(conn, "nodes_fts", "code_refs")?);
-        if outdated {
-            conn.execute_batch(
-                "DROP TRIGGER IF EXISTS nodes_ai;
-                 DROP TRIGGER IF EXISTS nodes_ad;
-                 DROP TRIGGER IF EXISTS nodes_au;
-                 DROP TABLE nodes_fts;",
-            )?;
-        }
-        conn.execute_batch(FTS_SCHEMA)?;
-        if outdated {
-            conn.execute_batch("INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild');")?;
-        }
-        Ok(())
-    }
+/// One repo's graph store. All methods take `&self`; writes are serialized by
+/// the daemon's single-writer design (every Engine sits behind a mutex).
+/// `Send` because engines cross thread boundaries inside `Arc<Mutex<_>>`.
+pub trait Store: Send {
+    // ---- store-level metadata -------------------------------------------
 
     /// Which embedding composition the stored vectors were computed with
-    /// (PRAGMA user_version; see `engine::EMBED_COMPOSITION`). 0 = legacy
-    /// title+body. The engine re-embeds and bumps this when it's behind.
-    pub fn embed_version(&self) -> Result<i64> {
-        Ok(self
-            .conn
-            .query_row("PRAGMA user_version", [], |r| r.get(0))?)
-    }
+    /// (see `engine::EMBED_COMPOSITION`). 0 = legacy title+body. The engine
+    /// re-embeds and bumps this when it's behind.
+    fn embed_version(&self) -> Result<i64>;
+    fn set_embed_version(&self, v: i64) -> Result<()>;
 
-    pub fn set_embed_version(&self, v: i64) -> Result<()> {
-        self.conn
-            .execute_batch(&format!("PRAGMA user_version = {v};"))?;
-        Ok(())
-    }
+    /// The embedding model identity this store's vectors were computed with;
+    /// `None` on stores that predate model selection (treated as the default
+    /// model by the engine's guard).
+    fn embed_model(&self) -> Result<Option<EmbedModelId>>;
+    fn set_embed_model(&self, model: &EmbedModelId) -> Result<()>;
 
-    /// One-time rewrite of legacy UUID ids to short ids (`id::new_id`),
-    /// cascading through edge endpoints, edge ids, and stored embeddings.
-    /// Idempotent — short ids are left alone. Runs on every open; a fully
-    /// migrated database matches nothing and pays one cheap SELECT.
-    pub fn shorten_legacy_ids(&self) -> Result<()> {
-        let legacy_nodes: Vec<String> = {
-            let mut stmt = self
-                .conn
-                .prepare("SELECT id FROM nodes WHERE length(id) > 12")?;
-            let rows = stmt.query_map([], |r| r.get(0))?;
-            rows.collect::<rusqlite::Result<_>>()?
-        };
-        let legacy_edges: Vec<String> = {
-            let mut stmt = self
-                .conn
-                .prepare("SELECT id FROM edges WHERE length(id) > 12")?;
-            let rows = stmt.query_map([], |r| r.get(0))?;
-            rows.collect::<rusqlite::Result<_>>()?
-        };
-        if legacy_nodes.is_empty() && legacy_edges.is_empty() {
-            return Ok(());
-        }
+    /// Drop every stored vector and re-shape vector storage for `dim`-wide
+    /// embeddings. The engine calls this only inside the guarded re-embed
+    /// that immediately repopulates the vectors (model swap, PLAN §7A).
+    fn reset_vectors(&self, dim: usize) -> Result<()>;
 
-        // Endpoint rewrites would trip the edges→nodes FK mid-flight; defer
-        // enforcement to commit (transaction-scoped, resets automatically).
-        self.conn.execute_batch("PRAGMA defer_foreign_keys=ON;")?;
-        let tx = self.conn.unchecked_transaction()?;
-        for old in &legacy_nodes {
-            let new = crate::id::new_id();
-            tx.execute("UPDATE nodes SET id=?1 WHERE id=?2", params![new, old])?;
-            tx.execute(
-                "UPDATE edges SET from_id=?1 WHERE from_id=?2",
-                params![new, old],
-            )?;
-            tx.execute(
-                "UPDATE edges SET to_id=?1 WHERE to_id=?2",
-                params![new, old],
-            )?;
-            // vec0 doesn't support PK updates: move the stored vector instead.
-            let embedding: Option<Vec<u8>> = tx
-                .query_row(
-                    "SELECT embedding FROM vec_nodes WHERE node_id=?1",
-                    [old],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if let Some(blob) = embedding {
-                tx.execute("DELETE FROM vec_nodes WHERE node_id=?1", [old])?;
-                tx.execute(
-                    "INSERT INTO vec_nodes(node_id, embedding) VALUES (?1, ?2)",
-                    params![new, blob],
-                )?;
-            }
-        }
-        for old in &legacy_edges {
-            tx.execute(
-                "UPDATE edges SET id=?1 WHERE id=?2",
-                params![crate::id::new_id(), old],
-            )?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
+    /// Backend-neutral counts for `/system` and doctor.
+    fn stats(&self) -> Result<StoreStats>;
 
-    /// Escape hatch for the rag module to add the sqlite-vec table / queries.
-    pub fn conn(&self) -> &Connection {
-        &self.conn
-    }
+    /// Backend-reported integrity (SQLite: journal mode + quick_check).
+    fn health(&self) -> Result<StoreHealth>;
 
     // ---- nodes -----------------------------------------------------------
 
-    pub fn add_node(&self, n: NewNode) -> Result<Node> {
-        let id = crate::id::new_id();
-        let created = now();
-        let title = crate::redact::scrub(&n.title);
-        let body = n.body.as_deref().map(crate::redact::scrub);
-        let code_refs = serde_json::to_string(&n.code_refs)?;
-        let tags = serde_json::to_string(&normalize_tags(&n.tags))?;
-        self.conn.execute(
-            "INSERT INTO nodes
-               (id, type, title, body, durability, source, session_id,
-                created_at, valid_from, valid_until, status, code_refs, tags, last_seen, approved_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
-            params![
-                id,
-                n.node_type.as_str(),
-                title,
-                body,
-                n.durability.as_str(),
-                n.source.as_str(),
-                n.session_id,
-                created,
-                created,
-                Option::<i64>::None,
-                n.status.map(NodeStatus::as_str),
-                code_refs,
-                tags,
-                Option::<i64>::None,
-                // User-authored knowledge is approved by construction.
-                (n.source == Source::User).then_some(created),
-            ],
-        )?;
-        // Trust anchors at created_at until a deliberate act confirms the node.
-        self.get_node(&id)?.ok_or_else(|| Error::NotFound(id))
-    }
-
-    pub fn get_node(&self, id: &str) -> Result<Option<Node>> {
-        let sql = format!("{NODE_SELECT} WHERE id=?1");
-        Ok(self.conn.query_row(&sql, [id], row_to_node).optional()?)
-    }
-
-    pub fn update_node(&self, id: &str, p: NodePatch) -> Result<Node> {
-        let mut sets: Vec<&str> = Vec::new();
-        let mut vals: Vec<Box<dyn ToSql>> = Vec::new();
-        if let Some(v) = p.node_type {
-            sets.push("type=?");
-            vals.push(Box::new(v.as_str().to_string()));
-        }
-        if let Some(v) = p.title {
-            sets.push("title=?");
-            vals.push(Box::new(crate::redact::scrub(&v)));
-        }
-        if let Some(v) = p.body {
-            sets.push("body=?");
-            vals.push(Box::new(crate::redact::scrub(&v)));
-        }
-        if let Some(v) = p.durability {
-            sets.push("durability=?");
-            vals.push(Box::new(v.as_str().to_string()));
-        }
-        if let Some(v) = p.status {
-            sets.push("status=?");
-            vals.push(Box::new(v.as_str().to_string()));
-        }
-        if let Some(v) = p.valid_until {
-            sets.push("valid_until=?");
-            vals.push(Box::new(v));
-        }
-        if let Some(v) = p.code_refs {
-            sets.push("code_refs=?");
-            vals.push(Box::new(serde_json::to_string(&v)?));
-        }
-        if let Some(v) = p.tags {
-            sets.push("tags=?");
-            vals.push(Box::new(serde_json::to_string(&normalize_tags(&v))?));
-        }
-        // A deliberate update is re-validation: it confirms the node (the
-        // unapproved trust anchor) and clears any evidence demotion. This —
-        // not retrieval — is what refreshes trust.
-        let ts = now();
-        sets.push("last_seen=?");
-        vals.push(Box::new(ts));
-        sets.push("confirmed_at=?");
-        vals.push(Box::new(ts));
-        sets.push("demoted_at=NULL");
-
-        let sql = format!("UPDATE nodes SET {} WHERE id=?", sets.join(", "));
-        vals.push(Box::new(id.to_string()));
-        let bound: Vec<&dyn ToSql> = vals.iter().map(|b| b.as_ref()).collect();
-        self.conn.execute(&sql, bound.as_slice())?;
-        self.get_node(id)?
-            .ok_or_else(|| Error::NotFound(id.to_string()))
-    }
-
-    /// Stamp an explicit approval: trust restarts at its ceiling (and holds
-    /// there on stable knowledge until evidence says otherwise). Re-approving
+    fn add_node(&self, n: NewNode) -> Result<Node>;
+    fn get_node(&self, id: &str) -> Result<Option<Node>>;
+    fn update_node(&self, id: &str, p: NodePatch) -> Result<Node>;
+    /// Stamp an explicit approval: trust restarts at its ceiling. Re-approving
     /// refreshes the stamp; approval also clears any evidence demotion.
-    pub fn approve(&self, id: &str) -> Result<Node> {
-        let ts = now();
-        self.conn.execute(
-            "UPDATE nodes SET approved_at=?1, last_seen=?1, confirmed_at=?1, demoted_at=NULL \
-             WHERE id=?2",
-            params![ts, id],
-        )?;
-        self.get_node(id)?
-            .ok_or_else(|| Error::NotFound(id.to_string()))
-    }
-
+    fn approve(&self, id: &str) -> Result<Node>;
     /// Withdraw an approval: trust falls back to the confirmed/created anchor.
     /// Also clears any pin — revoking is the "undo my endorsements" gesture.
-    pub fn revoke_approval(&self, id: &str) -> Result<Node> {
-        self.conn.execute(
-            "UPDATE nodes SET approved_at=NULL, trust_override=NULL WHERE id=?1",
-            [id],
-        )?;
-        self.get_node(id)?
-            .ok_or_else(|| Error::NotFound(id.to_string()))
-    }
-
-    /// Set (or clear, with `None`) the user's constant-trust pin. Values are
-    /// clamped to 0..=1; pin proper is 1.0.
-    pub fn set_trust_override(&self, id: &str, value: Option<f64>) -> Result<Node> {
-        self.conn.execute(
-            "UPDATE nodes SET trust_override=?1 WHERE id=?2",
-            params![value.map(|v| v.clamp(0.0, 1.0)), id],
-        )?;
-        self.get_node(id)?
-            .ok_or_else(|| Error::NotFound(id.to_string()))
-    }
-
-    /// Stamp contradicting evidence on a node — the event that starts the
-    /// decay ramp on stable knowledge. No-op when already demoted (the first
-    /// evidence started the clock) or pinned (a human said "forever"; the
-    /// contradiction still surfaces in review, but only a human demotes a
-    /// pin). Returns whether the stamp landed.
-    pub fn demote(&self, id: &str, ts: i64) -> Result<bool> {
-        let n = self.conn.execute(
-            "UPDATE nodes SET demoted_at=?1 \
-             WHERE id=?2 AND demoted_at IS NULL AND trust_override IS NULL",
-            params![ts, id],
-        )?;
-        Ok(n > 0)
-    }
-
+    fn revoke_approval(&self, id: &str) -> Result<Node>;
+    /// Set (or clear, with `None`) the user's constant-trust pin, clamped 0..=1.
+    fn set_trust_override(&self, id: &str, value: Option<f64>) -> Result<Node>;
+    /// Stamp contradicting evidence on a node — the event that starts the decay
+    /// ramp on stable knowledge. No-op when already demoted or pinned. Returns
+    /// whether the stamp landed.
+    fn demote(&self, id: &str, ts: i64) -> Result<bool>;
     /// Withdraw a demotion (the evidence that caused it is gone).
-    pub fn clear_demotion(&self, id: &str) -> Result<Node> {
-        self.conn
-            .execute("UPDATE nodes SET demoted_at=NULL WHERE id=?1", [id])?;
-        self.get_node(id)?
-            .ok_or_else(|| Error::NotFound(id.to_string()))
-    }
+    fn clear_demotion(&self, id: &str) -> Result<Node>;
+    /// User-only hard delete; cascades the node's edges and suspects (PLAN §6B).
+    fn delete_node(&self, id: &str) -> Result<bool>;
+    /// Insert or replace a node by id, preserving its timestamps (import).
+    fn upsert_node(&self, n: &Node) -> Result<()>;
+    fn all_nodes(&self) -> Result<Vec<Node>>;
+    /// Stamp `last_seen`: retrieval surfaced these nodes. Observability only —
+    /// trust never reads this stamp.
+    fn touch(&self, ids: &[String]) -> Result<()>;
+    /// Rewrite a node's creation clock (created_at + valid_from). Maintenance
+    /// and test support — decay scenarios need a past that no live write can
+    /// produce.
+    fn backdate_node(&self, id: &str, created_at: i64) -> Result<()>;
 
-    /// User-only hard delete; cascades the node's edges (PLAN §6B).
-    pub fn delete_node(&self, id: &str) -> Result<bool> {
-        let tx = self.conn.unchecked_transaction()?;
-        tx.execute("DELETE FROM edges WHERE from_id=?1 OR to_id=?1", [id])?;
-        tx.execute("DELETE FROM suspects WHERE a_id=?1 OR b_id=?1", [id])?;
-        tx.execute("DELETE FROM vec_nodes WHERE node_id=?1", [id])?;
-        let n = tx.execute("DELETE FROM nodes WHERE id=?1", [id])?;
-        tx.commit()?;
-        Ok(n > 0)
-    }
+    // ---- edges -----------------------------------------------------------
 
-    /// Open Problems/Intents — the live worklist (PLAN Appendix A `list_open`).
-    pub fn list_open(&self, types: &[NodeType]) -> Result<Vec<Node>> {
+    fn add_edge(&self, e: NewEdge) -> Result<Edge>;
+    fn get_edge(&self, id: &str) -> Result<Option<Edge>>;
+    fn update_edge(&self, id: &str, p: EdgePatch) -> Result<Edge>;
+    fn delete_edge(&self, id: &str) -> Result<bool>;
+    fn upsert_edge(&self, e: &Edge) -> Result<()>;
+    fn edges_out(&self, node_id: &str) -> Result<Vec<Edge>>;
+    fn edges_in(&self, node_id: &str) -> Result<Vec<Edge>>;
+    fn all_edges(&self) -> Result<Vec<Edge>>;
+
+    // ---- bulk ------------------------------------------------------------
+
+    /// Import nodes (first) then edges in ONE atomic unit so references hold
+    /// and a failure rolls the whole import back. Embeddings are regenerated
+    /// by the caller (Engine) after this returns.
+    fn import_raw(&self, nodes: &[Node], edges: &[Edge]) -> Result<()>;
+    /// Archive nodes atomically: sets `valid_until`, preserving history
+    /// (supersede-not-delete, PLAN §6B).
+    fn archive_nodes(&self, ids: &[String], ts: i64) -> Result<()>;
+
+    // ---- search primitives ----------------------------------------------
+
+    /// Keyword search over title/body/tags/code_refs with per-hit snippet
+    /// (matches marked with [`SNIPPET_OPEN`]/[`SNIPPET_CLOSE`]), higher
+    /// score = better, archived nodes excluded.
+    fn search_fts(&self, query: &str, types: &[NodeType], limit: usize) -> Result<Vec<SearchHit>>;
+    /// k-nearest node ids by cosine distance (smaller = closer).
+    fn search_vec(&self, query: &[f32], k: usize) -> Result<Vec<(String, f64)>>;
+    /// Store (or replace) a node's embedding.
+    fn upsert_embedding(&self, node_id: &str, embedding: &[f32]) -> Result<()>;
+    /// The stored embedding for a node.
+    fn embedding_of(&self, node_id: &str) -> Result<Option<Vec<f32>>>;
+
+    // ---- suspects (conflict-scan queue) ---------------------------------
+
+    /// Whether the pair was ever raised, in either order and any status —
+    /// judged (confirmed/dismissed) pairs are never re-raised.
+    fn suspect_between(&self, a: &str, b: &str) -> Result<bool>;
+    /// Queue a suspected pair (caller orders newer-first: a = newer). The
+    /// optional NLI hint rides along for queue triage — it suggests, never
+    /// judges.
+    fn add_suspect(
+        &self,
+        a_id: &str,
+        b_id: &str,
+        similarity: f64,
+        hint: Option<(&str, f64)>,
+    ) -> Result<Suspect>;
+    fn get_suspect(&self, id: &str) -> Result<Option<Suspect>>;
+    fn set_suspect_status(&self, id: &str, status: SuspectStatus) -> Result<Suspect>;
+    /// Pending suspects with their endpoints' display fields, newest first.
+    /// Pairs with an archived endpoint drop out.
+    fn suspects_pending(&self) -> Result<Vec<SuspectView>>;
+    /// Every suspect row, any status — judged pairs included (they carry the
+    /// never-re-raise memory the migration must not lose).
+    fn all_suspects(&self) -> Result<Vec<Suspect>>;
+    /// Insert or replace a suspect verbatim, preserving id, timestamps and
+    /// judgment (migration / restore).
+    fn upsert_suspect(&self, s: &Suspect) -> Result<()>;
+
+    // ---- audit journal ---------------------------------------------------
+
+    /// Append one journal row. `seq` on the input is ignored (assigned by the
+    /// store); rows are only ever inserted, never updated or deleted.
+    fn add_audit(&self, e: &AuditEntry) -> Result<()>;
+    /// One journal page, newest first. Keyset pagination: pass the last seen
+    /// `seq` as `before` for the next page; `entity_id` narrows to one
+    /// node/edge's history; `total` counts under the same filter.
+    fn audit_page(
+        &self,
+        before: Option<i64>,
+        entity_id: Option<&str>,
+        limit: usize,
+    ) -> Result<AuditPage>;
+
+    // ---- tags ------------------------------------------------------------
+
+    /// Every tag in use on current nodes with count and freshness, freshest
+    /// first.
+    fn tag_stats(&self, limit: usize) -> Result<Vec<TagStat>>;
+
+    // ---- provided composites (shared behavior, pure Rust) ----------------
+
+    /// Open Problems/Intents — the live worklist.
+    fn list_open(&self, types: &[NodeType]) -> Result<Vec<Node>> {
         let types = if types.is_empty() {
             &[NodeType::Problem, NodeType::Intent][..]
         } else {
             types
         };
-        let sql = format!(
-            "{NODE_SELECT} WHERE valid_until IS NULL AND status='open' AND type IN ({}) ORDER BY created_at DESC",
-            placeholders(types.len())
-        );
-        let strs: Vec<&'static str> = types.iter().map(|t| t.as_str()).collect();
-        let params: Vec<&dyn ToSql> = strs.iter().map(|s| s as &dyn ToSql).collect();
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params.as_slice(), row_to_node)?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    // ---- raw upserts (import) -------------------------------------------
-
-    /// Insert or replace a node by id, preserving its timestamps. Used by
-    /// import; still re-runs redaction (defense in depth). `ON CONFLICT DO
-    /// UPDATE` (not `INSERT OR REPLACE`) so we don't delete-and-reinsert a row
-    /// that edges reference.
-    pub fn upsert_node(&self, n: &Node) -> Result<()> {
-        let title = crate::redact::scrub(&n.title);
-        let body = n.body.as_deref().map(crate::redact::scrub);
-        let code_refs = serde_json::to_string(&n.code_refs)?;
-        let tags = serde_json::to_string(&normalize_tags(&n.tags))?;
-        self.conn.execute(
-            "INSERT INTO nodes
-               (id, type, title, body, durability, source, session_id,
-                created_at, valid_from, valid_until, status, code_refs, tags, last_seen,
-                approved_at, confirmed_at, demoted_at, trust_override)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
-             ON CONFLICT(id) DO UPDATE SET
-               type=excluded.type, title=excluded.title, body=excluded.body,
-               durability=excluded.durability, source=excluded.source,
-               session_id=excluded.session_id, created_at=excluded.created_at,
-               valid_from=excluded.valid_from, valid_until=excluded.valid_until,
-               status=excluded.status, code_refs=excluded.code_refs,
-               tags=excluded.tags, last_seen=excluded.last_seen,
-               approved_at=excluded.approved_at, confirmed_at=excluded.confirmed_at,
-               demoted_at=excluded.demoted_at, trust_override=excluded.trust_override",
-            params![
-                n.id,
-                n.node_type.as_str(),
-                title,
-                body,
-                n.durability.as_str(),
-                n.source.as_str(),
-                n.session_id,
-                n.created_at,
-                n.valid_from,
-                n.valid_until,
-                n.status.map(NodeStatus::as_str),
-                code_refs,
-                tags,
-                n.last_seen,
-                n.approved_at,
-                n.confirmed_at,
-                n.demoted_at,
-                n.trust_override,
-            ],
-        )?;
-        Ok(())
-    }
-
-    pub fn upsert_edge(&self, e: &Edge) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO edges
-               (id, type, from_id, to_id, source, created_at,
-                confidence, strength, note, valid_from, valid_until, status)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
-             ON CONFLICT(id) DO UPDATE SET
-               type=excluded.type, from_id=excluded.from_id, to_id=excluded.to_id,
-               source=excluded.source, created_at=excluded.created_at,
-               confidence=excluded.confidence, strength=excluded.strength,
-               note=excluded.note, valid_from=excluded.valid_from,
-               valid_until=excluded.valid_until, status=excluded.status",
-            params![
-                e.id,
-                e.edge_type.as_str(),
-                e.from_id,
-                e.to_id,
-                e.source.as_str(),
-                e.created_at,
-                e.confidence,
-                e.strength,
-                e.note,
-                e.valid_from,
-                e.valid_until,
-                e.status.map(EdgeStatus::as_str),
-            ],
-        )?;
-        Ok(())
-    }
-
-    /// Import nodes (first) then edges in one transaction so FK references hold
-    /// and a failure rolls the whole import back. Embeddings are regenerated by
-    /// the caller (Engine) after this returns.
-    pub fn import_raw(&self, nodes: &[Node], edges: &[Edge]) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
-        for n in nodes {
-            self.upsert_node(n)?;
-        }
-        for e in edges {
-            self.upsert_edge(e)?;
-        }
-        tx.commit()?;
-        Ok(())
+        let mut out: Vec<Node> = self
+            .all_nodes()?
+            .into_iter()
+            .filter(|n| {
+                n.valid_until.is_none()
+                    && n.status == Some(NodeStatus::Open)
+                    && types.contains(&n.node_type)
+            })
+            .collect();
+        sort_newest_first(&mut out);
+        Ok(out)
     }
 
     /// Nodes touched by an active `conflicts-with` edge — the contradiction
-    /// surface shown in the worklist (PLAN §7).
-    pub fn nodes_in_active_conflicts(&self) -> Result<Vec<Node>> {
-        let sql = format!(
-            "{NODE_SELECT} WHERE id IN (\
-               SELECT from_id FROM edges WHERE type='conflicts-with' AND (status IS NULL OR status='active') \
-               UNION \
-               SELECT to_id FROM edges WHERE type='conflicts-with' AND (status IS NULL OR status='active')\
-             ) ORDER BY created_at DESC"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], row_to_node)?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    // ---- edges -----------------------------------------------------------
-
-    pub fn add_edge(&self, e: NewEdge) -> Result<Edge> {
-        let id = crate::id::new_id();
-        let created = now();
-        self.conn.execute(
-            "INSERT INTO edges
-               (id, type, from_id, to_id, source, created_at,
-                confidence, strength, note, valid_from, valid_until, status)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
-            params![
-                id,
-                e.edge_type.as_str(),
-                e.from_id,
-                e.to_id,
-                e.source.as_str(),
-                created,
-                e.confidence,
-                e.strength,
-                e.note,
-                created,
-                Option::<i64>::None,
-                e.status.map(EdgeStatus::as_str),
-            ],
-        )?;
-        self.get_edge(&id)?.ok_or_else(|| Error::NotFound(id))
-    }
-
-    pub fn get_edge(&self, id: &str) -> Result<Option<Edge>> {
-        Ok(self
-            .conn
-            .query_row(EDGE_SELECT, [id], row_to_edge)
-            .optional()?)
-    }
-
-    pub fn edges_out(&self, node_id: &str) -> Result<Vec<Edge>> {
-        self.edges_where("from_id", node_id)
-    }
-
-    pub fn edges_in(&self, node_id: &str) -> Result<Vec<Edge>> {
-        self.edges_where("to_id", node_id)
-    }
-
-    fn edges_where(&self, col: &str, node_id: &str) -> Result<Vec<Edge>> {
-        let base = EDGE_SELECT.rsplit_once(" WHERE ").map(|(s, _)| s).unwrap();
-        let sql = format!("{base} WHERE {col}=?1");
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([node_id], row_to_edge)?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    // ---- keyword search (FTS5) ------------------------------------------
-
-    pub fn search_fts(
-        &self,
-        query: &str,
-        types: &[NodeType],
-        limit: usize,
-    ) -> Result<Vec<SearchHit>> {
-        let fts = fts_query(query);
-        if fts.is_empty() {
-            return Ok(Vec::new());
+    /// surface shown in the worklist.
+    fn nodes_in_active_conflicts(&self) -> Result<Vec<Node>> {
+        let mut ids: Vec<String> = Vec::new();
+        for e in self.active_conflict_edges()? {
+            for id in [&e.from_id, &e.to_id] {
+                if !ids.contains(id) {
+                    ids.push(id.clone());
+                }
+            }
         }
-        let mut sql = format!(
-            "SELECT n.id, n.type, n.title, \
-                    snippet(nodes_fts, -1, '{SNIPPET_OPEN}', '{SNIPPET_CLOSE}', '…', 12) AS snip, \
-                    n.durability, n.status, bm25(nodes_fts) AS rank, \
-                    n.created_at, n.confirmed_at, n.approved_at, \
-                    n.demoted_at, n.trust_override \
-             FROM nodes_fts JOIN nodes n ON n.rowid = nodes_fts.rowid \
-             WHERE nodes_fts MATCH ?1 AND n.valid_until IS NULL",
-        );
-        if !types.is_empty() {
-            let list = types
-                .iter()
-                .map(|t| format!("'{}'", t.as_str()))
-                .collect::<Vec<_>>()
-                .join(",");
-            sql.push_str(&format!(" AND n.type IN ({list})"));
+        let mut out = Vec::new();
+        for id in ids {
+            if let Some(n) = self.get_node(&id)? {
+                out.push(n);
+            }
         }
-        sql.push_str(" ORDER BY rank LIMIT ?2");
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![fts, limit as i64], |row| {
-            let type_s: String = row.get(1)?;
-            let dur_s: String = row.get(4)?;
-            let status_s: Option<String> = row.get(5)?;
-            let rank: f64 = row.get(6)?;
-            let durability = conv(4, &dur_s, Durability::parse)?;
-            let status = status_s
-                .map(|s| conv(5, &s, NodeStatus::parse))
-                .transpose()?;
-            let trust = crate::policy::trust(
-                &crate::policy::TrustInputs {
-                    created_at: row.get(7)?,
-                    confirmed_at: row.get(8)?,
-                    approved_at: row.get(9)?,
-                    demoted_at: row.get(10)?,
-                    trust_override: row.get(11)?,
-                    durability,
-                    status,
-                },
-                now(),
-            );
-            Ok(SearchHit {
-                id: row.get(0)?,
-                node_type: conv(1, &type_s, NodeType::parse)?,
-                title: row.get(2)?,
-                snippet: row.get(3)?,
-                // bm25 returns smaller = better (negative); flip so higher = better.
-                score: -rank,
-                durability,
-                status,
-                trust,
-                stale: crate::policy::is_stale(trust),
-                neighbors: Vec::new(),
+        sort_newest_first(&mut out);
+        Ok(out)
+    }
+
+    /// Active `conflicts-with` edges — the unresolved contradiction list.
+    fn active_conflict_edges(&self) -> Result<Vec<Edge>> {
+        let mut out: Vec<Edge> = self
+            .all_edges()?
+            .into_iter()
+            .filter(|e| {
+                e.edge_type == EdgeType::ConflictsWith
+                    && matches!(e.status, None | Some(EdgeStatus::Active))
+                    && e.valid_until.is_none()
             })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+            .collect();
+        out.sort_by(|a, b| (b.created_at, &b.id).cmp(&(a.created_at, &a.id)));
+        Ok(out)
     }
 
-    // ---- whole-graph reads + traversal ----------------------------------
-
-    pub fn all_nodes(&self) -> Result<Vec<Node>> {
-        let sql = format!("{NODE_SELECT} ORDER BY created_at");
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], row_to_node)?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    /// Whether a node sits on an active `conflicts-with` edge.
+    fn has_active_conflict(&self, id: &str) -> Result<bool> {
+        let on_edge = |e: &Edge| {
+            e.edge_type == EdgeType::ConflictsWith
+                && matches!(e.status, None | Some(EdgeStatus::Active))
+        };
+        Ok(self.edges_out(id)?.iter().any(on_edge) || self.edges_in(id)?.iter().any(on_edge))
     }
 
-    pub fn all_edges(&self) -> Result<Vec<Edge>> {
-        let base = EDGE_SELECT.rsplit_once(" WHERE ").map(|(s, _)| s).unwrap();
-        let mut stmt = self.conn.prepare(base)?;
-        let rows = stmt.query_map([], row_to_edge)?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    /// Whether any edge — either direction, any type or status — connects the
+    /// pair. Linked nodes are already consciously related: not scan material.
+    fn pair_linked(&self, a: &str, b: &str) -> Result<bool> {
+        Ok(self.edges_out(a)?.iter().any(|e| e.to_id == b)
+            || self.edges_in(a)?.iter().any(|e| e.from_id == b))
     }
 
-    /// Bounded breadth-first subgraph around `from` (PLAN Appendix A `traverse`).
-    pub fn traverse(
-        &self,
-        from: &str,
-        edge_types: &[EdgeType],
-        depth: usize,
-    ) -> Result<(Vec<Node>, Vec<Edge>)> {
-        use std::collections::{HashSet, VecDeque};
-        let mut seen_nodes: HashSet<String> = HashSet::new();
-        let mut seen_edges: HashSet<String> = HashSet::new();
-        let mut nodes = Vec::new();
-        let mut edges = Vec::new();
-        let mut queue = VecDeque::new();
+    /// Active non-anchor nodes — the conflict scan's iteration set (anchor
+    /// labels are similar by nature, not by contradiction).
+    fn scannable_nodes(&self) -> Result<Vec<Node>> {
+        let mut out: Vec<Node> = self
+            .all_nodes()?
+            .into_iter()
+            .filter(|n| n.valid_until.is_none() && n.node_type != NodeType::Anchor)
+            .collect();
+        sort_newest_first(&mut out);
+        Ok(out)
+    }
 
-        if let Some(n) = self.get_node(from)? {
-            seen_nodes.insert(n.id.clone());
-            nodes.push(n);
-            queue.push_back((from.to_string(), 0usize));
-        }
-        while let Some((id, d)) = queue.pop_front() {
-            if d >= depth {
+    /// How many current (non-archived) nodes of one type exist.
+    fn count_by_type_active(&self, t: NodeType) -> Result<i64> {
+        Ok(self
+            .all_nodes()?
+            .iter()
+            .filter(|n| n.valid_until.is_none() && n.node_type == t)
+            .count() as i64)
+    }
+
+    /// Current (non-archived) nodes of one type, most trusted first. Ordered
+    /// by deliberate-act timestamps, never last_seen — otherwise the brief
+    /// would re-select whatever it briefed yesterday (inclusion stamps
+    /// last_seen), a self-reinforcing loop.
+    fn nodes_by_type_active(&self, t: NodeType, limit: usize) -> Result<Vec<Node>> {
+        let mut out: Vec<Node> = self
+            .all_nodes()?
+            .into_iter()
+            .filter(|n| n.valid_until.is_none() && n.node_type == t)
+            .collect();
+        out.sort_by(|a, b| {
+            let key = |n: &Node| {
+                (
+                    n.trust_override.is_some(),
+                    n.approved_at.is_some(),
+                    n.approved_at.or(n.confirmed_at).unwrap_or(n.created_at),
+                    n.id.clone(),
+                )
+            };
+            key(b).cmp(&key(a))
+        });
+        out.truncate(limit);
+        Ok(out)
+    }
+
+    /// Most recently created current nodes (any type); id breaks second-level
+    /// timestamp ties by insertion order (ids are time-sortable).
+    fn recent_nodes(&self, limit: usize) -> Result<Vec<Node>> {
+        let mut out: Vec<Node> = self
+            .all_nodes()?
+            .into_iter()
+            .filter(|n| n.valid_until.is_none())
+            .collect();
+        sort_newest_first(&mut out);
+        out.truncate(limit);
+        Ok(out)
+    }
+
+    /// Nodes the decay pass would archive at `now_ts`: active, Claude-authored,
+    /// never approved, unpinned, episodic/volatile, and stale for longer than
+    /// `ttl_secs` (policy::stale_since). Stable durability, pins, and
+    /// user/approved knowledge never auto-archive.
+    fn decay_candidates(&self, ttl_secs: i64, now_ts: i64) -> Result<Vec<Node>> {
+        let mut pool: Vec<Node> = self
+            .all_nodes()?
+            .into_iter()
+            .filter(|n| {
+                n.valid_until.is_none()
+                    && n.source == Source::Claude
+                    && n.approved_at.is_none()
+                    && n.trust_override.is_none()
+                    && matches!(n.durability, Durability::Episodic | Durability::Volatile)
+            })
+            .collect();
+        pool.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+        let mut out = Vec::new();
+        for node in pool {
+            let Some(since) = crate::policy::stale_since(&node.trust_inputs()) else {
                 continue;
-            }
-            let mut incident = self.edges_out(&id)?;
-            incident.extend(self.edges_in(&id)?);
-            for e in incident {
-                if !edge_types.is_empty() && !edge_types.contains(&e.edge_type) {
-                    continue;
-                }
-                let other = if e.from_id == id {
-                    e.to_id.clone()
-                } else {
-                    e.from_id.clone()
-                };
-                if seen_edges.insert(e.id.clone()) {
-                    edges.push(e);
-                }
-                if seen_nodes.insert(other.clone()) {
-                    if let Some(n) = self.get_node(&other)? {
-                        nodes.push(n);
-                    }
-                    queue.push_back((other, d + 1));
-                }
+            };
+            if now_ts - since >= ttl_secs {
+                out.push(node);
             }
         }
-        Ok((nodes, edges))
-    }
-
-    // ---- vector + hybrid search -----------------------------------------
-
-    /// Store (or replace) a node's embedding. vec0 has no UPSERT, so delete-then-insert.
-    pub fn upsert_embedding(&self, node_id: &str, embedding: &[f32]) -> Result<()> {
-        let json = serde_json::to_string(embedding)?;
-        let tx = self.conn.unchecked_transaction()?;
-        tx.execute("DELETE FROM vec_nodes WHERE node_id = ?1", [node_id])?;
-        tx.execute(
-            "INSERT INTO vec_nodes(node_id, embedding) VALUES (?1, ?2)",
-            params![node_id, json],
-        )?;
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// k-nearest node ids by cosine distance (smaller = closer).
-    pub fn search_vec(&self, query: &[f32], k: usize) -> Result<Vec<(String, f64)>> {
-        let json = serde_json::to_string(query)?;
-        let mut stmt = self.conn.prepare(
-            "SELECT node_id, distance FROM vec_nodes \
-             WHERE embedding MATCH ?1 AND k = ?2 ORDER BY distance",
-        )?;
-        let rows = stmt.query_map(params![json, k as i64], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        Ok(out)
     }
 
     /// Hybrid retrieval: blend normalized keyword (bm25) and vector (cosine)
@@ -762,7 +367,7 @@ impl Store {
     /// high-confidence). Trust multiplies relevance rather than adding to it,
     /// so an irrelevant-but-trusted node can't outrank an actual match —
     /// PLAN §6A retrieval.
-    pub fn search_hybrid(
+    fn search_hybrid(
         &self,
         query: &str,
         query_vec: Option<&[f32]>,
@@ -816,7 +421,7 @@ impl Store {
             if relevance <= 0.0 {
                 continue;
             }
-            let age = crate::now() - node.created_at;
+            let age = now() - node.created_at;
             let score = relevance * (1.0 + trust_boost(&node)) * recency_factor(age);
             let snippet = snippets
                 .remove(id.as_str())
@@ -832,6 +437,7 @@ impl Store {
                 trust: node.trust,
                 stale: node.stale,
                 neighbors: Vec::new(),
+                project: None,
             });
         }
         hits.sort_by(|a, b| {
@@ -851,7 +457,7 @@ impl Store {
 
     /// A hit's 1-hop subgraph as compact refs, `conflicts-with` then `replaces`
     /// first (the edges that make retrieval *active*), capped.
-    pub fn neighbors(&self, id: &str, cap: usize) -> Result<Vec<NeighborRef>> {
+    fn neighbors(&self, id: &str, cap: usize) -> Result<Vec<NeighborRef>> {
         let mut refs: Vec<NeighborRef> = Vec::new();
         let incident = self
             .edges_out(id)?
@@ -887,384 +493,59 @@ impl Store {
         Ok(refs)
     }
 
-    /// Whether a node sits on an active `conflicts-with` edge.
-    pub fn has_active_conflict(&self, id: &str) -> Result<bool> {
-        let n: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM edges WHERE type='conflicts-with' \
-             AND (status IS NULL OR status='active') AND (from_id=?1 OR to_id=?1)",
-            [id],
-            |r| r.get(0),
-        )?;
-        Ok(n > 0)
-    }
-
-    // ---- conflict scan (PLAN §7) -------------------------------------------
-
-    /// The stored embedding for a node (vec0 keeps little-endian f32 bytes).
-    pub fn embedding_of(&self, node_id: &str) -> Result<Option<Vec<f32>>> {
-        let blob: Option<Vec<u8>> = self
-            .conn
-            .query_row(
-                "SELECT embedding FROM vec_nodes WHERE node_id=?1",
-                [node_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        Ok(blob.map(|b| {
-            b.chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                .collect()
-        }))
-    }
-
-    /// Whether any edge — either direction, any type or status — connects the
-    /// pair. Linked nodes are already consciously related: not scan material.
-    pub fn pair_linked(&self, a: &str, b: &str) -> Result<bool> {
-        let n: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM edges \
-             WHERE (from_id=?1 AND to_id=?2) OR (from_id=?2 AND to_id=?1)",
-            params![a, b],
-            |r| r.get(0),
-        )?;
-        Ok(n > 0)
-    }
-
-    /// Whether the pair was ever raised, in either order and any status —
-    /// judged (confirmed/dismissed) pairs are never re-raised.
-    pub fn suspect_between(&self, a: &str, b: &str) -> Result<bool> {
-        let n: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM suspects \
-             WHERE (a_id=?1 AND b_id=?2) OR (a_id=?2 AND b_id=?1)",
-            params![a, b],
-            |r| r.get(0),
-        )?;
-        Ok(n > 0)
-    }
-
-    /// Queue a suspected pair (caller orders newer-first: a = newer). The
-    /// optional NLI hint rides along for queue triage — it suggests, never
-    /// judges.
-    pub fn add_suspect(
+    /// Bounded breadth-first subgraph around `from` (PLAN Appendix A `traverse`).
+    fn traverse(
         &self,
-        a_id: &str,
-        b_id: &str,
-        similarity: f64,
-        hint: Option<(&str, f64)>,
-    ) -> Result<Suspect> {
-        let id = crate::id::new_id();
-        self.conn.execute(
-            "INSERT INTO suspects (id, a_id, b_id, similarity, created_at, status, nli_label, nli_score)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'suspected', ?6, ?7)",
-            params![
-                id,
-                a_id,
-                b_id,
-                similarity,
-                now(),
-                hint.map(|(l, _)| l),
-                hint.map(|(_, s)| s)
-            ],
-        )?;
-        self.get_suspect(&id)?.ok_or(Error::NotFound(id))
-    }
+        from: &str,
+        edge_types: &[EdgeType],
+        depth: usize,
+    ) -> Result<(Vec<Node>, Vec<Edge>)> {
+        use std::collections::{HashSet, VecDeque};
+        let mut seen_nodes: HashSet<String> = HashSet::new();
+        let mut seen_edges: HashSet<String> = HashSet::new();
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        let mut queue = VecDeque::new();
 
-    pub fn get_suspect(&self, id: &str) -> Result<Option<Suspect>> {
-        Ok(self
-            .conn
-            .query_row(
-                "SELECT id, a_id, b_id, similarity, created_at, status, nli_label, nli_score \
-                 FROM suspects WHERE id=?1",
-                [id],
-                row_to_suspect,
-            )
-            .optional()?)
-    }
-
-    pub fn set_suspect_status(&self, id: &str, status: SuspectStatus) -> Result<Suspect> {
-        self.conn.execute(
-            "UPDATE suspects SET status=?1 WHERE id=?2",
-            params![status.as_str(), id],
-        )?;
-        self.get_suspect(id)?
-            .ok_or_else(|| Error::NotFound(id.to_string()))
-    }
-
-    /// Pending suspects with their endpoints' display fields, newest first.
-    /// Pairs with an archived endpoint drop out — superseding one side settles
-    /// the question.
-    pub fn suspects_pending(&self) -> Result<Vec<SuspectView>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT s.id, s.similarity, s.created_at, s.nli_label, s.nli_score,
-                    a.id, a.type, a.title, b.id, b.type, b.title
-             FROM suspects s
-             JOIN nodes a ON a.id = s.a_id
-             JOIN nodes b ON b.id = s.b_id
-             WHERE s.status='suspected'
-               AND a.valid_until IS NULL AND b.valid_until IS NULL
-             ORDER BY s.created_at DESC",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            let a_type: String = r.get(6)?;
-            let b_type: String = r.get(9)?;
-            Ok(SuspectView {
-                id: r.get(0)?,
-                similarity: r.get(1)?,
-                created_at: r.get(2)?,
-                nli_label: r.get(3)?,
-                nli_score: r.get(4)?,
-                a: SuspectEndpoint {
-                    id: r.get(5)?,
-                    node_type: conv(6, &a_type, NodeType::parse)?,
-                    title: r.get(7)?,
-                },
-                b: SuspectEndpoint {
-                    id: r.get(8)?,
-                    node_type: conv(9, &b_type, NodeType::parse)?,
-                    title: r.get(10)?,
-                },
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    /// Active non-anchor nodes — the conflict scan's iteration set (anchor
-    /// labels are similar by nature, not by contradiction).
-    pub fn scannable_nodes(&self) -> Result<Vec<Node>> {
-        let sql = format!(
-            "{NODE_SELECT} WHERE valid_until IS NULL AND type != 'Anchor' ORDER BY created_at DESC"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], row_to_node)?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    // ---- decay (PLAN §6B) ----------------------------------------------------
-
-    /// Nodes the decay pass would archive at `now_ts`: active, Claude-authored,
-    /// never approved, unpinned, episodic/volatile, and stale for longer than
-    /// `ttl_secs` (policy::stale_since). Stable durability, pins, and
-    /// user/approved knowledge never auto-archive.
-    pub fn decay_candidates(&self, ttl_secs: i64, now_ts: i64) -> Result<Vec<Node>> {
-        let sql = format!(
-            "{NODE_SELECT} WHERE valid_until IS NULL AND source='claude' \
-             AND approved_at IS NULL AND trust_override IS NULL \
-             AND durability IN ('episodic','volatile') \
-             ORDER BY created_at"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], row_to_node)?;
-        let mut out = Vec::new();
-        for node in rows {
-            let node = node?;
-            let Some(since) = crate::policy::stale_since(&node.trust_inputs()) else {
+        if let Some(n) = self.get_node(from)? {
+            seen_nodes.insert(n.id.clone());
+            nodes.push(n);
+            queue.push_back((from.to_string(), 0usize));
+        }
+        while let Some((id, d)) = queue.pop_front() {
+            if d >= depth {
                 continue;
-            };
-            if now_ts - since >= ttl_secs {
-                out.push(node);
+            }
+            let mut incident = self.edges_out(&id)?;
+            incident.extend(self.edges_in(&id)?);
+            for e in incident {
+                if !edge_types.is_empty() && !edge_types.contains(&e.edge_type) {
+                    continue;
+                }
+                let other = if e.from_id == id {
+                    e.to_id.clone()
+                } else {
+                    e.from_id.clone()
+                };
+                if seen_edges.insert(e.id.clone()) {
+                    edges.push(e);
+                }
+                if seen_nodes.insert(other.clone()) {
+                    if let Some(n) = self.get_node(&other)? {
+                        nodes.push(n);
+                    }
+                    queue.push_back((other, d + 1));
+                }
             }
         }
-        Ok(out)
+        Ok((nodes, edges))
     }
+}
 
-    /// Archive nodes in one transaction: sets `valid_until`, preserving history
-    /// (supersede-not-delete, PLAN §6B).
-    pub fn archive_nodes(&self, ids: &[String], ts: i64) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
-        for id in ids {
-            tx.execute(
-                "UPDATE nodes SET valid_until=?1 WHERE id=?2 AND valid_until IS NULL",
-                params![ts, id],
-            )?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    pub fn update_edge(&self, id: &str, p: EdgePatch) -> Result<Edge> {
-        let mut sets: Vec<&str> = Vec::new();
-        let mut vals: Vec<Box<dyn ToSql>> = Vec::new();
-        if let Some(v) = p.edge_type {
-            sets.push("type=?");
-            vals.push(Box::new(v.as_str().to_string()));
-        }
-        if let Some(v) = p.status {
-            sets.push("status=?");
-            vals.push(Box::new(v.as_str().to_string()));
-        }
-        if let Some(v) = p.note {
-            sets.push("note=?");
-            vals.push(Box::new(v));
-        }
-        if let Some(v) = p.confidence {
-            sets.push("confidence=?");
-            vals.push(Box::new(v));
-        }
-        if let Some(v) = p.strength {
-            sets.push("strength=?");
-            vals.push(Box::new(v));
-        }
-        if !sets.is_empty() {
-            let sql = format!("UPDATE edges SET {} WHERE id=?", sets.join(", "));
-            vals.push(Box::new(id.to_string()));
-            let bound: Vec<&dyn ToSql> = vals.iter().map(|b| b.as_ref()).collect();
-            self.conn.execute(&sql, bound.as_slice())?;
-        }
-        self.get_edge(id)?
-            .ok_or_else(|| Error::NotFound(id.to_string()))
-    }
-
-    pub fn delete_edge(&self, id: &str) -> Result<bool> {
-        Ok(self.conn.execute("DELETE FROM edges WHERE id=?1", [id])? > 0)
-    }
-
-    // ---- audit journal (PLAN §10) -----------------------------------------
-
-    /// Append one journal row. `seq` on the input is ignored (assigned by
-    /// SQLite); rows are only ever inserted, never updated or deleted.
-    pub fn add_audit(&self, e: &AuditEntry) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO audit
-               (ts, action, entity, entity_id, title, before_json, after_json,
-                origin, session_id, cwd, pid, version)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
-            params![
-                e.ts,
-                e.action,
-                e.entity,
-                e.entity_id,
-                e.title,
-                e.before.as_ref().map(serde_json::Value::to_string),
-                e.after.as_ref().map(serde_json::Value::to_string),
-                e.origin,
-                e.session_id,
-                e.cwd,
-                e.pid,
-                e.version,
-            ],
-        )?;
-        Ok(())
-    }
-
-    /// One journal page, newest first. Keyset pagination: pass the last seen
-    /// `seq` as `before` for the next page. `entity_id` narrows to one
-    /// node/edge's history; `total` counts under the same filter.
-    pub fn audit_page(
-        &self,
-        before: Option<i64>,
-        entity_id: Option<&str>,
-        limit: usize,
-    ) -> Result<AuditPage> {
-        let total: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM audit WHERE (?1 IS NULL OR entity_id = ?1)",
-            params![entity_id],
-            |r| r.get(0),
-        )?;
-        let mut stmt = self.conn.prepare(
-            "SELECT seq, ts, action, entity, entity_id, title, before_json,
-                    after_json, origin, session_id, cwd, pid, version
-             FROM audit
-             WHERE (?1 IS NULL OR seq < ?1) AND (?2 IS NULL OR entity_id = ?2)
-             ORDER BY seq DESC LIMIT ?3",
-        )?;
-        let rows = stmt.query_map(params![before, entity_id, limit as i64], row_to_audit)?;
-        Ok(AuditPage {
-            entries: rows.collect::<rusqlite::Result<_>>()?,
-            total,
-        })
-    }
-
-    // ---- brief queries ----------------------------------------------------
-
-    /// How many current (non-archived) nodes of one type exist — the brief's
-    /// overflow counts.
-    pub fn count_by_type_active(&self, t: NodeType) -> Result<i64> {
-        Ok(self.conn.query_row(
-            "SELECT COUNT(*) FROM nodes WHERE valid_until IS NULL AND type=?1",
-            [t.as_str()],
-            |r| r.get(0),
-        )?)
-    }
-
-    /// Current (non-archived) nodes of one type, most trusted first. Ordered
-    /// by deliberate-act timestamps, never last_seen — otherwise the brief
-    /// would re-select whatever it briefed yesterday (inclusion stamps
-    /// last_seen), a self-reinforcing loop.
-    pub fn nodes_by_type_active(&self, t: NodeType, limit: usize) -> Result<Vec<Node>> {
-        let sql = format!(
-            "{NODE_SELECT} WHERE valid_until IS NULL AND type=?1 \
-             ORDER BY (trust_override IS NOT NULL) DESC, (approved_at IS NOT NULL) DESC, \
-             COALESCE(approved_at, confirmed_at, created_at) DESC, rowid DESC LIMIT ?2"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![t.as_str(), limit as i64], row_to_node)?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    /// Active `conflicts-with` edges — the unresolved contradiction list.
-    pub fn active_conflict_edges(&self) -> Result<Vec<Edge>> {
-        let base = EDGE_SELECT.rsplit_once(" WHERE ").map(|(s, _)| s).unwrap();
-        let sql = format!(
-            "{base} WHERE type='conflicts-with' AND (status IS NULL OR status='active') \
-             AND valid_until IS NULL ORDER BY created_at DESC"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], row_to_edge)?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    /// Most recently created current nodes (any type). `created_at` has
-    /// second granularity, so rowid breaks ties by insertion order.
-    pub fn recent_nodes(&self, limit: usize) -> Result<Vec<Node>> {
-        let sql = format!(
-            "{NODE_SELECT} WHERE valid_until IS NULL \
-             ORDER BY created_at DESC, rowid DESC LIMIT ?1"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([limit as i64], row_to_node)?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    /// Every tag in use on current nodes with count and freshness, freshest
-    /// first (PLAN §10 tags). "Used" leans on the trust clock: a node touched
-    /// by write or retrieval refreshes its tags' recency too.
-    pub fn tag_stats(&self, limit: usize) -> Result<Vec<TagStat>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT je.value, COUNT(*), MAX(COALESCE(n.last_seen, n.created_at)) \
-             FROM nodes n, json_each(COALESCE(n.tags, '[]')) je \
-             WHERE n.valid_until IS NULL \
-             GROUP BY je.value \
-             ORDER BY 3 DESC, 2 DESC LIMIT ?1",
-        )?;
-        let rows = stmt.query_map([limit as i64], |r| {
-            Ok(TagStat {
-                tag: r.get(0)?,
-                count: r.get(1)?,
-                last_used: r.get(2)?,
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    /// Stamp `last_seen`: retrieval surfaced these nodes (search hit, brief
-    /// inclusion). Observability only — retrieval proves a note was findable,
-    /// not that it is true, so trust never reads this stamp.
-    pub fn touch(&self, ids: &[String]) -> Result<()> {
-        if ids.is_empty() {
-            return Ok(());
-        }
-        let sql = format!(
-            "UPDATE nodes SET last_seen=? WHERE id IN ({})",
-            placeholders(ids.len())
-        );
-        let ts = now();
-        let mut vals: Vec<&dyn ToSql> = Vec::with_capacity(ids.len() + 1);
-        vals.push(&ts);
-        for id in ids {
-            vals.push(id);
-        }
-        self.conn.execute(&sql, vals.as_slice())?;
-        Ok(())
-    }
+/// Newest first by (created_at, id) — ids are time-sortable, so the id
+/// tie-break matches insertion order across backends.
+fn sort_newest_first(nodes: &mut [Node]) {
+    nodes.sort_by(|a, b| (b.created_at, &b.id).cmp(&(a.created_at, &a.id)));
 }
 
 /// Newness multiplier for hybrid search, in [1.0, 1.0 + SEARCH_RECENCY_BOOST]:
@@ -1304,17 +585,10 @@ fn trust_boost(node: &Node) -> f64 {
     b
 }
 
-fn excerpt(node: &Node) -> String {
+pub(crate) fn excerpt(node: &Node) -> String {
     let text = node.body.as_deref().unwrap_or(&node.title);
     text.chars().take(160).collect()
 }
-
-const NODE_SELECT: &str = "SELECT id, type, title, body, durability, source, session_id, \
-     created_at, valid_from, valid_until, status, code_refs, last_seen, approved_at, tags, \
-     confirmed_at, demoted_at, trust_override FROM nodes";
-
-const EDGE_SELECT: &str = "SELECT id, type, from_id, to_id, source, created_at, \
-     confidence, strength, note, valid_from, valid_until, status FROM edges WHERE id=?1";
 
 /// Canonical tag form: kebab-cased lowercase, deduped, empties dropped — so
 /// "Phase 1" and "phase-1" are one tag and the pane's dropdown stays clean.
@@ -1331,160 +605,4 @@ pub fn normalize_tags(tags: &[String]) -> Vec<String> {
         }
     }
     out
-}
-
-fn placeholders(n: usize) -> String {
-    std::iter::repeat_n("?", n).collect::<Vec<_>>().join(",")
-}
-
-fn column_exists(conn: &Connection, table: &str, col: &str) -> Result<bool> {
-    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
-    let mut rows = stmt.query([])?;
-    while let Some(row) = rows.next()? {
-        if row.get::<_, String>(1)? == col {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-/// Map a parse error into a column-conversion error so query closures stay `?`-clean.
-fn conv<T>(idx: usize, val: &str, f: impl Fn(&str) -> Result<T>) -> rusqlite::Result<T> {
-    f(val).map_err(|e| rusqlite::Error::FromSqlConversionFailure(idx, Type::Text, Box::new(e)))
-}
-
-fn row_to_node(row: &Row) -> rusqlite::Result<Node> {
-    let type_s: String = row.get(1)?;
-    let dur_s: String = row.get(4)?;
-    let src_s: String = row.get(5)?;
-    let status_s: Option<String> = row.get(10)?;
-    let refs_s: Option<String> = row.get(11)?;
-    let created_at: i64 = row.get(7)?;
-    let last_seen: Option<i64> = row.get(12)?;
-    let approved_at: Option<i64> = row.get(13)?;
-    let tags_s: Option<String> = row.get(14)?;
-    let confirmed_at: Option<i64> = row.get(15)?;
-    let demoted_at: Option<i64> = row.get(16)?;
-    let trust_override: Option<f64> = row.get(17)?;
-    let durability = conv(4, &dur_s, Durability::parse)?;
-    let status = status_s
-        .map(|s| conv(10, &s, NodeStatus::parse))
-        .transpose()?;
-    let trust = crate::policy::trust(
-        &crate::policy::TrustInputs {
-            created_at,
-            confirmed_at,
-            approved_at,
-            demoted_at,
-            trust_override,
-            durability,
-            status,
-        },
-        now(),
-    );
-    Ok(Node {
-        id: row.get(0)?,
-        node_type: conv(1, &type_s, NodeType::parse)?,
-        title: row.get(2)?,
-        body: row.get(3)?,
-        durability,
-        source: conv(5, &src_s, Source::parse)?,
-        session_id: row.get(6)?,
-        created_at,
-        valid_from: row.get(8)?,
-        valid_until: row.get(9)?,
-        status,
-        last_seen,
-        confirmed_at,
-        approved_at,
-        demoted_at,
-        trust_override,
-        trust,
-        stale: crate::policy::is_stale(trust),
-        code_refs: match refs_s {
-            Some(s) => serde_json::from_str(&s).map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(11, Type::Text, Box::new(e))
-            })?,
-            None => Vec::new(),
-        },
-        tags: match tags_s {
-            Some(s) => serde_json::from_str(&s).map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(14, Type::Text, Box::new(e))
-            })?,
-            None => Vec::new(),
-        },
-    })
-}
-
-fn row_to_audit(row: &Row) -> rusqlite::Result<AuditEntry> {
-    let parse_json = |idx: usize, s: Option<String>| {
-        s.map(|s| {
-            serde_json::from_str(&s).map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(idx, Type::Text, Box::new(e))
-            })
-        })
-        .transpose()
-    };
-    Ok(AuditEntry {
-        seq: row.get(0)?,
-        ts: row.get(1)?,
-        action: row.get(2)?,
-        entity: row.get(3)?,
-        entity_id: row.get(4)?,
-        title: row.get(5)?,
-        before: parse_json(6, row.get(6)?)?,
-        after: parse_json(7, row.get(7)?)?,
-        origin: row.get(8)?,
-        session_id: row.get(9)?,
-        cwd: row.get(10)?,
-        pid: row.get(11)?,
-        version: row.get(12)?,
-    })
-}
-
-fn row_to_suspect(row: &Row) -> rusqlite::Result<Suspect> {
-    let status_s: String = row.get(5)?;
-    Ok(Suspect {
-        id: row.get(0)?,
-        a_id: row.get(1)?,
-        b_id: row.get(2)?,
-        similarity: row.get(3)?,
-        created_at: row.get(4)?,
-        status: conv(5, &status_s, SuspectStatus::parse)?,
-        nli_label: row.get(6)?,
-        nli_score: row.get(7)?,
-    })
-}
-
-fn row_to_edge(row: &Row) -> rusqlite::Result<Edge> {
-    let type_s: String = row.get(1)?;
-    let src_s: String = row.get(4)?;
-    let status_s: Option<String> = row.get(11)?;
-    Ok(Edge {
-        id: row.get(0)?,
-        edge_type: conv(1, &type_s, EdgeType::parse)?,
-        from_id: row.get(2)?,
-        to_id: row.get(3)?,
-        source: conv(4, &src_s, Source::parse)?,
-        created_at: row.get(5)?,
-        confidence: row.get(6)?,
-        strength: row.get(7)?,
-        note: row.get(8)?,
-        valid_from: row.get(9)?,
-        valid_until: row.get(10)?,
-        status: status_s
-            .map(|s| conv(11, &s, EdgeStatus::parse))
-            .transpose()?,
-    })
-}
-
-/// Turn arbitrary user text into a safe FTS5 MATCH expression: each whitespace
-/// token becomes a quoted term, OR-ed. OR (not the default AND) because natural
-/// multi-word queries rarely contain *every* term — bm25 already ranks docs
-/// matching more terms higher, so OR keeps recall without hurting precision.
-fn fts_query(q: &str) -> String {
-    q.split_whitespace()
-        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
-        .collect::<Vec<_>>()
-        .join(" OR ")
 }

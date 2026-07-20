@@ -7,10 +7,23 @@ rust-version.workspace = true
 
 [dependencies]
 engram-core = { workspace = true }
-rmcp = { version = "2", features = ["server", "macros", "transport-io"] }
+rmcp = { version = "2", features = [
+    "server",
+    "client",
+    "macros",
+    "transport-io",
+    # The daemon-hosted MCP endpoint (PLAN §0 transport migration): the daemon
+    # mounts /mcp; `engram-alpha mcp` bridges stdio to it so exactly one
+    # process holds the store (redb's lock demands it — PLAN §7C thin clients).
+    "transport-streamable-http-server",
+    "transport-streamable-http-client-reqwest",
+] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = "1"
 anyhow = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+axum = "0.8"

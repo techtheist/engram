@@ -53,6 +53,17 @@ Subagents share your MCP connection: any subagent with tool access can `search`,
 - **Recall flows down.** Do the recall yourself and pass the relevant node ids/excerpts into the subagent's prompt; for a research subagent, telling it to call `brief` first is fine.
 - **Capture flows up.** Prefer having subagents *return* findings for you to capture at the stopping point — several parallel agents each writing their own overlapping notes is how the suspect queue fills with noise. If a long-running subagent must write its own findings, put the verdict protocol in its prompt explicitly (merge on `matched`, judge `suspects` immediately, never store secrets).
 
+## Multi-project memory — `project`, the home graph, and `all`
+
+Since v0.6.0 one hub serves every registered project plus a user-level **home graph**; the brief ends with a roster of what's reachable, and `list_projects` has the details. Most tools take an optional `project`:
+
+- **Omit it** for this project (the default, almost always right).
+- **A name/id** reads or writes THAT project's graph. Etiquette: knowledge *about a sibling project* belongs in **its** graph (`add_note(project: "<name>")`) — this project's graph records only what *this* project decided about the sibling. Never fan one insight into several graphs; `all` writes are refused for exactly that reason.
+- **`home`** is the user-level graph for knowledge that transcends projects — global principles, the user's standing preferences. "Remember this globally / everywhere" means a home write. Home canon rides along in every project's brief.
+- **`all`** on `search` / `check_claim` reads across every graph: foreign hits carry `project` provenance and rank under a locality prior (local canon wins ties). When retelling a foreign hit, attribute it ("in tepindb's graph…").
+
+Edges never cross graphs — if nodes in different graphs relate, say so in body text, don't force a link. Promotion of recurring Principles/Cautions into home is the *user's* gesture (the pane's Checkup nominates); don't copy canon into home unprompted.
+
 ## Answering "why" — retell the reasoning chain
 
 When the user asks *"why did we decide X?"* or *"why is it like this?"*: `search` the topic, then follow `because` / `answers` edges (`get_node`, `traverse`) and — when the decision has history — `timeline` for the supersession chain. Retell it as a short narrative: the decision, its reason, what it replaced and why, and what problem drove it. Include dates when the history matters.

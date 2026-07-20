@@ -263,6 +263,10 @@ pub struct SearchHit {
     /// (PLAN §6A retrieval), capped.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub neighbors: Vec<NeighborRef>,
+    /// Which project the hit came from — set only on cross-project reads
+    /// (PLAN §7C provenance); absent means the queried project itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
 }
 
 /// One edge+endpoint of a hit's 1-hop subgraph, compact enough to inline in
@@ -336,7 +340,7 @@ pub struct Drift {
 /// talking about the same thing. `a_id` is the newer node, `b_id` the older,
 /// so a confirming `replaces` edge reads "a replaces b". Resolved rows stay
 /// (confirmed/dismissed) so a judged pair is never re-raised.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Suspect {
     pub id: String,
     pub a_id: String,
@@ -385,6 +389,9 @@ pub struct ClaimVerdict {
     pub entailment: f32,
     pub neutral: f32,
     pub contradiction: f32,
+    /// Cross-project provenance (PLAN §7C) — absent for the queried project.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
 }
 
 /// The canon's answer to "is this claim true here": which nodes support it,
@@ -427,6 +434,44 @@ pub struct CheckedUpdate {
     pub missing_refs: Vec<String>,
 }
 
+/// One row of the hub's project listing (PLAN §7C): the registry entries plus
+/// the current project and the home graph, with liveness flags.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectInfo {
+    pub id: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
+    pub db: String,
+    /// The project this daemon/session was launched in.
+    pub current: bool,
+    /// The reserved user-level home graph.
+    pub home: bool,
+    /// An engine for this project is open in this process.
+    pub open: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_seen: Option<i64>,
+}
+
+/// A promotion nomination (PLAN §7C): a Principle/Caution that recurs across
+/// project graphs and may belong in the home graph. Nomination only — the
+/// user approves; nothing self-applies.
+#[derive(Debug, Clone, Serialize)]
+pub struct PromotionCandidate {
+    /// The current project's copy, in full (the pane promotes from this).
+    pub node: Node,
+    /// Same-type look-alikes of it in other projects.
+    pub matches: Vec<PromotionMatch>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PromotionMatch {
+    pub project: String,
+    pub id: String,
+    pub title: String,
+    pub similarity: f64,
+}
+
 /// One tag with its usage stats — the pane's dropdown and the brief's
 /// "recent tags" line both read from this (freshest first).
 #[derive(Debug, Clone, Serialize)]
@@ -450,7 +495,7 @@ pub struct WriteWarning {
 /// One row of the append-only audit journal (PLAN §10): a node/edge mutation
 /// with full before/after snapshots plus the binary-side context of the
 /// writing process. `seq` is the keyset-pagination cursor (newest = highest).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
     pub seq: i64,
     pub ts: i64,
@@ -506,4 +551,35 @@ pub enum WriteOutcome {
         nli_label: Option<String>,
         nli_score: Option<f64>,
     },
+}
+
+/// Backend-neutral store facts for `/system` and doctor — what used to require
+/// reaching through `conn()` into raw SQLite.
+#[derive(Debug, Clone, Serialize)]
+pub struct StoreStats {
+    /// Which driver backs this store: `"sqlite"` or `"tepindb"`.
+    pub backend: &'static str,
+    pub nodes: i64,
+    pub edges: i64,
+    /// Nodes with a stored embedding vector.
+    pub embedded: i64,
+}
+
+/// Backend-reported integrity, replacing doctor's raw PRAGMA probes.
+#[derive(Debug, Clone, Serialize)]
+pub struct StoreHealth {
+    /// SQLite's journal mode (`wal` expected); `None` for backends without one.
+    pub journal_mode: Option<String>,
+    pub integrity_ok: bool,
+    /// Human-readable detail when integrity is not ok.
+    pub detail: Option<String>,
+}
+
+/// The embedding model identity a store's vectors were computed with — the
+/// guard that triggers a full re-embed when the active model changes
+/// (PLAN §7A model selection; TepinDB pins the same pair per file).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EmbedModelId {
+    pub name: String,
+    pub dim: usize,
 }

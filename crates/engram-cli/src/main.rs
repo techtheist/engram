@@ -8,7 +8,9 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use engram_core::{Embedder, Engine, ExportGraph, FakeEmbedder, FastEmbedder, Store};
+use engram_core::{
+    Embedder, Engine, ExportGraph, FakeEmbedder, FastEmbedder, Hub, Nli, Reranker, registry,
+};
 use tracing_subscriber::EnvFilter;
 
 mod doctor;
@@ -51,6 +53,12 @@ enum Command {
     /// capture instructions, from assets embedded in this binary. With no
     /// --cli, auto-detects which assistants are installed and wires those.
     Setup(SetupArgs),
+    /// Move this repo's graph onto the TepinDB backend (PLAN §7C step 5):
+    /// nodes + edges travel as the canonical JSON export (embeddings
+    /// regenerated), the suspect queue and audit journal are carried over
+    /// verbatim, and the old graph.db stays behind untouched as a backup.
+    /// Every command picks up graph.tepin automatically afterwards.
+    Migrate(MigrateArgs),
 }
 
 #[derive(clap::Args)]
@@ -128,6 +136,20 @@ struct DoctorArgs {
 }
 
 #[derive(clap::Args)]
+struct MigrateArgs {
+    /// The SQLite graph to migrate (the .tepin file lands next to it).
+    #[arg(long, default_value = ".engram/graph.db")]
+    db: PathBuf,
+    /// Rebuild an existing graph.tepin target instead of refusing.
+    #[arg(long)]
+    force: bool,
+    /// Use the deterministic fake embedder (tests only — the migrated graph's
+    /// vectors would be noise for real searches).
+    #[arg(long)]
+    fake_embeddings: bool,
+}
+
+#[derive(clap::Args)]
 struct SetupArgs {
     /// Assistants to wire, comma-separated: claude|codex|gemini|opencode|kilo|antigravity|all.
     /// Default: auto-detect what's installed.
@@ -160,9 +182,121 @@ async fn main() -> anyhow::Result<()> {
         Command::Import(args) => run_import(args),
         Command::Brief(args) => run_brief(args),
         Command::Update(args) => run_update(args),
-        Command::Doctor(args) => doctor::run(&args.db),
+        Command::Doctor(args) => doctor::run(&engram_core::resolve_db_path(&args.db)),
         Command::Setup(args) => run_setup(args),
+        Command::Migrate(args) => run_migrate(args),
     }
+}
+
+/// The §7C step-5 cutover, per repo: JSON export/import is the vehicle for
+/// nodes + edges (embeddings regenerated on the way in), suspects and the
+/// audit journal ride over verbatim, counts are verified, and the registry
+/// entry repoints — the SQLite source is never modified.
+fn run_migrate(args: MigrateArgs) -> anyhow::Result<()> {
+    let src_path = args.db;
+    anyhow::ensure!(
+        src_path.exists(),
+        "{} does not exist — nothing to migrate",
+        src_path.display()
+    );
+    anyhow::ensure!(
+        !engram_core::is_tepin_path(&src_path),
+        "{} is already a TepinDB store",
+        src_path.display()
+    );
+    let dst_path = src_path.with_extension("tepin");
+    if dst_path.exists() {
+        anyhow::ensure!(
+            args.force,
+            "{} already exists — pass --force to rebuild it from the SQLite source",
+            dst_path.display()
+        );
+        std::fs::remove_file(&dst_path)
+            .with_context(|| format!("removing {}", dst_path.display()))?;
+    }
+
+    let models = load_models(args.fake_embeddings, false)?;
+    let src = Engine::new(
+        engram_core::SqliteStore::open(&src_path)
+            .with_context(|| format!("opening {}", src_path.display()))?,
+        Box::new(models.current().embedder.clone()),
+    );
+    let graph = src.export()?;
+    let suspects = src.store().all_suspects()?;
+    let audit_total = src.store().audit_page(None, None, 1)?.total.max(0) as usize;
+    let audit = src.store().audit_page(None, None, audit_total)?;
+
+    let mut dst = Engine::new(
+        engram_core::TepinStore::open(&dst_path)
+            .with_context(|| format!("creating {}", dst_path.display()))?,
+        Box::new(models.current().embedder.clone()),
+    );
+    dst.set_audit_origin(engram_core::AuditOrigin::cli());
+    // Journal first (oldest-first so seq keeps chronological order), then the
+    // graph — import appends its own "imported" row, which lands last, as the
+    // migration's own mark in the history.
+    for entry in audit.entries.iter().rev() {
+        dst.store().add_audit(entry)?;
+    }
+    for s in &suspects {
+        dst.store().upsert_suspect(s)?;
+    }
+    let summary = dst.import(graph)?;
+    dst.store()
+        .set_embed_version(src.store().embed_version()?)?;
+    if !args.fake_embeddings {
+        dst.store().set_embed_model(&engram_core::EmbedModelId {
+            name: engram_core::rag::DEFAULT_EMBED_MODEL.to_string(),
+            dim: engram_core::rag::EMBED_DIM,
+        })?;
+    }
+
+    // Verify before declaring victory — counts must survive the move.
+    let src_stats = src.store().stats()?;
+    let dst_stats = dst.store().stats()?;
+    anyhow::ensure!(
+        src_stats.nodes == dst_stats.nodes && src_stats.edges == dst_stats.edges,
+        "count mismatch after migration (nodes {} -> {}, edges {} -> {}) — graph.tepin is incomplete, graph.db is untouched",
+        src_stats.nodes,
+        dst_stats.nodes,
+        src_stats.edges,
+        dst_stats.edges
+    );
+    let dst_suspects = dst.store().all_suspects()?.len();
+    anyhow::ensure!(
+        suspects.len() == dst_suspects,
+        "suspect queue mismatch after migration ({} -> {dst_suspects})",
+        suspects.len()
+    );
+
+    // Repoint this repo's registry entry so every hub opens the new store.
+    if let Some(root) = dst_path
+        .canonicalize()
+        .ok()
+        .and_then(|p| {
+            let dir = p.parent()?;
+            (dir.file_name()? == ".engram").then(|| dir.parent().map(Path::to_path_buf))?
+        })
+        .or_else(|| std::env::current_dir().ok())
+        && let Err(e) = registry::register(&root, &dst_path)
+    {
+        eprintln!("note: couldn't repoint ~/.engram/registry.json: {e}");
+    }
+
+    println!(
+        "migrated {} nodes / {} edges / {} suspects / {} audit rows to {}",
+        summary.nodes,
+        summary.edges,
+        suspects.len(),
+        audit_total,
+        dst_path.display()
+    );
+    println!(
+        "{} is untouched (your backup); every engram-alpha command now picks {} automatically — restart the daemon and reconnect MCP",
+        src_path.display(),
+        dst_path.file_name().unwrap_or_default().display()
+    );
+    Ok(())
 }
 
 fn run_setup(args: SetupArgs) -> anyhow::Result<()> {
@@ -191,7 +325,15 @@ fn run_setup(args: SetupArgs) -> anyhow::Result<()> {
         }
     };
     anyhow::ensure!(!agents.is_empty(), "nothing to wire");
-    setup::Setup::new(&args.skill, args.mcp_only)?.run(&agents)
+    setup::Setup::new(&args.skill, args.mcp_only)?.run(&agents)?;
+    // Wiring a repo makes it a project — put it on the machine registry so
+    // every other project's hub can see it (PLAN §7C). Best-effort.
+    if let Ok(cwd) = std::env::current_dir()
+        && let Err(e) = registry::register(&cwd, &cwd.join(".engram/graph.db"))
+    {
+        eprintln!("note: couldn't add this repo to ~/.engram/registry.json: {e}");
+    }
+    Ok(())
 }
 
 /// Self-update from GitHub Releases: download the platform asset, verify its
@@ -325,8 +467,19 @@ fn scopeguard(dir: PathBuf) -> impl Drop {
 }
 
 fn run_brief(args: BriefArgs) -> anyhow::Result<()> {
-    let engine = build_engine(&args.db, args.fake_embeddings, false)?;
-    println!("{}", engine.brief(args.max_chars)?);
+    // Thin client first: a running daemon owns the store (and on TepinDB is
+    // the only process allowed to) — its /brief is the same hub digest.
+    let db = engram_core::resolve_db_path(&args.db);
+    if let Some(port) = daemon_for(&db)
+        && let Some(text) = doctor::http_get(port, &format!("/brief?max_chars={}", args.max_chars))
+    {
+        println!("{}", text.trim_end());
+        return Ok(());
+    }
+    // The hub form appends the home-graph section (PLAN §7C); a brief is a
+    // read, so it deliberately does not touch the registry.
+    let (hub, _) = build_hub(&db, args.fake_embeddings, false, false)?;
+    println!("{}", hub.brief(args.max_chars)?);
     Ok(())
 }
 
@@ -365,22 +518,157 @@ fn run_import(args: ImportArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Open the store and pick an embedder — shared by `serve` and `mcp`.
-/// `cortex` loads the local-cortex models (PLAN §7A: reranker + NLI) — only
-/// the search-serving commands ask for them; brief/export/import skip the load.
-fn build_engine(db: &Path, fake_embeddings: bool, cortex: bool) -> anyhow::Result<Engine> {
-    if let Some(dir) = db.parent().filter(|d| !d.as_os_str().is_empty()) {
-        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+/// One loaded model set — what every engine the process opens is wired to
+/// (PLAN §7C: the hub loads the cortex once, not once per project).
+#[derive(Clone)]
+struct ModelSet {
+    embedder: Arc<dyn Embedder>,
+    reranker: Option<Arc<dyn Reranker>>,
+    nli: Option<Arc<dyn Nli>>,
+}
+
+/// The live model runtime. The `RwLock` is model selection's hot-swap point
+/// (PLAN §7A): `/models` replaces a slot, already-open engines get the new
+/// handle pushed in, engines opened later read the current set here.
+#[derive(Clone)]
+struct Models {
+    set: Arc<std::sync::RwLock<ModelSet>>,
+}
+
+impl Models {
+    fn current(&self) -> ModelSet {
+        self.set.read().expect("model set lock").clone()
     }
-    let store = Store::open(db).with_context(|| format!("opening {}", db.display()))?;
-    let embedder: Box<dyn Embedder> = if fake_embeddings {
+}
+
+/// Load the models the machine-level selection (`~/.engram/models.json`)
+/// names — the embedder always, the local-cortex extras (reranker + NLI) when
+/// `cortex`; only the search-serving commands ask for them, brief/export/
+/// import skip the load. Default selections keep their pre-selection loading
+/// behavior (env-dir override, hf_hub fallback); user selections provision
+/// from their recorded URLs into `~/.cache/engram/<name>/` first.
+fn load_models(fake_embeddings: bool, cortex: bool) -> anyhow::Result<Models> {
+    let cfg = engram_core::cortex::load();
+    let embedder: Arc<dyn Embedder> = if fake_embeddings {
         tracing::warn!("using fake embeddings (search quality is degraded)");
-        Box::new(FakeEmbedder::default())
+        Arc::new(FakeEmbedder::default())
     } else {
         tracing::info!("loading local embedding model…");
-        Box::new(FastEmbedder::new().context("initializing fastembed model")?)
+        load_embedder(&cfg.effective(engram_core::cortex::Role::Embedding))
+            .context("initializing the embedding model")?
     };
-    let mut engine = Engine::new(store, embedder);
+    let mut set = ModelSet {
+        embedder,
+        reranker: None,
+        nli: None,
+    };
+    if cortex && !fake_embeddings {
+        // The cortex is an upgrade, never a dependency: any failed load
+        // (first run offline, cache wiped) degrades that layer away.
+        match load_reranker(&cfg.effective(engram_core::cortex::Role::Reranker)) {
+            Ok(r) => set.reranker = Some(r),
+            Err(e) => tracing::warn!("reranker unavailable, search keeps hybrid order: {e}"),
+        }
+        match load_nli(&cfg.effective(engram_core::cortex::Role::Nli)) {
+            Ok(n) => set.nli = Some(n),
+            Err(e) => tracing::warn!("NLI unavailable, cortex hints disabled: {e}"),
+        }
+    }
+    Ok(Models {
+        set: Arc::new(std::sync::RwLock::new(set)),
+    })
+}
+
+fn is_default_spec(role: engram_core::cortex::Role, spec: &engram_core::cortex::ModelSpec) -> bool {
+    engram_core::cortex::presets(role)[0].name == spec.name
+}
+
+/// Provision (when needed) and load one embedding spec. The default model
+/// keeps `FastEmbedder::new`'s dir-then-hf_hub behavior; anything else loads
+/// strictly from its provisioned directory.
+fn load_embedder(spec: &engram_core::cortex::ModelSpec) -> anyhow::Result<Arc<dyn Embedder>> {
+    use engram_core::cortex::Role;
+    if is_default_spec(Role::Embedding, spec) {
+        return Ok(Arc::new(FastEmbedder::new()?));
+    }
+    let dir = provision(Role::Embedding, spec)?;
+    let dim = spec
+        .dim
+        .with_context(|| format!("model {} has no dim recorded", spec.name))?;
+    Ok(Arc::new(FastEmbedder::from_spec(
+        &spec.name,
+        &dir,
+        dim,
+        spec.pooling.as_deref() == Some("mean"),
+    )?))
+}
+
+fn load_reranker(spec: &engram_core::cortex::ModelSpec) -> anyhow::Result<Arc<dyn Reranker>> {
+    use engram_core::cortex::Role;
+    if is_default_spec(Role::Reranker, spec) {
+        return Ok(Arc::new(engram_core::FastReranker::new()?));
+    }
+    let dir = provision(Role::Reranker, spec)?;
+    Ok(Arc::new(engram_core::FastReranker::open_dir(&dir)?))
+}
+
+fn load_nli(spec: &engram_core::cortex::ModelSpec) -> anyhow::Result<Arc<dyn Nli>> {
+    use engram_core::cortex::Role;
+    if is_default_spec(Role::Nli, spec) {
+        // The default NLI keeps its ENGRAM_NLI_DIR override + CLI download.
+        ensure_nli_model();
+        return Ok(Arc::new(engram_core::FastNli::new()?));
+    }
+    let dir = provision(Role::Nli, spec)?;
+    Ok(Arc::new(engram_core::FastNli::from_dir(&dir)?))
+}
+
+/// Make sure a spec's files exist under `~/.cache/engram/<name>/`,
+/// downloading what's missing (curl, atomic per file — the NLI pattern
+/// generalized). Returns the model directory.
+fn provision(
+    role: engram_core::cortex::Role,
+    spec: &engram_core::cortex::ModelSpec,
+) -> anyhow::Result<std::path::PathBuf> {
+    let dir = engram_core::cortex::cache_dir(&spec.name)
+        .context("no home directory for the model cache")?;
+    let files = engram_core::cortex::spec_files(role, spec);
+    if files.iter().all(|(name, _)| dir.join(name).is_file()) {
+        return Ok(dir);
+    }
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    tracing::info!("downloading {} (one-time)…", spec.name);
+    for (name, url) in files {
+        let target = dir.join(&name);
+        if target.is_file() {
+            continue;
+        }
+        let part = dir.join(format!("{name}.part"));
+        let ok = std::process::Command::new("curl")
+            .args(["-fsSL", "-o"])
+            .arg(&part)
+            .arg(&url)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok || std::fs::rename(&part, &target).is_err() {
+            let _ = std::fs::remove_file(&part);
+            anyhow::bail!("downloading {url} failed");
+        }
+    }
+    Ok(dir)
+}
+
+/// Open one store as an engine wired to the shared models. This is the hub's
+/// engine factory: every project store the daemon serves goes through here.
+fn open_engine(db: &Path, models: &Models) -> engram_core::Result<Engine> {
+    if let Some(dir) = db.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| engram_core::Error::Io(format!("creating {}: {e}", dir.display())))?;
+    }
+    let store = engram_core::open_store(db)?;
+    let set = models.current();
+    let mut engine = Engine::with_store(store, Box::new(set.embedder.clone()));
     // Write-time code_ref checks resolve against the repo the DB lives in
     // (<root>/.engram/graph.db), falling back to the launch cwd.
     let root = db
@@ -394,21 +682,23 @@ fn build_engine(db: &Path, fake_embeddings: bool, cortex: bool) -> anyhow::Resul
     if let Some(root) = root {
         engine.set_repo_root(root);
     }
-    if cortex && !fake_embeddings {
-        // The cortex is an upgrade, never a dependency: any failed load
-        // (first run offline, cache wiped) degrades that layer away.
-        match engram_core::FastReranker::new() {
-            Ok(r) => engine.set_reranker(Box::new(r)),
-            Err(e) => tracing::warn!("reranker unavailable, search keeps hybrid order: {e}"),
-        }
-        ensure_nli_model();
-        match engram_core::FastNli::new() {
-            Ok(n) => engine.set_nli(Box::new(n)),
-            Err(e) => tracing::warn!("NLI unavailable, cortex hints disabled: {e}"),
-        }
+    if let Some(r) = &set.reranker {
+        engine.set_reranker(Box::new(r.clone()));
     }
-    // One-time vector upgrade when the embedding composition changed (e.g.
-    // tags/code_refs joined title+body in v0.4.0). Never fatal at startup.
+    if let Some(n) = &set.nli {
+        engine.set_nli(Box::new(n.clone()));
+    }
+    // Guarded vector upgrades, model identity first (a swapped embedding
+    // model rebuilds vector storage and re-embeds — PLAN §7A model
+    // selection), then the composition catch-up. Never fatal at startup.
+    match engine.ensure_embed_model() {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(
+            "re-embedded {n} nodes for the {} embedding model",
+            engine.embed_model_id().name
+        ),
+        Err(e) => tracing::warn!("embedding-model upgrade failed: {e}"),
+    }
     match engine.ensure_embed_composition() {
         Ok(0) => {}
         Ok(n) => tracing::info!("re-embedded {n} nodes for the current embedding composition"),
@@ -417,10 +707,160 @@ fn build_engine(db: &Path, fake_embeddings: bool, cortex: bool) -> anyhow::Resul
     Ok(engine)
 }
 
-/// Best-effort download of the NLI model (curl, exactly like self-update;
-/// direct from Hugging Face — the user's chosen distribution). Atomic per
-/// file (.part + rename); any failure leaves the cortex hint-less, never
-/// blocks startup.
+/// Single-engine form, kept for export/import.
+fn build_engine(db: &Path, fake_embeddings: bool, cortex: bool) -> anyhow::Result<Engine> {
+    let models = load_models(fake_embeddings, cortex)?;
+    open_engine(db, &models).with_context(|| format!("opening {}", db.display()))
+}
+
+/// The multi-project hub (PLAN §7C): the launch project's engine plus a
+/// factory that opens any registered store against the same model runtime.
+/// `register` also upserts this repo into `~/.engram/registry.json` — that
+/// file is how every other project becomes aware of this one.
+fn build_hub(
+    db: &Path,
+    fake_embeddings: bool,
+    cortex: bool,
+    register: bool,
+) -> anyhow::Result<(Arc<Hub>, Models)> {
+    let db = &engram_core::resolve_db_path(db);
+    let models = load_models(fake_embeddings, cortex)?;
+    let engine = open_engine(db, &models).with_context(|| format!("opening {}", db.display()))?;
+    let entry = match (register, engine.repo_root().map(Path::to_path_buf)) {
+        (true, Some(root)) => match registry::register(&root, db) {
+            Ok(entry) => Some(entry),
+            Err(e) => {
+                tracing::warn!("couldn't register this project in the registry: {e}");
+                None
+            }
+        },
+        _ => None,
+    };
+    let factory_models = models.clone();
+    let factory: engram_core::EngineFactory = Box::new(move |db| open_engine(db, &factory_models));
+    let hub = Arc::new(Hub::new(Arc::new(Mutex::new(engine)), entry, Some(factory)));
+    Ok((hub, models))
+}
+
+/// The daemon's model-selection hands (PLAN §7A): resolve a `/models` request
+/// to a spec, provision + load it, swap it into the live model set AND every
+/// open engine, persist the choice, and — for embeddings — run the guarded
+/// re-embed on each open store. Projects not open right now re-embed lazily
+/// on their next open via the same `ensure_embed_model` guard.
+struct CortexAdmin {
+    models: Models,
+    hub: Arc<Hub>,
+}
+
+impl engram_http::ModelAdmin for CortexAdmin {
+    fn describe(&self) -> serde_json::Value {
+        use engram_core::cortex::{self, Role};
+        let cfg = cortex::load();
+        let role_json = |role: Role| {
+            let presets = cortex::presets(role);
+            let custom = cfg
+                .get(role)
+                .filter(|s| !presets.iter().any(|p| p.name == s.name));
+            serde_json::json!({
+                "role": role.as_str(),
+                "active": cfg.effective(role).name,
+                "default": presets[0].name,
+                "presets": presets,
+                "custom": custom,
+            })
+        };
+        serde_json::json!({
+            "available": true,
+            "fake_embeddings": self.models.current().embedder.is_fake(),
+            "roles": [
+                role_json(Role::Embedding),
+                role_json(Role::Reranker),
+                role_json(Role::Nli),
+            ],
+        })
+    }
+
+    fn apply(&self, request: serde_json::Value) -> engram_core::Result<serde_json::Value> {
+        use engram_core::cortex::{self, Role};
+        let role = Role::parse(request["role"].as_str().unwrap_or_default())?;
+        let spec: cortex::ModelSpec = if let Some(name) = request["preset"].as_str() {
+            cortex::presets(role)
+                .into_iter()
+                .find(|p| p.name == name)
+                .ok_or_else(|| {
+                    engram_core::Error::Project(format!(
+                        "unknown preset {name:?} for role {}",
+                        role.as_str()
+                    ))
+                })?
+        } else if request["custom"].is_object() {
+            serde_json::from_value(request["custom"].clone())?
+        } else {
+            return Err(engram_core::Error::Project(
+                "pass either \"preset\" or \"custom\"".into(),
+            ));
+        };
+        if role == Role::Embedding {
+            if self.models.current().embedder.is_fake() {
+                return Err(engram_core::Error::Project(
+                    "this daemon runs --fake-embeddings — restart with real embeddings before switching models".into(),
+                ));
+            }
+            if spec.dim.is_none() {
+                return Err(engram_core::Error::Project(
+                    "an embedding model needs \"dim\" (its vector width)".into(),
+                ));
+            }
+        }
+        let load_err = |e: anyhow::Error| engram_core::Error::Io(format!("{e:#}"));
+        let mut reembedded = 0usize;
+        match role {
+            Role::Embedding => {
+                let embedder = load_embedder(&spec).map_err(load_err)?;
+                self.models.set.write().expect("model set lock").embedder = embedder.clone();
+                for engine in self.hub.engines() {
+                    let mut engine = engine.lock().expect("engine lock");
+                    engine.set_embedder(Box::new(embedder.clone()));
+                    reembedded += engine.ensure_embed_model()?;
+                }
+            }
+            Role::Reranker => {
+                let reranker = load_reranker(&spec).map_err(load_err)?;
+                self.models.set.write().expect("model set lock").reranker = Some(reranker.clone());
+                for engine in self.hub.engines() {
+                    engine
+                        .lock()
+                        .expect("engine lock")
+                        .set_reranker(Box::new(reranker.clone()));
+                }
+            }
+            Role::Nli => {
+                let nli = load_nli(&spec).map_err(load_err)?;
+                self.models.set.write().expect("model set lock").nli = Some(nli.clone());
+                for engine in self.hub.engines() {
+                    engine
+                        .lock()
+                        .expect("engine lock")
+                        .set_nli(Box::new(nli.clone()));
+                }
+            }
+        }
+        // Persist: a default selection is the absence of config.
+        let mut cfg = cortex::load();
+        cfg.set(role, (!is_default_spec(role, &spec)).then(|| spec.clone()));
+        cortex::save(&cfg)?;
+        Ok(serde_json::json!({
+            "role": role.as_str(),
+            "applied": spec.name,
+            "reembedded_nodes": reembedded,
+        }))
+    }
+}
+
+/// Best-effort download of the default NLI model (curl, exactly like
+/// self-update; direct from Hugging Face — the user's chosen distribution).
+/// Atomic per file (.part + rename); any failure leaves the cortex hint-less,
+/// never blocks startup.
 fn ensure_nli_model() {
     let Some(dir) = engram_core::nli::nli_model_dir() else {
         return;
@@ -462,33 +902,99 @@ fn ensure_nli_model() {
     }
 }
 
+/// The thin-client resolution (PLAN §7C): a healthy daemon that owns this db
+/// — daemon.json next to the store, /health answers, and the advertised db
+/// matches. When one exists, IT holds the file; everything else talks HTTP.
+fn daemon_for(db: &Path) -> Option<u16> {
+    let raw = std::fs::read_to_string(db.parent()?.join("daemon.json")).ok()?;
+    let port = serde_json::from_str::<serde_json::Value>(&raw).ok()?["port"].as_u64()? as u16;
+    let health = doctor::http_get(port, "/health")?;
+    let canon = std::fs::canonicalize(db).unwrap_or_else(|_| db.to_path_buf());
+    health
+        .contains(&canon.display().to_string())
+        .then_some(port)
+}
+
+/// Start the daemon detached and wait for it to own the store. The model load
+/// dominates startup, so the health wait is generous; `None` = it never came
+/// up (offline first run, port trouble) and the caller falls back.
+fn spawn_daemon_and_wait(db: &Path) -> Option<u16> {
+    let exe = std::env::current_exe().ok()?;
+    let log = std::fs::File::create(db.parent()?.join("serve.log")).ok()?;
+    std::process::Command::new(exe)
+        .args(["serve", "--http-only", "--db"])
+        .arg(db)
+        .stdin(std::process::Stdio::null())
+        .stdout(log.try_clone().ok()?)
+        .stderr(log)
+        .spawn()
+        .ok()?;
+    for _ in 0..120 {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if let Some(port) = daemon_for(db) {
+            return Some(port);
+        }
+    }
+    None
+}
+
 async fn run_mcp(args: McpArgs) -> anyhow::Result<()> {
-    let engine = build_engine(&args.db, args.fake_embeddings, true)?;
-    tracing::info!("MCP server ready on stdio (db: {})", args.db.display());
-    engram_mcp::serve_stdio(engine).await
+    let db = engram_core::resolve_db_path(&args.db);
+    // Thin client first (PLAN §7C): when a daemon owns this store, bridge
+    // stdio to its /mcp endpoint — mandatory on a TepinDB store (redb allows
+    // one process), and it also puts MCP writes on the pane's live SSE feed.
+    let mut port = daemon_for(&db);
+    if port.is_none() && engram_core::is_tepin_path(&db) {
+        tracing::info!("tepin store with no daemon — starting one (it must own the file)");
+        port = spawn_daemon_and_wait(&db);
+    }
+    if let Some(port) = port {
+        tracing::info!(
+            "bridging stdio MCP to the daemon on port {port} (db: {})",
+            db.display()
+        );
+        return engram_mcp::serve_stdio_proxy(&format!("http://127.0.0.1:{port}/mcp")).await;
+    }
+    // No daemon: open the store directly (SQLite coexists via WAL; a tepin
+    // store works too as long as this stays the only process).
+    // Registering keeps the registry fresh even for repos only ever opened
+    // over MCP (PLAN §7C: serve/mcp/setup all register).
+    let (hub, _) = build_hub(&db, args.fake_embeddings, true, true)?;
+    tracing::info!("MCP server ready on stdio (db: {})", db.display());
+    engram_mcp::serve_stdio_hub(hub).await
 }
 
 async fn serve(args: ServeArgs) -> anyhow::Result<()> {
-    ensure_gitignored(&args.db);
-    let engine = Arc::new(Mutex::new(build_engine(
-        &args.db,
-        args.fake_embeddings,
-        true,
-    )?));
+    // A migrated repo's wiring still says graph.db; the graph lives in
+    // graph.tepin next to it. Resolve once so the daemon file, /health and
+    // the registry all name the store actually being served.
+    let db = engram_core::resolve_db_path(&args.db);
+    ensure_gitignored(&db);
+    let (hub, models) = build_hub(&db, args.fake_embeddings, true, true)?;
+    let engine = hub.current_engine();
 
-    // HTTP + SSE on a background task; both interfaces share `engine`, so a
-    // write from Claude (MCP) streams to the pane and vice versa.
-    let db_display = std::fs::canonicalize(&args.db)
-        .unwrap_or_else(|_| args.db.clone())
+    // HTTP + SSE on a background task; both interfaces share the hub, so a
+    // write from Claude (MCP) streams to the pane and vice versa — in any
+    // project the hub serves.
+    let db_display = std::fs::canonicalize(&db)
+        .unwrap_or_else(|_| db.clone())
         .display()
         .to_string();
-    let router = engram_http::router_shared_with_db(engine.clone(), db_display.clone());
+    let admin = Arc::new(CortexAdmin {
+        models: models.clone(),
+        hub: hub.clone(),
+    });
+    let router = engram_http::router_hub_with_models(hub.clone(), Some(db_display.clone()), admin)
+        // The daemon-hosted MCP endpoint (PLAN §0 transport migration):
+        // `engram-alpha mcp` bridges stdio sessions here, so exactly one
+        // process — this daemon — holds the store (redb requires it).
+        .route_service("/mcp", engram_mcp::streamable_http_service(hub.clone()));
     let (listener, port) = bind_with_fallback(args.http_port).await?;
     if port != args.http_port {
         tracing::warn!("port {} was taken; using {port} instead", args.http_port);
     }
     // Record where we actually landed so plugins/skills can discover the port.
-    write_daemon_file(&args.db, port, &db_display);
+    write_daemon_file(&db, port, &db_display);
     tracing::info!("HTTP + SSE listening on http://127.0.0.1:{port}");
 
     // First-run nudge: if installed assistants aren't wired to this repo's
@@ -553,9 +1059,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
     // MCP over stdio is the foreground; when Claude disconnects, the daemon ends.
     tracing::info!("MCP server ready on stdio");
-    let result = engram_mcp::serve_stdio_shared(engine).await;
+    let result = engram_mcp::serve_stdio_hub(hub).await;
     http.abort();
-    remove_daemon_file(&args.db);
+    remove_daemon_file(&db);
     result
 }
 

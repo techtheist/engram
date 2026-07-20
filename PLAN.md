@@ -15,7 +15,7 @@ A graph-based, durable, **inspectable long-term project memory** for AI coding a
 | **Goal** | Open-source / portfolio; optimize for docs, DX, shareability |
 | **Name** | **Engram Alpha** ("Alpha" part of the name, not a version) |
 | **License** | MIT |
-| **Memory scope** | **Per-repo only** (v1); cross-project layer is a future option |
+| **Memory scope** | **Per-repo only** (v1); cross-project layer now planned — **§7C** (federation + home graph, rides the TepinDB migration) |
 | **Build first** | Browser standalone (doubles as Claude Desktop support); IDE wrappers later |
 | **Embeddings** | **Local-only** — `fastembed`/ONNX; no remote, no keys |
 | **Backend language** | **Rust** — `rmcp`, `rusqlite` (bundled), `sqlite-vec`, `fastembed` |
@@ -24,7 +24,7 @@ A graph-based, durable, **inspectable long-term project memory** for AI coding a
 | **Storage** | `.engram/graph.db` in repo, **git-ignored**; share via JSON export, never the binary DB |
 | **Live updates** | SSE (axum → pane) |
 | **Deletion** | Supersede auto; **hard-delete user-only** (cascades edges) |
-| **Backend run (v1)** | `engram-alpha serve` — one local daemon per repo (HTTP + MCP + SSE) |
+| **Backend run (v1)** | `engram-alpha serve` — one local daemon per repo (HTTP + MCP + SSE); **§7C plans the hub-daemon successor** (one per user), shipping feature-first on SQLite, before TepinDB |
 | **Bootstrap / export** | Empty start; JSON export in v1 (embeddings stripped, regenerated on import) |
 | **Secrets** | Skill rule + backend redaction pass (regex + high-entropy) |
 | **Validation** | **Dogfood on Aggressive mode** — we're the first user |
@@ -211,6 +211,38 @@ Engram still **bootstraps empty** (§6A locked). Digestion is a **user-invoked, 
 
 ---
 
+## 7C. Multi-project memory — federation + home graph (planned 2026-07-20; implemented same day as v0.6.0, local/uncommitted)
+
+*Status:* steps 1–3 of the sequencing below are **implemented on SQLite** (v0.6.0, kept local pending dogfood): `registry.rs` + `hub.rs` in engram-core (153 workspace tests incl. a federation end-to-end), `serve`/`mcp`/`setup` self-register, the HTTP API is fully project-scoped (`/projects` + a pre-routing rewrite of `/projects/{sel}/…`, per-project SSE), every MCP tool takes `project` (+ a `list_projects` tool), the home graph + brief section + promotion nominations work, and the pane has the switcher / add-by-path / registry view / promote-to-home. One model runtime serves every open store (`Arc` sharing). The formal `Store` trait extraction was deliberately deferred to the TepinDB driver work — with one implementor it would be ~45 delegation stubs around a boundary that still leaks `conn()` into `/system`; the seam that multi-store actually needed (engine factory + shared models) is in.
+
+*Scope guard:* one user, one machine. Multi-user & repo sync stay permanently out (§10). Single-user multi-machine is later/maybe at most, via the JSON-export-through-a-user-repo pattern — not planned here.
+
+**Principle: access + promotion, not replication.** If any project can read the others' graphs, nothing needs syncing — no copies, no divergence, no merge-conflict machinery (the problem class that made team sync an enterprise-product decision). The only knowledge that moves between graphs is a deliberate, user-approved **promotion** into the home graph.
+
+**Pieces:**
+- **Global registry — first-class and obvious.** `~/.engram/registry.json`: every `serve`/`setup`/`mcp` start registers `{name, repo_root, db_path, last_seen}`. Inspectable via CLI (`engram-alpha projects`) and the pane. Stale entries are harmless — health-check-before-trust, same as `daemon.json`.
+- **Scoped read access.** Reads accept the `project` param (see *Addressing surface* below). Cross-project hits carry provenance (project name) plus a **locality prior** — a small rank penalty so local canon wins ties. `brief` stays project-local except a capped home-graph section.
+- **No cross-project edges** (v1 of this layer). Edges stay intra-graph — URI-style endpoints break "reads as a sentence" (§4.3); cross-project relatedness is a search result, not an edge.
+- **Home graph.** `~/.engram/home.db` — a normal Engram graph for knowledge that was never project-scoped: user preferences, global principles, cross-cutting cautions. Included in every project's brief. Written only by explicit gesture ("remember this globally") or promotion.
+- **Promotion flow.** The same Principle/Caution near-duplicated across ≥2 project graphs is a **nomination** surfaced in Review; the user approves; project copies keep provenance links back to the promoted node. Scans nominate, the human moves knowledge (§7A principle).
+
+**Addressing surface (decided 2026-07-20):**
+- **MCP:** most tools grow an optional `project` param — omitted/null = the current project (the store this MCP entry is wired to); a name/id = that project (reads *and* writes — capturing into a sibling repo's graph is allowed); `all` = every registered project, **reads only**. A write addressed to `all` is refused: fanning one write into N graphs is replication and mints N future dupes — the shared write target is the home graph, reserved name `home`.
+- **HTTP:** project id in the URL — the hub serves `/projects` (register-by-path, list, health) and project-scoped routes `/projects/{id}/…` for everything else, incl. SSE at `/projects/{id}/events`. Legacy unscoped routes alias to the launch project during the transition so existing panes/plugins keep working.
+- **Pane — deliberately simple:** a project switcher in the topbar + "add project by path" (validates/creates `.engram/`, registers it); registry view under Settings → System.
+- **Identity:** the registry assigns each project a stable id + unique slug name (dir basename, deduped); MCP accepts name or id, URLs use the id. `home` and `all` are reserved names.
+
+**Topology: hub daemon (decided 2026-07-20; supersedes one-daemon-per-repo — ships pre-TepinDB, see sequencing).** redb — TepinDB's storage core — holds an exclusive per-process file lock, so per-repo daemons can never cross-attach each other's stores post-migration; federation forces the hub. One machine-level `engram-alpha serve` owns all registered project stores plus the home graph: **one models runtime** instead of N (matches TepinDB's "one binary owns the models"), the pane gets a project switcher, MCP resolves the project from cwd (dovetails with the streamable-HTTP transport migration). **Per-repo storage is unchanged** — the store file stays in the repo, git-ignored, portable; the hub opens files, it doesn't own data. Per-project touchpoints (brief hook, project MCP entry) become **thin, minimal clients** that resolve the hub via the registry and **lazily start it** when absent — no always-on requirement.
+
+**Sequencing (feature-first, decided 2026-07-20 — the hub ships on SQLite; TepinDB swaps in behind the trait):** everything above the `Store` trait — registry, `project` addressing, provenance, locality prior, home graph, promotion — is storage-agnostic application logic, so nothing meaningful is built twice *as long as federation is hub-shaped from day one* (what dies at redb cutover is attach-based per-repo federation, not the feature). Feature-first also unstacks the risk — the topology change and the storage change land separately, each debuggable alone — turns the federation test suite into the migration's regression gate, and hands TepinDB v1 a precise spec: the trait, with a working reference implementation, instead of guessed requirements.
+1. **Storage trait seam** in engram-core (`Store` trait over the rusqlite impl). *Done 2026-07-20: `trait Store` in store.rs (primitives + provided pure-Rust composites — hybrid fusion/traverse/neighbors/decay — so backends share one behavior), `SqliteStore` reference impl, the `conn()` leaks sealed behind `stats()`/`health()`, Engine on `Box<dyn Store>`, both-backends conformance battery in the core tests.*
+2. **Hub daemon + registry + `project`-scoped MCP/HTTP on SQLite** (provenance + locality prior; thin lazy clients). *First dogfood milestone: from this repo, reach the TepinDB repo's graph — and write into it.*
+3. **Home graph + promotion nominations** in Review.
+4. **TepinDB v1** matures in parallel (sibling repo); Engram's `Store` trait is its requirements spec.
+5. **Cutover = pure driver swap** behind the trait; JSON export/import (embeddings stripped, regenerated) is the vehicle — already the canonical portable form (§6B); the federation suite gates the swap. *Done 2026-07-20 (local, uncommitted): `store_tepin.rs` implements the trait on tepindb's primitives tier (git rev-pinned, default-features off — Engram brings its own embedder; nodes/edges/suspects/audit/meta collections, manual one-vector-per-node, BM25 + raw KNN under the shared fusion, driver-side sentinel snippets, batch-atomic cascades; empty-collection reads mapped to empty). `engram-alpha migrate` moves a repo: export/import for the graph, suspects + audit journal verbatim (oldest-first so the import's own row lands last), counts verified, graph.db untouched as the backup; `resolve_db_path` makes a `graph.tepin` sibling win over `graph.db` everywhere, so hooks/.mcp.json/registry/IDE wiring survive unchanged. KEY GOTCHA: tepin pins one (model_id, dim) per file with no unpin — `reset_vectors` on the tepin backend is a whole-file rebuild (docs copied, vectors dropped). Verified by migrating the real dogfood graph (identical briefs before/after). The live cutover first hit redb's exclusive per-process lock (brief/doctor/stdio-MCP could no longer co-open the store beside the daemon, the coexistence SQLite WAL provided) — resolved the same day by the thin-client work below; **this repo now lives on graph.tepin.***
+
+---
+
 ## 8. Tech stack (locked: Rust + Vue, local-first)
 
 The stable contract is the *interface* (local HTTP + MCP + SQLite).
@@ -271,15 +303,19 @@ The stable contract is the *interface* (local HTTP + MCP + SQLite).
 **Next (near-term):**
 - **Local cortex phases (§7A):** Phase-A NLI eval on the dogfood corpus → conflict triage → `check_claim`/verify + Audit panel → edge-verb suggestion → offline split/merge.
 - **Bundle skill + `.mcp.json` bootstrap into the IDE plugins**; `runIde`/`verifyPlugin` for JetBrains.
-- **MCP transport migration** to daemon-hosted streamable HTTP (current stdio `engram-alpha mcp` is a deliberate divergence; user owns this migration).
+- **MCP transport migration — DONE 2026-07-20 (user-directed, unblocking the live tepin cutover):** the daemon mounts rmcp's `StreamableHttpService` at `/mcp` (stateful — one session = one `Engram` instance over the shared hub, so per-session audit attribution survives; MCP writes now reach the pane's SSE feed). `engram-alpha mcp` stays the wired command everywhere but became a thin client: healthy daemon owning the db (daemon.json + /health match) → verbatim stdio↔HTTP passthrough (an rmcp `Service<RoleServer>` forwarding to a `Peer<RoleClient>`, `get_info` mirroring the daemon); tepin store with no daemon → spawn `serve --http-only` detached, wait for health, bridge; otherwise direct file open (sqlite WAL coexistence unchanged). `brief` rides GET /brief and `doctor` reads /system the same way, both with direct-open fallback. No wiring file changed anywhere. e2e: engram-mcp `transport_tests` (axum-hosted /mcp + direct client + duplex-hosted bridge sharing state) and a live handshake/tool-call probe through the deployed daemon.
+- **Security hardening pre-release (SECURITY.md is the tracked list, 2026-07-20):** CORS origin allowlist for the localhost API (today: permissive — any browser page can call the daemon; needs the IDE webview origins retested in-IDE), per-file SHA-256 pinning for cortex model downloads (binary self-update already verifies; tepin's fetcher is the precedent). App-level store encryption is explicitly **post-this-release** (user decision 2026-07-20; disk encryption is the interim answer).
 - **Session quarantine** — exclude a session's writes from retrieval without deleting them (journal substrate shipped; quarantined-sessions table + retrieval filter + pane toggle).
 - **File-read match hook** (design TBD) — inject connected nodes when the assistant reads a file matching stored `code_refs`; needs a match endpoint + noise control (per-session dedupe, cap, trust filter).
+- **Multi-project memory — §7C:** all five steps done (hub + federation on SQLite 2026-07-20, then the `Store` trait + TepinDB driver + `engram-alpha migrate` cutover the same day). Remaining: propose the API asks upstream (empty-collection reads as empty, an embedder-pin reset); one machine-level hub daemon before a SECOND daily repo migrates (a sibling tepin store can only be federated by whichever single daemon opens it first).
 
 **Phase 2 — active features:** mid-session conflict push (MCP channels), ambient capture → librarian, cross-platform release pipeline.
 
 **Phase 3 — multi-harness memory:** first-class OpenCode / Codex CLI / Gemini CLI / Kilo CLI + Cursor/Windsurf. All speak MCP, so the backend is agnostic — the work is per-harness config bootstrap, capture-prompt equivalents, docs. Upgrades the pitch to **one shared local memory across different AI agents**. Multi-agent concurrency already handled (WAL + one daemon); verify with a smoke test.
 
-**Later / maybe:** cross-project shared Principle layer; app-level DB encryption (deliberately far down); Obsidian export (typed edges map natively to wikilinks). **Out of scope permanently:** multi-user & repo sync — a future enterprise product, not Engram Alpha (user decision 2026-07-10).
+**Shipped 2026-07-20 (was Later/maybe): user-selectable cortex models.** `cortex.rs` (machine-level `~/.engram/models.json`, presets + custom-by-URL specs), `GET/POST /models` (the `ModelAdmin` trait lives in engram-http, the CLI implements it — curl provisioning into `~/.cache/engram/<name>/` stays the CLI's job), live hot-swap (RwLock'd model set + push into every hub-open engine), and the `ensure_embed_model` guard (store records `EmbedModelId`; a mismatch = reset vectors to the new width + full re-embed + stamp; skipped entirely under fake embeddings). Pane: Settings → System → "Choose models" with per-role dropdowns, custom URL entry and the embedding-swap warning. Still open: the 0.90/0.88/0.85 cosine thresholds are bge-small-calibrated — swapping the embedding model un-calibrates suspect/dupe quality until re-tuned against the judged-suspects corpus (warned in the UI; recalibration story still deferred).
+
+**Later / maybe:** app-level DB encryption (deliberately far down); Obsidian export (typed edges map natively to wikilinks). **Out of scope permanently:** multi-user & repo sync — a future enterprise product, not Engram Alpha (user decision 2026-07-10).
 
 ---
 
@@ -300,7 +336,7 @@ The stable contract is the *interface* (local HTTP + MCP + SQLite).
 
 - No companion/persona features — project memory, not a relationship.
 - No custom UI inside the Claude Code chat panel (unsupported; not needed).
-- No cross-project / global graph; no remote embeddings or cloud sync.
+- No cross-project / global graph *in v1* (now planned — §7C); no remote embeddings or cloud sync.
 - No ambient hook *capture* in v1 — cooperative MCP first (the read-side brief hook shipped).
 
 ---

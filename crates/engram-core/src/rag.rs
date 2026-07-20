@@ -9,9 +9,20 @@ use crate::Result;
 /// table width. Changing this requires rebuilding the vector table.
 pub const EMBED_DIM: usize = 384;
 
+/// The default embedding model's identity — what every store that predates
+/// model selection is assumed to carry (PLAN §7A model selection).
+pub const DEFAULT_EMBED_MODEL: &str = "bge-small-en-v1.5";
+
 pub trait Embedder: Send + Sync {
     fn dim(&self) -> usize;
     fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
+
+    /// The model identity behind these vectors — what stores record so a
+    /// later open can tell whether their vectors match the active model
+    /// (PLAN §7A model selection).
+    fn name(&self) -> &str {
+        DEFAULT_EMBED_MODEL
+    }
 
     fn embed_one(&self, text: &str) -> Result<Vec<f32>> {
         Ok(self
@@ -26,6 +37,27 @@ pub trait Embedder: Send + Sync {
     /// brief hook routinely opens real DBs with the fake embedder.
     fn is_fake(&self) -> bool {
         false
+    }
+}
+
+/// One model runtime can serve every open store (PLAN §7C: the hub loads the
+/// cortex once, not once per project) — sharing is just an `Arc`, since all
+/// model traits take `&self`.
+impl<T: Embedder + ?Sized> Embedder for std::sync::Arc<T> {
+    fn dim(&self) -> usize {
+        (**self).dim()
+    }
+    fn name(&self) -> &str {
+        (**self).name()
+    }
+    fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        (**self).embed(texts)
+    }
+    fn embed_one(&self, text: &str) -> Result<Vec<f32>> {
+        (**self).embed_one(text)
+    }
+    fn is_fake(&self) -> bool {
+        (**self).is_fake()
     }
 }
 
@@ -85,6 +117,46 @@ pub trait Reranker: Send + Sync {
     fn rank(&self, query: &str, documents: &[String]) -> Result<Vec<f32>>;
 }
 
+impl<T: Reranker + ?Sized> Reranker for std::sync::Arc<T> {
+    fn rank(&self, query: &str, documents: &[String]) -> Result<Vec<f32>> {
+        (**self).rank(query, documents)
+    }
+}
+
+/// The five files that make up a fastembed-loadable model on disk.
+pub(crate) const MODEL_FILES: [&str; 5] = [
+    "model.onnx",
+    "tokenizer.json",
+    "config.json",
+    "special_tokens_map.json",
+    "tokenizer_config.json",
+];
+
+/// Where the embedding model lives (`ENGRAM_MODEL_DIR` override) — also
+/// reported by `/system` so the pane can show real paths. Pure path logic,
+/// deliberately outside the `fastembed` gate so the HTTP crate builds alone.
+pub fn model_dir() -> Option<std::path::PathBuf> {
+    if let Ok(dir) = std::env::var("ENGRAM_MODEL_DIR") {
+        return Some(std::path::PathBuf::from(dir));
+    }
+    home().map(|h| h.join(".cache/engram").join(DEFAULT_EMBED_MODEL))
+}
+
+/// Where the reranker model lives (`ENGRAM_RERANKER_DIR` override).
+pub fn reranker_model_dir() -> Option<std::path::PathBuf> {
+    if let Ok(dir) = std::env::var("ENGRAM_RERANKER_DIR") {
+        return Some(std::path::PathBuf::from(dir));
+    }
+    home().map(|h| h.join(".cache/engram/jina-reranker-v1-turbo-en"))
+}
+
+pub(crate) fn home() -> Option<std::path::PathBuf> {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()
+        .map(std::path::PathBuf::from)
+}
+
 #[cfg(feature = "fastembed")]
 mod fast {
     use std::path::{Path, PathBuf};
@@ -96,15 +168,6 @@ mod fast {
     };
 
     use super::*;
-
-    /// The five files that make up the bge-small-en-v1.5 model on disk.
-    const MODEL_FILES: [&str; 5] = [
-        "model.onnx",
-        "tokenizer.json",
-        "config.json",
-        "special_tokens_map.json",
-        "tokenizer_config.json",
-    ];
 
     /// Local ONNX embeddings via `fastembed` (`bge-small-en-v1.5`, 384-dim).
     ///
@@ -119,12 +182,14 @@ mod fast {
     /// and serializes inference (fine for a local single-user daemon).
     pub struct FastEmbedder {
         model: Mutex<TextEmbedding>,
+        name: String,
+        dim: usize,
     }
 
     impl FastEmbedder {
         pub fn new() -> Result<Self> {
             let model = match model_dir().filter(|d| has_all_files(d)) {
-                Some(dir) => Self::from_dir(&dir)?,
+                Some(dir) => Self::load_dir(&dir, Pooling::Cls)?,
                 None => {
                     // Keep the hf_hub download out of the project: fastembed's
                     // default cache is ./.fastembed_cache in the cwd (i.e. the
@@ -140,10 +205,28 @@ mod fast {
             };
             Ok(Self {
                 model: Mutex::new(model),
+                name: DEFAULT_EMBED_MODEL.to_string(),
+                dim: EMBED_DIM,
             })
         }
 
-        fn from_dir(dir: &Path) -> Result<TextEmbedding> {
+        /// A user-selected embedding model from its provisioned directory
+        /// (PLAN §7A model selection): identity + width + pooling come from
+        /// the spec, never guessed.
+        pub fn from_spec(name: &str, dir: &Path, dim: usize, mean_pooling: bool) -> Result<Self> {
+            let pooling = if mean_pooling {
+                Pooling::Mean
+            } else {
+                Pooling::Cls
+            };
+            Ok(Self {
+                model: Mutex::new(Self::load_dir(dir, pooling)?),
+                name: name.to_string(),
+                dim,
+            })
+        }
+
+        fn load_dir(dir: &Path, pooling: Pooling) -> Result<TextEmbedding> {
             let read = |name: &str| {
                 std::fs::read(dir.join(name))
                     .map_err(|e| crate::Error::Embedding(format!("reading {name}: {e}")))
@@ -157,7 +240,7 @@ mod fast {
                     special_tokens_map_file: read("special_tokens_map.json")?,
                     tokenizer_config_file: read("tokenizer_config.json")?,
                 },
-                pooling: Some(Pooling::Cls), // bge-small uses CLS pooling
+                pooling: Some(pooling), // bge family uses CLS
                 quantization: QuantizationMode::None,
                 output_key: None,
             };
@@ -168,7 +251,11 @@ mod fast {
 
     impl Embedder for FastEmbedder {
         fn dim(&self) -> usize {
-            EMBED_DIM
+            self.dim
+        }
+
+        fn name(&self) -> &str {
+            &self.name
         }
 
         fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
@@ -215,6 +302,13 @@ mod fast {
             })
         }
 
+        /// A user-selected reranker from its provisioned directory.
+        pub fn open_dir(dir: &Path) -> Result<Self> {
+            Ok(Self {
+                model: Mutex::new(Self::from_dir(dir)?),
+            })
+        }
+
         fn from_dir(dir: &Path) -> Result<fastembed::TextRerank> {
             let read = |name: &str| {
                 std::fs::read(dir.join(name))
@@ -237,14 +331,6 @@ mod fast {
         }
     }
 
-    /// Where the reranker model lives (`ENGRAM_RERANKER_DIR` override).
-    pub fn reranker_model_dir() -> Option<PathBuf> {
-        if let Ok(dir) = std::env::var("ENGRAM_RERANKER_DIR") {
-            return Some(PathBuf::from(dir));
-        }
-        home().map(|h| h.join(".cache/engram/jina-reranker-v1-turbo-en"))
-    }
-
     impl Reranker for FastReranker {
         fn rank(&self, query: &str, documents: &[String]) -> Result<Vec<f32>> {
             let docs: Vec<&str> = documents.iter().map(String::as_str).collect();
@@ -260,25 +346,9 @@ mod fast {
         }
     }
 
-    /// Where the embedding model lives (`ENGRAM_MODEL_DIR` override) — also
-    /// reported by `/system` so the pane can show real paths.
-    pub fn model_dir() -> Option<PathBuf> {
-        if let Ok(dir) = std::env::var("ENGRAM_MODEL_DIR") {
-            return Some(PathBuf::from(dir));
-        }
-        home().map(|h| h.join(".cache/engram/bge-small-en-v1.5"))
-    }
-
     /// Machine-wide cache for fastembed's own hf_hub downloads.
     fn shared_cache_dir() -> Option<PathBuf> {
         home().map(|h| h.join(".cache/engram/fastembed"))
-    }
-
-    fn home() -> Option<PathBuf> {
-        std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .ok()
-            .map(PathBuf::from)
     }
 
     fn has_all_files(dir: &Path) -> bool {
@@ -287,7 +357,7 @@ mod fast {
 }
 
 #[cfg(feature = "fastembed")]
-pub use fast::{FastEmbedder, FastReranker, model_dir, reranker_model_dir};
+pub use fast::{FastEmbedder, FastReranker};
 
 #[cfg(test)]
 mod tests {

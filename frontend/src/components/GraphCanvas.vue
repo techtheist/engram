@@ -16,19 +16,23 @@ import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
 import { storeToRefs } from 'pinia'
 import EngramNode from '@/components/nodes/EngramNode.vue'
+import EngramEdge from '@/components/nodes/EngramEdge.vue'
 import ConnectDialog from '@/components/panels/ConnectDialog.vue'
 import { layoutGraph, type XY } from '@/composables/useLayout'
 import { EDGE_ANIMATED, EDGE_COLOR, EDGE_DASHED, NODE_ACCENT_VAR } from '@/constants/ontology'
 import { useGraphStore } from '@/stores/graph'
 import { useLayoutStore } from '@/stores/layout'
+import { useProjectsStore } from '@/stores/projects'
 import type { GraphNode } from '@/types/graph'
 
 const store = useGraphStore()
 const layout = useLayoutStore()
+const projects = useProjectsStore()
 const { visibleNodeList, visibleEdgeList, selectedId } = storeToRefs(store)
 const { fitView, setCenter, viewport } = useVueFlow()
 
 const nodeTypes = { engram: markRaw(EngramNode) }
+const edgeTypes = { engram: markRaw(EngramEdge) }
 
 /**
  * Fit with a 3% breathing margin on every side, except a 64px top gap so the
@@ -65,6 +69,20 @@ watch(
     },
 )
 
+// Switching projects replaces the whole graph, and graph sizes differ wildly
+// — the one-time initial fit doesn't cover this, so re-fit once the freshly
+// rendered nodes have dimensions (one frame after the DOM settles).
+watch(
+    () => projects.switchEpoch,
+    async () => {
+        await nextTick()
+        await new Promise(requestAnimationFrame)
+        if (visibleNodeList.value.length > 0) {
+            await fitView({ ...FIT_VIEW_PARAMS, duration: 400 })
+        }
+    },
+)
+
 const flowNodes = computed<Node<GraphNode>[]>(() =>
     visibleNodeList.value.map((n) => ({
         id: n.id,
@@ -81,15 +99,14 @@ const flowEdges = computed<Edge[]>(() =>
         source: e.from_id,
         target: e.to_id,
         label: e.type,
-        type: 'default',
+        type: 'engram',
+        data: { note: e.note },
         animated: EDGE_ANIMATED.has(e.type),
         style: {
             stroke: EDGE_COLOR[e.type],
             strokeWidth: 2,
             strokeDasharray: EDGE_DASHED.has(e.type) ? '6 4' : undefined,
         },
-        labelBgStyle: { fill: 'var(--surface-base)', fillOpacity: 0.85 },
-        labelStyle: { fill: 'var(--text-tertiary)', fontSize: 11 },
     })),
 )
 
@@ -152,6 +169,7 @@ watch(
         :nodes="flowNodes"
         :edges="flowEdges"
         :node-types="nodeTypes"
+        :edge-types="edgeTypes"
         :min-zoom="0.05"
         :max-zoom="1"
         :pan-on-scroll="true"

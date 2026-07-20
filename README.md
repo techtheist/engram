@@ -131,9 +131,25 @@ History works at the knowledge level too: `timeline` walks a decision's `replace
 
 Nodes can point at code (`code_refs`). When the code moves, the memory doesn't get to pretend otherwise: drift scans check every path-shaped ref against the repository, and a ref that no longer resolves badges its node as **drifted** — in the pane, in the health strip, and in the assistant's `list_drift` worklist. The contract is repair-or-retire: fix the path if the knowledge still holds, supersede it if the refactor invalidated it.
 
-### All of it runs offline
+### One memory across your projects
+
+Every repo keeps its own graph — but since v0.6.0 they're aware of each other. Each `engram-alpha serve`/`mcp` run registers its repo on a machine-level registry (`~/.engram/registry.json` — plain JSON, inspectable with `cat`), and the daemon becomes a hub over every registered store plus a **home graph** (`~/.engram/home.db`) for knowledge that was never project-scoped: your global principles, standing preferences, cross-cutting cautions. Home canon rides along in every project's session brief.
+
+For the assistant, most MCP tools take an optional `project`: omit it for the current repo, name a sibling to read **or write** its graph (an insight about another project belongs in *that* project's memory), `home` for the shared graph, or `project: "all"` on search/claim-checks to read across everything — foreign hits carry provenance and rank under a locality prior, so the local canon wins ties. Writes to `all` are refused by design: cross-project memory is **access, not replication** — one insight lives in one graph, never N copies.
+
+In the pane: a project switcher in the top bar (browse and add any folder via the daemon-backed picker — no path typing), the registry under Settings → System, and a Checkup pass that spots Principles/Cautions recurring across your projects and nominates them for promotion into the home graph. As everywhere in Engram: the scan nominates, you approve.
+
+### All of it runs offline — on models you choose
 
 The scans that keep the graph honest run in the local daemon, on local models — embeddings, a cross-encoder reranker, and the [Checkup](#interrogate-the-canon--checkup) NLI classifier: the conflict scan at write time plus a six-hourly sweep (or **Scan now** in the pane), the drift check over code refs, and the decay pass that archives stale never-approved scratch notes (see [Trust & decay](#trust--decay)). No API calls, no telemetry, nothing leaves your machine — the whole loop works on a plane.
+
+And the models are yours to pick: Settings → System → **Choose models** swaps any cortex layer live — known-good presets (bge-small/bge-base/all-MiniLM embeddings, jina-turbo/bge-reranker rerankers) or any compatible ONNX export by URL. Reranker and NLI swaps are instant; an embedding swap re-embeds every open graph on the spot (one guarded pass, no restart) and the selection persists machine-wide in `~/.engram/models.json`.
+
+### Storage that can outgrow SQLite
+
+Graphs live on SQLite by default. `engram-alpha migrate` moves a repo onto [TepinDB](https://github.com/tepindb/tepindb) — a single self-describing `.tepin` file holding documents, keyword index, and vectors together. The migration regenerates embeddings, carries the suspect queue and the full audit journal over verbatim, verifies counts, and leaves `graph.db` behind untouched as your backup; every command, hook, and MCP wiring picks up the new file automatically. On TepinDB the daemon is the store's sole owner and everything else — the session brief, `doctor`, the MCP server your assistant launches — talks to it over localhost HTTP, transparently.
+
+See [`SECURITY.md`](./SECURITY.md) for the threat model, what's already in place, and what's coming (at-rest encryption lands in a later release).
 
 **Status:** early development, heavily dogfooded. See [`PLAN.md`](./PLAN.md) for the full spec and roadmap.
 
@@ -232,7 +248,7 @@ Below **30%** a node is **stale**: badged in the pane, flagged to the assistant 
 Search folds this in: results rank by relevance × trust, with a small recency bonus, so fresh, living knowledge wins near-ties against stale look-alikes. The net effect: capture can be liberal, because a wrong-but-attractive note can't keep itself alive by being retrieved — it fades or dies of a judged conflict — while the rare true constraint survives its quiet year untouched.
 
 ## Stack
-Rust core (`rmcp`, `rusqlite`, `sqlite-vec`, `fastembed` — local ONNX embeddings + reranker, an NLI layer next; no LLM ever runs in the daemon) · Vue 3 + TypeScript + Vue Flow · JetBrains (JCEF) & VSCode (Webview) wrappers · MIT licensed.
+Rust core (`rmcp` — stdio + daemon-hosted streamable HTTP, `rusqlite` + `sqlite-vec` with a [TepinDB](https://github.com/tepindb/tepindb) backend behind the same storage trait, `fastembed` — local ONNX embeddings + reranker + NLI, all user-swappable; no LLM ever runs in the daemon) · Vue 3 + TypeScript + Vue Flow · JetBrains (JCEF) & VSCode (Webview) wrappers · MIT licensed.
 
 ## License
 [MIT](./LICENSE)

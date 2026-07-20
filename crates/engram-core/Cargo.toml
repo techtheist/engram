@@ -7,6 +7,10 @@ rust-version.workspace = true
 
 [dependencies]
 rusqlite = { version = "0.37", features = ["bundled"] }
+# The TepinDB storage driver (PLAN §7C step 5). Pinned by rev to the sibling
+# project's primitives tier (BYO vectors / batch / in-memory / indexes);
+# default-features = false — Engram brings its own embedder, never tepin's.
+tepindb = { git = "https://github.com/tepindb/tepindb.git", rev = "1e98ee56c95f49520c8eb18ad05c6e5827290290", default-features = false }
 regex = "1"
 ignore = "0.4"
 serde = { workspace = true }

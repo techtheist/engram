@@ -19,6 +19,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DB="$ROOT/.engram/graph.db"
+# A migrated repo's graph lives in graph.tepin next to the old file; the
+# binary resolves that itself — the health check must expect the same path.
+[ -f "$ROOT/.engram/graph.tepin" ] && DB="$ROOT/.engram/graph.tepin"
 LOG="$ROOT/.engram/serve.log"
 BIN="$HOME/.cargo/bin/engram-alpha"
 

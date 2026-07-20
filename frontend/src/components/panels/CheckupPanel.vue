@@ -5,7 +5,7 @@ import SidePanel from '@/components/common/SidePanel.vue'
 import { NODE_ACCENT_VAR } from '@/constants/ontology'
 import { api } from '@/services/api'
 import { useGraphStore } from '@/stores/graph'
-import type { AnsweredHint, ClaimReport, GraphNode } from '@/types/graph'
+import type { AnsweredHint, ClaimReport, GraphNode, PromotionCandidate } from '@/types/graph'
 
 /**
  * The Checkup panel (PLAN §7A): one-click audit passes over the whole graph,
@@ -63,6 +63,46 @@ async function runAnswered(): Promise<void> {
         sweepNote.value.answered = e instanceof Error ? e.message : String(e)
     } finally {
         running.value = null
+    }
+}
+
+// --- promotion nominations (PLAN §7C) ----------------------------------------
+
+const promotions = ref<PromotionCandidate[] | null>(null)
+const promoted = ref(new Set<string>())
+
+async function runPromotions(): Promise<void> {
+    running.value = 'promotions'
+    try {
+        const res = await api.promotions()
+        promotions.value = res.candidates
+        sweepNote.value.promotions = res.skipped.length
+            ? `some projects were skipped: ${res.skipped.join('; ')}`
+            : ''
+    } catch (e) {
+        sweepNote.value.promotions = e instanceof Error ? e.message : String(e)
+    } finally {
+        running.value = null
+    }
+}
+
+/** The user's approval: copy the node into the home graph. The project
+ * copies stay put — promotion adds a shared source of truth, it never
+ * deletes local context. code_refs are dropped: repo paths mean nothing
+ * outside their repo. */
+async function promote(c: PromotionCandidate): Promise<void> {
+    try {
+        await api.promoteToHome({
+            type: c.node.type,
+            title: c.node.title,
+            body: c.node.body ?? undefined,
+            durability: c.node.durability,
+            source: 'user',
+            tags: c.node.tags,
+        })
+        promoted.value.add(c.node.id)
+    } catch (e) {
+        sweepNote.value.promotions = e instanceof Error ? e.message : String(e)
     }
 }
 
@@ -183,6 +223,46 @@ const STRUCT_CAP = 8
                         {{ h.candidate.title }}
                     </button>
                     <span class="pct">{{ Math.round(h.entailment * 100) }}%</span>
+                </div>
+            </div>
+        </section>
+
+        <section class="block">
+            <h3 class="block-title">Cross-project — promote shared canon</h3>
+            <div class="sweep">
+                <button
+                    class="run"
+                    type="button"
+                    :disabled="running != null"
+                    title="Find Principles/Cautions that recur in your other projects' graphs — candidates for the shared home graph. Nominations only; you approve each"
+                    @click="runPromotions"
+                >
+                    {{ running === 'promotions' ? 'Scanning…' : 'Find promotion candidates' }}
+                </button>
+                <span v-if="sweepNote.promotions" class="note">{{ sweepNote.promotions }}</span>
+            </div>
+            <div v-if="promotions" class="results">
+                <p v-if="promotions.length === 0" class="note">
+                    nothing recurs across projects that isn't already in the home graph
+                </p>
+                <div v-for="c in promotions" :key="c.node.id" class="promo-row">
+                    <button class="row-link" type="button" :title="c.node.title" @click="store.select(c.node.id)">
+                        <span class="dot" :style="{ background: NODE_ACCENT_VAR[c.node.type] }" />
+                        {{ c.node.title }}
+                    </button>
+                    <span class="verb">
+                        also in {{ c.matches.map((m) => m.project).filter((v, i, a) => a.indexOf(v) === i).join(', ') }}
+                    </span>
+                    <button
+                        v-if="!promoted.has(c.node.id)"
+                        class="promote-btn"
+                        type="button"
+                        title="Copy this into the shared home graph (project copies stay put)"
+                        @click="promote(c)"
+                    >
+                        Promote to home
+                    </button>
+                    <span v-else class="note">promoted ✓</span>
                 </div>
             </div>
         </section>
@@ -440,5 +520,36 @@ const STRUCT_CAP = 8
     margin: 0.6rem 0 0.3rem;
     font-size: var(--text-body-sm);
     color: var(--text-secondary);
+}
+
+.promo-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    min-width: 0;
+}
+
+.promo-row .row-link {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex: 1;
+}
+
+.promote-btn {
+    flex: none;
+    margin-left: auto;
+    padding: 0.3rem 0.8rem;
+    border-radius: var(--radius-full);
+    border: 1px solid color-mix(in srgb, var(--interactive-primary) 55%, transparent);
+    background-color: color-mix(in srgb, var(--interactive-primary) 12%, transparent);
+    color: var(--interactive-primary);
+    font-size: var(--text-caption);
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.promote-btn:hover {
+    background-color: color-mix(in srgb, var(--interactive-primary) 22%, transparent);
 }
 </style>
