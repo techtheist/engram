@@ -10,10 +10,10 @@
 //! come from the trait's provided methods, so ranking behavior is identical
 //! across backends by construction.
 
-use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::path::Path;
 
 use serde_json::{Value, json};
+use tepin_core::ServeMode;
 use tepindb::{BatchOp, Db};
 
 use crate::rag::DEFAULT_EMBED_MODEL;
@@ -37,38 +37,38 @@ pub fn is_tepin_path(path: &Path) -> bool {
     path.extension().is_some_and(|e| e == "tepin")
 }
 
-/// One repo's graph in a single `.tepin` file. The `RwLock` exists solely for
-/// [`Store::reset_vectors`], which rebuilds the file (TepinDB pins one
-/// embedding model per file with no unpin — a rebuild without vectors IS the
-/// unpin); every other method is a read of the handle.
+/// One repo's graph in a single `.tepin` file. Since tepin 0.4 the model
+/// swap is `reset_embedder` — a metadata operation — so the handle never
+/// needs replacing and the struct is just the `Db`.
 pub struct TepinStore {
-    db: RwLock<Db>,
-    path: Option<PathBuf>,
+    db: Db,
 }
 
 impl TepinStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let db = Db::open(path.as_ref())?;
-        let store = Self {
-            db: RwLock::new(db),
-            path: Some(path.as_ref().to_path_buf()),
-        };
-        configure(&store.db())?;
+        // Retry rides out cold-start races (two sessions opening at once);
+        // Host makes this handle serve reads to other processes while it
+        // holds the lock — `npx tepindb inspect` on a live store works
+        // through the sidecar instead of dying on `database_locked`.
+        let db = Db::options()
+            .retry_for(std::time::Duration::from_secs(3))
+            .serve(ServeMode::Host)
+            .open(path.as_ref())?;
+        let store = Self { db };
+        configure(store.db())?;
         Ok(store)
     }
 
     pub fn open_in_memory() -> Result<Self> {
-        let db = Db::open_in_memory()?;
         let store = Self {
-            db: RwLock::new(db),
-            path: None,
+            db: Db::open_in_memory()?,
         };
-        configure(&store.db())?;
+        configure(store.db())?;
         Ok(store)
     }
 
-    fn db(&self) -> std::sync::RwLockReadGuard<'_, Db> {
-        self.db.read().expect("tepin store lock")
+    fn db(&self) -> &Db {
+        &self.db
     }
 
     fn get_doc(&self, collection: &str, id: &str) -> Result<Option<Value>> {
@@ -84,23 +84,13 @@ impl TepinStore {
     }
 
     fn set_meta(&self, key: &str, mut doc: Value) -> Result<()> {
-        let db = self.db();
         doc["_id"] = json!(key);
-        if no_collection_is_empty(db.get(META, key))?.is_some() {
-            db.update(META, key, doc)?;
-        } else {
-            db.insert(META, doc)?;
-        }
+        self.db().upsert(META, doc)?;
         Ok(())
     }
 
-    fn write_node(&self, node: &Node, exists: bool) -> Result<()> {
-        let db = self.db();
-        if exists {
-            db.update(NODES, &node.id, node_doc(node)?)?;
-        } else {
-            db.insert(NODES, node_doc(node)?)?;
-        }
+    fn write_node(&self, node: &Node, _exists: bool) -> Result<()> {
+        self.db().upsert(NODES, node_doc(node)?)?;
         Ok(())
     }
 
@@ -206,46 +196,11 @@ impl Store for TepinStore {
     }
 
     fn reset_vectors(&self, _dim: usize) -> Result<()> {
-        // TepinDB pins one (model_id, dim) per file and refuses vectors from
-        // any other — the correct guard for normal writes, and exactly what a
-        // model swap must clear. There is no unpin API, so the reset IS a
-        // file rebuild: copy every document into a fresh store (no vectors —
-        // the caller re-embeds immediately after), then swap it in.
-        let mut guard = self.db.write().expect("tepin store lock");
-        let mut docs: Vec<BatchOp> = Vec::new();
-        for info in guard.collections()? {
-            for doc in no_collection_is_empty(guard.find(&info.name, &json!({})))? {
-                docs.push(BatchOp::Insert {
-                    collection: info.name.clone(),
-                    doc,
-                });
-            }
-        }
-        let fresh = match &self.path {
-            Some(path) => {
-                let tmp = path.with_extension("tepin.rebuild");
-                let _ = std::fs::remove_file(&tmp);
-                {
-                    let db = Db::open(&tmp)?;
-                    configure(&db)?;
-                    if !docs.is_empty() {
-                        db.batch(docs)?;
-                    }
-                }
-                std::fs::rename(&tmp, path)
-                    .map_err(|e| Error::Io(format!("swapping rebuilt store: {e}")))?;
-                Db::open(path)?
-            }
-            None => {
-                let db = Db::open_in_memory()?;
-                configure(&db)?;
-                if !docs.is_empty() {
-                    db.batch(docs)?;
-                }
-                db
-            }
-        };
-        *guard = fresh;
+        // tepin 0.4's reset_embedder (an Engram dossier ask): clears the
+        // per-file model pin and every stored vector as a metadata operation
+        // — documents and the keyword index untouched, no file rebuild. The
+        // caller re-embeds immediately after, which re-pins the new model.
+        self.db().reset_embedder()?;
         Ok(())
     }
 
@@ -564,12 +519,7 @@ impl Store for TepinStore {
     }
 
     fn upsert_edge(&self, e: &Edge) -> Result<()> {
-        let db = self.db();
-        if no_collection_is_empty(db.get(EDGES, &e.id))?.is_some() {
-            db.update(EDGES, &e.id, edge_doc(e)?)?;
-        } else {
-            db.insert(EDGES, edge_doc(e)?)?;
-        }
+        self.db().upsert(EDGES, edge_doc(e)?)?;
         Ok(())
     }
 
@@ -591,7 +541,8 @@ impl Store for TepinStore {
     // ---- bulk ------------------------------------------------------------
 
     fn import_raw(&self, nodes: &[Node], edges: &[Edge]) -> Result<()> {
-        // One atomic multi-collection batch, nodes before edges.
+        // One atomic multi-collection batch of native upserts (tepin 0.4),
+        // nodes before edges — no per-document existence pre-pass.
         let db = self.db();
         let mut ops: Vec<BatchOp> = Vec::with_capacity(nodes.len() + edges.len());
         for n in nodes {
@@ -599,36 +550,16 @@ impl Store for TepinStore {
             node.title = crate::redact::scrub(&node.title);
             node.body = node.body.as_deref().map(crate::redact::scrub);
             node.tags = normalize_tags(&node.tags);
-            let doc = node_doc(&node)?;
-            ops.push(
-                match no_collection_is_empty(db.get(NODES, &node.id))?.is_some() {
-                    true => BatchOp::Update {
-                        collection: NODES.into(),
-                        id: node.id.clone(),
-                        doc,
-                    },
-                    false => BatchOp::Insert {
-                        collection: NODES.into(),
-                        doc,
-                    },
-                },
-            );
+            ops.push(BatchOp::Upsert {
+                collection: NODES.into(),
+                doc: node_doc(&node)?,
+            });
         }
         for e in edges {
-            let doc = edge_doc(e)?;
-            ops.push(
-                match no_collection_is_empty(db.get(EDGES, &e.id))?.is_some() {
-                    true => BatchOp::Update {
-                        collection: EDGES.into(),
-                        id: e.id.clone(),
-                        doc,
-                    },
-                    false => BatchOp::Insert {
-                        collection: EDGES.into(),
-                        doc,
-                    },
-                },
-            );
+            ops.push(BatchOp::Upsert {
+                collection: EDGES.into(),
+                doc: edge_doc(e)?,
+            });
         }
         if !ops.is_empty() {
             db.batch(ops)?;
@@ -812,14 +743,9 @@ impl Store for TepinStore {
     }
 
     fn upsert_suspect(&self, s: &Suspect) -> Result<()> {
-        let db = self.db();
         let mut doc = serde_json::to_value(s)?;
         doc["_id"] = json!(s.id);
-        if no_collection_is_empty(db.get(SUSPECTS, &s.id))?.is_some() {
-            db.update(SUSPECTS, &s.id, doc)?;
-        } else {
-            db.insert(SUSPECTS, doc)?;
-        }
+        self.db().upsert(SUSPECTS, doc)?;
         Ok(())
     }
 

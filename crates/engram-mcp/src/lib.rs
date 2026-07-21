@@ -120,6 +120,17 @@ impl Engram {
         }
     }
 
+    /// Bound to one project of the hub (v0.6.2 machine core): `selector`'s
+    /// engine is this session's current project — what an omitted `project`
+    /// param means — regardless of which project the core launched with.
+    pub fn for_project(hub: Arc<Hub>, selector: &str) -> Result<Self, engram_core::Error> {
+        Ok(Self {
+            engine: hub.get(selector)?,
+            hub,
+            session_id: format!("mcp-{}", engram_core::id::new_id()).into(),
+        })
+    }
+
     /// Lock the engine and stamp this MCP session as the writer (audit journal
     /// attribution). Re-stamped on every operation: the engine may be shared
     /// with the HTTP pane, which stamps itself the same way.
@@ -865,18 +876,35 @@ async fn serve(server: Engram) -> anyhow::Result<()> {
 
 // ---- daemon-hosted MCP (PLAN §0 transport migration / §7C thin clients) ----
 
+/// The daemon-hosted MCP service type, nameable so the CLI can cache one per
+/// project (v0.6.2: `/projects/{id}/mcp`).
+pub type McpHttpService = rmcp::transport::StreamableHttpService<
+    Engram,
+    rmcp::transport::streamable_http_server::session::local::LocalSessionManager,
+>;
+
 /// The daemon's `/mcp` endpoint: MCP over streamable HTTP as a tower service
 /// for the daemon router. Stateful — each connected client becomes one
 /// session with its own [`Engram`] instance over the shared hub, so
 /// per-session audit attribution works exactly as one stdio process did.
-pub fn streamable_http_service(
-    hub: Arc<Hub>,
-) -> rmcp::transport::StreamableHttpService<
-    Engram,
-    rmcp::transport::streamable_http_server::session::local::LocalSessionManager,
-> {
+pub fn streamable_http_service(hub: Arc<Hub>) -> McpHttpService {
     rmcp::transport::StreamableHttpService::new(
         move || Ok(Engram::with_hub(hub.clone())),
+        Arc::new(Default::default()),
+        Default::default(),
+    )
+}
+
+/// The per-project form (v0.6.2 machine core): sessions on this service
+/// treat `selector`'s graph as the current project — an MCP bridge from repo
+/// X binds to X, however the core was launched. The `project` tool param
+/// still overrides per call.
+pub fn streamable_http_service_for(hub: Arc<Hub>, selector: String) -> McpHttpService {
+    rmcp::transport::StreamableHttpService::new(
+        move || {
+            Engram::for_project(hub.clone(), &selector)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e.to_string()))
+        },
         Arc::new(Default::default()),
         Default::default(),
     )
@@ -940,9 +968,40 @@ pub async fn serve_stdio_proxy(url: &str) -> anyhow::Result<()> {
         info,
     };
     let service = proxy.serve(rmcp::transport::io::stdio()).await?;
-    service.waiting().await?;
-    let _ = client.cancel().await;
-    Ok(())
+    // Satellites die with the core (v0.6.2): whichever side ends first ends
+    // the bridge — stdio closing is a normal disconnect, the upstream dying
+    // means the core is gone and lingering would only strand the client.
+    // Satellites die with the core (v0.6.2). The HTTP client transport
+    // auto-reconnects, so a dead core never surfaces as a closed connection —
+    // liveness has to be probed: ping the core on a heartbeat and treat a
+    // timed-out or failed ping as its death. Both sides' futures own their
+    // service; the bridge process ends right after the select, which tears
+    // the loser down with it.
+    let heartbeat_peer = client.peer().clone();
+    let core_died = async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            let ping = heartbeat_peer.send_request(rmcp::model::ClientRequest::PingRequest(
+                rmcp::model::PingRequest {
+                    method: Default::default(),
+                    extensions: Default::default(),
+                },
+            ));
+            match tokio::time::timeout(std::time::Duration::from_secs(10), ping).await {
+                Ok(Ok(_)) => {}
+                _ => return,
+            }
+        }
+    };
+    tokio::select! {
+        served = service.waiting() => {
+            served?;
+            Ok(())
+        }
+        _ = core_died => {
+            anyhow::bail!("the engram core went away — bridge exiting")
+        }
+    }
 }
 
 // ---- argument schemas ---------------------------------------------------
@@ -2101,5 +2160,117 @@ mod transport_tests {
             text.contains("served over the daemon transport"),
             "a write through the direct client is visible through the bridge: {text}"
         );
+    }
+}
+
+#[cfg(test)]
+mod scoped_transport_tests {
+    use super::*;
+    use engram_core::{FakeEmbedder, SqliteStore, registry};
+    use rmcp::model::CallToolRequestParams;
+
+    /// v0.6.2: a session on /projects/{id}/mcp treats that project as current
+    /// — the repo-bound AI side of "one core, one pane".
+    #[tokio::test]
+    async fn scoped_mcp_endpoint_binds_sessions_to_their_project() {
+        let tmp = std::env::temp_dir().join(format!("engram-mcp-scope-{}", std::process::id()));
+        let beta_root = tmp.join("beta");
+        std::fs::create_dir_all(beta_root.join(".engram")).unwrap();
+        unsafe { std::env::set_var("ENGRAM_HOME", tmp.join("home")) };
+        let beta_db = beta_root.join(".engram/graph.db");
+        registry::register(&beta_root, &beta_db).unwrap();
+        {
+            let beta = Engine::new(
+                SqliteStore::open(&beta_db).unwrap(),
+                Box::new(FakeEmbedder::default()),
+            );
+            beta.add_node(engram_core::NewNode {
+                node_type: engram_core::NodeType::Decision,
+                title: "beta owns this decision".into(),
+                body: None,
+                durability: engram_core::Durability::Stable,
+                source: engram_core::Source::Claude,
+                session_id: None,
+                status: None,
+                code_refs: vec![],
+                tags: vec![],
+            })
+            .unwrap();
+        }
+
+        let alpha = Engine::new(
+            SqliteStore::open_in_memory().unwrap(),
+            Box::new(FakeEmbedder::default()),
+        );
+        let factory: engram_core::EngineFactory = Box::new(|db| {
+            Ok(Engine::new(
+                SqliteStore::open(db)?,
+                Box::new(FakeEmbedder::default()),
+            ))
+        });
+        let hub = Arc::new(Hub::new(Arc::new(Mutex::new(alpha)), None, Some(factory)));
+
+        let app = axum::Router::new()
+            .route_service("/mcp", streamable_http_service(hub.clone()))
+            .route_service(
+                "/projects/beta/mcp",
+                streamable_http_service_for(hub.clone(), "beta".into()),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let scoped = ()
+            .serve(rmcp::transport::StreamableHttpClientTransport::from_uri(
+                format!("http://{addr}/projects/beta/mcp"),
+            ))
+            .await
+            .unwrap();
+        let hits = scoped
+            .peer()
+            .call_tool(
+                CallToolRequestParams::new("search").with_arguments(
+                    serde_json::json!({ "query": "beta owns decision" })
+                        .as_object()
+                        .cloned()
+                        .unwrap(),
+                ),
+            )
+            .await
+            .unwrap();
+        let text = format!("{:?}", hits.content);
+        assert!(
+            text.contains("beta owns this decision"),
+            "scoped session searches ITS project by default: {text}"
+        );
+
+        let unscoped = ()
+            .serve(rmcp::transport::StreamableHttpClientTransport::from_uri(
+                format!("http://{addr}/mcp"),
+            ))
+            .await
+            .unwrap();
+        let hits = unscoped
+            .peer()
+            .call_tool(
+                CallToolRequestParams::new("search").with_arguments(
+                    serde_json::json!({ "query": "beta owns decision" })
+                        .as_object()
+                        .cloned()
+                        .unwrap(),
+                ),
+            )
+            .await
+            .unwrap();
+        let text = format!("{:?}", hits.content);
+        assert!(
+            !text.contains("beta owns this decision"),
+            "the hub's current project stays its own graph: {text}"
+        );
+
+        unsafe { std::env::remove_var("ENGRAM_HOME") };
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

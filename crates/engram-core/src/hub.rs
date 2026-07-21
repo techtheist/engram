@@ -84,6 +84,25 @@ impl Hub {
         }
     }
 
+    /// The machine core launched outside any project (v0.6.2 serve-anywhere):
+    /// the home graph IS the current project — `get("home")` resolves to this
+    /// same engine via `is_current`, registered projects open lazily through
+    /// the factory, and the pane's switcher does the navigating.
+    pub fn new_home(engine: Arc<Mutex<Engine>>, factory: Option<EngineFactory>) -> Self {
+        Self {
+            current: ProjectHandle {
+                id: HOME_PROJECT.into(),
+                name: HOME_PROJECT.into(),
+                root: None,
+                db: registry::home_db_path(),
+                engine,
+            },
+            factory,
+            listener_factory: Mutex::new(None),
+            open: Mutex::new(HashMap::new()),
+        }
+    }
+
     /// Single-project hub (tests, library embedding): no factory, so every
     /// cross-project selector fails with a clear message.
     pub fn single(engine: Engine) -> Self {
@@ -245,6 +264,9 @@ impl Hub {
     /// Every project this hub can reach: current, home, then the registry.
     pub fn projects(&self) -> Vec<ProjectInfo> {
         let open = self.open.lock().unwrap();
+        // A core launched outside any project has home AS its current
+        // project (v0.6.2 serve-anywhere) — one row, both hats.
+        let home_is_current = self.current.id == HOME_PROJECT;
         let mut out = vec![ProjectInfo {
             id: self.current.id.clone(),
             name: self.current.name.clone(),
@@ -256,11 +278,11 @@ impl Hub {
                 .map(|p| p.display().to_string())
                 .unwrap_or_default(),
             current: true,
-            home: false,
+            home: home_is_current,
             open: true,
             last_seen: None,
         }];
-        if let Some(db) = registry::home_db_path() {
+        if let Some(db) = registry::home_db_path().filter(|_| !home_is_current) {
             out.push(ProjectInfo {
                 id: HOME_PROJECT.into(),
                 name: HOME_PROJECT.into(),

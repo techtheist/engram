@@ -784,6 +784,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "doctest-file"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2db04e74f0a9a93103b50e90b96024c9b2bdca8bce6a632ec71b88736d3d359"
+
+[[package]]
 name = "document-features"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -821,7 +827,7 @@ dependencies = [
 
 [[package]]
 name = "engram"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -832,13 +838,14 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
 ]
 
 [[package]]
 name = "engram-core"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "fastembed",
  "getrandom 0.4.3",
@@ -850,6 +857,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlite-vec",
+ "tepin-core",
  "tepindb",
  "thiserror",
  "tokenizers",
@@ -857,7 +865,7 @@ dependencies = [
 
 [[package]]
 name = "engram-http"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "axum",
  "engram-core",
@@ -874,7 +882,7 @@ dependencies = [
 
 [[package]]
 name = "engram-mcp"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -1652,6 +1660,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "interprocess"
+version = "2.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "069323743400cb7ab06a8fe5c1ed911d36b6919ec531661d034c89083629595b"
+dependencies = [
+ "doctest-file",
+ "libc",
+ "recvmsg",
+ "widestring",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2507,6 +2528,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "recvmsg"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3edd4d5d42c92f0a659926464d4cce56b562761267ecf0f469d85b7de384175"
+
+[[package]]
 name = "redb"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3207,10 +3234,12 @@ dependencies = [
 
 [[package]]
 name = "tepin-core"
-version = "0.1.0"
-source = "git+https://github.com/tepindb/tepindb.git?rev=1e98ee56c95f49520c8eb18ad05c6e5827290290#1e98ee56c95f49520c8eb18ad05c6e5827290290"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37c1a611488a40a0a3418ae403b14883546d2cd6c5cbd57a761ccc94cb7ae701"
 dependencies = [
  "getrandom 0.4.3",
+ "interprocess",
  "redb",
  "serde",
  "serde_json",
@@ -3219,16 +3248,18 @@ dependencies = [
 
 [[package]]
 name = "tepin-embed"
-version = "0.1.0"
-source = "git+https://github.com/tepindb/tepindb.git?rev=1e98ee56c95f49520c8eb18ad05c6e5827290290#1e98ee56c95f49520c8eb18ad05c6e5827290290"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ed8fa6acaf44b64aa6da2089f00663d835f0622a414b9dbfd5252953037254a"
 dependencies = [
  "tepin-core",
 ]
 
 [[package]]
 name = "tepindb"
-version = "0.1.0"
-source = "git+https://github.com/tepindb/tepindb.git?rev=1e98ee56c95f49520c8eb18ad05c6e5827290290#1e98ee56c95f49520c8eb18ad05c6e5827290290"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01aaa6cc48ea514ea4243738c2d73db8a7c134ddea71e107314ace598b28209f"
 dependencies = [
  "tepin-core",
  "tepin-embed",
@@ -3859,6 +3890,12 @@ name = "weezl"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
+
+[[package]]
+name = "widestring"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
 
 [[package]]
 name = "winapi"

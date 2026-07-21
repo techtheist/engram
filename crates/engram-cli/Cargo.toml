@@ -14,6 +14,7 @@ engram-core = { workspace = true, features = ["fastembed"] }
 engram-http = { path = "../engram-http" }
 engram-mcp = { path = "../engram-mcp" }
 axum = "0.8"
+tower = "0.5"
 clap = { version = "4", features = ["derive"] }
 tokio = { workspace = true }
 serde_json = { workspace = true }

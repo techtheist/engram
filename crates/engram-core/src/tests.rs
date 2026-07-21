@@ -3152,7 +3152,17 @@ fn resolve_db_prefers_a_migrated_tepin_sibling() {
     let dir = std::env::temp_dir().join(format!("engram-resolve-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let db = dir.join("graph.db");
-    assert_eq!(resolve_db_path(&db), db, "no sibling: the .db path stands");
+    assert_eq!(
+        resolve_db_path(&db),
+        dir.join("graph.tepin"),
+        "a brand-new store is born tepin (v0.6.2 default)"
+    );
+    std::fs::write(&db, b"sqlite bytes").unwrap();
+    assert_eq!(
+        resolve_db_path(&db),
+        db,
+        "an existing graph.db keeps working"
+    );
     std::fs::write(dir.join("graph.tepin"), b"x").unwrap();
     assert_eq!(
         resolve_db_path(&db),
@@ -3681,4 +3691,32 @@ fn tepin_embed_model_swap_keeps_writes_working() {
     assert!(e.store().embedding_of("00gaplessnode").unwrap().is_none());
     assert_eq!(e.ensure_embed_model().unwrap(), 1, "heals exactly the gap");
     assert!(e.store().embedding_of("00gaplessnode").unwrap().is_some());
+}
+
+#[test]
+fn default_preset_cache_dirs_match_the_legacy_loader_dirs() {
+    // The provisioning fix for the default models composes with the legacy
+    // loaders ONLY because cortex's cache layout and the pre-selection dirs
+    // agree — provision() downloads into the exact dir FastEmbedder::new /
+    // FastReranker::new / FastNli::new prefer. Pin that invariant.
+    use crate::cortex::{Role, cache_dir, presets};
+    assert_eq!(
+        cache_dir(&presets(Role::Embedding)[0].name),
+        rag::model_dir(),
+        "embedding default provisions where the loader looks"
+    );
+    assert_eq!(
+        cache_dir(&presets(Role::Reranker)[0].name),
+        rag::reranker_model_dir(),
+        "reranker default provisions where the loader looks"
+    );
+    assert_eq!(
+        cache_dir(&presets(Role::Nli)[0].name),
+        nli::nli_model_dir(),
+        "nli default provisions where the loader looks"
+    );
+    // And the reranker spec carries the full fastembed five-file layout.
+    let files = crate::cortex::spec_files(Role::Reranker, &presets(Role::Reranker)[0]);
+    assert_eq!(files.len(), 5);
+    assert!(files.iter().all(|(_, url)| url.starts_with("https://")));
 }

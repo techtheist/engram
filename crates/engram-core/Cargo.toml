@@ -7,10 +7,13 @@ rust-version.workspace = true
 
 [dependencies]
 rusqlite = { version = "0.37", features = ["bundled"] }
-# The TepinDB storage driver (PLAN §7C step 5). Pinned by rev to the sibling
-# project's primitives tier (BYO vectors / batch / in-memory / indexes);
+# The TepinDB storage driver (PLAN §7C step 5). 0.4 ships the Engram dossier:
+# reset_embedder, native upsert, empty reads, open retry, and in-driver
+# serving — the daemon hosts reads so `npx tepindb` can inspect a live store.
 # default-features = false — Engram brings its own embedder, never tepin's.
-tepindb = { git = "https://github.com/tepindb/tepindb.git", rev = "1e98ee56c95f49520c8eb18ad05c6e5827290290", default-features = false }
+# tepin-core rides along for ServeMode (not re-exported by the wrapper yet).
+tepindb = { version = "0.4", default-features = false }
+tepin-core = "0.4"
 regex = "1"
 ignore = "0.4"
 serde = { workspace = true }

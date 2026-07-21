@@ -217,6 +217,30 @@ fn check_daemon(r: &mut Report, db: &Path) {
     }
 }
 
+/// Minimal localhost POST (HTTP/1.0, JSON body) — enough to register a repo
+/// with a running core. Returns the response body on any 2xx.
+pub(crate) fn http_post(port: u16, path: &str, json_body: &str) -> Option<String> {
+    use std::io::{Read, Write};
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    write!(
+        stream,
+        "POST {path} HTTP/1.0\r\nHost: 127.0.0.1\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{json_body}",
+        json_body.len()
+    )
+    .ok()?;
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    let ok = text.starts_with("HTTP/1.0 2") || text.starts_with("HTTP/1.1 2");
+    ok.then(|| {
+        text.split_once("\r\n\r\n")
+            .map(|(_, body)| body.to_string())
+            .unwrap_or_default()
+    })
+}
+
 /// Minimal localhost GET. HTTP/1.0 keeps the reply un-chunked, so everything
 /// after the blank line is the body. Shared with the thin-client resolution
 /// in main.rs (mcp bridge, daemon-aware brief).

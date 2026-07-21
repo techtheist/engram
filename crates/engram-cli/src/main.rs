@@ -59,6 +59,11 @@ enum Command {
     /// verbatim, and the old graph.db stays behind untouched as a backup.
     /// Every command picks up graph.tepin automatically afterwards.
     Migrate(MigrateArgs),
+    /// Stop every engram process on this machine in one gesture — the core
+    /// and any per-repo daemons (bridges exit on their own when the core
+    /// goes). The primitive behind updates and repairs that need exclusive
+    /// access to the stores.
+    Stop,
 }
 
 #[derive(clap::Args)]
@@ -185,6 +190,79 @@ async fn main() -> anyhow::Result<()> {
         Command::Doctor(args) => doctor::run(&engram_core::resolve_db_path(&args.db)),
         Command::Setup(args) => run_setup(args),
         Command::Migrate(args) => run_migrate(args),
+        Command::Stop => run_stop(),
+    }
+}
+
+/// Cut them all at once: terminate every advertised engram daemon — the
+/// machine core plus any per-repo daemons — discovered from the daemon files
+/// we already keep (never by process-name matching), health-verified before
+/// each kill so a stale file can't take down an unrelated reused pid.
+fn run_stop() -> anyhow::Result<()> {
+    let mut targets: Vec<(String, std::path::PathBuf)> = Vec::new();
+    if let Some(home) = registry::engram_home() {
+        targets.push(("machine core".into(), home.join("daemon.json")));
+    }
+    for entry in registry::load().projects {
+        if let Some(dir) = Path::new(&entry.db).parent() {
+            targets.push((entry.name.clone(), dir.join("daemon.json")));
+        }
+    }
+    let mut stopped = 0;
+    for (label, file) in targets {
+        let Ok(raw) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let Ok(meta) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            let _ = std::fs::remove_file(&file);
+            continue;
+        };
+        let (Some(port), Some(pid)) = (meta["port"].as_u64(), meta["pid"].as_u64()) else {
+            continue;
+        };
+        if doctor::http_get(port as u16, "/health").is_none() {
+            // Nothing lives there — the file is stale; clean it up.
+            let _ = std::fs::remove_file(&file);
+            continue;
+        }
+        let ok = terminate_pid(pid as u32);
+        if ok {
+            // Give it a moment, then confirm the port went quiet.
+            for _ in 0..20 {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                if doctor::http_get(port as u16, "/health").is_none() {
+                    break;
+                }
+            }
+            let _ = std::fs::remove_file(&file);
+            println!("stopped {label} (pid {pid}, port {port})");
+            stopped += 1;
+        } else {
+            eprintln!("couldn't stop {label} (pid {pid}) — stop it manually");
+        }
+    }
+    if stopped == 0 {
+        println!("nothing to stop — no healthy engram daemons advertised");
+    }
+    Ok(())
+}
+
+fn terminate_pid(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        std::process::Command::new("kill")
+            .arg(pid.to_string())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+    #[cfg(windows)]
+    {
+        std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
 }
 
@@ -468,10 +546,17 @@ fn scopeguard(dir: PathBuf) -> impl Drop {
 
 fn run_brief(args: BriefArgs) -> anyhow::Result<()> {
     // Thin client first: a running daemon owns the store (and on TepinDB is
-    // the only process allowed to) — its /brief is the same hub digest.
+    // the only process allowed to). A repo-launched daemon serves this
+    // project at /brief; the machine core serves it at the scoped route.
     let db = engram_core::resolve_db_path(&args.db);
-    if let Some(port) = daemon_for(&db)
-        && let Some(text) = doctor::http_get(port, &format!("/brief?max_chars={}", args.max_chars))
+    let brief_url = resolve_mcp_target(&db)
+        .map(|mcp| mcp.replace("/mcp", &format!("/brief?max_chars={}", args.max_chars)));
+    if let Some(url) = brief_url
+        && let Some((port, path)) = url
+            .strip_prefix("http://127.0.0.1:")
+            .and_then(|rest| rest.split_once('/'))
+        && let Ok(port) = port.parse::<u16>()
+        && let Some(text) = doctor::http_get(port, &format!("/{path}"))
     {
         println!("{}", text.trim_end());
         return Ok(());
@@ -589,6 +674,12 @@ fn is_default_spec(role: engram_core::cortex::Role, spec: &engram_core::cortex::
 fn load_embedder(spec: &engram_core::cortex::ModelSpec) -> anyhow::Result<Arc<dyn Embedder>> {
     use engram_core::cortex::Role;
     if is_default_spec(Role::Embedding, spec) {
+        // Provision the default like any selected model — the curl download
+        // into the same dir FastEmbedder::new prefers. fastembed's flaky
+        // hf_hub fallback inside new() becomes the last resort, not the plan.
+        if let Err(e) = provision(Role::Embedding, spec) {
+            tracing::warn!("couldn't pre-provision the embedding model ({e:#}); falling back");
+        }
         return Ok(Arc::new(FastEmbedder::new()?));
     }
     let dir = provision(Role::Embedding, spec)?;
@@ -606,6 +697,13 @@ fn load_embedder(spec: &engram_core::cortex::ModelSpec) -> anyhow::Result<Arc<dy
 fn load_reranker(spec: &engram_core::cortex::ModelSpec) -> anyhow::Result<Arc<dyn Reranker>> {
     use engram_core::cortex::Role;
     if is_default_spec(Role::Reranker, spec) {
+        // The long-open asymmetry (Problem 009yrpcyno9p): the NLI model had a
+        // curl ensure, the reranker leaned on fastembed's flaky hf_hub
+        // download and silently lost the precision layer when it failed.
+        // Provision it like everything else; new() prefers the local dir.
+        if let Err(e) = provision(Role::Reranker, spec) {
+            tracing::warn!("couldn't pre-provision the reranker ({e:#}); falling back");
+        }
         return Ok(Arc::new(engram_core::FastReranker::new()?));
     }
     let dir = provision(Role::Reranker, spec)?;
@@ -740,6 +838,21 @@ fn build_hub(
     let factory: engram_core::EngineFactory = Box::new(move |db| open_engine(db, &factory_models));
     let hub = Arc::new(Hub::new(Arc::new(Mutex::new(engine)), entry, Some(factory)));
     Ok((hub, models))
+}
+
+/// The core hub launched outside any project (v0.6.2 serve-anywhere): the
+/// home graph is the current project; registered repos open lazily.
+fn build_core_hub(fake_embeddings: bool) -> anyhow::Result<(Arc<Hub>, Models)> {
+    let home = registry::home_db_path().context("no home directory for the home graph")?;
+    let models = load_models(fake_embeddings, true)?;
+    let engine =
+        open_engine(&home, &models).with_context(|| format!("opening {}", home.display()))?;
+    let factory_models = models.clone();
+    let factory: engram_core::EngineFactory = Box::new(move |db| open_engine(db, &factory_models));
+    Ok((
+        Arc::new(Hub::new_home(Arc::new(Mutex::new(engine)), Some(factory))),
+        models,
+    ))
 }
 
 /// The daemon's model-selection hands (PLAN §7A): resolve a `/models` request
@@ -931,29 +1044,50 @@ fn spawn_daemon_and_wait(db: &Path) -> Option<u16> {
         .ok()?;
     for _ in 0..120 {
         std::thread::sleep(std::time::Duration::from_millis(500));
-        if let Some(port) = daemon_for(db) {
+        // The spawned serve may have become the core — or converged with one
+        // that won a startup race; either way counts as up.
+        if let Some(port) = daemon_for(db).or_else(machine_core) {
             return Some(port);
         }
     }
     None
 }
 
+/// Where an MCP session for `db` should connect (thin-client resolution,
+/// v0.6.2): a daemon launched from this repo, else the machine core with the
+/// repo registered on it (so the scoped endpoint binds the session to THIS
+/// project), else nothing — the caller decides between spawning a core and
+/// opening the file directly.
+fn resolve_mcp_target(db: &Path) -> Option<String> {
+    if let Some(port) = daemon_for(db) {
+        return Some(format!("http://127.0.0.1:{port}/mcp"));
+    }
+    let port = machine_core()?;
+    let root = db.canonicalize().ok().and_then(|p| {
+        let dir = p.parent()?;
+        (dir.file_name()? == ".engram").then(|| dir.parent().map(Path::to_path_buf))?
+    })?;
+    let body = serde_json::json!({ "path": root }).to_string();
+    let id = doctor::http_post(port, "/projects", &body)
+        .and_then(|resp| serde_json::from_str::<serde_json::Value>(&resp).ok())
+        .and_then(|v| v["id"].as_str().map(str::to_string))?;
+    Some(format!("http://127.0.0.1:{port}/projects/{id}/mcp"))
+}
+
 async fn run_mcp(args: McpArgs) -> anyhow::Result<()> {
     let db = engram_core::resolve_db_path(&args.db);
-    // Thin client first (PLAN §7C): when a daemon owns this store, bridge
-    // stdio to its /mcp endpoint — mandatory on a TepinDB store (redb allows
-    // one process), and it also puts MCP writes on the pane's live SSE feed.
-    let mut port = daemon_for(&db);
-    if port.is_none() && engram_core::is_tepin_path(&db) {
-        tracing::info!("tepin store with no daemon — starting one (it must own the file)");
-        port = spawn_daemon_and_wait(&db);
+    // Thin client first (PLAN §7C): when a daemon owns stores on this
+    // machine, bridge stdio to it — mandatory on a TepinDB store (redb
+    // allows one process), and it puts MCP writes on the pane's SSE feed.
+    let mut target = resolve_mcp_target(&db);
+    if target.is_none() && engram_core::is_tepin_path(&db) {
+        tracing::info!("tepin store with no core — starting one (it must own the file)");
+        spawn_daemon_and_wait(&db);
+        target = resolve_mcp_target(&db);
     }
-    if let Some(port) = port {
-        tracing::info!(
-            "bridging stdio MCP to the daemon on port {port} (db: {})",
-            db.display()
-        );
-        return engram_mcp::serve_stdio_proxy(&format!("http://127.0.0.1:{port}/mcp")).await;
+    if let Some(url) = target {
+        tracing::info!("bridging stdio MCP to {url} (db: {})", db.display());
+        return engram_mcp::serve_stdio_proxy(&url).await;
     }
     // No daemon: open the store directly (SQLite coexists via WAL; a tepin
     // store works too as long as this stays the only process).
@@ -964,37 +1098,169 @@ async fn run_mcp(args: McpArgs) -> anyhow::Result<()> {
     engram_mcp::serve_stdio_hub(hub).await
 }
 
-async fn serve(args: ServeArgs) -> anyhow::Result<()> {
-    // A migrated repo's wiring still says graph.db; the graph lives in
-    // graph.tepin next to it. Resolve once so the daemon file, /health and
-    // the registry all name the store actually being served.
-    let db = engram_core::resolve_db_path(&args.db);
-    ensure_gitignored(&db);
-    let (hub, models) = build_hub(&db, args.fake_embeddings, true, true)?;
-    let engine = hub.current_engine();
+/// What a `serve` invocation should become — decided by looking at the
+/// machine, not by flags (the one-smart-binary Principle, v0.6.2).
+enum ServeRole {
+    /// Serve with this store as the current project (repo dir, or explicit --db).
+    Project(PathBuf),
+    /// No project here (~, non-git dir, or a declined init): run the machine
+    /// core with the home graph as the current project.
+    CoreOnly,
+}
 
-    // HTTP + SSE on a background task; both interfaces share the hub, so a
-    // write from Claude (MCP) streams to the pane and vice versa — in any
-    // project the hub serves.
-    let db_display = std::fs::canonicalize(&db)
-        .unwrap_or_else(|_| db.clone())
-        .display()
-        .to_string();
+fn serve_role(args: &ServeArgs) -> anyhow::Result<ServeRole> {
+    let resolved = engram_core::resolve_db_path(&args.db);
+    if args.db != Path::new(".engram/graph.db") {
+        // An explicit --db is an explicit answer.
+        return Ok(ServeRole::Project(resolved));
+    }
+    let cwd = std::env::current_dir()?;
+    if resolved.exists() || cwd.join(".engram").exists() {
+        return Ok(ServeRole::Project(resolved));
+    }
+    if cwd.join(".git").exists() {
+        // A git repo without a graph: offer to init — never create silently.
+        if propose_init(&cwd) {
+            return Ok(ServeRole::Project(resolved));
+        }
+        eprintln!(
+            "Skipped — you can initialize this repo later with `engram-alpha setup`, another `serve`, or from the pane."
+        );
+    }
+    Ok(ServeRole::CoreOnly)
+}
+
+/// Interactive init consent: only on a real terminal, default yes.
+fn propose_init(repo: &Path) -> bool {
+    use std::io::{BufRead, IsTerminal, Write};
+    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+        return false;
+    }
+    eprint!(
+        "No Engram graph in {} yet — initialize one here? [Y/n] ",
+        repo.display()
+    );
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    let _ = std::io::stdin().lock().read_line(&mut line);
+    matches!(line.trim().to_lowercase().as_str(), "" | "y" | "yes")
+}
+
+/// A healthy machine core, if one runs: `~/.engram/daemon.json` (beside the
+/// registry — new state folds into the existing file family) verified over
+/// /health.
+fn machine_core() -> Option<u16> {
+    let path = registry::engram_home()?.join("daemon.json");
+    let raw = std::fs::read_to_string(path).ok()?;
+    let port = serde_json::from_str::<serde_json::Value>(&raw).ok()?["port"].as_u64()? as u16;
+    doctor::http_get(port, "/health").map(|_| port)
+}
+
+/// Absorb a `serve` into an already-running core: hand it the cwd project
+/// (registering an existing graph, or offering init on a bare git repo) and
+/// point the user at the one pane. Ten serves, one core, zero errors.
+fn converge_with_core(port: u16) -> anyhow::Result<()> {
+    if let Ok(cwd) = std::env::current_dir() {
+        let should_register =
+            cwd.join(".engram").exists() || (cwd.join(".git").exists() && propose_init(&cwd));
+        if should_register {
+            let body = serde_json::json!({ "path": cwd }).to_string();
+            match doctor::http_post(port, "/projects", &body) {
+                Some(_) => tracing::info!("registered {} with the running core", cwd.display()),
+                None => tracing::warn!(
+                    "couldn't register {} with the core on port {port}",
+                    cwd.display()
+                ),
+            }
+        }
+    }
+    println!("Engram core already running — pane: http://127.0.0.1:{port}");
+    Ok(())
+}
+
+async fn serve(args: ServeArgs) -> anyhow::Result<()> {
+    // One core per machine: a healthy one absorbs this invocation.
+    if let Some(port) = machine_core() {
+        return converge_with_core(port);
+    }
+    let role = serve_role(&args)?;
+    let (hub, models, db, db_display) = match role {
+        ServeRole::Project(db) => {
+            ensure_gitignored(&db);
+            let (hub, models) = build_hub(&db, args.fake_embeddings, true, true)?;
+            let display = std::fs::canonicalize(&db)
+                .unwrap_or_else(|_| db.clone())
+                .display()
+                .to_string();
+            (hub, models, Some(db), display)
+        }
+        ServeRole::CoreOnly => {
+            let (hub, models) = build_core_hub(args.fake_embeddings)?;
+            let display = registry::home_db_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            tracing::info!("no project here — running the machine core over the home graph");
+            (hub, models, None, display)
+        }
+    };
+
     let admin = Arc::new(CortexAdmin {
         models: models.clone(),
         hub: hub.clone(),
     });
+    // Per-project MCP endpoints (v0.6.2): a bridge from repo X connects to
+    // /projects/{id}/mcp and its sessions treat X as the current project —
+    // one service instance per project, minted lazily over the shared hub.
+    let mcp_services: Arc<Mutex<std::collections::HashMap<String, engram_mcp::McpHttpService>>> =
+        Arc::default();
+    let mcp_hub = hub.clone();
+    let scoped_mcp = axum::routing::any(
+        move |axum::extract::Path(id): axum::extract::Path<String>, req: axum::extract::Request| {
+            let services = mcp_services.clone();
+            let hub = mcp_hub.clone();
+            async move {
+                use axum::response::IntoResponse;
+                let canonical = match hub.resolve_id(&id) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return (axum::http::StatusCode::NOT_FOUND, e.to_string()).into_response();
+                    }
+                };
+                let mut service = services
+                    .lock()
+                    .unwrap()
+                    .entry(canonical.clone())
+                    .or_insert_with(|| {
+                        engram_mcp::streamable_http_service_for(hub.clone(), canonical)
+                    })
+                    .clone();
+                match tower::Service::call(&mut service, req).await {
+                    Ok(response) => response.into_response(),
+                    Err(never) => match never {},
+                }
+            }
+        },
+    );
     let router = engram_http::router_hub_with_models(hub.clone(), Some(db_display.clone()), admin)
-        // The daemon-hosted MCP endpoint (PLAN §0 transport migration):
+        // The daemon-hosted MCP endpoints (PLAN §0 transport migration):
         // `engram-alpha mcp` bridges stdio sessions here, so exactly one
-        // process — this daemon — holds the store (redb requires it).
-        .route_service("/mcp", engram_mcp::streamable_http_service(hub.clone()));
-    let (listener, port) = bind_with_fallback(args.http_port).await?;
+        // process — this core — holds every store (redb requires it).
+        .route_service("/mcp", engram_mcp::streamable_http_service(hub.clone()))
+        .route("/projects/{id}/mcp", scoped_mcp);
+    let (listener, port) = match bind_or_converge(args.http_port).await? {
+        Bound::Listener(l, port) => (l, port),
+        Bound::CoreWonTheRace(port) => return converge_with_core(port),
+    };
     if port != args.http_port {
         tracing::warn!("port {} was taken; using {port} instead", args.http_port);
     }
-    // Record where we actually landed so plugins/skills can discover the port.
-    write_daemon_file(&db, port, &db_display);
+    // Record where we landed: the machine-level daemon file always (how every
+    // thin client finds the core), the repo-local one too when a project is
+    // current (how pre-0.6.2 clients find their daemon).
+    write_machine_daemon_file(port, &db_display);
+    if let Some(db) = &db {
+        write_daemon_file(db, port, &db_display);
+    }
     tracing::info!("HTTP + SSE listening on http://127.0.0.1:{port}");
 
     // First-run nudge: if installed assistants aren't wired to this repo's
@@ -1016,31 +1282,39 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // provisional nodes and refresh the suspected-conflict queue. Purely local
     // math — judgment stays with Claude/the user (PLAN §7). First tick fires
     // at startup, then every 6 hours.
-    let sweeper = engine.clone();
+    let sweeper = hub.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(6 * 60 * 60));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tick.tick().await;
-            let result = {
-                let mut engine = sweeper.lock().unwrap();
-                // Sweep writes (decay archives, scan suspects) are the
-                // daemon's own — attribute them as such in the audit journal.
-                engine.set_audit_origin(engram_core::AuditOrigin::daemon());
-                engine
-                    .decay(engram_core::policy::DECAY_TTL_DAYS, false)
-                    .and_then(|archived| {
-                        engine.scan_conflicts().map(|added| (archived.len(), added))
-                    })
-            };
-            match result {
-                Ok((archived, added)) if archived > 0 || added > 0 => {
-                    tracing::info!(
-                        "sweep: archived {archived} stale nodes, queued {added} suspected conflicts"
-                    );
+            // Every engine the core currently holds open — the machine core
+            // sweeps all its projects, not just the launch one.
+            let (mut archived_total, mut added_total) = (0usize, 0usize);
+            for engine in sweeper.engines() {
+                let result = {
+                    let mut engine = engine.lock().unwrap();
+                    // Sweep writes (decay archives, scan suspects) are the
+                    // daemon's own — attribute them as such in the journal.
+                    engine.set_audit_origin(engram_core::AuditOrigin::daemon());
+                    engine
+                        .decay(engram_core::policy::DECAY_TTL_DAYS, false)
+                        .and_then(|archived| {
+                            engine.scan_conflicts().map(|added| (archived.len(), added))
+                        })
+                };
+                match result {
+                    Ok((archived, added)) => {
+                        archived_total += archived;
+                        added_total += added;
+                    }
+                    Err(e) => tracing::warn!("sweep failed: {e}"),
                 }
-                Ok(_) => {}
-                Err(e) => tracing::warn!("sweep failed: {e}"),
+            }
+            if archived_total > 0 || added_total > 0 {
+                tracing::info!(
+                    "sweep: archived {archived_total} stale nodes, queued {added_total} suspected conflicts"
+                );
             }
         }
     });
@@ -1061,25 +1335,68 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     tracing::info!("MCP server ready on stdio");
     let result = engram_mcp::serve_stdio_hub(hub).await;
     http.abort();
-    remove_daemon_file(&db);
+    if let Some(db) = &db {
+        remove_daemon_file(db);
+    }
+    remove_machine_daemon_file();
     result
 }
 
-/// Bind the requested port, or walk forward to the next free one (another
-/// repo's daemon likely owns the default — one daemon per repo is the norm).
-/// The real port lands in the daemon file for clients to discover.
-async fn bind_with_fallback(start: u16) -> anyhow::Result<(tokio::net::TcpListener, u16)> {
+enum Bound {
+    Listener(tokio::net::TcpListener, u16),
+    /// The port is held by another engram daemon — two serves raced and the
+    /// other one won; this invocation converges instead of walking ports.
+    CoreWonTheRace(u16),
+}
+
+/// Bind the requested port, or walk forward to the next free one. A taken
+/// port is probed first: if an engram daemon answers /health there, that is
+/// the core this invocation should join, never a reason to open a second
+/// port (v0.6.2: one core, one pane).
+async fn bind_or_converge(start: u16) -> anyhow::Result<Bound> {
     const TRIES: u16 = 16;
     for offset in 0..TRIES {
         let port = start + offset;
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
         match tokio::net::TcpListener::bind(addr).await {
-            Ok(l) => return Ok((l, port)),
-            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => continue,
+            Ok(l) => return Ok(Bound::Listener(l, port)),
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                let ours = doctor::http_get(port, "/health")
+                    .is_some_and(|b| b.contains("\"status\"") && b.contains("\"db\""));
+                if ours {
+                    return Ok(Bound::CoreWonTheRace(port));
+                }
+                continue;
+            }
             Err(e) => return Err(e).with_context(|| format!("binding {addr}")),
         }
     }
     anyhow::bail!("no free port in {start}..{}", start + TRIES)
+}
+
+/// `~/.engram/daemon.json` — the machine core's advertisement, next to the
+/// registry. Stale files are harmless: every reader health-checks the port.
+fn write_machine_daemon_file(port: u16, db_display: &str) {
+    let Some(home) = registry::engram_home() else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&home);
+    let body = serde_json::json!({
+        "port": port,
+        "url": format!("http://127.0.0.1:{port}"),
+        "pid": std::process::id(),
+        "db": db_display,
+        "version": env!("CARGO_PKG_VERSION"),
+    });
+    if let Err(e) = std::fs::write(home.join("daemon.json"), format!("{body:#}\n")) {
+        tracing::warn!("couldn't write the machine daemon file: {e}");
+    }
+}
+
+fn remove_machine_daemon_file() {
+    if let Some(home) = registry::engram_home() {
+        let _ = std::fs::remove_file(home.join("daemon.json"));
+    }
 }
 
 /// `.engram/daemon.json`, next to the DB: how plugins and the skill find the

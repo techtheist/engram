@@ -124,6 +124,7 @@ impl<T: Reranker + ?Sized> Reranker for std::sync::Arc<T> {
 }
 
 /// The five files that make up a fastembed-loadable model on disk.
+#[cfg_attr(not(feature = "fastembed"), allow(dead_code))]
 pub(crate) const MODEL_FILES: [&str; 5] = [
     "model.onnx",
     "tokenizer.json",

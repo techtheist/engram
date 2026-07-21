@@ -42,15 +42,17 @@ pub fn open_store(path: impl AsRef<Path>) -> Result<Box<dyn Store>> {
     Ok(Box::new(crate::store_sqlite::SqliteStore::open(&path)?))
 }
 
-/// The post-migration path dance: wiring everywhere (hooks, `.mcp.json`, the
-/// registry, clap defaults) names `graph.db`, but a migrated repo's graph
-/// lives in `graph.tepin` next to it. A `.db` path whose `.tepin` sibling
-/// exists resolves there — so every pre-migration wiring survives the cutover
-/// untouched, and the old SQLite file stays behind as the backup it is.
+/// The path dance around the storage sunset: wiring everywhere (hooks,
+/// `.mcp.json`, the registry, clap defaults) names `graph.db`, and this
+/// resolution decides what that means today. A migrated repo's `.tepin`
+/// sibling always wins (the SQLite file stays behind as the backup it is);
+/// an existing `graph.db` with no sibling keeps working untouched; and a
+/// brand-new store — neither file exists — is born `graph.tepin` (v0.6.2,
+/// the roadmap's first sunset step: new graphs never start on SQLite).
 pub fn resolve_db_path(path: &Path) -> std::path::PathBuf {
     if path.extension().is_some_and(|e| e == "db") {
         let tepin = path.with_extension("tepin");
-        if tepin.is_file() {
+        if tepin.is_file() || !path.exists() {
             return tepin;
         }
     }
