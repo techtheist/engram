@@ -1036,3 +1036,36 @@ async fn models_endpoint_with_admin_describes_and_applies() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body["error"].as_str().unwrap().contains("unknown role"));
 }
+
+#[tokio::test]
+async fn cors_allows_local_ui_origins_and_refuses_the_open_web() {
+    // SECURITY.md hardening: a random website in the user's browser must not
+    // be able to read the graph API; the pane's own origins must.
+    let app = test_app();
+    let probe = |origin: &'static str| {
+        let app = app.clone();
+        async move {
+            let req = Request::builder()
+                .method("GET")
+                .uri("/health")
+                .header("origin", origin)
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            resp.headers()
+                .get("access-control-allow-origin")
+                .map(|v| v.to_str().unwrap().to_string())
+        }
+    };
+    assert_eq!(
+        probe("http://127.0.0.1:8787").await.as_deref(),
+        Some("http://127.0.0.1:8787")
+    );
+    assert_eq!(
+        probe("http://localhost:5173").await.as_deref(),
+        Some("http://localhost:5173")
+    );
+    assert!(probe("vscode-webview://abc123").await.is_some());
+    assert_eq!(probe("https://evil.example").await, None);
+    assert_eq!(probe("http://127.0.0.1.evil.example").await, None);
+}

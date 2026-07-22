@@ -308,7 +308,9 @@ impl Store for SqliteStore {
 
     fn add_node(&self, n: NewNode) -> Result<Node> {
         let id = crate::id::new_id();
-        let created = now();
+        // Historical material carries its own date (digestion); the future
+        // is clamped away so nothing can buy itself a recency boost.
+        let created = n.created_at.map(|t| t.min(now())).unwrap_or_else(now);
         let title = crate::redact::scrub(&n.title);
         let body = n.body.as_deref().map(crate::redact::scrub);
         let code_refs = serde_json::to_string(&n.code_refs)?;
@@ -448,7 +450,10 @@ impl Store for SqliteStore {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute("DELETE FROM edges WHERE from_id=?1 OR to_id=?1", [id])?;
         tx.execute("DELETE FROM suspects WHERE a_id=?1 OR b_id=?1", [id])?;
-        tx.execute("DELETE FROM vec_nodes WHERE node_id=?1", [id])?;
+        tx.execute(
+            "DELETE FROM vec_nodes WHERE node_id = ?1 OR node_id LIKE ?1 || '#%'",
+            [id],
+        )?;
         let n = tx.execute("DELETE FROM nodes WHERE id=?1", [id])?;
         tx.commit()?;
         Ok(n > 0)
@@ -804,26 +809,51 @@ impl Store for SqliteStore {
     }
 
     fn search_vec(&self, query: &[f32], k: usize) -> Result<Vec<(String, f64)>> {
+        // Multiple chunks per node share the KNN space: over-fetch, keep each
+        // node's best chunk (rows arrive distance-ascending), return k nodes.
         let json = serde_json::to_string(query)?;
         let mut stmt = self.conn.prepare(
             "SELECT node_id, distance FROM vec_nodes \
              WHERE embedding MATCH ?1 AND k = ?2 ORDER BY distance",
         )?;
-        let rows = stmt.query_map(params![json, k as i64], |r| {
+        let over = (k * 4).max(k + 8) as i64;
+        let rows = stmt.query_map(params![json, over], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
         })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        let mut out: Vec<(String, f64)> = Vec::new();
+        for row in rows {
+            let (key, distance) = row?;
+            let id = key.split('#').next().unwrap_or(&key).to_string();
+            if !out.iter().any(|(seen, _)| *seen == id) {
+                out.push((id, distance));
+                if out.len() == k {
+                    break;
+                }
+            }
+        }
+        Ok(out)
     }
 
-    fn upsert_embedding(&self, node_id: &str, embedding: &[f32]) -> Result<()> {
-        // vec0 has no UPSERT, so delete-then-insert.
-        let json = serde_json::to_string(embedding)?;
+    fn upsert_embeddings(&self, node_id: &str, vectors: &[Vec<f32>]) -> Result<()> {
+        // vec0 has no UPSERT, so delete-then-insert. The node-level vector
+        // keeps the plain id (embedding_of and legacy layouts read it);
+        // claim vectors live under `id#NN`.
         let tx = self.conn.unchecked_transaction()?;
-        tx.execute("DELETE FROM vec_nodes WHERE node_id = ?1", [node_id])?;
         tx.execute(
-            "INSERT INTO vec_nodes(node_id, embedding) VALUES (?1, ?2)",
-            params![node_id, json],
+            "DELETE FROM vec_nodes WHERE node_id = ?1 OR node_id LIKE ?1 || '#%'",
+            [node_id],
         )?;
+        for (i, vector) in vectors.iter().enumerate() {
+            let key = if i == 0 {
+                node_id.to_string()
+            } else {
+                format!("{node_id}#{i:02}")
+            };
+            tx.execute(
+                "INSERT INTO vec_nodes(node_id, embedding) VALUES (?1, ?2)",
+                params![key, serde_json::to_string(vector)?],
+            )?;
+        }
         tx.commit()?;
         Ok(())
     }

@@ -9,6 +9,7 @@ fn new_node(t: NodeType, title: &str, body: &str) -> NewNode {
         node_type: t,
         title: title.to_string(),
         body: Some(body.to_string()),
+        created_at: None,
         durability: Durability::Stable,
         source: Source::Claude,
         session_id: Some("s1".to_string()),
@@ -299,9 +300,9 @@ fn vector_knn_finds_nearest() {
         .add_node(new_node(NodeType::Decision, "beta", ""))
         .unwrap();
     let e = FakeEmbedder::default();
-    s.upsert_embedding(&a.id, &e.embed_one("alpha").unwrap())
+    s.upsert_embeddings(&a.id, &[e.embed_one("alpha").unwrap()])
         .unwrap();
-    s.upsert_embedding(&b.id, &e.embed_one("beta").unwrap())
+    s.upsert_embeddings(&b.id, &[e.embed_one("beta").unwrap()])
         .unwrap();
 
     let q = e.embed_one("alpha").unwrap();
@@ -1590,7 +1591,8 @@ fn legacy_uuid_ids_shrink_with_edges_and_embeddings_intact() {
     };
     s.import_raw(&[base, b_node], &[edge]).unwrap();
     let emb = FakeEmbedder::default().embed_one("legacy node a").unwrap();
-    s.upsert_embedding(&uuid_a, &emb).unwrap();
+    s.upsert_embeddings(&uuid_a, std::slice::from_ref(&emb))
+        .unwrap();
 
     s.shorten_legacy_ids().unwrap();
 
@@ -2918,8 +2920,10 @@ fn store_battery(s: &dyn Store, backend: &str) {
     let emb = FakeEmbedder::default();
     let va = emb.embed_one("use sqlite WAL journaling").unwrap();
     let vb = emb.embed_one("completely unrelated topic zebra").unwrap();
-    s.upsert_embedding(&a.id, &va).unwrap();
-    s.upsert_embedding(&secret.id, &vb).unwrap();
+    s.upsert_embeddings(&a.id, std::slice::from_ref(&va))
+        .unwrap();
+    s.upsert_embeddings(&secret.id, std::slice::from_ref(&vb))
+        .unwrap();
     let knn = s.search_vec(&va, 2).unwrap();
     assert_eq!(knn[0].0, a.id, "nearest neighbor first on {backend}");
     assert!(knn[0].1 < knn[1].1, "distances ascend");
@@ -3051,7 +3055,8 @@ fn store_battery(s: &dyn Store, backend: &str) {
         "use sqlite WAL journaling",
         "reset keeps documents"
     );
-    s.upsert_embedding(&a.id, &[0.5, 0.5, 0.5, 0.5]).unwrap();
+    s.upsert_embeddings(&a.id, &[vec![0.5, 0.5, 0.5, 0.5]])
+        .unwrap();
     assert_eq!(s.embedding_of(&a.id).unwrap().unwrap().len(), 4);
     assert_eq!(s.search_vec(&[0.5, 0.5, 0.5, 0.5], 1).unwrap()[0].0, a.id);
 
@@ -3087,9 +3092,9 @@ fn tepin_store_survives_reopen_and_rebuild_on_disk() {
         let n = s
             .add_node(new_node(NodeType::Decision, "durable across reopen", ""))
             .unwrap();
-        s.upsert_embedding(
+        s.upsert_embeddings(
             &n.id,
-            &FakeEmbedder::default().embed_one("durable").unwrap(),
+            &[FakeEmbedder::default().embed_one("durable").unwrap()],
         )
         .unwrap();
         n.id
@@ -3102,7 +3107,7 @@ fn tepin_store_survives_reopen_and_rebuild_on_disk() {
         s.reset_vectors(8).unwrap();
         assert!(s.embedding_of(&id).unwrap().is_none());
         assert!(s.get_node(&id).unwrap().is_some());
-        s.upsert_embedding(&id, &[1.0; 8]).unwrap();
+        s.upsert_embeddings(&id, &[vec![1.0; 8]]).unwrap();
     }
     let s = TepinStore::open(&path).unwrap();
     assert_eq!(s.embedding_of(&id).unwrap().unwrap().len(), 8);
@@ -3719,4 +3724,144 @@ fn default_preset_cache_dirs_match_the_legacy_loader_dirs() {
     let files = crate::cortex::spec_files(Role::Reranker, &presets(Role::Reranker)[0]);
     assert_eq!(files.len(), 5);
     assert!(files.iter().all(|(_, url)| url.starts_with("https://")));
+}
+
+// ---- historical dating: capture carries its original date ------------------
+
+#[test]
+fn parse_day_handles_days_unix_and_rfc3339_prefixes() {
+    assert_eq!(parse_day("2026-07-22"), Some(1784678400));
+    assert_eq!(parse_day("2024-02-29"), Some(1709164800), "leap day");
+    assert_eq!(parse_day("1970-01-01"), Some(0));
+    assert_eq!(parse_day("2026-07-22T15:30:00Z"), Some(1784678400));
+    assert_eq!(parse_day(" 1784678400 "), Some(1784678400));
+    assert_eq!(parse_day("2026-13-01"), None, "month range");
+    assert_eq!(parse_day("yesterday"), None);
+}
+
+#[test]
+fn writes_carry_their_original_date_on_both_backends() {
+    let stores: Vec<Box<dyn Store>> = vec![
+        Box::new(SqliteStore::open_in_memory().unwrap()),
+        Box::new(TepinStore::open_in_memory().unwrap()),
+    ];
+    for s in &stores {
+        let mut spec = new_node(NodeType::Decision, "a decision from the past", "");
+        spec.created_at = parse_day("2025-03-10");
+        let n = s.add_node(spec).unwrap();
+        assert_eq!(n.created_at, parse_day("2025-03-10").unwrap());
+        assert_eq!(n.valid_from, parse_day("2025-03-10"));
+
+        // The future is clamped away — no recency boost for sale.
+        let mut spec = new_node(NodeType::Insight, "a note from tomorrow", "");
+        spec.created_at = Some(now() + 7 * 24 * 3600);
+        let n = s.add_node(spec).unwrap();
+        assert!(n.created_at <= now());
+
+        // Omitted stays exactly as before: dated now.
+        let n = s
+            .add_node(new_node(NodeType::Caution, "a live capture", ""))
+            .unwrap();
+        assert!((now() - n.created_at) < 5);
+    }
+}
+
+// ---- claim-level search (v0.6.3): rich nodes, per-claim vectors ------------
+
+#[test]
+fn claim_texts_tokenizes_substantial_sentences_only() {
+    use crate::engine_claims_for_tests as claims;
+    let body = "The first substantial sentence carries a real claim here. Ok. \
+                A second long sentence about an entirely different matter follows; \
+                and a third one closes the paragraph with more concrete detail.";
+    let out = claims("My node title", Some(body));
+    assert!(
+        out.len() >= 2,
+        "multiple substantial sentences become claims: {out:?}"
+    );
+    assert!(
+        out.iter().all(|c| c.starts_with("My node title. ")),
+        "claims keep their subject"
+    );
+    assert!(
+        out.iter().all(|c| !c.contains("Ok.")),
+        "fragments are dropped"
+    );
+    assert!(
+        claims(
+            "t",
+            Some("One sentence only, however long it happens to be written out.")
+        )
+        .is_empty(),
+        "a single claim adds nothing over the composition vector"
+    );
+    assert!(claims("t", None).is_empty());
+}
+
+#[test]
+fn buried_claims_are_reachable_on_both_backends() {
+    let emb = FakeEmbedder::default();
+    let stores: Vec<Box<dyn Store>> = vec![
+        Box::new(SqliteStore::open_in_memory().unwrap()),
+        Box::new(TepinStore::open_in_memory().unwrap()),
+    ];
+    for s in &stores {
+        // A rich node whose third sentence is the interesting claim, and a
+        // decoy that resembles the rich node's OVERALL average text.
+        let title = "storage decision";
+        let body = "We considered several options for the backend layer overall. \
+                    The team benchmarked writes across a few candidate engines. \
+                    Zanzibar quorum replication was rejected for latency reasons entirely.";
+        let rich = s
+            .add_node(new_node(NodeType::Decision, title, body))
+            .unwrap();
+        let decoy = s
+            .add_node(new_node(
+                NodeType::Insight,
+                "backend layer benchmarks considered",
+                "",
+            ))
+            .unwrap();
+
+        // Store vectors the way the engine does: composition first, claims after.
+        let mut texts = vec![format!("{title}\n{body}")];
+        texts.extend(crate::engine_claims_for_tests(title, Some(body)));
+        assert!(texts.len() > 2, "the rich body yields claim chunks");
+        s.upsert_embeddings(&rich.id, &emb.embed(&texts).unwrap())
+            .unwrap();
+        s.upsert_embeddings(
+            &decoy.id,
+            &[emb
+                .embed_one("backend layer benchmarks considered")
+                .unwrap()],
+        )
+        .unwrap();
+
+        // Query = the buried claim's chunk text: with claim vectors this is a
+        // near-exact match (distance ≈ 0); the node-level vector alone would
+        // sit much further away.
+        let query = emb
+            .embed_one(&format!(
+                "{title}. Zanzibar quorum replication was rejected for latency reasons entirely."
+            ))
+            .unwrap();
+        let hits = s.search_vec(&query, 2).unwrap();
+        assert_eq!(hits[0].0, rich.id, "the buried claim finds its node");
+        assert!(
+            hits[0].1 < 1e-6,
+            "claim chunk matches near-exactly: {}",
+            hits[0].1
+        );
+        assert!(
+            hits.iter().all(|(id, _)| !id.contains('#')),
+            "chunk keys never leak"
+        );
+
+        // embedding_of still answers with the node-level vector.
+        let node_vec = s.embedding_of(&rich.id).unwrap().unwrap();
+        assert_eq!(
+            node_vec,
+            emb.embed_one(&format!("{title}\n{body}")).unwrap()
+        );
+    }
 }

@@ -98,6 +98,10 @@ pub struct Engram {
     /// process, which over stdio is one Claude session. Superseded by the
     /// transport session id after the streamable-HTTP migration (PLAN §0).
     session_id: Arc<str>,
+    /// The mid-session conflict push (v0.6.3): judged contradictions from any
+    /// session or project land here and ride out on this session's next tool
+    /// response.
+    conflicts: Arc<Mutex<engram_core::ConflictFeed>>,
 }
 
 #[tool_router]
@@ -115,6 +119,7 @@ impl Engram {
     pub fn with_hub(hub: Arc<Hub>) -> Self {
         Self {
             engine: hub.current_engine(),
+            conflicts: Arc::new(Mutex::new(hub.subscribe_conflicts())),
             hub,
             session_id: format!("mcp-{}", engram_core::id::new_id()).into(),
         }
@@ -126,6 +131,7 @@ impl Engram {
     pub fn for_project(hub: Arc<Hub>, selector: &str) -> Result<Self, engram_core::Error> {
         Ok(Self {
             engine: hub.get(selector)?,
+            conflicts: Arc::new(Mutex::new(hub.subscribe_conflicts())),
             hub,
             session_id: format!("mcp-{}", engram_core::id::new_id()).into(),
         })
@@ -151,6 +157,110 @@ impl Engram {
         }
     }
 
+    /// Apply a search `detail` level: compact strips snippets and neighbors,
+    /// snippet is the wire shape as-is, full attaches each hit's body.
+    fn shape_hits(
+        &self,
+        detail: &Detail,
+        hits: Vec<engram_core::SearchHit>,
+        engine: Option<&Arc<Mutex<Engine>>>,
+    ) -> serde_json::Value {
+        match detail {
+            Detail::Snippet => json!(hits),
+            Detail::Compact => json!(
+                hits.iter()
+                    .map(|h| {
+                        let mut o = json!({
+                            "id": h.id,
+                            "type": h.node_type,
+                            "title": h.title,
+                            "score": h.score,
+                            "trust": h.trust,
+                            "stale": h.stale,
+                        });
+                        if let Some(p) = &h.project {
+                            o["project"] = json!(p);
+                        }
+                        if let Some(s) = h.status {
+                            o["status"] = json!(s);
+                        }
+                        o
+                    })
+                    .collect::<Vec<_>>()
+            ),
+            Detail::Full => json!(
+                hits.iter()
+                    .map(|h| {
+                        let mut o = json!(h);
+                        let resolved = match (&h.project, engine) {
+                            (Some(p), _) => self.hub.get(p).ok(),
+                            (None, Some(e)) => Some((*e).clone()),
+                            (None, None) => Some(self.engine.clone()),
+                        };
+                        if let Some(e) = resolved
+                            && let Ok(Some(node)) = e.lock().unwrap().get_node(&h.id)
+                        {
+                            o["body"] = json!(node.body);
+                            o["tags"] = json!(node.tags);
+                            o["code_refs"] = json!(node.code_refs);
+                        }
+                        o
+                    })
+                    .collect::<Vec<_>>()
+            ),
+        }
+    }
+
+    /// The mid-session conflict push, delivery side: whatever judged
+    /// contradictions landed since this session's last tool call, formatted
+    /// as one out-of-band text block. Titles are resolved here — at delivery
+    /// time, with short engine locks — never inside the emitting listener.
+    fn drain_conflict_alerts(&self) -> Option<String> {
+        let alerts = self.conflicts.lock().unwrap().drain();
+        if alerts.is_empty() {
+            return None;
+        }
+        let title_of = |project: &str, id: &str| -> String {
+            self.hub
+                .get(project)
+                .ok()
+                .and_then(|e| e.lock().unwrap().get_node(id).ok().flatten())
+                .map(|n| n.title)
+                .unwrap_or_else(|| id.to_string())
+        };
+        let mut lines = vec![format!(
+            "MEMORY ALERT: {} contradiction(s) were judged while you worked — check whether they touch your current task before relying on either side.",
+            alerts.len()
+        )];
+        for a in alerts.iter().take(3) {
+            lines.push(format!(
+                "- \"{}\" now conflicts-with \"{}\" [project {}, edge {}] — get_node either side for the full claims.",
+                title_of(&a.project, &a.from_id),
+                title_of(&a.project, &a.to_id),
+                a.project,
+                a.edge_id
+            ));
+        }
+        if alerts.len() > 3 {
+            lines.push(format!(
+                "- (+{} more — see list_suspects / the pane Review drawer)",
+                alerts.len() - 3
+            ));
+        }
+        Some(lines.join("\n"))
+    }
+
+    /// The standard tool reply: the JSON payload, plus any pending conflict
+    /// alert as a second content block — every tool call is a delivery
+    /// window, so the push needs no client or bridge support at all.
+    fn reply<T: Serialize>(&self, v: &T) -> Result<CallToolResult, ErrorData> {
+        let mut result = ok_json(v)?;
+        if let Some(alert) = self.drain_conflict_alerts() {
+            result.content.push(ContentBlock::text(alert));
+        }
+        Ok(result)
+    }
+
     /// Lock a scoped engine with this session stamped as the writer.
     fn mcp<'a>(&self, engine: &'a Arc<Mutex<Engine>>) -> std::sync::MutexGuard<'a, Engine> {
         let mut guard = engine.lock().unwrap();
@@ -174,13 +284,15 @@ impl Engram {
     ) -> Result<CallToolResult, ErrorData> {
         let types = node_types(&a.types)?;
         let limit = a.limit.unwrap_or(8);
+        let detail = Detail::parse(a.detail.as_deref())?;
         if a.project.as_deref() == Some(registry::ALL_PROJECTS) {
             let (mut hits, skipped) = self
                 .hub
                 .search_all(&a.query, &types, limit)
                 .map_err(map_err)?;
             hits.iter_mut().for_each(debracket);
-            return ok_json(&json!({ "hits": hits, "skipped": skipped }));
+            let hits = self.shape_hits(&detail, hits, None);
+            return self.reply(&json!({ "hits": hits, "skipped": skipped }));
         }
         let engine = self.engine_for(&a.project)?;
         let mut hits = self
@@ -188,7 +300,8 @@ impl Engram {
             .search(&a.query, &types, limit)
             .map_err(map_err)?;
         hits.iter_mut().for_each(debracket);
-        ok_json(&hits)
+        let hits = self.shape_hits(&detail, hits, Some(&engine));
+        self.reply(&hits)
     }
 
     #[tool(
@@ -224,7 +337,7 @@ impl Engram {
             let mut seen = std::collections::HashSet::from([a.id.clone()]);
             payload["children"] = json!(hierarchy(&engine, &a.id, down, false, &mut seen));
         }
-        ok_json(&payload)
+        self.reply(&payload)
     }
 
     #[tool(
@@ -241,7 +354,7 @@ impl Engram {
             .mcp(&engine)
             .traverse(&a.from, &edge_types, a.depth.unwrap_or(2))
             .map_err(map_err)?;
-        ok_json(&json!({ "nodes": nodes, "edges": edges }))
+        self.reply(&json!({ "nodes": nodes, "edges": edges }))
     }
 
     #[tool(
@@ -260,7 +373,7 @@ impl Engram {
         Parameters(a): Parameters<AddNoteArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let payload = self.create_note(a)?;
-        ok_json(&payload)
+        self.reply(&payload)
     }
 
     /// The add_note core, shared with the batch form. Each note resolves its
@@ -276,6 +389,15 @@ impl Engram {
             NodeType::Problem | NodeType::Intent => Some(NodeStatus::Open),
             _ => None,
         };
+        let created_at = match a.created_at.as_deref() {
+            None => None,
+            Some(raw) => Some(engram_core::parse_day(raw).ok_or_else(|| {
+                ErrorData::invalid_params(
+                    format!("created_at {raw:?} is not YYYY-MM-DD or unix seconds"),
+                    None,
+                )
+            })?),
+        };
         let engine = self.engine_for(&a.project)?;
         let outcome = self
             .mcp(&engine)
@@ -283,6 +405,7 @@ impl Engram {
                 node_type,
                 title: a.title,
                 body: a.body,
+                created_at,
                 durability,
                 source: Source::Claude,
                 session_id: a.session_id.or_else(|| Some(self.session_id.to_string())),
@@ -368,7 +491,7 @@ impl Engram {
                     .unwrap_or_else(|e| json!({ "ok": false, "error": e.message }))
             })
             .collect();
-        ok_json(&json!({ "results": results }))
+        self.reply(&json!({ "results": results }))
     }
 
     #[tool(
@@ -406,7 +529,7 @@ impl Engram {
                 None,
             ));
         }
-        ok_json(&json!({ "ok": true }))
+        self.reply(&json!({ "ok": true }))
     }
 
     #[tool(
@@ -435,7 +558,7 @@ impl Engram {
             .mcp(&engine)
             .update_edge(&a.id, patch)
             .map_err(map_err)?;
-        ok_json(&json!({ "ok": true, "id": edge.id }))
+        self.reply(&json!({ "ok": true, "id": edge.id }))
     }
 
     #[tool(description = "Link two nodes with a sentence-shaped edge \
@@ -456,7 +579,12 @@ impl Engram {
                 status: None,
             })
             .map_err(map_err)?;
-        ok_json(&json!({ "id": edge.id }))
+        if edge_type == EdgeType::ConflictsWith {
+            // This session just recorded the contradiction deliberately — it
+            // already knows; don't echo its own alert back on the next call.
+            let _ = self.drain_conflict_alerts();
+        }
+        self.reply(&json!({ "id": edge.id }))
     }
 
     #[tool(
@@ -477,14 +605,14 @@ impl Engram {
             let (report, skipped) = self.hub.check_claim_all(&a.claim, limit).map_err(map_err)?;
             let mut out = json!(report);
             out["skipped"] = json!(skipped);
-            return ok_json(&out);
+            return self.reply(&out);
         }
         let engine = self.engine_for(&a.project)?;
         let report = self
             .mcp(&engine)
             .check_claim(&a.claim, limit)
             .map_err(map_err)?;
-        ok_json(&report)
+        self.reply(&report)
     }
 
     #[tool(
@@ -499,7 +627,7 @@ impl Engram {
     ) -> Result<CallToolResult, ErrorData> {
         let engine = self.engine_for(&a.project)?;
         let suspects = self.mcp(&engine).suspects().map_err(map_err)?;
-        ok_json(&json!({ "suspects": suspects }))
+        self.reply(&json!({ "suspects": suspects }))
     }
 
     #[tool(
@@ -517,7 +645,11 @@ impl Engram {
             .mcp(&engine)
             .resolve_suspect(&a.id, verdict, Source::Claude)
             .map_err(map_err)?;
-        ok_json(&json!({ "ok": true, "edge": edge }))
+        if matches!(verdict, SuspectVerdict::Conflict) {
+            // The judge doesn't need its own verdict pushed back at it.
+            let _ = self.drain_conflict_alerts();
+        }
+        self.reply(&json!({ "ok": true, "edge": edge }))
     }
 
     #[tool(description = "Approve a node: trust restarts at 100% (and holds \
@@ -531,7 +663,7 @@ impl Engram {
     ) -> Result<CallToolResult, ErrorData> {
         let engine = self.engine_for(&a.project)?;
         let node = self.mcp(&engine).approve(&a.id).map_err(map_err)?;
-        ok_json(&json!({ "ok": true, "id": node.id, "trust": node.trust }))
+        self.reply(&json!({ "ok": true, "id": node.id, "trust": node.trust }))
     }
 
     #[tool(
@@ -548,7 +680,7 @@ impl Engram {
         Parameters(a): Parameters<UpdateArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let payload = self.patch_node(a)?;
-        ok_json(&payload)
+        self.reply(&payload)
     }
 
     /// The update_node core, shared with the batch form.
@@ -629,7 +761,7 @@ impl Engram {
                     .unwrap_or_else(|e| json!({ "ok": false, "id": id, "error": e.message }))
             })
             .collect();
-        ok_json(&json!({ "results": results }))
+        self.reply(&json!({ "results": results }))
     }
 
     #[tool(description = "Full-fidelity paged read of the graph: complete nodes \
@@ -664,13 +796,44 @@ impl Engram {
                 && tag.as_ref().is_none_or(|t| n.tags.contains(t))
                 && a.pinned.is_none_or(|p| n.trust_override.is_some() == p)
         });
-        // Ids are time-sortable, so this is newest-first creation order.
-        nodes.sort_by(|x, y| y.id.cmp(&x.id));
+        match a.sort.as_deref() {
+            None | Some("recent") => {
+                // Ids are time-sortable, so this is newest-first creation order.
+                nodes.sort_by(|x, y| y.id.cmp(&x.id));
+            }
+            Some(order @ ("most-connected" | "least-connected")) => {
+                // Degree over live edges: the least-connected end surfaces
+                // reachability islands (no links means text search is the
+                // only road in), the most-connected end surfaces the hubs.
+                let mut degree: std::collections::HashMap<String, usize> =
+                    std::collections::HashMap::new();
+                for e in self.mcp(&engine).store().all_edges().map_err(map_err)? {
+                    *degree.entry(e.from_id).or_default() += 1;
+                    *degree.entry(e.to_id).or_default() += 1;
+                }
+                nodes.sort_by(|x, y| {
+                    let (dx, dy) = (
+                        degree.get(&x.id).copied().unwrap_or(0),
+                        degree.get(&y.id).copied().unwrap_or(0),
+                    );
+                    match order {
+                        "most-connected" => dy.cmp(&dx).then(y.id.cmp(&x.id)),
+                        _ => dx.cmp(&dy).then(y.id.cmp(&x.id)),
+                    }
+                });
+            }
+            Some(other) => {
+                return Err(ErrorData::invalid_params(
+                    format!("sort {other:?}: use recent | most-connected | least-connected"),
+                    None,
+                ));
+            }
+        }
         let total = nodes.len();
         let offset = a.offset.unwrap_or(0);
         let limit = a.limit.unwrap_or(30).min(200);
         let page: Vec<Node> = nodes.into_iter().skip(offset).take(limit).collect();
-        ok_json(&json!({ "total": total, "offset": offset, "nodes": page }))
+        self.reply(&json!({ "total": total, "offset": offset, "nodes": page }))
     }
 
     #[tool(description = "List the live worklist: open Problems and Intents.")]
@@ -684,7 +847,7 @@ impl Engram {
             .mcp(&engine)
             .worklist(&types, a.include_conflicts.unwrap_or(true))
             .map_err(map_err)?;
-        ok_json(&nodes)
+        self.reply(&nodes)
     }
 
     #[tool(
@@ -699,7 +862,7 @@ impl Engram {
     ) -> Result<CallToolResult, ErrorData> {
         let engine = self.engine_for(&a.project)?;
         let chain = self.mcp(&engine).timeline(&a.id).map_err(map_err)?;
-        ok_json(&json!({ "timeline": chain }))
+        self.reply(&json!({ "timeline": chain }))
     }
 
     #[tool(description = "Nodes whose path-shaped code_refs no longer exist in \
@@ -720,7 +883,7 @@ impl Engram {
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
         };
         let drifted = engine.scan_code_refs(&root).map_err(map_err)?;
-        ok_json(&json!({ "drifted": drifted }))
+        self.reply(&json!({ "drifted": drifted }))
     }
 
     #[tool(description = "One page of the audit journal, newest first: every \
@@ -741,7 +904,7 @@ impl Engram {
                 a.limit.unwrap_or(20).min(200),
             )
             .map_err(map_err)?;
-        ok_json(&page)
+        self.reply(&page)
     }
 
     #[tool(description = "Every project this memory hub can reach: the current \
@@ -752,7 +915,7 @@ impl Engram {
         the shared user-level graph, 'all' = fan a search/check_claim out \
         across everything (reads only).")]
     async fn list_projects(&self) -> Result<CallToolResult, ErrorData> {
-        ok_json(&json!({ "projects": self.hub.projects() }))
+        self.reply(&json!({ "projects": self.hub.projects() }))
     }
 }
 
@@ -849,6 +1012,28 @@ impl ServerHandler for Engram {
             ResourceContents::text(payload.to_string(), request.uri)
                 .with_mime_type("application/json"),
         ]))
+    }
+}
+
+/// Progressive disclosure for search results (v0.6.3): compact → snippet →
+/// full, so the assistant starts cheap and expands on demand.
+enum Detail {
+    Compact,
+    Snippet,
+    Full,
+}
+
+impl Detail {
+    fn parse(s: Option<&str>) -> Result<Self, ErrorData> {
+        match s {
+            None | Some("snippet") => Ok(Detail::Snippet),
+            Some("compact") => Ok(Detail::Compact),
+            Some("full") => Ok(Detail::Full),
+            Some(other) => Err(ErrorData::invalid_params(
+                format!("detail {other:?}: use compact | snippet | full"),
+                None,
+            )),
+        }
     }
 }
 
@@ -1019,6 +1204,13 @@ struct SearchArgs {
     types: Vec<String>,
     #[serde(default)]
     limit: Option<usize>,
+    /// Progressive disclosure: "compact" = id/type/title/score/trust only
+    /// (cheapest — start here when scanning), "snippet" (default) = compact
+    /// plus matched snippet and 1-hop neighbors, "full" = snippet plus the
+    /// complete body of every hit. Expand on demand instead of paying for
+    /// depth up front.
+    #[serde(default)]
+    detail: Option<String>,
     /// Omit = current project; name/id = that project; "home"; "all" =
     /// every project + home with provenance (reads only).
     #[serde(default)]
@@ -1101,6 +1293,11 @@ struct AddNoteArgs {
     /// implicitly.
     #[serde(default)]
     tags: Vec<String>,
+    /// The knowledge's ORIGINAL date, for digesting historical material:
+    /// "YYYY-MM-DD" (or unix seconds). Omit for live capture — then the note
+    /// is dated now. Never use for fresh knowledge.
+    #[serde(default)]
+    created_at: Option<String>,
     /// Omit = current project; a name/id writes into THAT project's graph
     /// (deliberate cross-project capture); "home" = the user-level graph.
     /// "all" is refused — a fanned-out write is replication.
@@ -1171,6 +1368,11 @@ struct ListNodesArgs {
     /// Only nodes carrying this tag.
     #[serde(default)]
     tag: Option<String>,
+    /// Ordering: "recent" (default, newest first), "most-connected" or
+    /// "least-connected" (by live edge count — the least-connected end is
+    /// where unreachable knowledge hides).
+    #[serde(default)]
+    sort: Option<String>,
     /// Also return archived (superseded) generations. Default false.
     #[serde(default)]
     include_archived: Option<bool>,
@@ -1391,6 +1593,7 @@ mod tests {
 
         let res = server
             .add_note(Parameters(AddNoteArgs {
+                created_at: None,
                 node_type: "Decision".into(),
                 title: "Adopt SQLite WAL".into(),
                 body: Some("concurrent reads".into()),
@@ -1406,6 +1609,7 @@ mod tests {
 
         let hits = server
             .search(Parameters(SearchArgs {
+                detail: None,
                 query: "sqlite".into(),
                 types: vec![],
                 limit: None,
@@ -1421,11 +1625,11 @@ mod tests {
 }
 
 #[cfg(test)]
-mod tool_tests {
+pub(crate) mod tool_tests {
     use super::*;
     use engram_core::{FakeEmbedder, SqliteStore};
 
-    fn server() -> Engram {
+    pub(crate) fn server() -> Engram {
         Engram::new(Engine::new(
             SqliteStore::open_in_memory().unwrap(),
             Box::new(FakeEmbedder::default()),
@@ -1436,14 +1640,52 @@ mod tool_tests {
         format!("{:?}", res.content)
     }
 
-    fn id_of(r: &CallToolResult) -> String {
+    pub(crate) fn id_of(r: &CallToolResult) -> String {
         let t = text_of(r);
         let start = t.find("\\\"id\\\": \\\"").unwrap() + 10;
         t[start..].split("\\\"").next().unwrap().to_string()
     }
 
-    fn note(title: &str) -> AddNoteArgs {
+    #[tokio::test]
+    async fn add_note_dates_historical_knowledge() {
+        let s = server();
+        let created = s
+            .add_note(Parameters(AddNoteArgs {
+                created_at: Some("2025-03-10".into()),
+                ..note("a decision recovered from git history")
+            }))
+            .await
+            .unwrap();
+        let id = id_of(&created);
+        let fetched = s
+            .get_node(Parameters(GetNodeArgs {
+                id,
+                parents: None,
+                children: None,
+                project: None,
+            }))
+            .await
+            .unwrap();
+        assert!(
+            text_of(&fetched).contains(&engram_core::parse_day("2025-03-10").unwrap().to_string()),
+            "the node carries its original date, not the ingest date"
+        );
+
+        let bad = s
+            .add_note(Parameters(AddNoteArgs {
+                created_at: Some("yesterday".into()),
+                ..note("undateable")
+            }))
+            .await;
+        assert!(
+            bad.is_err(),
+            "an unparseable date is refused, never guessed"
+        );
+    }
+
+    pub(crate) fn note(title: &str) -> AddNoteArgs {
         AddNoteArgs {
+            created_at: None,
             node_type: "Decision".into(),
             title: title.into(),
             body: Some("shared body".into()),
@@ -1473,6 +1715,7 @@ mod tool_tests {
         let s = server();
         let id = id_of(
             &s.add_note(Parameters(AddNoteArgs {
+                created_at: None,
                 tags: vec!["Phase 1".into(), "UI".into()],
                 ..note("tagged decision")
             }))
@@ -1507,6 +1750,7 @@ mod tool_tests {
         // Decision -because-> Principle (parent); Insight -about-> Decision (child).
         let principle = id_of(
             &s.add_note(Parameters(AddNoteArgs {
+                created_at: None,
                 node_type: "Principle".into(),
                 title: "local first".into(),
                 body: None,
@@ -1526,6 +1770,7 @@ mod tool_tests {
         );
         let insight = id_of(
             &s.add_note(Parameters(AddNoteArgs {
+                created_at: None,
                 node_type: "Insight".into(),
                 title: "wal mode matters".into(),
                 body: None,
@@ -1669,6 +1914,7 @@ mod tool_tests {
         let s = server();
         let old = id_of(
             &s.add_note(Parameters(AddNoteArgs {
+                created_at: None,
                 body: Some("cookie sessions".into()),
                 ..note("auth v1")
             }))
@@ -1677,6 +1923,7 @@ mod tool_tests {
         );
         let new = id_of(
             &s.add_note(Parameters(AddNoteArgs {
+                created_at: None,
                 body: Some("oauth device flow".into()),
                 ..note("auth v2")
             }))
@@ -1719,6 +1966,7 @@ mod tool_tests {
     async fn list_drift_flags_missing_refs() {
         let s = server();
         s.add_note(Parameters(AddNoteArgs {
+            created_at: None,
             code_refs: vec!["Cargo.toml".into(), "src/vanished.rs".into()],
             ..note("refs moved")
         }))
@@ -1763,15 +2011,18 @@ mod tool_tests {
             .add_notes(Parameters(AddNotesArgs {
                 notes: vec![
                     AddNoteArgs {
+                        created_at: None,
                         body: Some("the full body that an export must not lose".into()),
                         ..note("store data in sqlite")
                     },
                     AddNoteArgs {
+                        created_at: None,
                         node_type: "Caution".into(),
                         tags: vec!["hygiene".into()],
                         ..note("never trust a relative db path")
                     },
                     AddNoteArgs {
+                        created_at: None,
                         body: Some("the full body that an export must not lose".into()),
                         ..note("store data in sqlite")
                     },
@@ -1786,6 +2037,7 @@ mod tool_tests {
         // Full-fidelity filtered read: only Decisions, whole body included.
         let listed = s
             .list_nodes(Parameters(ListNodesArgs {
+                sort: None,
                 types: vec!["Decision".into()],
                 status: None,
                 tag: None,
@@ -1810,6 +2062,7 @@ mod tool_tests {
         // Tag filter reaches the Caution.
         let tagged = s
             .list_nodes(Parameters(ListNodesArgs {
+                sort: None,
                 types: vec![],
                 status: None,
                 tag: Some("hygiene".into()),
@@ -1884,6 +2137,7 @@ mod tool_tests {
             .unwrap();
         let res = s
             .search(Parameters(SearchArgs {
+                detail: None,
                 query: "sentinel".into(),
                 types: vec![],
                 limit: None,
@@ -1917,6 +2171,7 @@ mod project_tests {
         let s = server();
         let err = s
             .add_note(Parameters(AddNoteArgs {
+                created_at: None,
                 node_type: "Decision".into(),
                 title: "fan out".into(),
                 body: None,
@@ -1936,6 +2191,7 @@ mod project_tests {
         let s = server();
         let err = s
             .search(Parameters(SearchArgs {
+                detail: None,
                 query: "anything".into(),
                 types: vec![],
                 limit: None,
@@ -1971,6 +2227,7 @@ mod suspect_tests {
             Box::new(FakeEmbedder::default()),
         ));
         let mk = |t: &str, ty: &str| AddNoteArgs {
+            created_at: None,
             node_type: ty.into(),
             title: t.into(),
             body: None,
@@ -2029,6 +2286,7 @@ mod suspect_tests {
             Box::new(FakeEmbedder::default()),
         ));
         let mk = |t: &str, ty: &str| AddNoteArgs {
+            created_at: None,
             node_type: ty.into(),
             title: t.into(),
             body: None,
@@ -2185,6 +2443,7 @@ mod scoped_transport_tests {
                 Box::new(FakeEmbedder::default()),
             );
             beta.add_node(engram_core::NewNode {
+                created_at: None,
                 node_type: engram_core::NodeType::Decision,
                 title: "beta owns this decision".into(),
                 body: None,
@@ -2272,5 +2531,236 @@ mod scoped_transport_tests {
 
         unsafe { std::env::remove_var("ENGRAM_HOME") };
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
+
+#[cfg(test)]
+mod push_and_params_tests {
+    use super::tool_tests::{id_of, note, server};
+    use super::*;
+    use engram_core::{FakeEmbedder, SqliteStore};
+
+    fn two_sessions() -> (Arc<Hub>, Engram, Engram) {
+        let hub = Arc::new(Hub::single(Engine::new(
+            SqliteStore::open_in_memory().unwrap(),
+            Box::new(FakeEmbedder::default()),
+        )));
+        (
+            hub.clone(),
+            Engram::with_hub(hub.clone()),
+            Engram::with_hub(hub),
+        )
+    }
+
+    fn body_of(r: &CallToolResult) -> String {
+        format!("{:?}", r.content)
+    }
+
+    #[tokio::test]
+    async fn judged_conflicts_push_into_other_live_sessions() {
+        let (_hub, writer, reader) = two_sessions();
+        let a = writer
+            .add_note(Parameters(AddNoteArgs {
+                created_at: None,
+                ..note("zzz retry policy: exponential backoff")
+            }))
+            .await
+            .unwrap();
+        let b = writer
+            .add_note(Parameters(AddNoteArgs {
+                created_at: None,
+                ..note("qqq retry policy: never retry anything")
+            }))
+            .await
+            .unwrap();
+        let (a_id, b_id) = (id_of(&a), id_of(&b));
+
+        // Reader's calls are clean before any judgment.
+        let calm = reader
+            .search(Parameters(SearchArgs {
+                detail: None,
+                query: "retry policy".into(),
+                types: vec![],
+                limit: None,
+                project: None,
+            }))
+            .await
+            .unwrap();
+        assert!(!body_of(&calm).contains("MEMORY ALERT"));
+
+        // The writer records the contradiction…
+        writer
+            .link(Parameters(LinkArgs {
+                from: b_id,
+                to: a_id,
+                edge_type: "conflicts-with".into(),
+                note: None,
+                confidence: None,
+                project: None,
+            }))
+            .await
+            .unwrap();
+
+        // …the reader's NEXT tool call carries the push, titles included.
+        let alerted = reader
+            .search(Parameters(SearchArgs {
+                detail: None,
+                query: "retry policy".into(),
+                types: vec![],
+                limit: None,
+                project: None,
+            }))
+            .await
+            .unwrap();
+        let text = body_of(&alerted);
+        assert!(
+            text.contains("MEMORY ALERT"),
+            "push rides the next response"
+        );
+        assert!(text.contains("qqq retry policy"), "alerts carry titles");
+
+        // Delivered once: the reader's following call is clean again.
+        let after = reader
+            .brief(Parameters(BriefArgs {
+                max_chars: Some(500),
+                project: None,
+            }))
+            .await
+            .unwrap();
+        assert!(!body_of(&after).contains("MEMORY ALERT"));
+
+        // And the writer never gets its own judgment echoed back.
+        let writer_next = writer
+            .search(Parameters(SearchArgs {
+                detail: None,
+                query: "retry policy".into(),
+                types: vec![],
+                limit: None,
+                project: None,
+            }))
+            .await
+            .unwrap();
+        assert!(
+            !body_of(&writer_next).contains("MEMORY ALERT"),
+            "own-write suppression holds"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_detail_tiers_shape_the_response() {
+        let s = server();
+        s.add_note(Parameters(AddNoteArgs {
+            created_at: None,
+            body: Some("a body with plenty of retrieval detail inside it".into()),
+            ..note("progressive disclosure subject")
+        }))
+        .await
+        .unwrap();
+        let call = |detail: Option<&str>| {
+            let s = &s;
+            let detail = detail.map(str::to_string);
+            async move {
+                body_of(
+                    &s.search(Parameters(SearchArgs {
+                        detail,
+                        query: "progressive disclosure".into(),
+                        types: vec![],
+                        limit: None,
+                        project: None,
+                    }))
+                    .await
+                    .unwrap(),
+                )
+            }
+        };
+        let compact = call(Some("compact")).await;
+        assert!(
+            !compact.contains("snippet"),
+            "compact strips snippets: {compact}"
+        );
+        assert!(!compact.contains("neighbors"), "compact strips neighbors");
+        assert!(compact.contains("progressive disclosure subject"));
+        let full = call(Some("full")).await;
+        assert!(
+            full.contains("plenty of retrieval detail"),
+            "full attaches bodies: {full}"
+        );
+        let bad = s
+            .search(Parameters(SearchArgs {
+                detail: Some("verbose".into()),
+                query: "x".into(),
+                types: vec![],
+                limit: None,
+                project: None,
+            }))
+            .await;
+        assert!(bad.is_err(), "unknown detail level is refused");
+    }
+
+    #[tokio::test]
+    async fn list_nodes_sorts_by_connectivity() {
+        let s = server();
+        let hubnode = s
+            .add_note(Parameters(AddNoteArgs {
+                created_at: None,
+                ..note("zzz the well connected hub node")
+            }))
+            .await
+            .unwrap();
+        let spoke = s
+            .add_note(Parameters(AddNoteArgs {
+                created_at: None,
+                ..note("qqq a spoke node with one link")
+            }))
+            .await
+            .unwrap();
+        s.add_note(Parameters(AddNoteArgs {
+            created_at: None,
+            ..note("xxx an island nobody linked or tagged")
+        }))
+        .await
+        .unwrap();
+        s.link(Parameters(LinkArgs {
+            from: id_of(&spoke),
+            to: id_of(&hubnode),
+            edge_type: "builds-on".into(),
+            note: None,
+            confidence: None,
+            project: None,
+        }))
+        .await
+        .unwrap();
+
+        let order = |sort: &str| {
+            let s = &s;
+            let sort = sort.to_string();
+            async move {
+                body_of(
+                    &s.list_nodes(Parameters(ListNodesArgs {
+                        sort: Some(sort),
+                        types: vec![],
+                        status: None,
+                        tag: None,
+                        include_archived: None,
+                        pinned: None,
+                        offset: None,
+                        limit: None,
+                        project: None,
+                    }))
+                    .await
+                    .unwrap(),
+                )
+            }
+        };
+        let least = order("least-connected").await;
+        assert!(
+            least.find("island nobody").unwrap() < least.find("well connected hub").unwrap(),
+            "least-connected surfaces the islands first"
+        );
+        let most = order("most-connected").await;
+        assert!(
+            most.find("well connected hub").unwrap() < most.find("island nobody").unwrap(),
+            "most-connected surfaces the hubs first"
+        );
     }
 }

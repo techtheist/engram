@@ -244,7 +244,9 @@ impl Store for TepinStore {
 
     fn add_node(&self, n: NewNode) -> Result<Node> {
         let id = crate::id::new_id();
-        let created = now();
+        // Same clamp as the SQLite backend: provided dates for historical
+        // material, never a future stamp.
+        let created = n.created_at.map(|t| t.min(now())).unwrap_or_else(now);
         let node = Node {
             id: id.clone(),
             node_type: n.node_type,
@@ -639,10 +641,12 @@ impl Store for TepinStore {
             .collect())
     }
 
-    fn upsert_embedding(&self, node_id: &str, embedding: &[f32]) -> Result<()> {
+    fn upsert_embeddings(&self, node_id: &str, vectors: &[Vec<f32>]) -> Result<()> {
+        // TepinDB's chunk model natively: chunk 0 = the node-level vector,
+        // chunks 1..N the claims; search_by_vector already scores per-doc
+        // best-chunk, so claim-level recall needs nothing else here.
         let model_id = self.vector_model_id()?;
-        self.db()
-            .set_vectors(NODES, node_id, &model_id, &[embedding.to_vec()])?;
+        self.db().set_vectors(NODES, node_id, &model_id, vectors)?;
         Ok(())
     }
 

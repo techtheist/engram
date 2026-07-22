@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use crate::engine::{Engine, Listener};
+use crate::engine::{ChangeEvent, Engine, Listener};
 use crate::registry::{self, ALL_PROJECTS, HOME_PROJECT, ProjectEntry};
 use crate::types::*;
 use crate::{Error, Result};
@@ -23,6 +23,86 @@ type NamedEngines = Vec<(String, Arc<Mutex<Engine>>)>;
 /// Builds the change listener for a freshly-opened project engine (the HTTP
 /// layer wires these to per-project SSE channels). Keyed by project id.
 pub type ListenerFactory = Box<dyn Fn(&str) -> Listener + Send + Sync>;
+
+/// A judged contradiction landing anywhere the hub can see (a
+/// `conflicts-with` edge created or retyped-into) — the mid-session push's
+/// payload. Ids only: enrichment (titles) happens at delivery time, where an
+/// engine can be locked safely.
+#[derive(Debug, Clone)]
+pub struct ConflictAlert {
+    pub project: String,
+    pub edge_id: String,
+    pub from_id: String,
+    pub to_id: String,
+}
+
+/// A dependency-free broadcast: a ring of recent alerts with a global
+/// sequence; every subscriber keeps its own cursor. Subscribers that never
+/// drain cost nothing; the ring caps memory.
+pub struct AlertBus {
+    inner: Mutex<(u64, std::collections::VecDeque<(u64, ConflictAlert)>)>,
+}
+
+const ALERT_RING: usize = 128;
+
+impl AlertBus {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            inner: Mutex::new((0, std::collections::VecDeque::new())),
+        })
+    }
+
+    fn push(&self, alert: ConflictAlert) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.0 += 1;
+        let seq = inner.0;
+        inner.1.push_back((seq, alert));
+        if inner.1.len() > ALERT_RING {
+            inner.1.pop_front();
+        }
+    }
+}
+
+/// One subscriber's view of the bus: starts at "now", `drain` returns what
+/// landed since the last drain.
+pub struct ConflictFeed {
+    bus: Arc<AlertBus>,
+    cursor: u64,
+}
+
+impl ConflictFeed {
+    pub fn drain(&mut self) -> Vec<ConflictAlert> {
+        let inner = self.bus.inner.lock().unwrap();
+        let fresh: Vec<ConflictAlert> = inner
+            .1
+            .iter()
+            .filter(|(seq, _)| *seq > self.cursor)
+            .map(|(_, a)| a.clone())
+            .collect();
+        self.cursor = inner.0;
+        fresh
+    }
+}
+
+/// The listener every hub-owned engine gets: watches for live
+/// `conflicts-with` edges and drops them on the bus.
+fn conflict_tap(bus: Arc<AlertBus>, project: String) -> Listener {
+    Box::new(move |event| {
+        let edge = match &event {
+            ChangeEvent::EdgeAdded(e) | ChangeEvent::EdgeUpdated(e) => e,
+            _ => return,
+        };
+        let live = matches!(edge.status, None | Some(EdgeStatus::Active));
+        if edge.edge_type == EdgeType::ConflictsWith && live && edge.valid_until.is_none() {
+            bus.push(ConflictAlert {
+                project: project.clone(),
+                edge_id: edge.id.clone(),
+                from_id: edge.from_id.clone(),
+                to_id: edge.to_id.clone(),
+            });
+        }
+    })
+}
 
 /// One open project: identity plus its engine.
 pub struct ProjectHandle {
@@ -40,6 +120,8 @@ pub struct Hub {
     /// Lazily-opened engines beyond the current one, keyed by project id
     /// (the home graph under the reserved [`HOME_PROJECT`] key).
     open: Mutex<HashMap<String, ProjectHandle>>,
+    /// The mid-session conflict push's transport (v0.6.3).
+    alerts: Arc<AlertBus>,
 }
 
 impl Hub {
@@ -76,11 +158,18 @@ impl Hub {
                 }
             }
         };
+        let alerts = AlertBus::new();
+        current
+            .engine
+            .lock()
+            .unwrap()
+            .add_listener(conflict_tap(alerts.clone(), current.id.clone()));
         Self {
             current,
             factory,
             listener_factory: Mutex::new(None),
             open: Mutex::new(HashMap::new()),
+            alerts,
         }
     }
 
@@ -89,6 +178,11 @@ impl Hub {
     /// same engine via `is_current`, registered projects open lazily through
     /// the factory, and the pane's switcher does the navigating.
     pub fn new_home(engine: Arc<Mutex<Engine>>, factory: Option<EngineFactory>) -> Self {
+        let alerts = AlertBus::new();
+        engine
+            .lock()
+            .unwrap()
+            .add_listener(conflict_tap(alerts.clone(), HOME_PROJECT.into()));
         Self {
             current: ProjectHandle {
                 id: HOME_PROJECT.into(),
@@ -100,6 +194,7 @@ impl Hub {
             factory,
             listener_factory: Mutex::new(None),
             open: Mutex::new(HashMap::new()),
+            alerts,
         }
     }
 
@@ -115,6 +210,15 @@ impl Hub {
 
     pub fn current(&self) -> &ProjectHandle {
         &self.current
+    }
+
+    /// Subscribe to judged-conflict alerts across every project this hub
+    /// owns; the feed starts at "now" and `drain` returns what landed since.
+    pub fn subscribe_conflicts(&self) -> ConflictFeed {
+        ConflictFeed {
+            bus: self.alerts.clone(),
+            cursor: self.alerts.inner.lock().unwrap().0,
+        }
     }
 
     /// Every engine this hub currently holds open — the launch project plus
@@ -145,9 +249,9 @@ impl Hub {
             .engine
             .lock()
             .unwrap()
-            .set_listener(f(&self.current.id));
+            .add_listener(f(&self.current.id));
         for handle in self.open.lock().unwrap().values() {
-            handle.engine.lock().unwrap().set_listener(f(&handle.id));
+            handle.engine.lock().unwrap().add_listener(f(&handle.id));
         }
         *self.listener_factory.lock().unwrap() = Some(f);
     }
@@ -248,8 +352,13 @@ impl Hub {
     }
 
     fn insert_open(&self, handle: ProjectHandle) -> Arc<Mutex<Engine>> {
+        handle
+            .engine
+            .lock()
+            .unwrap()
+            .add_listener(conflict_tap(self.alerts.clone(), handle.id.clone()));
         if let Some(f) = self.listener_factory.lock().unwrap().as_ref() {
-            handle.engine.lock().unwrap().set_listener(f(&handle.id));
+            handle.engine.lock().unwrap().add_listener(f(&handle.id));
         }
         // A racing open of the same project keeps the first handle.
         self.open

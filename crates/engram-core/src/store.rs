@@ -23,6 +23,37 @@ pub fn now() -> i64 {
         .unwrap_or(0)
 }
 
+/// Parse a lenient day stamp into unix seconds: plain unix seconds, a
+/// `YYYY-MM-DD` day (midnight UTC), or anything RFC3339-shaped whose first
+/// ten characters are that day. The capture surface for historical
+/// knowledge — digestion dates notes by when they happened, not when they
+/// were ingested.
+pub fn parse_day(s: &str) -> Option<i64> {
+    let t = s.trim();
+    if let Ok(unix) = t.parse::<i64>() {
+        return Some(unix);
+    }
+    let day = match t.as_bytes().get(10) {
+        Some(b'T') | Some(b' ') => &t[..10],
+        _ => t,
+    };
+    let mut parts = day.splitn(3, '-');
+    let y: i64 = parts.next()?.parse().ok()?;
+    let m: i64 = parts.next()?.parse().ok()?;
+    let d: i64 = parts.next()?.parse().ok()?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || !(1900..=9999).contains(&y) {
+        return None;
+    }
+    // Days-from-civil (Howard Hinnant's algorithm), then to unix seconds.
+    let y2 = if m <= 2 { y - 1 } else { y };
+    let era = if y2 >= 0 { y2 } else { y2 - 399 } / 400;
+    let yoe = y2 - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some((era * 146097 + doe - 719468) * 86400)
+}
+
 /// FTS snippet match markers: private-use sentinels no real body text carries
 /// (bodies legitimately contain `[` — node-id references would false-mark).
 /// The MCP layer rewrites them to `[`/`]` for assistants; the pane turns them
@@ -149,9 +180,13 @@ pub trait Store: Send {
     fn search_fts(&self, query: &str, types: &[NodeType], limit: usize) -> Result<Vec<SearchHit>>;
     /// k-nearest node ids by cosine distance (smaller = closer).
     fn search_vec(&self, query: &[f32], k: usize) -> Result<Vec<(String, f64)>>;
-    /// Store (or replace) a node's embedding.
-    fn upsert_embedding(&self, node_id: &str, embedding: &[f32]) -> Result<()>;
-    /// The stored embedding for a node.
+    /// Store (or replace) a node's vectors: `vectors[0]` is the node-level
+    /// composition embedding (what [`Store::embedding_of`] returns and every
+    /// similarity scan compares), `vectors[1..]` are per-claim vectors —
+    /// sentence-sized retrieval units, so a query matching one claim buried
+    /// in a rich body still finds the node (claim-level search, v0.6.3).
+    fn upsert_embeddings(&self, node_id: &str, vectors: &[Vec<f32>]) -> Result<()>;
+    /// The stored node-level embedding (claim chunks are search-only).
     fn embedding_of(&self, node_id: &str) -> Result<Option<Vec<f32>>>;
 
     // ---- suspects (conflict-scan queue) ---------------------------------

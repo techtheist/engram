@@ -102,7 +102,7 @@ pub struct Engine {
     nli: Option<Box<dyn Nli>>,
     /// Repo root for write-time code_ref checks (serve/mcp set it).
     repo_root: Option<std::path::PathBuf>,
-    listener: Option<Listener>,
+    listeners: Vec<Listener>,
     audit_origin: AuditOrigin,
     /// Binary-side context captured once per process — the enrichment every
     /// audit row carries (PLAN §10 audit journal).
@@ -124,7 +124,7 @@ impl Engine {
             reranker: None,
             nli: None,
             repo_root: None,
-            listener: None,
+            listeners: Vec::new(),
             audit_origin: AuditOrigin::default(),
             audit_cwd: std::env::current_dir()
                 .ok()
@@ -134,9 +134,11 @@ impl Engine {
         }
     }
 
-    /// Install the single change listener (the daemon wires this to SSE).
-    pub fn set_listener(&mut self, listener: Listener) {
-        self.listener = Some(listener);
+    /// Add a change listener (the daemon wires SSE here; the hub adds its
+    /// conflict-alert tap). Listeners accumulate — every mutation reaches
+    /// all of them.
+    pub fn add_listener(&mut self, listener: Listener) {
+        self.listeners.push(listener);
     }
 
     /// Install the optional reranker (serve/mcp with real embeddings).
@@ -212,8 +214,14 @@ impl Engine {
     }
 
     fn notify(&self, event: ChangeEvent) {
-        if let Some(l) = &self.listener {
-            l(event);
+        match self.listeners.as_slice() {
+            [] => {}
+            [one] => one(event),
+            many => {
+                for l in many {
+                    l(event.clone());
+                }
+            }
         }
     }
 
@@ -1550,13 +1558,15 @@ impl Engine {
     }
 
     fn embed_node(&self, node: &Node) -> Result<()> {
-        let vec = self.embedder.embed_one(&embed_text(
+        let mut texts = vec![embed_text(
             &node.title,
             node.body.as_deref(),
             &node.tags,
             &node.code_refs,
-        ))?;
-        self.store.upsert_embedding(&node.id, &vec)
+        )];
+        texts.extend(claim_texts(&node.title, node.body.as_deref()));
+        let vectors = self.embedder.embed(&texts)?;
+        self.store.upsert_embeddings(&node.id, &vectors)
     }
 
     /// Bring stored vectors in line with the ACTIVE embedding model (PLAN §7A
@@ -1622,6 +1632,9 @@ impl Engine {
         if self.embedder.is_fake() && !nodes.is_empty() {
             return Ok(0);
         }
+        // The composition change also reshapes the vector layout (claim
+        // chunks since v3) — clear storage once, then rebuild it whole.
+        self.store.reset_vectors(self.embedder.dim())?;
         for n in &nodes {
             self.embed_node(n)?;
         }
@@ -1667,6 +1680,45 @@ fn generation<'a>(
     g
 }
 
+/// Sentence-sized claim texts for retrieval (v0.6.3 claim-level search):
+/// the tokenizer splits the body on sentence boundaries and keeps units
+/// substantial enough to mean something alone — each becomes its own vector
+/// next to the node-level one, mirroring how the NLI layer already judges
+/// claims instead of whole bodies. Title rides along with each claim so a
+/// sentence keeps its subject.
+pub(crate) fn claim_texts(title: &str, body: Option<&str>) -> Vec<String> {
+    const MIN_CHARS: usize = 30;
+    const MAX_CLAIMS: usize = 12;
+    let Some(body) = body.filter(|b| b.trim().len() >= MIN_CHARS) else {
+        return Vec::new();
+    };
+    let mut claims = Vec::new();
+    let mut current = String::new();
+    let flat = body.replace('\n', " ");
+    let mut chars = flat.chars().peekable();
+    while let Some(c) = chars.next() {
+        current.push(c);
+        let boundary =
+            matches!(c, '.' | '!' | '?' | ';') && chars.peek().is_none_or(|n| n.is_whitespace());
+        if boundary || chars.peek().is_none() {
+            let sentence = current.trim();
+            if sentence.len() >= MIN_CHARS {
+                claims.push(format!("{title}. {sentence}"));
+                if claims.len() == MAX_CLAIMS {
+                    break;
+                }
+            }
+            current.clear();
+        }
+    }
+    // A single claim adds nothing over the composition vector.
+    if claims.len() <= 1 {
+        Vec::new()
+    } else {
+        claims
+    }
+}
+
 /// A node's canonical claim for NLI judgment (PLAN §7A): the declarative,
 /// skill-enforced title, plus the body's first sentence when it adds context.
 /// Claim-level on purpose — whole multi-claim bodies dilute a sentence-pair
@@ -1700,8 +1752,10 @@ fn ref_is_path(r: &str) -> bool {
 /// Which embedding composition stored vectors were computed with (kept in
 /// `PRAGMA user_version`). Bump when [`embed_text`] changes what it includes;
 /// [`Engine::ensure_embed_composition`] re-embeds databases that are behind.
-/// 0 = legacy title+body; 2 = full fields (title, body, tags, code_refs).
-pub const EMBED_COMPOSITION: i64 = 2;
+/// 0 = legacy title+body; 2 = full fields (title, body, tags, code_refs);
+/// 3 = claim-chunked (the node-level vector plus one vector per body
+/// sentence, so a query matching one claim in a rich body finds the node).
+pub const EMBED_COMPOSITION: i64 = 3;
 
 /// The text a node is embedded as — kept in one place so write-time similarity
 /// checks embed exactly what storage embeds. Tags and code_refs ride along so

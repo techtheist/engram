@@ -302,8 +302,37 @@ fn api_router(state: Arc<AppState>) -> Router {
         // build), so `engram-alpha serve` is a complete browser-standalone app and
         // the IDE wrappers just point a webview at this one URL.
         .fallback(static_pane)
-        .layer(CorsLayer::permissive())
+        .layer(local_cors())
         .with_state(state)
+}
+
+/// CORS for a localhost-only daemon (SECURITY.md hardening): same-machine
+/// browser pages on loopback and the IDE webviews the pane embeds under are
+/// allowed; a random website in the user's browser is not — the previously
+/// permissive layer let any page read the whole graph API. Requests without
+/// an Origin header (curl, the IDE's same-origin JCEF view, MCP bridges)
+/// never hit CORS at all.
+fn local_cors() -> CorsLayer {
+    use axum::http::HeaderValue;
+    CorsLayer::new()
+        .allow_origin(tower_http::cors::AllowOrigin::predicate(
+            |origin: &HeaderValue, _| {
+                let Ok(origin) = origin.to_str() else {
+                    return false;
+                };
+                let localhost = origin.strip_prefix("http://").is_some_and(|rest| {
+                    rest.starts_with("127.0.0.1:")
+                        || rest == "127.0.0.1"
+                        || rest.starts_with("localhost:")
+                        || rest == "localhost"
+                });
+                // VS Code / VSCodium / Cursor / Windsurf webviews fetch with
+                // their per-webview pseudo-origin.
+                localhost || origin.starts_with("vscode-webview://")
+            },
+        ))
+        .allow_methods(tower_http::cors::Any)
+        .allow_headers(tower_http::cors::Any)
 }
 
 pub fn router(state: Arc<AppState>) -> Router {

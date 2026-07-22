@@ -159,6 +159,11 @@ pub struct NewNode {
     pub title: String,
     #[serde(default)]
     pub body: Option<String>,
+    /// The knowledge's original date (unix seconds), for digesting or
+    /// importing historical material — one clock, `created_at`, everywhere.
+    /// Omitted = now. Future values are clamped to now at write time.
+    #[serde(default)]
+    pub created_at: Option<i64>,
     pub durability: Durability,
     pub source: Source,
     #[serde(default)]

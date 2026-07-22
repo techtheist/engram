@@ -144,6 +144,14 @@ const orphans = computed(() => {
     return nodeList.value.filter((n) => active(n) && !linked.has(n.id))
 })
 
+/**
+ * Unreachable knowledge: no edges AND no tags — text search is the only road
+ * in, so a differently-phrased future query may never find these.
+ */
+const unreachable = computed(() =>
+    orphans.value.filter((n) => !(n.tags && n.tags.length)),
+)
+
 const STRUCT_CAP = 8
 </script>
 
@@ -309,6 +317,19 @@ const STRUCT_CAP = 8
             </p>
             <button
                 v-for="n in unjustified.slice(0, STRUCT_CAP)"
+                :key="n.id"
+                class="verdict-row"
+                type="button"
+                @click="store.select(n.id)"
+            >
+                <span class="dot" :style="{ background: NODE_ACCENT_VAR[n.type] }" />
+                <span class="row-title">{{ n.title }}</span>
+            </button>
+            <p class="struct-line">
+                <b>{{ unreachable.length }}</b> reachability islands (no edges <i>and</i> no tags — only text search finds these)
+            </p>
+            <button
+                v-for="n in unreachable.slice(0, STRUCT_CAP)"
                 :key="n.id"
                 class="verdict-row"
                 type="button"
