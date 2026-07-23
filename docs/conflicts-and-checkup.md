@@ -21,7 +21,9 @@ assistant at the start of its next session:
 
 Suspects carry a triage hint from the local NLI model (contradiction /
 entailment / neutral), which orders the queue — contradiction-hinted pairs
-first — but never decides anything.
+first — but never decides anything. When the model reads a contradiction as
+lopsided, the hint also names which side likely carries the negation ("the
+older side"), so you know where to look first.
 
 ## Checkup: interrogate the canon
 
@@ -47,7 +49,13 @@ Above the claim box, one-click sweeps over the whole graph:
 - **Find duplicates** — pairs that state the same thing; judge as Replaces
   to merge their histories.
 - **Check open problems** — does an existing Decision or Resolution already
-  answer an open Problem?
+  answer an open Problem? Pairs that are already linked another way are
+  flagged as such rather than re-suggested blindly.
+- **Triage stale notes** — for each note whose trust has decayed, what the
+  live canon suggests: *reconfirm* (something current still backs it — one
+  click restores its trust), *contradicted* (the canon now disputes it —
+  judge it as a conflict), or *isolated* (nothing current speaks to it — a
+  candidate to archive).
 
 Below, instant structural checks with no models at all: Decisions missing a
 recorded reason, nodes with no connections. Everything a sweep finds lands

@@ -25,8 +25,12 @@ second time your assistant meets a flaky build step or a library quirk, the
 graph already holds the fix from last time, and it applies it instead of
 rediscovering it.
 
-There are exactly eight types, and tools never invent a ninth. If something
-doesn't fit, it's usually a sign it doesn't belong in reasoning memory.
+Your assistant never invents a ninth type — a write can only use a type the
+graph declares. These eight are the shipped default, and they're what most
+projects should keep; if a note doesn't fit one of them, that's usually a
+sign it doesn't belong in reasoning memory. If your project genuinely wants a
+different vocabulary, the whole set is yours to reshape — see
+[Customization](./customization.md).
 
 ## The seven edge verbs
 
@@ -46,6 +50,11 @@ The last two are what make the graph *active* rather than a note pile:
 superseded knowledge can't silently contradict the new canon, and real
 contradictions are surfaced instead of coexisting quietly. There is
 deliberately no `relates_to` — if no real verb fits, the link doesn't belong.
+
+Like the node types, these seven are the default set. What the engine
+actually keys on is a verb's *role* — which one supersedes, which one
+contradicts — not its name, so the vocabulary is
+[yours to rename or replace](./customization.md) while the behavior holds.
 
 ## Durability
 

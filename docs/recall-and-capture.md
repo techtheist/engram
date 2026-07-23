@@ -31,7 +31,9 @@ Recent tags (reuse before inventing new ones): phase-2, hooks, pane-crud, retrie
 
 You can read the same brief anytime in the pane (Memory Lens), or print it
 with `engram-alpha brief`. When your projects share a
-[home graph](./multi-project.md), its canon rides along in every brief.
+[home graph](./multi-project.md), its canon rides along in every brief. A note
+the last session tagged `handoff` gets guaranteed top billing — the
+[handoff mechanism](./customization.md#handoff-notes) for "read this first".
 
 ## Search that carries its context
 
@@ -63,6 +65,11 @@ verdict it must act on:
 - **Suspects** — the write queued new look-alike pairs; the assistant judges
   them immediately (see [Conflicts & Checkup](./conflicts-and-checkup.md)),
   and a genuine contradiction is the one thing it surfaces to you out loud.
+- **Canon check** — a local model reads the new note against nearby
+  knowledge: *supports* (the canon already backs this — link it rather than
+  restate it) or *contradicts* (existing knowledge disputes it — read before
+  proceeding). Zero tokens, and a nomination like every other check —
+  nothing moves on its own.
 - **Missing code refs** — paths that don't resolve in the repository, caught
   at write time instead of at the next drift scan.
 
@@ -74,6 +81,14 @@ against the repository, and a ref that no longer resolves badges its node as
 **drifted** — in the pane, in the health strip, and in the assistant's
 `list_drift` worklist. The contract is repair-or-retire: fix the path if the
 knowledge still holds, supersede it if the refactor invalidated it.
+
+Code refs also work in the other direction. An optional file-read hook (wired
+by `engram-alpha setup`, and in the Claude Code plugin) watches which files
+the assistant reads or edits, and when one is covered by a node's `code_refs`
+it quietly attaches that memory to the session — so a caution about a file
+arrives *because you touched the file*, no matter what anyone searched for.
+The noise controls live server-side: only current, non-stale nodes, ranked by
+trust, capped per read, and never the same node twice in one session.
 
 ## Subagents
 

@@ -8,6 +8,7 @@ if Engram isn't installed yet.
 |---|---|
 | [Getting started](./getting-started.md) | Install, wire your assistants, first session, updating |
 | [The memory model](./memory-model.md) | The eight node types, seven edge verbs, durability, capture modes |
+| [Customization](./customization.md) | Reshaping the ontology, presets, tuning trust/decay, version tracking, handoff notes |
 | [Trust & decay](./trust.md) | How trust is computed, what moves it, pins, stale knowledge |
 | [The pane](./pane.md) | The graph UI: layouts, tags and filters, editing, review, audit, history |
 | [Recall & capture](./recall-and-capture.md) | The session brief, search, silent writes and their verdicts, code refs |

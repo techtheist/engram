@@ -90,8 +90,14 @@ per-assistant wiring, and updating: [Getting started](./docs/getting-started.md)
   before/after values and session attribution, plus per-decision history
   along `replaces` chains. → [The pane](./docs/pane.md)
 - **Memory that tracks the code** — nodes point at code; refs that stop
-  resolving badge their nodes as drifted, with a repair-or-retire contract.
-  → [Recall & capture](./docs/recall-and-capture.md)
+  resolving badge their nodes as drifted, with a repair-or-retire contract,
+  and an optional hook attaches a file's memory the moment your assistant
+  reads it. → [Recall & capture](./docs/recall-and-capture.md)
+- **A model you can reshape** — the ontology, the trust and decay numbers,
+  and the brief are all per-graph configuration, edited in one Settings
+  drawer: rename or replace types and verbs (the engine keys on roles, not
+  names), tune how fast memory fades, pick from curated presets, and track a
+  working version per note. → [Customization](./docs/customization.md)
 - **One memory across your projects** — one core process, one pane, a
   machine registry, and a home graph for knowledge that was never
   project-scoped. Cross-project reads with local-canon priority; promotion
@@ -113,7 +119,9 @@ Insight, Intent, Anchor) and seven edge verbs that read as sentences — a
 Decision **because** a Principle, a Resolution **answers** a Problem, the
 newer **replaces** the older, two claims **conflict-with** each other. Three
 capture intensities (`relaxed` / `normal` / `aggressive`) set how much your
-assistant writes. → [The memory model](./docs/memory-model.md)
+assistant writes. It's the shipped default, and the one most projects should
+keep — but every part of it is [yours to reshape](./docs/customization.md).
+→ [The memory model](./docs/memory-model.md)
 
 ## Documentation
 
