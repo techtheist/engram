@@ -6,6 +6,7 @@ import GraphCanvas from '@/components/GraphCanvas.vue'
 import EngramMark from '@/components/common/EngramMark.vue'
 import AuditPanel from '@/components/panels/AuditPanel.vue'
 import CheckupPanel from '@/components/panels/CheckupPanel.vue'
+import ConfigPanel from '@/components/panels/ConfigPanel.vue'
 import SearchBar from '@/components/panels/SearchBar.vue'
 import FilterMenu from '@/components/panels/FilterMenu.vue'
 import HealthStrip from '@/components/panels/HealthStrip.vue'
@@ -16,12 +17,14 @@ import ProjectSwitcher from '@/components/panels/ProjectSwitcher.vue'
 import ReviewPanel from '@/components/panels/ReviewPanel.vue'
 import SettingsMenu from '@/components/panels/SettingsMenu.vue'
 import SystemInfoPanel from '@/components/panels/SystemInfoPanel.vue'
+import { useConfigStore } from '@/stores/config'
 import { useGraphStore } from '@/stores/graph'
 import { useThemeStore } from '@/stores/theme'
 import { useGraphSync } from '@/composables/useGraphSync'
 
 useThemeStore() // applies the persisted theme on mount via its watcher
 const store = useGraphStore()
+const config = useConfigStore()
 const { loading, error, connected, nodeList } = storeToRefs(store)
 
 useGraphSync() // poll-reconcile cross-process writes, but only while the user is active
@@ -40,7 +43,9 @@ function startCreate(): void {
 }
 
 onMounted(async () => {
-    await store.load()
+    // Config first-ish: colors/labels derive from it; both load in parallel
+    // and the ontology CSS lands as soon as it arrives.
+    await Promise.all([config.load().catch(() => undefined), store.load()])
     store.connect() // instant SSE for pane-originated writes
 })
 
@@ -93,6 +98,7 @@ onBeforeUnmount(() => store.disconnect())
     <MemoryLensPanel />
     <AuditPanel />
     <SystemInfoPanel />
+    <ConfigPanel />
     <HealthStrip />
 
     <Transition name="fade">

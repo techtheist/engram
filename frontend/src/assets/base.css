@@ -51,6 +51,78 @@
         color: inherit;
     }
 
+    /*
+     * Engram-styled checkboxes and radios, everywhere: native widgets ignore
+     * the theme tokens, so both are redrawn from scratch. The accent picks up
+     * --check-accent when a component sets one (e.g. a type's derived color),
+     * falling back to the theme's interactive primary.
+     */
+    input[type="checkbox"],
+    input[type="radio"] {
+        appearance: none;
+        width: 1.5rem;
+        height: 1.5rem;
+        margin: 0;
+        flex-shrink: 0;
+        border: 1px solid var(--border-strong);
+        border-radius: 0.4rem;
+        background: var(--surface-sunken);
+        cursor: pointer;
+        display: inline-grid;
+        place-content: center;
+        transition:
+            background-color 120ms ease,
+            border-color 120ms ease;
+    }
+
+    input[type="radio"] {
+        border-radius: 50%;
+    }
+
+    input[type="checkbox"]::before,
+    input[type="radio"]::before {
+        content: "";
+        width: 0.9rem;
+        height: 0.9rem;
+        transform: scale(0);
+        transition: transform 120ms ease;
+    }
+
+    input[type="checkbox"]::before {
+        /* the checkmark, drawn in the surface color over the accent fill */
+        clip-path: polygon(14% 46%, 0 62%, 38% 100%, 100% 18%, 84% 4%, 38% 68%);
+        background: var(--text-inverse);
+    }
+
+    input[type="radio"]::before {
+        border-radius: 50%;
+        background: var(--text-inverse);
+        width: 0.7rem;
+        height: 0.7rem;
+    }
+
+    input[type="checkbox"]:checked,
+    input[type="radio"]:checked {
+        border-color: var(--check-accent, var(--interactive-primary));
+        background: var(--check-accent, var(--interactive-primary));
+    }
+
+    input[type="checkbox"]:checked::before,
+    input[type="radio"]:checked::before {
+        transform: scale(1);
+    }
+
+    input[type="checkbox"]:focus-visible,
+    input[type="radio"]:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+    }
+
+    input[type="checkbox"]:hover:not(:checked),
+    input[type="radio"]:hover:not(:checked) {
+        border-color: var(--check-accent, var(--interactive-primary));
+    }
+
     ::-webkit-scrollbar {
         width: 0.8rem;
         height: 0.8rem;

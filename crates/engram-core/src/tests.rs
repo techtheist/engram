@@ -4,6 +4,11 @@ fn store() -> SqliteStore {
     SqliteStore::open_in_memory().unwrap()
 }
 
+/// The default policy — the numbers every pre-config test ran under.
+fn dp() -> crate::config::PolicyConfig {
+    crate::config::PolicyConfig::default()
+}
+
 fn new_node(t: NodeType, title: &str, body: &str) -> NewNode {
     NewNode {
         node_type: t,
@@ -16,6 +21,7 @@ fn new_node(t: NodeType, title: &str, body: &str) -> NewNode {
         status: None,
         code_refs: vec![],
         tags: vec![],
+        version: None,
     }
 }
 
@@ -33,7 +39,12 @@ fn node_type_roundtrip() {
     ] {
         assert_eq!(NodeType::parse(t.as_str()).unwrap(), t);
     }
-    assert!(NodeType::parse("Concept").is_err());
+    // Ontology-as-data (PLAN §7D): parse checks only shape — a name the
+    // shipped set doesn't know is still parseable; whether it EXISTS is the
+    // engine's config-driven write-time check.
+    assert_eq!(NodeType::parse("Concept").unwrap().as_str(), "Concept");
+    assert!(NodeType::parse("").is_err());
+    assert!(NodeType::parse("   ").is_err());
 }
 
 #[test]
@@ -41,7 +52,13 @@ fn edge_type_strings() {
     assert_eq!(EdgeType::BuildsOn.as_str(), "builds-on");
     assert_eq!(EdgeType::ConflictsWith.as_str(), "conflicts-with");
     assert_eq!(EdgeType::parse("about").unwrap(), EdgeType::About);
-    assert!(EdgeType::parse("relates_to").is_err());
+    // Shape-only, like NodeType: unknown verbs parse; the engine's write
+    // boundary rejects verbs the graph's ontology doesn't declare.
+    assert_eq!(
+        EdgeType::parse("relates_to").unwrap().as_str(),
+        "relates_to"
+    );
+    assert!(EdgeType::parse("").is_err());
 }
 
 #[test]
@@ -512,12 +529,16 @@ fn trust_curves_follow_the_anchor_timestamps() {
     let t0 = 1_000_000i64;
 
     // created-only episodic: 50% now, linear to the floor at half a year
-    assert!((trust(&ti(t0), t0) - policy::TRUST_UNSEEN_START).abs() < 1e-9);
+    assert!((trust(&ti(t0), t0, &dp()) - policy::TRUST_UNSEEN_START).abs() < 1e-9);
     let half_window = t0 + policy::PROVISIONAL_TRUST_WINDOW_SECS / 2;
-    let mid = trust(&ti(t0), half_window);
+    let mid = trust(&ti(t0), half_window, &dp());
     assert!((mid - (policy::TRUST_UNSEEN_START + policy::TRUST_FLOOR) / 2.0).abs() < 1e-6);
     assert!(
-        (trust(&ti(t0), t0 + policy::PROVISIONAL_TRUST_WINDOW_SECS + day) - policy::TRUST_FLOOR)
+        (trust(
+            &ti(t0),
+            t0 + policy::PROVISIONAL_TRUST_WINDOW_SECS + day,
+            &dp()
+        ) - policy::TRUST_FLOOR)
             .abs()
             < 1e-9
     );
@@ -527,8 +548,10 @@ fn trust_curves_follow_the_anchor_timestamps() {
         confirmed_at: Some(t0 + 100 * day),
         ..ti(t0)
     };
-    assert!((trust(&confirmed, t0 + 100 * day) - policy::TRUST_CONFIRMED_START).abs() < 1e-9);
-    assert!(trust(&confirmed, t0 + 100 * day) > trust(&ti(t0), t0 + 100 * day));
+    assert!(
+        (trust(&confirmed, t0 + 100 * day, &dp()) - policy::TRUST_CONFIRMED_START).abs() < 1e-9
+    );
+    assert!(trust(&confirmed, t0 + 100 * day, &dp()) > trust(&ti(t0), t0 + 100 * day, &dp()));
 
     // approved: 100% at approval, floor 20% past a year, wins over confirmed
     let approved = policy::TrustInputs {
@@ -536,8 +559,12 @@ fn trust_curves_follow_the_anchor_timestamps() {
         confirmed_at: Some(t0),
         ..ti(t0)
     };
-    assert!((trust(&approved, t0) - policy::TRUST_APPROVED_START).abs() < 1e-9);
-    let old = trust(&approved, t0 + policy::APPROVED_TRUST_WINDOW_SECS + day);
+    assert!((trust(&approved, t0, &dp()) - policy::TRUST_APPROVED_START).abs() < 1e-9);
+    let old = trust(
+        &approved,
+        t0 + policy::APPROVED_TRUST_WINDOW_SECS + day,
+        &dp(),
+    );
     assert!((old - policy::TRUST_APPROVED_FLOOR).abs() < 1e-9);
 
     // volatile rots on the short window
@@ -546,15 +573,15 @@ fn trust_curves_follow_the_anchor_timestamps() {
         ..ti(t0)
     };
     let aged = t0 + policy::VOLATILE_TRUST_WINDOW_SECS + day;
-    assert!((trust(&volatile, aged) - policy::TRUST_FLOOR).abs() < 1e-9);
+    assert!((trust(&volatile, aged, &dp()) - policy::TRUST_FLOOR).abs() < 1e-9);
     assert!(
-        trust(&ti(t0), aged) > policy::TRUST_FLOOR,
+        trust(&ti(t0), aged, &dp()) > policy::TRUST_FLOOR,
         "episodic outlives volatile"
     );
 
     // staleness threshold
-    assert!(policy::is_stale(policy::STALE_TRUST - 0.01));
-    assert!(!policy::is_stale(policy::STALE_TRUST));
+    assert!(policy::is_stale(policy::STALE_TRUST - 0.01, &dp()));
+    assert!(!policy::is_stale(policy::STALE_TRUST, &dp()));
 }
 
 #[test]
@@ -569,13 +596,16 @@ fn stable_trust_holds_flat_until_evidence_demotes_it() {
 
     // Time alone never moves stable knowledge — the redditor's rare
     // production constraint survives its quiet year at full anchor value.
-    assert_eq!(trust(&stable, t0 + 3 * year), policy::TRUST_UNSEEN_START);
+    assert_eq!(
+        trust(&stable, t0 + 3 * year, &dp()),
+        policy::TRUST_UNSEEN_START
+    );
     let approved_stable = policy::TrustInputs {
         approved_at: Some(t0),
         ..stable
     };
     assert_eq!(
-        trust(&approved_stable, t0 + 3 * year),
+        trust(&approved_stable, t0 + 3 * year, &dp()),
         policy::TRUST_APPROVED_START
     );
 
@@ -584,11 +614,15 @@ fn stable_trust_holds_flat_until_evidence_demotes_it() {
         demoted_at: Some(t0 + 2 * year),
         ..stable
     };
-    assert_eq!(trust(&demoted, t0 + 2 * year), policy::TRUST_UNSEEN_START);
+    assert_eq!(
+        trust(&demoted, t0 + 2 * year, &dp()),
+        policy::TRUST_UNSEEN_START
+    );
     assert!(
         trust(
             &demoted,
-            t0 + 2 * year + policy::PROVISIONAL_TRUST_WINDOW_SECS
+            t0 + 2 * year + policy::PROVISIONAL_TRUST_WINDOW_SECS,
+            &dp()
         ) < 0.05
     );
 
@@ -597,30 +631,33 @@ fn stable_trust_holds_flat_until_evidence_demotes_it() {
         trust_override: Some(1.0),
         ..demoted
     };
-    assert_eq!(trust(&pinned, t0 + 3 * year), 1.0);
+    assert_eq!(trust(&pinned, t0 + 3 * year, &dp()), 1.0);
     // Constant overrides are clamped to 0..=1.
     let odd = policy::TrustInputs {
         trust_override: Some(1.7),
         ..stable
     };
-    assert_eq!(trust(&odd, t0), 1.0);
+    assert_eq!(trust(&odd, t0, &dp()), 1.0);
 
     // Open worklist items are never buried by age.
     let open = policy::TrustInputs {
         status: Some(NodeStatus::Open),
         ..ti(t0)
     };
-    assert_eq!(trust(&open, t0 + 3 * year), policy::TRUST_UNSEEN_START);
+    assert_eq!(
+        trust(&open, t0 + 3 * year, &dp()),
+        policy::TRUST_UNSEEN_START
+    );
     assert!(
-        policy::stale_since(&open).is_none(),
+        policy::stale_since(&open, &dp()).is_none(),
         "open never decays out"
     );
     assert!(
-        policy::stale_since(&stable).is_none(),
+        policy::stale_since(&stable, &dp()).is_none(),
         "stable never decays out"
     );
     assert!(
-        policy::stale_since(&ti(t0)).is_some(),
+        policy::stale_since(&ti(t0), &dp()).is_some(),
         "plain episodic still crosses"
     );
 }
@@ -1174,11 +1211,13 @@ fn import_backfills_confirmed_at_like_the_migration() {
         stale: false,
         code_refs: vec![],
         tags: vec![],
+        version: None,
     };
     e.import(ExportGraph {
         version: EXPORT_VERSION,
         nodes: vec![node],
         edges: vec![],
+        config: None,
     })
     .unwrap();
     let restored = e.get_node("aaaaaaaaaaaa").unwrap().unwrap();
@@ -1569,6 +1608,7 @@ fn legacy_uuid_ids_shrink_with_edges_and_embeddings_intact() {
         stale: false,
         code_refs: vec![],
         tags: vec![],
+        version: None,
     };
     let b_node = Node {
         id: uuid_b.clone(),
@@ -2946,7 +2986,7 @@ fn store_battery(s: &dyn Store, backend: &str) {
 
     // -- suspects
     let sus = s
-        .add_suspect(&a.id, &secret.id, 0.91, Some(("contradiction", 0.88)))
+        .add_suspect(&a.id, &secret.id, 0.91, Some(("contradiction", 0.88, None)))
         .unwrap();
     assert!(
         s.suspect_between(&secret.id, &a.id).unwrap(),
@@ -2996,9 +3036,9 @@ fn store_battery(s: &dyn Store, backend: &str) {
         s.add_node(n).unwrap()
     };
     assert_eq!(s.list_open(&[]).unwrap().len(), 1);
-    assert_eq!(s.count_by_type_active(NodeType::Problem).unwrap(), 1);
+    assert_eq!(s.count_by_type_active(&NodeType::Problem).unwrap(), 1);
     assert_eq!(
-        s.nodes_by_type_active(NodeType::Principle, 5).unwrap()[0].id,
+        s.nodes_by_type_active(&NodeType::Principle, 5).unwrap()[0].id,
         user.id
     );
     assert!(s.recent_nodes(2).unwrap().len() == 2);
@@ -3150,6 +3190,184 @@ fn export_import_moves_a_graph_between_backends() {
     let back = dst.export().unwrap();
     assert_eq!(back.nodes.len(), 2);
     assert_eq!(back.edges.len(), 1);
+}
+
+#[test]
+fn graph_config_roundtrips_on_both_backends() {
+    let engines = [
+        engine(),
+        Engine::new(
+            TepinStore::open_in_memory().unwrap(),
+            Box::new(FakeEmbedder::default()),
+        ),
+    ];
+    for e in engines {
+        assert_eq!(
+            e.graph_config(),
+            GraphConfig::default(),
+            "a never-customized graph runs on the shipped defaults"
+        );
+        let mut cfg = GraphConfig::default();
+        cfg.brief.recent.cap = 3;
+        cfg.policy.volatile_window_days = 10;
+        cfg.ontology.types[0].hue = 100;
+        e.set_graph_config(&cfg).unwrap();
+        assert_eq!(e.graph_config(), cfg);
+        // A corrupt stored document reads as defaults — config must never
+        // brick a store open.
+        e.store().set_graph_config("{ not json").unwrap();
+        assert_eq!(e.graph_config(), GraphConfig::default());
+    }
+}
+
+#[test]
+fn graph_config_validation_guards_hard_invariants() {
+    let ok = GraphConfig::default();
+    ok.validate().unwrap();
+
+    let mut two_supersessions = ok.clone();
+    two_supersessions.ontology.verbs[0].roles.supersession = true;
+    assert!(two_supersessions.validate().is_err());
+
+    let mut no_contradiction = ok.clone();
+    no_contradiction
+        .ontology
+        .verbs
+        .retain(|v| !v.roles.contradiction);
+    assert!(no_contradiction.validate().is_err());
+
+    let mut dup_type = ok.clone();
+    dup_type.ontology.types[1].name = "principle".into();
+    assert!(
+        dup_type.validate().is_err(),
+        "type names dedupe case-insensitively"
+    );
+
+    let mut spaced_verb = ok.clone();
+    spaced_verb.ontology.verbs[0].name = "relates to".into();
+    assert!(
+        spaced_verb.validate().is_err(),
+        "verbs stay sentence-shaped"
+    );
+
+    let mut unordered = ok.clone();
+    unordered.policy.trust_confirmed = 0.4;
+    assert!(
+        unordered.validate().is_err(),
+        "trust anchors keep their order"
+    );
+
+    // The engine refuses to store an invalid document.
+    let mut bad_hue = ok.clone();
+    bad_hue.ontology.types[0].hue = 360;
+    let e = engine();
+    assert!(e.set_graph_config(&bad_hue).is_err());
+    assert_eq!(e.graph_config(), GraphConfig::default());
+}
+
+#[test]
+fn export_embeds_custom_config_and_import_restores_it() {
+    let src = engine();
+    let bare = src.export().unwrap();
+    assert!(bare.config.is_none(), "default graphs export bare");
+    assert!(
+        !serde_json::to_string(&bare).unwrap().contains("\"config\""),
+        "pre-0.7 dumps and default dumps stay identical in shape"
+    );
+
+    let mut cfg = GraphConfig::default();
+    cfg.ontology.preset = "custom".into();
+    cfg.brief.ontology.show = true;
+    src.set_graph_config(&cfg).unwrap();
+    let dump = src.export().unwrap();
+    assert_eq!(dump.config.as_ref(), Some(&cfg));
+
+    let dst = Engine::new(
+        TepinStore::open_in_memory().unwrap(),
+        Box::new(FakeEmbedder::default()),
+    );
+    dst.import(dump).unwrap();
+    assert_eq!(dst.graph_config(), cfg, "the dump restores its ontology");
+}
+
+#[test]
+fn migrate_to_tepin_publishes_only_a_complete_store() {
+    let dir = std::env::temp_dir().join(format!("engram-migrate-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("graph.db");
+    let (a_id, b_id) = {
+        let src = Engine::new(
+            SqliteStore::open(&db).unwrap(),
+            Box::new(FakeEmbedder::default()),
+        );
+        let a = src
+            .add_node(new_node(NodeType::Decision, "adopt tepindb", "driver swap"))
+            .unwrap();
+        let b = src
+            .add_node(new_node(
+                NodeType::Principle,
+                "storage is an open-time choice",
+                "",
+            ))
+            .unwrap();
+        link(src.store(), EdgeType::Because, &a.id, &b.id);
+        let mut cfg = GraphConfig::default();
+        cfg.ontology.preset = "custom".into();
+        src.set_graph_config(&cfg).unwrap();
+        (a.id, b.id)
+    };
+    // A crashed earlier attempt's leftover is disposable, never fatal.
+    std::fs::write(dir.join("graph.tepin.part"), b"junk").unwrap();
+
+    let summary = migrate_to_tepin(
+        &db,
+        std::sync::Arc::new(FakeEmbedder::default()),
+        AuditOrigin::cli(),
+    )
+    .unwrap();
+    assert_eq!((summary.nodes, summary.edges), (2, 1));
+    assert_eq!(summary.dst, dir.join("graph.tepin"));
+    assert!(summary.dst.is_file());
+    assert!(
+        !dir.join("graph.tepin.part").exists(),
+        "the build file is cleaned up after publishing"
+    );
+    assert!(db.is_file(), "the SQLite source stays as the backup");
+    assert_eq!(
+        resolve_db_path(&db),
+        summary.dst,
+        "every open now picks the migrated store"
+    );
+
+    let dst = Engine::new(
+        TepinStore::open(&summary.dst).unwrap(),
+        Box::new(FakeEmbedder::default()),
+    );
+    let hits = dst.search("tepindb driver", &[], 5).unwrap();
+    assert_eq!(hits[0].id, a_id);
+    assert!(
+        hits[0].neighbors.iter().any(|n| n.id == b_id),
+        "edges survive the migration"
+    );
+    assert_eq!(
+        dst.graph_config().ontology.preset,
+        "custom",
+        "the graph's configuration travels with the migration"
+    );
+    drop(dst);
+
+    // An existing target refuses — the CLI's --force removes it first, and
+    // the auto-migration can never race past resolve_db_path to get here.
+    assert!(
+        migrate_to_tepin(
+            &db,
+            std::sync::Arc::new(FakeEmbedder::default()),
+            AuditOrigin::cli(),
+        )
+        .is_err()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -3550,6 +3768,7 @@ fn tepin_import_is_idempotent_at_volume() {
         trust_override: None,
         trust: 0.0,
         stale: false,
+        version: None,
         code_refs: vec![],
         tags: vec!["bulk".into()],
     };
@@ -3578,6 +3797,7 @@ fn tepin_import_is_idempotent_at_volume() {
     for round in 0..2 {
         let summary = e
             .import(ExportGraph {
+                config: None,
                 version: 1,
                 nodes: nodes.clone(),
                 edges: edges.clone(),
@@ -3691,6 +3911,7 @@ fn tepin_embed_model_swap_keeps_writes_working() {
         stale: false,
         code_refs: vec![],
         tags: vec![],
+        version: None,
     };
     e.store().import_raw(&[orphan], &[]).unwrap();
     assert!(e.store().embedding_of("00gaplessnode").unwrap().is_none());
@@ -3864,4 +4085,977 @@ fn buried_claims_are_reachable_on_both_backends() {
             emb.embed_one(&format!("{title}\n{body}")).unwrap()
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// engine on live config (PLAN §7D workstream 3): policy numbers, brief
+// composition, and the ontology itself all read the graph's stored document.
+// ---------------------------------------------------------------------------
+
+/// A fully renamed ontology: none of the shipped names survive, the role
+/// flags carry every behavior.
+fn custom_ontology() -> GraphConfig {
+    let mut cfg = GraphConfig::default();
+    cfg.ontology.preset = "custom".into();
+    cfg.ontology.types = vec![
+        crate::config::TypeDef {
+            name: "Rule".into(),
+            hue: 10,
+            thought: "a law of this project".into(),
+            durability: Durability::Stable,
+            roles: crate::config::TypeRoles {
+                worklist: false,
+                anchor: false,
+                rank_prior: 0.05,
+                highlight: true,
+                versioned: true,
+            },
+            brief: crate::config::BriefSection {
+                show: true,
+                cap: 5,
+                excerpt: 100,
+            },
+        },
+        crate::config::TypeDef {
+            name: "Task".into(),
+            hue: 200,
+            thought: "something to do".into(),
+            durability: Durability::Volatile,
+            roles: crate::config::TypeRoles {
+                worklist: true,
+                anchor: false,
+                rank_prior: 0.0,
+                highlight: true,
+                versioned: true,
+            },
+            brief: crate::config::BriefSection {
+                show: false,
+                cap: 5,
+                excerpt: 100,
+            },
+        },
+        crate::config::TypeDef {
+            name: "Subject".into(),
+            hue: 300,
+            thought: "a code subject".into(),
+            durability: Durability::Stable,
+            roles: crate::config::TypeRoles {
+                worklist: false,
+                anchor: true,
+                rank_prior: 0.0,
+                highlight: false,
+                versioned: false,
+            },
+            brief: crate::config::BriefSection {
+                show: false,
+                cap: 5,
+                excerpt: 100,
+            },
+        },
+    ];
+    cfg.ontology.verbs = vec![
+        crate::config::VerbDef {
+            name: "supersedes".into(),
+            reads_as: "Rule supersedes Rule".into(),
+            roles: crate::config::VerbRoles {
+                supersession: true,
+                contradiction: false,
+                reason: false,
+                answer: false,
+                dependency: false,
+            },
+        },
+        crate::config::VerbDef {
+            name: "contradicts".into(),
+            reads_as: "Rule contradicts Rule".into(),
+            roles: crate::config::VerbRoles {
+                supersession: false,
+                contradiction: true,
+                reason: false,
+                answer: false,
+                dependency: false,
+            },
+        },
+    ];
+    cfg
+}
+
+fn custom_node(t: &str, title: &str, body: &str) -> NewNode {
+    NewNode {
+        node_type: NodeType::parse(t).unwrap(),
+        ..new_node(NodeType::Decision, title, body)
+    }
+}
+
+#[test]
+fn custom_ontology_runs_every_role_on_both_backends() {
+    let engines = [
+        engine(),
+        Engine::new(
+            TepinStore::open_in_memory().unwrap(),
+            Box::new(FakeEmbedder::default()),
+        ),
+    ];
+    for e in engines {
+        e.set_graph_config(&custom_ontology()).unwrap();
+
+        // Unknown names — including yesterday's shipped ones — are refused
+        // at the write boundary; declared ones flow.
+        assert!(
+            e.add_node(new_node(NodeType::Decision, "old name", "x"))
+                .is_err()
+        );
+        let a = e
+            .add_node(custom_node("Rule", "never hard-delete user data", "law"))
+            .unwrap();
+        let b = e
+            .add_node(custom_node("Rule", "hard-delete is fine actually", "law"))
+            .unwrap();
+
+        // Worklist role: an open Task IS the worklist.
+        let mut task = custom_node("Task", "ship the release", "todo");
+        task.status = Some(NodeStatus::Open);
+        let task = e.add_node(task).unwrap();
+        let open = e.store().list_open(&[]).unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].id, task.id);
+
+        // Anchor role: excluded from the conflict scan's iteration set.
+        e.add_node(custom_node("Subject", "auth module", "code subject"))
+            .unwrap();
+        assert!(
+            e.store()
+                .scannable_nodes()
+                .unwrap()
+                .iter()
+                .all(|n| n.node_type.as_str() != "Subject"),
+            "anchor-role types never enter the scan"
+        );
+
+        // Undeclared verbs are refused; the declared supersession verb chains
+        // history and the timeline follows it.
+        assert!(
+            e.add_edge(NewEdge {
+                edge_type: EdgeType::Replaces,
+                from_id: b.id.clone(),
+                to_id: a.id.clone(),
+                source: Source::Claude,
+                note: None,
+                confidence: None,
+                strength: None,
+                status: None,
+            })
+            .is_err(),
+            "'replaces' is not part of this ontology"
+        );
+        let edge = e
+            .add_edge(NewEdge {
+                edge_type: EdgeType::parse("supersedes").unwrap(),
+                from_id: b.id.clone(),
+                to_id: a.id.clone(),
+                source: Source::Claude,
+                note: None,
+                confidence: None,
+                strength: None,
+                status: None,
+            })
+            .unwrap();
+        assert_eq!(edge.edge_type.as_str(), "supersedes");
+        let timeline = e.timeline(&a.id).unwrap();
+        assert_eq!(timeline.len(), 2, "timeline follows the supersession role");
+
+        // Contradiction role: a live edge demotes the older endpoint and
+        // surfaces in the conflict list; deleting it withdraws the demotion.
+        let c = e
+            .add_node(custom_node("Rule", "always squash commits", "law"))
+            .unwrap();
+        // Strictly older: same-second ties demote the from-node instead.
+        e.store().backdate_node(&c.id, now() - 1_000).unwrap();
+        let d = e
+            .add_node(custom_node("Rule", "never squash commits", "law"))
+            .unwrap();
+        let conflict = e
+            .add_edge(NewEdge {
+                edge_type: EdgeType::parse("contradicts").unwrap(),
+                from_id: d.id.clone(),
+                to_id: c.id.clone(),
+                source: Source::Claude,
+                note: None,
+                confidence: None,
+                strength: None,
+                status: None,
+            })
+            .unwrap();
+        assert!(e.store().has_active_conflict(&c.id).unwrap());
+        assert!(
+            e.store()
+                .get_node(&c.id)
+                .unwrap()
+                .unwrap()
+                .demoted_at
+                .is_some(),
+            "the contradiction role carries the demotion"
+        );
+        e.delete_edge(&conflict.id).unwrap();
+        assert!(
+            e.store()
+                .get_node(&c.id)
+                .unwrap()
+                .unwrap()
+                .demoted_at
+                .is_none(),
+            "withdrawing the evidence withdraws the demotion"
+        );
+    }
+}
+
+#[test]
+fn suspect_verdicts_speak_the_ontology_verbs() {
+    let e = engine();
+    e.set_graph_config(&custom_ontology()).unwrap();
+    let a = e
+        .add_node(custom_node(
+            "Rule",
+            "connections use a pool of 10",
+            "sizing",
+        ))
+        .unwrap();
+    let b = e
+        .add_node(custom_node(
+            "Rule",
+            "connections use a pool of 50",
+            "sizing",
+        ))
+        .unwrap();
+    // Queue the pair directly (the scan's thresholds are covered elsewhere —
+    // this test is about which verb the verdict speaks).
+    let s = e.store().add_suspect(&b.id, &a.id, 0.89, None).unwrap();
+    let edge = e
+        .resolve_suspect(&s.id, SuspectVerdict::Replaces, Source::User)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        edge.edge_type.as_str(),
+        "supersedes",
+        "the verdict creates this graph's supersession verb, not 'replaces'"
+    );
+}
+
+#[test]
+fn tuned_policy_windows_move_trust_and_staleness() {
+    let engines = [
+        engine(),
+        Engine::new(
+            TepinStore::open_in_memory().unwrap(),
+            Box::new(FakeEmbedder::default()),
+        ),
+    ];
+    for e in engines {
+        let n = e
+            .add_node(NewNode {
+                durability: Durability::Episodic,
+                ..new_node(NodeType::Insight, "aging note", "wisdom")
+            })
+            .unwrap();
+        // 40 days old: healthy under the default 183-day episodic window.
+        e.store().backdate_node(&n.id, now() - 40 * 86_400).unwrap();
+        let fresh = e.store().get_node(&n.id).unwrap().unwrap();
+        assert!(!fresh.stale, "40d old under a 183d window is healthy");
+
+        // Shrink the window to 30 days: the same node is now past its
+        // course — floor trust, stale, and a decay candidate.
+        let mut cfg = GraphConfig::default();
+        cfg.policy.episodic_window_days = 30;
+        e.set_graph_config(&cfg).unwrap();
+        let aged = e.store().get_node(&n.id).unwrap().unwrap();
+        assert!(aged.stale, "the tuned 30d window ages the node out");
+        assert!(aged.trust < fresh.trust);
+        assert!(
+            !e.decay(cfg.policy.decay_ttl_days, true).unwrap().is_empty(),
+            "the decay pass sees it under the tuned window"
+        );
+
+        // Widen instead: trust comes back without touching the node.
+        cfg.policy.episodic_window_days = 3650;
+        e.set_graph_config(&cfg).unwrap();
+        let relaxed = e.store().get_node(&n.id).unwrap().unwrap();
+        assert!(!relaxed.stale);
+        assert!(relaxed.trust > aged.trust);
+    }
+}
+
+#[test]
+fn tuned_duplicate_bar_flips_the_write_verdict() {
+    let e = engine();
+    let title = "cache invalidation happens on write";
+    e.add_node_checked(new_node(NodeType::Decision, title, "body"))
+        .unwrap();
+    // Near-identical text: a duplicate under the default 0.90 bar.
+    let near = format!("{title}!");
+    match e
+        .add_node_checked(new_node(NodeType::Decision, &near, "body"))
+        .unwrap()
+    {
+        WriteOutcome::Matched { .. } => {}
+        WriteOutcome::Created { .. } => panic!("near-identical text must match by default"),
+    }
+    // Raise both bars to 1.0: only EXACT vectors match, so the same text now
+    // creates (and queues no suspect — the suspect band sits at the same bar).
+    let mut cfg = GraphConfig::default();
+    cfg.policy.duplicate_similarity = 1.0;
+    cfg.policy.conflict_suspect_similarity = 1.0;
+    e.set_graph_config(&cfg).unwrap();
+    match e
+        .add_node_checked(new_node(NodeType::Decision, &near, "body"))
+        .unwrap()
+    {
+        WriteOutcome::Created { .. } => {}
+        WriteOutcome::Matched { .. } => panic!("a 1.0 bar must not match near-identical text"),
+    }
+}
+
+#[test]
+fn brief_composition_follows_the_config() {
+    let e = engine();
+    // The problem first, then enough principles that the recent window
+    // (which claims the newest nodes) can't swallow the whole canon.
+    let mut task = new_node(NodeType::Problem, "flaky test", "in ci");
+    task.status = Some(NodeStatus::Open);
+    e.add_node(task).unwrap();
+    for i in 0..9 {
+        e.add_node(new_node(
+            NodeType::Principle,
+            &format!("principle number {i}"),
+            "always",
+        ))
+        .unwrap();
+    }
+
+    let stock = e.brief(16_000).unwrap();
+    assert!(stock.contains("## Principles"));
+    assert!(stock.contains("## Recently added"));
+    assert!(stock.contains("## Open problems & intents"));
+    assert!(
+        !stock.contains("This graph's ontology"),
+        "the teaching section is off in the shipped preset"
+    );
+
+    let mut cfg = GraphConfig::default();
+    cfg.brief.recent.show = false;
+    cfg.brief.ontology.show = true;
+    // Hide the Principle section, shrink nothing else.
+    cfg.ontology
+        .types
+        .iter_mut()
+        .find(|t| t.name == "Principle")
+        .unwrap()
+        .brief
+        .show = false;
+    e.set_graph_config(&cfg).unwrap();
+
+    let tuned = e.brief(16_000).unwrap();
+    assert!(!tuned.contains("## Principles"));
+    assert!(!tuned.contains("## Recently added"));
+    assert!(
+        tuned.starts_with("# Engram brief\nThis graph's ontology"),
+        "the ontology teaching section leads when toggled on"
+    );
+    assert!(
+        tuned.contains("- Decision — \"we chose this, for a reason\""),
+        "teaching lines carry each type's thought"
+    );
+}
+
+#[test]
+fn brief_speaks_a_custom_ontology() {
+    let e = engine();
+    let mut cfg = custom_ontology();
+    cfg.brief.recent.show = false;
+    e.set_graph_config(&cfg).unwrap();
+    e.add_node(custom_node("Rule", "tabs not spaces", "law"))
+        .unwrap();
+    let mut task = custom_node("Task", "write the docs", "todo");
+    task.status = Some(NodeStatus::Open);
+    e.add_node(task).unwrap();
+
+    let brief = e.brief(16_000).unwrap();
+    assert!(
+        brief.contains("## Rules"),
+        "canon sections use the graph's type names"
+    );
+    assert!(
+        brief.contains("## Open tasks"),
+        "the worklist heading names the worklist-role types"
+    );
+    assert!(!brief.contains("## Principles"));
+    assert!(!brief.contains("problems & intents"));
+}
+
+#[test]
+fn describe_ontology_teaches_types_verbs_and_roles() {
+    let cfg = custom_ontology();
+    let text = cfg.describe_ontology();
+    assert!(text.contains("- Rule — \"a law of this project\""));
+    assert!(text.contains("worklist: carries open/resolved status"));
+    assert!(text.contains("anchor: a code subject"));
+    assert!(text.contains(
+        "- supersedes — e.g. Rule supersedes Rule (supersession: archives the older endpoint)"
+    ));
+    assert!(text.contains("- contradicts — e.g. Rule contradicts Rule (contradiction: flags a conflict, demotes trust)"));
+}
+
+#[test]
+fn rename_type_bulk_retypes_and_guards_hold() {
+    let engines = [
+        engine(),
+        Engine::new(
+            TepinStore::open_in_memory().unwrap(),
+            Box::new(FakeEmbedder::default()),
+        ),
+    ];
+    for e in engines {
+        let a = e
+            .add_node(new_node(NodeType::Decision, "pick sqlite", "why"))
+            .unwrap();
+        e.add_node(new_node(NodeType::Decision, "pick axum", "why"))
+            .unwrap();
+
+        // A plain PUT that drops a type with stored nodes is refused — the
+        // rename endpoints are the migration gesture.
+        let mut dropped = GraphConfig::default();
+        dropped.ontology.types.retain(|t| t.name != "Decision");
+        let err = e.set_graph_config(&dropped).unwrap_err().to_string();
+        assert!(err.contains("Decision"), "{err}");
+        assert!(err.contains("2 node"), "{err}");
+
+        let renamed = e.rename_type("Decision", "Choice").unwrap();
+        assert_eq!(renamed, 2);
+        let node = e.store().get_node(&a.id).unwrap().unwrap();
+        assert_eq!(node.node_type.as_str(), "Choice");
+        let cfg = e.graph_config();
+        assert!(cfg.type_def("Choice").is_some());
+        assert!(cfg.type_def("Decision").is_none());
+        // The write boundary follows the rename immediately.
+        assert!(
+            e.add_node(new_node(NodeType::Decision, "old name", "x"))
+                .is_err()
+        );
+        assert!(
+            e.add_node(custom_node("Choice", "new name works", "x"))
+                .is_ok()
+        );
+        // Unknown / colliding renames are refused.
+        assert!(e.rename_type("Ghost", "Whatever").is_err());
+        assert!(e.rename_type("Choice", "Principle").is_err());
+    }
+}
+
+#[test]
+fn rename_verb_bulk_retypes_edges_and_keeps_roles() {
+    let e = engine();
+    let a = e
+        .add_node(new_node(NodeType::Decision, "old way", "x"))
+        .unwrap();
+    e.store().backdate_node(&a.id, now() - 1_000).unwrap();
+    let b = e
+        .add_node(new_node(NodeType::Decision, "new way", "x"))
+        .unwrap();
+    e.add_edge(NewEdge {
+        edge_type: EdgeType::Replaces,
+        from_id: b.id.clone(),
+        to_id: a.id.clone(),
+        source: Source::User,
+        note: None,
+        confidence: None,
+        strength: None,
+        status: None,
+    })
+    .unwrap();
+
+    let renamed = e.rename_verb("replaces", "supersedes").unwrap();
+    assert_eq!(renamed, 1);
+    let cfg = e.graph_config();
+    assert_eq!(
+        cfg.supersession_verb(),
+        "supersedes",
+        "the supersession role rides the rename"
+    );
+    // The timeline still walks the (renamed) chain.
+    assert_eq!(e.timeline(&a.id).unwrap().len(), 2);
+    // A PUT dropping a verb with stored edges is refused.
+    let mut dropped = cfg.clone();
+    dropped.ontology.verbs.retain(|v| v.name != "supersedes");
+    dropped.ontology.verbs[0].roles.supersession = true; // keep the invariant
+    let err = e.set_graph_config(&dropped).unwrap_err().to_string();
+    assert!(err.contains("supersedes"), "{err}");
+}
+
+#[test]
+fn shipped_presets_are_valid_and_complete() {
+    let shelf = crate::config::presets();
+    assert_eq!(shelf.len(), 3);
+    assert_eq!(shelf[0].id, "engram");
+    assert_eq!(shelf[0].config, GraphConfig::default());
+    for p in &shelf {
+        p.config
+            .validate()
+            .unwrap_or_else(|e| panic!("preset {} violates the hard invariants: {e}", p.id));
+        assert!(
+            p.config.ontology.types.iter().any(|t| t.roles.worklist),
+            "preset {} has no worklist type",
+            p.id
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 0.7.0 workstream 6: file-read match lookup, activity journal, and the
+// stale-triage NLI sweep.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn match_code_refs_covers_files_and_parent_dirs() {
+    let e = engine();
+    let a = e
+        .add_node(NewNode {
+            code_refs: vec!["crates/engram-core/src/policy.rs".into()],
+            ..new_node(
+                NodeType::Caution,
+                "trust math is subtle",
+                "watch the windows",
+            )
+        })
+        .unwrap();
+    let b = e
+        .add_node(NewNode {
+            code_refs: vec!["crates/engram-core".into()],
+            ..new_node(NodeType::Decision, "core stays dependency-light", "why")
+        })
+        .unwrap();
+    e.add_node(NewNode {
+        code_refs: vec!["frontend/src".into()],
+        ..new_node(NodeType::Decision, "vue for the pane", "why")
+    })
+    .unwrap();
+
+    let hits = e
+        .match_code_refs("crates/engram-core/src/policy.rs", 5)
+        .unwrap();
+    let ids: Vec<&str> = hits.iter().map(|n| n.id.as_str()).collect();
+    assert!(ids.contains(&a.id.as_str()), "exact file ref matches");
+    assert!(
+        ids.contains(&b.id.as_str()),
+        "a directory ref covers files under it"
+    );
+    assert_eq!(ids.len(), 2, "unrelated refs stay out");
+
+    // Normalization: leading ./ and trailing / never matter.
+    assert_eq!(
+        e.match_code_refs("./crates/engram-core/src/policy.rs", 5)
+            .unwrap()
+            .len(),
+        2
+    );
+    // A stale node never surfaces ambiently.
+    e.store()
+        .backdate_node(&a.id, now() - 400 * 86_400)
+        .unwrap();
+    let mut cfg = GraphConfig::default();
+    cfg.policy.episodic_window_days = 30;
+    e.set_graph_config(&cfg).unwrap();
+    let hits = e
+        .match_code_refs("crates/engram-core/src/policy.rs", 5)
+        .unwrap();
+    assert!(
+        hits.iter().all(|n| n.id != a.id || !n.stale),
+        "stale nodes are filtered from ambient injection"
+    );
+}
+
+#[test]
+fn activity_events_land_in_the_journal() {
+    let e = engine();
+    e.brief(4_000).unwrap();
+    e.audit_activity("mcp_session_started", Some("project test".into()))
+        .unwrap();
+    let page = e.audit_log(None, None, 10).unwrap();
+    let actions: Vec<&str> = page.entries.iter().map(|r| r.action.as_str()).collect();
+    assert!(actions.contains(&"brief_served"));
+    assert!(actions.contains(&"mcp_session_started"));
+    let row = page
+        .entries
+        .iter()
+        .find(|r| r.action == "mcp_session_started")
+        .unwrap();
+    assert_eq!(row.entity, "session");
+}
+
+#[test]
+fn stale_triage_buckets_reconfirm_contradicted_isolated() {
+    let e = engine_with_nli();
+    let mut cfg = GraphConfig::default();
+    cfg.policy.episodic_window_days = 30;
+    e.set_graph_config(&cfg).unwrap();
+
+    // A stale note whose claim the live canon still contains → reconfirm
+    // (FakeNli entails when one claim contains the other verbatim).
+    let stale_ok = e
+        .add_node(NewNode {
+            durability: Durability::Episodic,
+            ..new_node(
+                NodeType::Insight,
+                "the cache warms in two minutes",
+                "measured on staging",
+            )
+        })
+        .unwrap();
+    e.add_node(new_node(
+        NodeType::Insight,
+        "the cache warms in two minutes. measured on staging and on prod",
+        "measured on staging",
+    ))
+    .unwrap();
+    // A stale note nothing current speaks to → isolated (digit/punctuation
+    // text keeps the byte-histogram fake embedder far from everything).
+    let stale_alone = e
+        .add_node(NewNode {
+            durability: Durability::Episodic,
+            ..new_node(NodeType::Insight, "0000 1111 2222 :::", "#### 9999 ;;;")
+        })
+        .unwrap();
+    for id in [&stale_ok.id, &stale_alone.id] {
+        e.store().backdate_node(id, now() - 400 * 86_400).unwrap();
+    }
+
+    let triage = e.audit_stale_triage().unwrap();
+    let verdict = |id: &str| {
+        triage
+            .iter()
+            .find(|t| t.node.id == id)
+            .map(|t| t.verdict.clone())
+    };
+    assert_eq!(verdict(&stale_ok.id).as_deref(), Some("reconfirm"));
+    assert!(
+        triage
+            .iter()
+            .find(|t| t.node.id == stale_ok.id)
+            .unwrap()
+            .evidence
+            .is_some()
+    );
+    assert_eq!(verdict(&stale_alone.id).as_deref(), Some("isolated"));
+    assert!(
+        triage
+            .iter()
+            .all(|t| t.node.id != stale_ok.id || t.verdict != "contradicted"),
+        "no contradiction without the similarity gate"
+    );
+}
+
+#[test]
+fn write_time_canon_check_supports_and_contradicts() {
+    let e = engine_with_nli();
+    // Canon that ENTAILS the new text (FakeNli: premise contains the
+    // hypothesis verbatim — the canon claim is a superset of the new claim).
+    e.add_node(new_node(
+        NodeType::Principle,
+        "store sessions in redis. observed again while debugging and settled since v2",
+        "observed again while debugging",
+    ))
+    .unwrap();
+    let outcome = e
+        .add_node_checked(new_node(
+            NodeType::Insight,
+            "store sessions in redis",
+            "observed again while debugging",
+        ))
+        .unwrap();
+    match outcome {
+        WriteOutcome::Created { canon, .. } => {
+            assert!(
+                canon.iter().any(|c| c.verdict == "supports"),
+                "entailing canon yields a supports verdict: {canon:?}"
+            );
+        }
+        _ => panic!("must create"),
+    }
+
+    // Contradiction only inside the suspect band (co-reference gate): two
+    // "contra" texts (FakeNli contradiction) that are near-identical.
+    let e = engine_with_nli();
+    e.add_node(new_node(
+        NodeType::Decision,
+        "contra: use tabs for indentation everywhere",
+        "why",
+    ))
+    .unwrap();
+    let outcome = e
+        .add_node_checked(new_node(
+            NodeType::Insight,
+            "contra: use tabs for indentation everywhere!!",
+            "why",
+        ))
+        .unwrap();
+    match outcome {
+        WriteOutcome::Created { canon, .. } => {
+            assert!(
+                canon.iter().any(|c| c.verdict == "contradicts"),
+                "in-band contradiction yields a contradicts verdict: {canon:?}"
+            );
+        }
+        _ => panic!("cross-type text never dupe-matches"),
+    }
+}
+
+#[test]
+fn validate_graph_runs_all_passes_and_journals() {
+    let e = engine();
+    e.add_node(new_node(NodeType::Decision, "keep it simple", "why"))
+        .unwrap();
+    let note = e.validate_graph().unwrap();
+    assert!(note.contains("decayed"), "{note}");
+    assert!(note.contains("suspect"), "{note}");
+    let page = e.audit_log(None, None, 5).unwrap();
+    let row = page
+        .entries
+        .iter()
+        .find(|r| r.action == "graph_validated")
+        .expect("validation journals itself");
+    assert_eq!(row.entity, "session");
+}
+
+// ---------------------------------------------------------------------------
+// Version tracking + handoff notes (0.7.0).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn version_tracking_stamps_bound_types_only() {
+    let engines = [
+        engine(),
+        Engine::new(
+            TepinStore::open_in_memory().unwrap(),
+            Box::new(FakeEmbedder::default()),
+        ),
+    ];
+    for e in engines {
+        // Off by default: nothing is stamped even with a version set.
+        e.set_current_version(Some("v0.7.0")).unwrap();
+        let off = e
+            .add_node(new_node(NodeType::Decision, "before tracking", "x"))
+            .unwrap();
+        assert_eq!(off.version, None);
+
+        let mut cfg = GraphConfig::default();
+        cfg.versioning.enabled = true;
+        e.set_graph_config(&cfg).unwrap();
+
+        let d = e
+            .add_node(new_node(NodeType::Decision, "while tracking", "x"))
+            .unwrap();
+        assert_eq!(d.version.as_deref(), Some("v0.7.0"));
+        // Principle and Anchor transcend releases in the shipped ontology.
+        let p = e
+            .add_node(new_node(NodeType::Principle, "timeless value", "x"))
+            .unwrap();
+        assert_eq!(p.version, None);
+        let a = e
+            .add_node(new_node(NodeType::Anchor, "auth module", "x"))
+            .unwrap();
+        assert_eq!(a.version, None);
+
+        // Explicit version (historical digestion) always wins.
+        let hist = e
+            .add_node(NewNode {
+                version: Some("v0.1.0".into()),
+                ..new_node(NodeType::Insight, "old lesson", "x")
+            })
+            .unwrap();
+        assert_eq!(hist.version.as_deref(), Some("v0.1.0"));
+
+        // Switching and unsetting; the switch history is journaled.
+        assert_eq!(
+            e.set_current_version(Some("v0.8.0")).unwrap().as_deref(),
+            Some("v0.7.0")
+        );
+        e.set_current_version(None).unwrap();
+        let unversioned = e
+            .add_node(new_node(NodeType::Decision, "between versions", "x"))
+            .unwrap();
+        assert_eq!(unversioned.version, None);
+        let history = e.audit_log(None, Some("version"), 10).unwrap();
+        assert!(history.entries.len() >= 3);
+        assert!(
+            history
+                .entries
+                .iter()
+                .any(|r| r.title.as_deref() == Some("v0.7.0 → v0.8.0"))
+        );
+
+        // Patch can correct a node's version; the brief shows the stamp.
+        e.update_node(
+            &unversioned.id,
+            NodePatch {
+                version: Some("v0.8.1".into()),
+                ..NodePatch::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            e.store()
+                .get_node(&unversioned.id)
+                .unwrap()
+                .unwrap()
+                .version
+                .as_deref(),
+            Some("v0.8.1")
+        );
+        let brief = e.brief(16_000).unwrap();
+        assert!(brief.contains("Current working version: not set"));
+        assert!(brief.contains("[Decision"), "{brief}");
+        assert!(
+            brief.contains("v0.8.1"),
+            "node lines carry the stamp: {brief}"
+        );
+    }
+}
+
+#[test]
+fn handoff_notes_lead_the_brief() {
+    let e = engine();
+    for i in 0..9 {
+        e.add_node(new_node(
+            NodeType::Principle,
+            &format!("filler principle {i}"),
+            "x",
+        ))
+        .unwrap();
+    }
+    let mut n = new_node(
+        NodeType::Intent,
+        "finish the cutover before touching search",
+        "half-migrated state",
+    );
+    n.status = Some(NodeStatus::Open);
+    n.tags = vec!["handoff".into()];
+    n.durability = Durability::Volatile;
+    let handoff = e.add_node(n).unwrap();
+
+    let brief = e.brief(16_000).unwrap();
+    let handoff_pos = brief.find("## Handoff — left for this session").unwrap();
+    let first_section = brief.find("##").unwrap();
+    assert_eq!(handoff_pos, first_section, "handoff is the FIRST section");
+    assert!(brief.contains("finish the cutover before touching search"));
+
+    // Resolved handoffs stop surfacing.
+    e.update_node(
+        &handoff.id,
+        NodePatch {
+            status: Some(NodeStatus::Resolved),
+            ..NodePatch::default()
+        },
+    )
+    .unwrap();
+    let brief = e.brief(16_000).unwrap();
+    assert!(!brief.contains("## Handoff"));
+}
+
+#[test]
+fn contradiction_hints_carry_a_direction() {
+    let e = engine_with_nli();
+    // Older node carries the negation marker; texts are near-identical so
+    // the write-time scan queues the pair (same band as the dupe test but
+    // cross-type, so no dupe match).
+    let older = e
+        .add_node(new_node(
+            NodeType::Decision,
+            "contra neg: never use tabs for indentation",
+            "law",
+        ))
+        .unwrap();
+    e.store().backdate_node(&older.id, now() - 1_000).unwrap();
+    e.add_node_checked(new_node(
+        NodeType::Insight,
+        "contra: never use tabs for indentation!!",
+        "law",
+    ))
+    .unwrap();
+
+    let suspects = e.suspects().unwrap();
+    assert_eq!(suspects.len(), 1, "the pair queues one suspect");
+    let s = &suspects[0];
+    assert_eq!(s.nli_label.as_deref(), Some("contradiction"));
+    assert_eq!(
+        s.nli_direction.as_deref(),
+        Some("older"),
+        "the neg-marked older side reads as the negation carrier"
+    );
+    let brief = e.brief(16_000).unwrap();
+    assert!(
+        brief.contains("negation likely on the older side"),
+        "{brief}"
+    );
+}
+
+#[test]
+fn answered_sweep_penalizes_already_linked_pairs() {
+    let e = engine_with_nli();
+    let mut problem = new_node(
+        NodeType::Problem,
+        "the importer times out on big graphs",
+        "seen twice",
+    );
+    problem.status = Some(NodeStatus::Open);
+    let problem = e.add_node(problem).unwrap();
+    // Candidate whose claim contains the problem's claim (FakeNli entails).
+    let fix = e
+        .add_node(new_node(
+            NodeType::Resolution,
+            "the importer times out on big graphs. seen twice — fixed by streaming batches",
+            "seen twice",
+        ))
+        .unwrap();
+
+    let fresh = e.audit_answered().unwrap();
+    let hit = fresh
+        .iter()
+        .find(|h| h.problem.id == problem.id && h.candidate.id == fix.id)
+        .expect("unlinked pair is nominated");
+    assert!(hit.existing_link.is_none());
+
+    // Linked another way: the nomination survives but names the verb.
+    e.add_edge(NewEdge {
+        edge_type: EdgeType::BuildsOn,
+        from_id: fix.id.clone(),
+        to_id: problem.id.clone(),
+        source: Source::Claude,
+        note: None,
+        confidence: None,
+        strength: None,
+        status: None,
+    })
+    .unwrap();
+    let linked = e.audit_answered().unwrap();
+    let hit = linked
+        .iter()
+        .find(|h| h.problem.id == problem.id)
+        .expect("differently-linked pair still nominated");
+    assert_eq!(hit.existing_link.as_deref(), Some("builds-on"));
+
+    // Linked with the answer verb: nothing left to suggest.
+    e.add_edge(NewEdge {
+        edge_type: EdgeType::Answers,
+        from_id: fix.id.clone(),
+        to_id: problem.id.clone(),
+        source: Source::Claude,
+        note: None,
+        confidence: None,
+        strength: None,
+        status: None,
+    })
+    .unwrap();
+    let done = e.audit_answered().unwrap();
+    assert!(
+        done.iter().all(|h| h.problem.id != problem.id),
+        "answer-linked pairs are dropped"
+    );
 }

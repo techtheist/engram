@@ -26,5 +26,17 @@ export function usePanels() {
         release(side: PanelSide, id: string): void {
             if (owners[side]?.id === id) owners[side] = null
         },
+        /**
+         * Force-close both edges. A project switch calls this: drawers hold
+         * per-graph state (a node card, the settings draft), and carrying
+         * them across graphs shows the previous project's truth as the new
+         * one's.
+         */
+        closeAll(): void {
+            for (const side of ['left', 'right'] as const) {
+                owners[side]?.dismiss()
+                owners[side] = null
+            }
+        },
     }
 }

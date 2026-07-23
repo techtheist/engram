@@ -2,9 +2,8 @@
 import { computed, ref, useTemplateRef } from 'vue'
 import { onClickOutside } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
-import { NODE_ACCENT_VAR } from '@/constants/ontology'
+import { useConfigStore } from '@/stores/config'
 import { trustLevel, useGraphStore, type GraphFilters } from '@/stores/graph'
-import type { NodeType } from '@/types/graph'
 
 /**
  * Pure client-side canvas filter. Every option list is gathered from the
@@ -12,6 +11,7 @@ import type { NodeType } from '@/types/graph'
  * re-packs to just the matching nodes.
  */
 const store = useGraphStore()
+const config = useConfigStore()
 const { nodeList, filters, activeFilterCount } = storeToRefs(store)
 
 const open = ref(false)
@@ -63,7 +63,7 @@ const hasArchived = computed(() => nodeList.value.some((n) => n.valid_until != n
 const isOn = (group: Group, value: string): boolean => filters.value[group].includes(value)
 
 function accentFor(group: Group, value: string): string | undefined {
-    return group === 'types' ? NODE_ACCENT_VAR[value as NodeType] : undefined
+    return group === 'types' ? config.accent(value) : undefined
 }
 </script>
 

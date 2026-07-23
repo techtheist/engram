@@ -86,8 +86,74 @@ Judge each pair NOW with resolve_suspect: `conflict` if they contradict (then te
 contradiction with standing canon is the one thing silent capture must surface), `replaces` if this \
 write supersedes the older claim, `dismiss` if they are fine together.";
 
+/// Journal bracket for one MCP session (activity audit): `mcp_session_started`
+/// on construction, `mcp_session_ended` when the LAST clone of the session's
+/// server drops (the server is `Clone`, so the bracket rides an `Arc`).
+/// Best-effort by design — a session must never fail over its own trace.
+struct SessionTrace {
+    engine: Arc<Mutex<Engine>>,
+    session_id: Arc<str>,
+}
+
+const VALIDATION_MIN_INTERVAL_SECS: i64 = 60;
+
+impl SessionTrace {
+    fn start(
+        engine: &Arc<Mutex<Engine>>,
+        session_id: &Arc<str>,
+        note: Option<String>,
+    ) -> Arc<Self> {
+        let trace = Arc::new(Self {
+            engine: engine.clone(),
+            session_id: session_id.clone(),
+        });
+        trace.emit("mcp_session_started", note);
+        trace.validate();
+        trace
+    }
+
+    fn emit(&self, action: &str, note: Option<String>) {
+        if let Ok(mut engine) = self.engine.lock() {
+            engine.set_audit_origin(engram_core::AuditOrigin::mcp(self.session_id.to_string()));
+            let _ = engine.audit_activity(action, note);
+        }
+    }
+
+    /// Run the full graph validation (decay + conflict scan + drift) in the
+    /// background so connects stay instant — the graph is prepared for the
+    /// session, and cleaned up after it, without waiting for the six-hourly
+    /// sweep. Rate-limited PER GRAPH (the engine keeps the clock — a connect
+    /// to one project must not suppress another's validation); skipped on
+    /// fake embeddings (fake vectors over a real graph would queue noise
+    /// suspects).
+    fn validate(&self) {
+        let engine = self.engine.clone();
+        let session = self.session_id.clone();
+        std::thread::spawn(move || {
+            if let Ok(mut engine) = engine.lock() {
+                if engine.embeddings_are_fake()
+                    || !engine.validation_due(VALIDATION_MIN_INTERVAL_SECS)
+                {
+                    return;
+                }
+                engine.set_audit_origin(engram_core::AuditOrigin::mcp(session.to_string()));
+                let _ = engine.validate_graph();
+            }
+        });
+    }
+}
+
+impl Drop for SessionTrace {
+    fn drop(&mut self) {
+        self.emit("mcp_session_ended", None);
+        self.validate();
+    }
+}
+
 #[derive(Clone)]
 pub struct Engram {
+    /// Session lifecycle journal rows; ends when the last clone drops.
+    _trace: Arc<SessionTrace>,
     /// The multi-project hub (PLAN §7C). Single-project constructions get a
     /// factory-less hub, so cross-project selectors fail with a clear message.
     hub: Arc<Hub>,
@@ -117,11 +183,14 @@ impl Engram {
 
     /// The full multi-project form: the same hub the HTTP server holds.
     pub fn with_hub(hub: Arc<Hub>) -> Self {
+        let engine = hub.current_engine();
+        let session_id: Arc<str> = format!("mcp-{}", engram_core::id::new_id()).into();
         Self {
-            engine: hub.current_engine(),
+            _trace: SessionTrace::start(&engine, &session_id, None),
+            engine,
             conflicts: Arc::new(Mutex::new(hub.subscribe_conflicts())),
             hub,
-            session_id: format!("mcp-{}", engram_core::id::new_id()).into(),
+            session_id,
         }
     }
 
@@ -129,11 +198,14 @@ impl Engram {
     /// engine is this session's current project — what an omitted `project`
     /// param means — regardless of which project the core launched with.
     pub fn for_project(hub: Arc<Hub>, selector: &str) -> Result<Self, engram_core::Error> {
+        let engine = hub.get(selector)?;
+        let session_id: Arc<str> = format!("mcp-{}", engram_core::id::new_id()).into();
         Ok(Self {
-            engine: hub.get(selector)?,
+            _trace: SessionTrace::start(&engine, &session_id, Some(format!("project {selector}"))),
+            engine,
             conflicts: Arc::new(Mutex::new(hub.subscribe_conflicts())),
             hub,
-            session_id: format!("mcp-{}", engram_core::id::new_id()).into(),
+            session_id,
         })
     }
 
@@ -261,6 +333,22 @@ impl Engram {
         Ok(result)
     }
 
+    /// Decorate a write response with the canon check's verdicts and the
+    /// action note they call for (shared by add_note and update_node).
+    fn attach_canon(out: &mut serde_json::Value, canon: &[engram_core::CanonVerdict]) {
+        if canon.is_empty() {
+            return;
+        }
+        out["canon"] = json!(canon);
+        out["canon_note"] = json!(if canon.iter().any(|c| c.verdict == "contradicts") {
+            "existing canon CONTRADICTS this text (see `canon`) — read the flagged node; \
+             if the disagreement is real, link conflicts-with and tell the user"
+        } else {
+            "existing canon already supports this text (see `canon`) — consider linking it \
+             (because / builds-on) instead of leaving the reinforcement implicit"
+        });
+    }
+
     /// Lock a scoped engine with this session stamped as the writer.
     fn mcp<'a>(&self, engine: &'a Arc<Mutex<Engine>>) -> std::sync::MutexGuard<'a, Engine> {
         let mut guard = engine.lock().unwrap();
@@ -381,13 +469,13 @@ impl Engram {
     /// the home-graph pointer (PLAN §7C: fan-out writes are replication).
     fn create_note(&self, a: AddNoteArgs) -> Result<serde_json::Value, ErrorData> {
         let node_type = NodeType::parse(&a.node_type).map_err(map_err)?;
+        let engine = self.engine_for(&a.project)?;
+        // Durability defaults from the ontology; born-open status for
+        // worklist types is applied by Engine::add_node (the write boundary
+        // owns it, so every surface gets it).
         let durability = match a.durability {
             Some(d) => Durability::parse(&d).map_err(map_err)?,
-            None => default_durability(node_type),
-        };
-        let status = match node_type {
-            NodeType::Problem | NodeType::Intent => Some(NodeStatus::Open),
-            _ => None,
+            None => engine.lock().unwrap().default_durability(&node_type),
         };
         let created_at = match a.created_at.as_deref() {
             None => None,
@@ -398,7 +486,6 @@ impl Engram {
                 )
             })?),
         };
-        let engine = self.engine_for(&a.project)?;
         let outcome = self
             .mcp(&engine)
             .add_node_checked(NewNode {
@@ -409,9 +496,10 @@ impl Engram {
                 durability,
                 source: Source::Claude,
                 session_id: a.session_id.or_else(|| Some(self.session_id.to_string())),
-                status,
+                status: None,
                 code_refs: a.code_refs,
                 tags: a.tags,
+                version: a.version,
             })
             .map_err(map_err)?;
         Ok(match outcome {
@@ -420,6 +508,7 @@ impl Engram {
                 warnings,
                 suspects,
                 missing_refs,
+                canon,
             } => {
                 let mut out = json!({ "id": node.id, "created": true });
                 if !warnings.is_empty() {
@@ -435,6 +524,7 @@ impl Engram {
                     out["suspects"] = json!(suspects);
                     out["action_required"] = json!(SUSPECT_ACTION);
                 }
+                Self::attach_canon(&mut out, &canon);
                 out
             }
             WriteOutcome::Matched {
@@ -503,9 +593,12 @@ impl Engram {
         &self,
         Parameters(a): Parameters<BriefArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let max_chars = a
-            .max_chars
-            .unwrap_or(engram_core::policy::DEFAULT_BRIEF_CHARS);
+        // No explicit budget → the briefed graph's configured one.
+        let max_chars = self
+            .engine_for(&a.project)?
+            .lock()
+            .unwrap()
+            .brief_chars(a.max_chars);
         // Unscoped = the current project plus the home-graph section; a
         // scoped project (or `home`) briefs that graph alone.
         let text = match &a.project {
@@ -516,6 +609,52 @@ impl Engram {
             }
         };
         Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
+    }
+
+    #[tool(description = "Describe this graph's ontology: every node type (the \
+        thought it captures, default durability, roles) and every edge verb \
+        (worked example, roles). The graph defines its own ontology (it may \
+        be customized per project) — call this when type or verb names \
+        surprise you, or before writing into an unfamiliar graph.")]
+    async fn describe_ontology(
+        &self,
+        Parameters(a): Parameters<DescribeOntologyArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let engine = self.engine_for(&a.project)?;
+        let text = engine.lock().unwrap().config().describe_ontology();
+        Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
+    }
+
+    #[tool(description = "Set (or clear, with null) the graph's CURRENT WORKING \
+        VERSION — version tracking stamps it on every new version-bound note \
+        so the graph shows when each piece of knowledge was captured. Call it \
+        when the project moves to a new version (release cut, version bump). \
+        The response carries the recent switch history.")]
+    async fn set_version(
+        &self,
+        Parameters(a): Parameters<SetVersionArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let engine = self.engine_for(&a.project)?;
+        let (previous, history) = {
+            let engine = self.mcp(&engine);
+            let previous = engine
+                .set_current_version(a.version.as_deref())
+                .map_err(map_err)?;
+            let history: Vec<String> = engine
+                .audit_log(None, Some("version"), 10)
+                .map_err(map_err)?
+                .entries
+                .into_iter()
+                .filter_map(|r| r.title)
+                .collect();
+            (previous, history)
+        };
+        self.reply(&json!({
+            "ok": true,
+            "previous": previous,
+            "current": a.version,
+            "history": history,
+        }))
     }
 
     #[tool(description = "Delete one edge by id — for repairing a mislink. \
@@ -579,7 +718,9 @@ impl Engram {
                 status: None,
             })
             .map_err(map_err)?;
-        if edge_type == EdgeType::ConflictsWith {
+        let contradiction =
+            engine.lock().unwrap().config().contradiction_verb() == edge.edge_type.as_str();
+        if contradiction {
             // This session just recorded the contradiction deliberately — it
             // already knows; don't echo its own alert back on the next call.
             let _ = self.drain_conflict_alerts();
@@ -686,6 +827,7 @@ impl Engram {
     /// The update_node core, shared with the batch form.
     fn patch_node(&self, a: UpdateArgs) -> Result<serde_json::Value, ErrorData> {
         let patch = NodePatch {
+            version: a.version,
             node_type: a
                 .node_type
                 .map(|t| NodeType::parse(&t))
@@ -713,6 +855,7 @@ impl Engram {
             warnings,
             suspects,
             missing_refs,
+            canon,
         } = self
             .mcp(&engine)
             .update_node_checked(&a.id, patch)
@@ -731,6 +874,7 @@ impl Engram {
             out["suspects"] = json!(suspects);
             out["action_required"] = json!(SUSPECT_ACTION);
         }
+        Self::attach_canon(&mut out, &canon);
         Ok(out)
     }
 
@@ -1286,6 +1430,10 @@ struct AddNoteArgs {
     durability: Option<String>,
     #[serde(default)]
     session_id: Option<String>,
+    /// Captured-at version override (version tracking): omit to auto-stamp
+    /// the graph's current working version on version-bound types.
+    #[serde(default)]
+    version: Option<String>,
     #[serde(default)]
     code_refs: Vec<String>,
     /// Free-form slice labels (kebab-cased on write). Reuse the recent tags
@@ -1340,6 +1488,9 @@ struct UpdateArgs {
     /// Replaces the node's tag list when set (kebab-cased on write).
     #[serde(default)]
     tags: Option<Vec<String>>,
+    /// Set or correct the node's captured-at version (version tracking).
+    #[serde(default)]
+    version: Option<String>,
     /// Omit = current project; name/id = that project; "home".
     #[serde(default)]
     project: Option<String>,
@@ -1440,6 +1591,23 @@ struct BriefArgs {
     max_chars: Option<usize>,
     /// Omit = current project's brief plus the home-graph section; a name/id
     /// (or "home") briefs that graph alone.
+    #[serde(default)]
+    project: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct SetVersionArgs {
+    /// The new current version ("v0.7.0", "26.7.23", …); null/omit clears it.
+    #[serde(default)]
+    version: Option<String>,
+    /// Omit = current project; name/id = that project; "home".
+    #[serde(default)]
+    project: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct DescribeOntologyArgs {
+    /// Omit = current project; name/id = that project; "home".
     #[serde(default)]
     project: Option<String>,
 }
@@ -1552,34 +1720,30 @@ fn edge_types(v: &[String]) -> Result<Vec<EdgeType>, ErrorData> {
         .map_err(map_err)
 }
 
-/// The natural durability for a node type when the caller doesn't specify one.
-fn default_durability(t: NodeType) -> Durability {
-    match t {
-        NodeType::Principle | NodeType::Decision | NodeType::Caution | NodeType::Anchor => {
-            Durability::Stable
-        }
-        NodeType::Problem | NodeType::Resolution | NodeType::Insight => Durability::Episodic,
-        NodeType::Intent => Durability::Volatile,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn default_durability_matches_ontology() {
-        assert_eq!(default_durability(NodeType::Decision), Durability::Stable);
-        assert_eq!(default_durability(NodeType::Insight), Durability::Episodic);
-        assert_eq!(default_durability(NodeType::Intent), Durability::Volatile);
+    fn shipped_ontology_durability_defaults_hold() {
+        let cfg = engram_core::config::GraphConfig::default();
+        let durability = |name: &str| cfg.type_def(name).unwrap().durability;
+        assert_eq!(durability("Decision"), Durability::Stable);
+        assert_eq!(durability("Insight"), Durability::Episodic);
+        assert_eq!(durability("Intent"), Durability::Volatile);
     }
 
     #[test]
-    fn type_parsing_rejects_garbage() {
+    fn type_parsing_is_shape_only() {
+        // Ontology-as-data (PLAN §7D): names parse by shape; whether one
+        // exists is the engine's config-driven check, so a custom ontology's
+        // types flow through the MCP layer untouched.
         assert!(node_types(&["Decision".into()]).is_ok());
-        assert!(node_types(&["Nope".into()]).is_err());
+        assert!(node_types(&["Nope".into()]).is_ok());
+        assert!(node_types(&["".into()]).is_err());
         assert!(edge_types(&["because".into()]).is_ok());
-        assert!(edge_types(&["relates_to".into()]).is_err());
+        assert!(edge_types(&["relates_to".into()]).is_ok());
+        assert!(edge_types(&["".into()]).is_err());
     }
 
     #[tokio::test]
@@ -1593,6 +1757,7 @@ mod tests {
 
         let res = server
             .add_note(Parameters(AddNoteArgs {
+                version: None,
                 created_at: None,
                 node_type: "Decision".into(),
                 title: "Adopt SQLite WAL".into(),
@@ -1685,6 +1850,7 @@ pub(crate) mod tool_tests {
 
     pub(crate) fn note(title: &str) -> AddNoteArgs {
         AddNoteArgs {
+            version: None,
             created_at: None,
             node_type: "Decision".into(),
             title: title.into(),
@@ -1750,6 +1916,7 @@ pub(crate) mod tool_tests {
         // Decision -because-> Principle (parent); Insight -about-> Decision (child).
         let principle = id_of(
             &s.add_note(Parameters(AddNoteArgs {
+                version: None,
                 created_at: None,
                 node_type: "Principle".into(),
                 title: "local first".into(),
@@ -1770,6 +1937,7 @@ pub(crate) mod tool_tests {
         );
         let insight = id_of(
             &s.add_note(Parameters(AddNoteArgs {
+                version: None,
                 created_at: None,
                 node_type: "Insight".into(),
                 title: "wal mode matters".into(),
@@ -2088,6 +2256,7 @@ pub(crate) mod tool_tests {
                 .unwrap(),
         );
         let blank = |id: String| UpdateArgs {
+            version: None,
             id,
             node_type: None,
             title: None,
@@ -2171,6 +2340,7 @@ mod project_tests {
         let s = server();
         let err = s
             .add_note(Parameters(AddNoteArgs {
+                version: None,
                 created_at: None,
                 node_type: "Decision".into(),
                 title: "fan out".into(),
@@ -2227,6 +2397,7 @@ mod suspect_tests {
             Box::new(FakeEmbedder::default()),
         ));
         let mk = |t: &str, ty: &str| AddNoteArgs {
+            version: None,
             created_at: None,
             node_type: ty.into(),
             title: t.into(),
@@ -2286,6 +2457,7 @@ mod suspect_tests {
             Box::new(FakeEmbedder::default()),
         ));
         let mk = |t: &str, ty: &str| AddNoteArgs {
+            version: None,
             created_at: None,
             node_type: ty.into(),
             title: t.into(),
@@ -2443,6 +2615,7 @@ mod scoped_transport_tests {
                 Box::new(FakeEmbedder::default()),
             );
             beta.add_node(engram_core::NewNode {
+                version: None,
                 created_at: None,
                 node_type: engram_core::NodeType::Decision,
                 title: "beta owns this decision".into(),

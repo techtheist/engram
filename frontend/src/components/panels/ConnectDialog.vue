@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { ALL_EDGE_TYPES, EDGE_COLOR, EDGE_SENTENCE } from '@/constants/ontology'
+import { useConfigStore } from '@/stores/config'
 import { useGraphStore } from '@/stores/graph'
 import type { EdgeType } from '@/types/graph'
 
@@ -13,6 +13,7 @@ const props = defineProps<{ source: string; target: string }>()
 const emit = defineEmits<{ close: [] }>()
 
 const store = useGraphStore()
+const config = useConfigStore()
 const busy = ref(false)
 const error = ref<string | null>(null)
 // Drag direction seeds subject → object; the swap fixes a backwards sentence.
@@ -60,16 +61,16 @@ async function pick(type: EdgeType): Promise<void> {
 
         <div class="verbs">
             <button
-                v-for="t in ALL_EDGE_TYPES"
+                v-for="t in config.verbNames"
                 :key="t"
                 class="verb"
                 type="button"
                 :disabled="busy"
-                :style="{ '--verb-color': EDGE_COLOR[t] }"
+                :style="{ '--verb-color': config.edgeColor(t) }"
                 @click="pick(t)"
             >
                 <span class="verb-name">{{ t }}</span>
-                <span class="verb-hint">{{ EDGE_SENTENCE[t] }}</span>
+                <span class="verb-hint">{{ config.edgeSentence(t) }}</span>
             </button>
         </div>
 

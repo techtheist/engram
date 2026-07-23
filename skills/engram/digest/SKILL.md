@@ -44,7 +44,7 @@ Ingested nodes start **provisional at 50% trust** like any Claude-authored node 
 
 ## The eight node types — worked examples
 
-One example per type; each also teaches one feature of the graph. **The shapes are load-bearing**: copy the example, replace the content with your project's fact, and keep everything else — type names, edge verbs, durabilities, and statuses are exactly as written here (there are only 8 types and 7 verbs; inventing others fails the write).
+One example per type; each also teaches one feature of the graph. **The shapes are load-bearing**: copy the example, replace the content with your project's fact, and keep everything else — type names, edge verbs, durabilities, and statuses are exactly as written here (there are only 8 types and 7 verbs; inventing others fails the write). *(0.7+: if this graph runs a customized ontology — the write errors with "unknown node type", or the brief teaches different names — call `describe_ontology` and translate these examples into that vocabulary; the roles map 1:1.)*
 
 **Principle** — a stable conviction the project keeps honoring. Teaches: `durability`, and that principles are what `because` edges point at.
 

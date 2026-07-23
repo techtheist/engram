@@ -5,13 +5,14 @@ import { storeToRefs } from 'pinia'
 import MarkdownView from '@/components/common/MarkdownView.vue'
 import SidePanel from '@/components/common/SidePanel.vue'
 import TagEditor from '@/components/common/TagEditor.vue'
-import { ALL_EDGE_TYPES, EDGE_COLOR, NODE_ACCENT_VAR } from '@/constants/ontology'
+import { useConfigStore } from '@/stores/config'
 import { BADGE_TIPS, explainTrust } from '@/constants/trust'
 import { api } from '@/services/api'
 import { useGraphStore } from '@/stores/graph'
 import type { EdgeType, GraphEdge, TimelineEntry } from '@/types/graph'
 
 const store = useGraphStore()
+const config = useConfigStore()
 const { selected, nodes, edgeList, driftByNode } = storeToRefs(store)
 
 /** Code refs of this node that no longer exist in the project (drifted). */
@@ -63,7 +64,7 @@ const applyTrustOverride = () =>
 
 // --- edit mode (PLAN §10 Phase 1: reclassification / editing UX) ----------
 
-const NODE_TYPES = Object.keys(NODE_ACCENT_VAR)
+const NODE_TYPES = computed(() => config.typeNames)
 const DURABILITIES = ['stable', 'episodic', 'volatile']
 
 const editing = ref(false)
@@ -130,7 +131,7 @@ async function removeEdge(edge: GraphEdge): Promise<void> {
 }
 
 const accent = computed(() =>
-    selected.value ? NODE_ACCENT_VAR[selected.value.type] : 'var(--node-anchor)',
+    selected.value ? config.accent(selected.value.type) : '#64748b',
 )
 const archived = computed(() => selected.value?.valid_until != null)
 const trustPct = computed(() =>
@@ -167,7 +168,9 @@ function title(id: string): string {
 const timeline = ref<TimelineEntry[]>([])
 
 /** Only chain members carry a `replaces` edge — everyone else skips the fetch. */
-const inChain = computed(() => relations.value.some((r) => r.edge.type === 'replaces'))
+const inChain = computed(() =>
+    relations.value.some((r) => r.edge.type === config.supersessionVerb),
+)
 
 watch(
     [() => selected.value?.id, inChain],
@@ -264,10 +267,15 @@ function close(): void {
         <h2 v-if="!editing" class="title">{{ selected.title }}</h2>
 
         <div class="badges">
+            <span
+                v-if="selected.version"
+                class="badge"
+                title="Project version this note was captured at (version tracking)"
+            >{{ selected.version }}</span>
             <span class="badge" :title="BADGE_TIPS.durability[selected.durability]">{{ selected.durability }}</span>
             <span class="badge" :title="BADGE_TIPS.source[selected.source]">{{ selected.source }}</span>
             <span v-if="selected.status" class="badge" :title="BADGE_TIPS.status[selected.status]">{{ selected.status }}</span>
-            <span v-if="trustPct != null" class="badge" :title="explainTrust(selected)">trust {{ trustPct }}%</span>
+            <span v-if="trustPct != null" class="badge" :title="explainTrust(selected, config.cfg?.policy)">trust {{ trustPct }}%</span>
             <span v-if="pinned" class="badge pinned" :title="BADGE_TIPS.pinned">📌 pinned</span>
             <span v-if="selected.demoted_at != null && !pinned" class="badge stale" :title="BADGE_TIPS.demoted">demoted</span>
             <span v-if="selected.stale" class="badge stale" :title="BADGE_TIPS.stale">stale</span>
@@ -279,7 +287,7 @@ function close(): void {
             <span v-if="archived" class="badge archived" title="Superseded or decayed out — kept for history, hidden from retrieval">archived</span>
         </div>
 
-        <p class="trust-note">{{ explainTrust(selected) }}</p>
+        <p class="trust-note">{{ explainTrust(selected, config.cfg?.policy) }}</p>
 
         <div v-if="selected.tags.length && !editing" class="tag-row">
             <span v-for="t in selected.tags" :key="t" class="tag-chip">#{{ t }}</span>
@@ -304,18 +312,18 @@ function close(): void {
             <h3 class="block-title">Connections</h3>
             <ul class="relations">
                 <li v-for="r in relations" :key="r.edge.id" class="relation-row">
-                    <span class="rel-dir" :style="{ color: EDGE_COLOR[r.edge.type] }">
+                    <span class="rel-dir" :style="{ color: config.edgeColor(r.edge.type) }">
                         {{ r.dir === 'out' ? '→' : '←' }}
                     </span>
                     <select
                         class="rel-select"
                         :value="r.edge.type"
                         :disabled="busy"
-                        :style="{ color: EDGE_COLOR[r.edge.type] }"
+                        :style="{ color: config.edgeColor(r.edge.type) }"
                         title="Change the connection verb"
                         @change="retypeEdge(r.edge, $event)"
                     >
-                        <option v-for="t in ALL_EDGE_TYPES" :key="t" :value="t">{{ t }}</option>
+                        <option v-for="t in config.verbNames" :key="t" :value="t">{{ t }}</option>
                     </select>
                     <button class="relation" type="button" @click="store.select(r.otherId)">
                         <span class="rel-target">{{ r.otherTitle }}</span>

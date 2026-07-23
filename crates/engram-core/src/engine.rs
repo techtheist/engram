@@ -22,22 +22,13 @@ pub enum ChangeEvent {
     /// The suspected-conflict queue changed (scan found pairs, or one was
     /// judged) — coarse on purpose; the pane refetches the pending list.
     SuspectsChanged,
+    /// The per-graph configuration was replaced (PLAN §7D) — the pane
+    /// refetches `/config` and re-derives colors/labels.
+    ConfigChanged,
 }
 
 /// How many 1-hop neighbors ride along with each search hit.
 const NEIGHBOR_CAP: usize = 5;
-/// How many suspected conflicts the brief lists (strongest first).
-const BRIEF_SUSPECT_CAP: usize = 8;
-/// How many recently-used tags the brief names — enough for the assistant to
-/// reuse the live vocabulary instead of inventing near-synonyms.
-const BRIEF_TAG_CAP: usize = 7;
-/// How many recently-created nodes the brief lists — the "what changed
-/// lately" window, placed right after the suspects so it never falls into
-/// the budget-cut tail.
-const BRIEF_RECENT_CAP: usize = 7;
-/// How many open problems/intents the brief lists (newest first). The full
-/// worklist stays one `list_open` away; uncapped it starves the canon sections.
-const BRIEF_OPEN_CAP: usize = 10;
 /// How many nearest nodes the write-time duplicate/conflict checks consider.
 const WRITE_CHECK_K: usize = 8;
 
@@ -109,6 +100,10 @@ pub struct Engine {
     audit_cwd: Option<String>,
     audit_pid: i64,
     audit_version: String,
+    /// When [`Engine::validate_graph`] last ran — the session-boundary
+    /// trigger consults this so back-to-back connects don't re-sweep. Per
+    /// graph, not per process: this engine IS the graph's process-side.
+    last_validated: std::sync::atomic::AtomicI64,
 }
 
 impl Engine {
@@ -131,6 +126,7 @@ impl Engine {
                 .map(|p| p.display().to_string()),
             audit_pid: std::process::id() as i64,
             audit_version: env!("CARGO_PKG_VERSION").to_string(),
+            last_validated: std::sync::atomic::AtomicI64::new(0),
         }
     }
 
@@ -211,6 +207,117 @@ impl Engine {
     /// engine call it under their mutex lock before every operation.
     pub fn set_audit_origin(&mut self, origin: AuditOrigin) {
         self.audit_origin = origin;
+    }
+
+    /// Journal a session-level activity event (mcp_session_started /
+    /// mcp_session_ended / brief_served, …): AI activity around the graph,
+    /// not just mutations of it — so a session's whole arc is retrievable
+    /// later. `entity_id` is the acting session, making
+    /// `audit(entity_id = session)` page one session's lifecycle directly.
+    pub fn audit_activity(&self, action: &str, note: Option<String>) -> Result<()> {
+        let session = self.audit_origin.session_id.clone().unwrap_or_default();
+        self.audit(action, "session", &session, note, None, None, None)
+    }
+
+    /// The graph's current working version (version tracking, 0.7.0).
+    pub fn current_version(&self) -> Result<Option<String>> {
+        self.store.current_version()
+    }
+
+    /// Set (or clear) the current working version — the version every new
+    /// node of a version-bound type is stamped with while tracking is on.
+    /// Journaled under entity_id "version", so `audit(entity_id="version")`
+    /// pages the switch history directly.
+    pub fn set_current_version(&self, version: Option<&str>) -> Result<Option<String>> {
+        if let Some(v) = version
+            && (v.trim().is_empty() || v.len() > 32)
+        {
+            return Err(crate::Error::Config(
+                "version must be 1..=32 non-blank characters".into(),
+            ));
+        }
+        let previous = self.store.current_version()?;
+        self.store.set_current_version(version)?;
+        self.audit(
+            "version_switched",
+            "graph",
+            "version",
+            Some(format!(
+                "{} → {}",
+                previous.as_deref().unwrap_or("(unset)"),
+                version.unwrap_or("(unset)")
+            )),
+            None,
+            None,
+            None,
+        )?;
+        self.notify(ChangeEvent::ConfigChanged);
+        Ok(previous)
+    }
+
+    /// One full graph-health pass — the session-boundary validation: the
+    /// decay pass archives what has expired, the conflict scan queues fresh
+    /// look-alike pairs, and the drift scan counts unresolved code_refs, so
+    /// a session starts (and leaves) with the graph prepared rather than
+    /// waiting for the six-hourly sweep. Journaled as a `graph_validated`
+    /// activity row; returns the summary note.
+    pub fn validate_graph(&self) -> Result<String> {
+        self.last_validated
+            .store(crate::store::now(), std::sync::atomic::Ordering::Relaxed);
+        let ttl = self.store.config().policy.decay_ttl_days;
+        let archived = self.decay(ttl, false)?.len();
+        let suspects = self.scan_conflicts()?;
+        let drift = match self.repo_root().map(std::path::Path::to_path_buf) {
+            Some(root) => self.scan_code_refs(&root)?.len(),
+            None => 0,
+        };
+        let note = format!(
+            "{archived} decayed, {suspects} new suspect{}, {drift} drifted ref{}",
+            if suspects == 1 { "" } else { "s" },
+            if drift == 1 { "" } else { "s" },
+        );
+        self.audit_activity("graph_validated", Some(note.clone()))?;
+        Ok(note)
+    }
+
+    /// Whether a fresh [`Engine::validate_graph`] run is due — false within
+    /// `min_interval_secs` of the last one on THIS graph.
+    pub fn validation_due(&self, min_interval_secs: i64) -> bool {
+        let last = self
+            .last_validated
+            .load(std::sync::atomic::Ordering::Relaxed);
+        crate::store::now() - last >= min_interval_secs
+    }
+
+    /// Nodes whose `code_refs` cover a repo-relative file path — the
+    /// file-read match hook's lookup (PLAN §10 ambient hooks). A ref matches
+    /// when it names the file exactly or a directory above it. Only current,
+    /// non-stale knowledge surfaces (ambient value must not be ambient
+    /// noise), strongest trust first.
+    pub fn match_code_refs(&self, path: &str, limit: usize) -> Result<Vec<Node>> {
+        let path = path.trim().trim_start_matches("./").trim_end_matches('/');
+        if path.is_empty() {
+            return Ok(Vec::new());
+        }
+        let covers = |r: &str| {
+            let r = r.trim().trim_start_matches("./").trim_end_matches('/');
+            !r.is_empty() && (r == path || path.starts_with(&format!("{r}/")))
+        };
+        let mut hits: Vec<Node> = self
+            .store
+            .all_nodes()?
+            .into_iter()
+            .filter(|n| {
+                n.valid_until.is_none() && !n.stale && n.code_refs.iter().any(|r| covers(r))
+            })
+            .collect();
+        hits.sort_by(|a, b| {
+            b.trust
+                .total_cmp(&a.trust)
+                .then((b.created_at, &b.id).cmp(&(a.created_at, &a.id)))
+        });
+        hits.truncate(limit);
+        Ok(hits)
     }
 
     fn notify(&self, event: ChangeEvent) {
@@ -330,7 +437,29 @@ impl Engine {
     /// Add a node and embed it (full-field composition) in one step. Trust is computed
     /// from timestamps at read time; user-authored nodes are approved by
     /// construction (the store stamps `approved_at`).
-    pub fn add_node(&self, n: NewNode) -> Result<Node> {
+    pub fn add_node(&self, mut n: NewNode) -> Result<Node> {
+        self.check_node_type(&n.node_type)?;
+        let cfg = self.store.config();
+        // Worklist-role types are live items from birth — the write boundary
+        // owns the default so every surface (MCP, pane, raw HTTP) gets it.
+        if n.status.is_none()
+            && cfg
+                .type_def(n.node_type.as_str())
+                .is_some_and(|t| t.roles.worklist)
+        {
+            n.status = Some(NodeStatus::Open);
+        }
+        // Version tracking: auto-stamp the current working version on
+        // version-bound types (explicit versions — digestion of historical
+        // material — always win).
+        if n.version.is_none()
+            && cfg.versioning.enabled
+            && cfg
+                .type_def(n.node_type.as_str())
+                .is_none_or(|t| t.roles.versioned)
+        {
+            n.version = self.store.current_version()?;
+        }
         let node = self.store.add_node(n)?;
         self.embed_node(&node)?;
         self.audit_node("created", None, Some(&node))?;
@@ -338,10 +467,52 @@ impl Engine {
         Ok(node)
     }
 
+    /// The write boundary of ontology-as-data (PLAN §7D): a node type must
+    /// exist in this graph's ontology. Shape was checked at parse; existence
+    /// can only be checked here, where the graph's config is known.
+    fn check_node_type(&self, t: &NodeType) -> Result<()> {
+        let cfg = self.store.config();
+        if cfg.type_def(t.as_str()).is_none() {
+            return Err(crate::Error::Config(format!(
+                "unknown node type {:?} — this graph's ontology defines: {}",
+                t.as_str(),
+                cfg.ontology
+                    .types
+                    .iter()
+                    .map(|t| t.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+        Ok(())
+    }
+
+    /// Same boundary for edge verbs: a triple can only use a verb this
+    /// graph's ontology declares.
+    fn check_edge_type(&self, t: &EdgeType) -> Result<()> {
+        let cfg = self.store.config();
+        if cfg.verb_def(t.as_str()).is_none() {
+            return Err(crate::Error::Config(format!(
+                "unknown edge verb {:?} — this graph's ontology defines: {}",
+                t.as_str(),
+                cfg.ontology
+                    .verbs
+                    .iter()
+                    .map(|v| v.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+        Ok(())
+    }
+
     /// Patch a node and re-embed if any embedded field changed (title, body,
     /// tags, code_refs). Any update refreshes `last_seen` (the store stamps
     /// it): edited knowledge is in-use knowledge.
     pub fn update_node(&self, id: &str, patch: NodePatch) -> Result<Node> {
+        if let Some(t) = &patch.node_type {
+            self.check_node_type(t)?;
+        }
         let touches_text = patch.title.is_some()
             || patch.body.is_some()
             || patch.tags.is_some()
@@ -431,6 +602,7 @@ impl Engine {
     }
 
     pub fn add_edge(&self, e: NewEdge) -> Result<Edge> {
+        self.check_edge_type(&e.edge_type)?;
         let edge = self.store.add_edge(e)?;
         self.audit_edge("created", None, Some(&edge))?;
         self.notify(ChangeEvent::EdgeAdded(edge.clone()));
@@ -446,7 +618,7 @@ impl Engine {
     /// decaying after the contradiction is gone. (Pinned nodes are skipped
     /// inside demote.)
     fn reconcile_conflict_demotion(&self, edge: &Edge) -> Result<()> {
-        let live = edge.edge_type == EdgeType::ConflictsWith
+        let live = edge.edge_type.as_str() == self.store.config().contradiction_verb()
             && !matches!(
                 edge.status,
                 Some(EdgeStatus::Resolved | EdgeStatus::Dismissed)
@@ -494,6 +666,9 @@ impl Engine {
     }
 
     pub fn update_edge(&self, id: &str, p: EdgePatch) -> Result<Edge> {
+        if let Some(t) = &p.edge_type {
+            self.check_edge_type(t)?;
+        }
         let before = self.store.get_edge(id)?;
         let edge = self.store.update_edge(id, p)?;
         self.audit_edge("updated", before.as_ref(), Some(&edge))?;
@@ -513,7 +688,7 @@ impl Engine {
             self.audit_edge("deleted", before.as_ref(), None)?;
             self.notify(ChangeEvent::EdgeDeleted(id.to_string()));
             if let Some(b) = &before
-                && b.edge_type == EdgeType::ConflictsWith
+                && b.edge_type.as_str() == self.store.config().contradiction_verb()
             {
                 for endpoint in [&b.from_id, &b.to_id] {
                     self.undemote_if_unconflicted(endpoint)?;
@@ -584,7 +759,198 @@ impl Engine {
             version: EXPORT_VERSION,
             nodes,
             edges,
+            // Exports embed their ontology (PLAN §7D): a customized graph's
+            // dump must re-import as the same graph. Uncustomized stays bare
+            // — an old dump and a new default dump mean the same thing.
+            config: self.stored_graph_config(),
         })
+    }
+
+    /// The stored per-graph configuration, or `None` when the graph runs on
+    /// defaults. A corrupt document reads as `None` (defaults) — config must
+    /// never be able to brick a store open.
+    fn stored_graph_config(&self) -> Option<crate::config::GraphConfig> {
+        // Corrupt documents already warn at open (GraphConfig::from_stored);
+        // here only the stored-vs-defaults distinction matters (exports).
+        self.store
+            .graph_config()
+            .ok()
+            .flatten()
+            .and_then(|json| serde_json::from_str(&json).ok())
+    }
+
+    /// The live configuration this graph runs on (PLAN §7D): the store's
+    /// cached parse, shared — the cheap accessor every read path should use.
+    pub fn config(&self) -> std::sync::Arc<crate::config::GraphConfig> {
+        self.store.config()
+    }
+
+    /// Owned clone of the live configuration — only for callers that
+    /// serialize or mutate it (GET /config, the rename ops).
+    pub fn graph_config(&self) -> crate::config::GraphConfig {
+        (*self.store.config()).clone()
+    }
+
+    /// Resolve a caller's optional brief budget: explicit wins, otherwise
+    /// the graph's configured `brief.total_chars` — the one rule every
+    /// surface (HTTP, MCP, CLI) shares.
+    pub fn brief_chars(&self, requested: Option<usize>) -> usize {
+        requested.unwrap_or_else(|| self.store.config().brief.total_chars)
+    }
+
+    /// The ontology's default durability for a node type when the caller
+    /// doesn't specify one (each TypeDef carries its default; unknown types
+    /// are caught by the write-boundary check, episodic here is moot).
+    pub fn default_durability(&self, t: &NodeType) -> Durability {
+        self.store
+            .config()
+            .type_def(t.as_str())
+            .map(|d| d.durability)
+            .unwrap_or(Durability::Episodic)
+    }
+
+    /// Replace the graph's configuration — validated against the hard
+    /// invariants first; a violation is a 400, never a partial write. A
+    /// config change is a user gesture (pane/HTTP only) and journals like
+    /// any other mutation.
+    pub fn set_graph_config(&self, cfg: &crate::config::GraphConfig) -> Result<()> {
+        cfg.validate()?;
+        // In-use guard: a PUT can't strand stored knowledge. Dropping a type
+        // that still has nodes (or a verb that still has edges) is refused —
+        // rename (bulk retype) or retype first; renames must go through
+        // `rename_type`/`rename_verb`, which move the stored rows along.
+        let current = self.store.config();
+        let dropped_types: Vec<&str> = current
+            .ontology
+            .types
+            .iter()
+            .filter(|t| cfg.type_def(&t.name).is_none())
+            .map(|t| t.name.as_str())
+            .collect();
+        if !dropped_types.is_empty() {
+            let mut counts: std::collections::HashMap<&str, usize> =
+                std::collections::HashMap::new();
+            let nodes = self.store.all_nodes()?;
+            for node in &nodes {
+                if let Some(name) = dropped_types
+                    .iter()
+                    .find(|t| **t == node.node_type.as_str())
+                {
+                    *counts.entry(name).or_default() += 1;
+                }
+            }
+            if let Some((name, n)) = counts.into_iter().next() {
+                return Err(crate::Error::Config(format!(
+                    "type {name:?} still has {n} node(s) — rename it (bulk retype) or retype them first"
+                )));
+            }
+        }
+        let dropped_verbs: Vec<&str> = current
+            .ontology
+            .verbs
+            .iter()
+            .filter(|v| cfg.verb_def(&v.name).is_none())
+            .map(|v| v.name.as_str())
+            .collect();
+        if !dropped_verbs.is_empty() {
+            let mut counts: std::collections::HashMap<&str, usize> =
+                std::collections::HashMap::new();
+            let edges = self.store.all_edges()?;
+            for edge in &edges {
+                if let Some(name) = dropped_verbs
+                    .iter()
+                    .find(|v| **v == edge.edge_type.as_str())
+                {
+                    *counts.entry(name).or_default() += 1;
+                }
+            }
+            if let Some((name, n)) = counts.into_iter().next() {
+                return Err(crate::Error::Config(format!(
+                    "verb {name:?} still has {n} edge(s) — rename it or retype them first"
+                )));
+            }
+        }
+        let before = self.stored_graph_config().map(|c| serde_json::json!(c));
+        self.store.set_graph_config(&serde_json::to_string(cfg)?)?;
+        self.audit(
+            "config_updated",
+            "graph",
+            "",
+            Some(format!(
+                "{} types / {} verbs, preset {}",
+                cfg.ontology.types.len(),
+                cfg.ontology.verbs.len(),
+                cfg.ontology.preset
+            )),
+            before,
+            Some(serde_json::json!(cfg)),
+            None,
+        )?;
+        self.notify(ChangeEvent::ConfigChanged);
+        Ok(())
+    }
+
+    /// Rename a node type AND bulk-retype every stored node of it — the
+    /// ontology-migration gesture (PLAN §7D). Roles, hue, brief section and
+    /// durability ride along unchanged; only the name moves. Returns how
+    /// many nodes followed.
+    pub fn rename_type(&self, from: &str, to: &str) -> Result<u64> {
+        if from == to {
+            return Err(crate::Error::Config("rename needs a new name".into()));
+        }
+        let mut cfg = (*self.store.config()).clone();
+        let def = cfg
+            .ontology
+            .types
+            .iter_mut()
+            .find(|t| t.name == from)
+            .ok_or_else(|| crate::Error::Config(format!("unknown type {from:?}")))?;
+        def.name = to.to_string();
+        cfg.validate()?;
+        // Retype first, then persist: if the config write fails the retype
+        // is legal either way (a re-run is idempotent), while the reverse
+        // order could strand rows under a name the config no longer knows.
+        let renamed = self.store.retype_nodes(from, to)?;
+        self.set_graph_config(&cfg)?;
+        self.audit(
+            "type_renamed",
+            "graph",
+            "",
+            Some(format!("{from} → {to} ({renamed} nodes retyped)")),
+            None,
+            None,
+            None,
+        )?;
+        Ok(renamed)
+    }
+
+    /// Rename an edge verb AND bulk-retype every stored edge of it. Role
+    /// flags (supersession/contradiction/…) ride along unchanged.
+    pub fn rename_verb(&self, from: &str, to: &str) -> Result<u64> {
+        if from == to {
+            return Err(crate::Error::Config("rename needs a new name".into()));
+        }
+        let mut cfg = (*self.store.config()).clone();
+        let def = cfg
+            .ontology
+            .verbs
+            .iter_mut()
+            .find(|v| v.name == from)
+            .ok_or_else(|| crate::Error::Config(format!("unknown verb {from:?}")))?;
+        def.name = to.to_string();
+        cfg.validate()?;
+        let renamed = self.store.retype_edges(from, to)?;
+        self.set_graph_config(&cfg)?;
+        self.audit(
+            "verb_renamed",
+            "graph",
+            "",
+            Some(format!("{from} → {to} ({renamed} edges retyped)")),
+            None,
+            None,
+            None,
+        )?;
+        Ok(renamed)
     }
 
     /// Import a snapshot: upsert nodes+edges by id in one transaction, then
@@ -610,6 +976,12 @@ impl Engine {
         for n in &graph.nodes {
             self.embed_node(n)?;
         }
+        // A dump that embeds its ontology restores it — validated like any
+        // config write; an invalid one fails the whole import loudly rather
+        // than silently restoring a graph whose types have no definitions.
+        if let Some(cfg) = &graph.config {
+            self.set_graph_config(cfg)?;
+        }
         let (nodes, edges) = (graph.nodes.len(), graph.edges.len());
         // One summary row: per-entity rows for a bulk restore would drown the
         // journal, and the snapshot file itself is the before/after record.
@@ -631,6 +1003,9 @@ impl Engine {
     /// (conflicts/supersessions first) so contradictions surface passively
     /// with the match (PLAN §6A / §7A).
     pub fn search(&self, query: &str, types: &[NodeType], limit: usize) -> Result<Vec<SearchHit>> {
+        for t in types {
+            self.check_node_type(t)?;
+        }
         let qv = self.embedder.embed_one(query)?;
         let fetch = match &self.reranker {
             Some(_) => (limit * 3).clamp(12, 50),
@@ -698,9 +1073,10 @@ impl Engine {
             &n.code_refs,
         ))?;
 
+        let duplicate_similarity = self.store.config().policy.duplicate_similarity;
         for (id, distance) in self.store.search_vec(&vec, WRITE_CHECK_K)? {
             let similarity = 1.0 - distance;
-            if similarity < crate::policy::DUPLICATE_SIMILARITY {
+            if similarity < duplicate_similarity {
                 break; // results are distance-ordered; nothing closer follows
             }
             if let Some(node) = self.store.get_node(&id)?
@@ -744,12 +1120,87 @@ impl Engine {
         } else {
             Vec::new()
         };
+        let canon = self.canon_verdicts(&vec, &claim(&node), &node.id)?;
         Ok(WriteOutcome::Created {
             node,
             warnings,
             suspects,
             missing_refs,
+            canon,
         })
+    }
+
+    /// The write-time canon check (PLAN §7A): judge the fresh text against
+    /// its nearest existing knowledge. Entailment is directional and cheap
+    /// to trust — `supports` says the canon already backs this claim (link
+    /// it, or wonder why it needed rewriting). `contradicts` is only issued
+    /// inside the suspect similarity band, where the co-reference
+    /// presupposition holds — below it an MNLI verdict is noise. Capped, and
+    /// skipped entirely without the logic layer.
+    fn canon_verdicts(
+        &self,
+        vec: &[f32],
+        text: &str,
+        exclude_id: &str,
+    ) -> Result<Vec<CanonVerdict>> {
+        const CANON_CHECK_CAP: usize = 5;
+        const CANON_SUPPORT: f32 = 0.6;
+        const CANON_CONTRADICTION: f32 = 0.7;
+        let Some(nli) = &self.nli else {
+            return Ok(Vec::new());
+        };
+        let cfg = self.store.config();
+        let excerpt: String = text.chars().take(400).collect();
+        let mut out = Vec::new();
+        let mut examined = 0;
+        for (id, distance) in self.store.search_vec(vec, WRITE_CHECK_K)? {
+            if id == exclude_id {
+                continue;
+            }
+            let similarity = 1.0 - distance;
+            if similarity < cfg.policy.warn_similarity {
+                break; // distance-ordered: nothing closer follows
+            }
+            if examined >= CANON_CHECK_CAP {
+                break;
+            }
+            let Some(node) = self.store.get_node(&id)? else {
+                continue;
+            };
+            if node.valid_until.is_some() || is_anchor(&cfg, &node) {
+                continue;
+            }
+            examined += 1;
+            let Ok(j) = nli.judge_pair(&claim(&node), &excerpt) else {
+                continue;
+            };
+            let verdict = if j.contradiction() >= CANON_CONTRADICTION
+                && similarity >= cfg.policy.conflict_suspect_similarity
+            {
+                Some(("contradicts", j.contradiction()))
+            } else if j.forward.entailment >= CANON_SUPPORT {
+                Some(("supports", j.forward.entailment))
+            } else {
+                None
+            };
+            if let Some((verdict, score)) = verdict {
+                out.push(CanonVerdict {
+                    id: node.id,
+                    node_type: node.node_type,
+                    title: node.title,
+                    verdict: verdict.into(),
+                    score: score as f64,
+                    similarity,
+                });
+            }
+        }
+        // Contradictions first — they are the act-now verdicts.
+        out.sort_by(|a, b| {
+            (b.verdict == "contradicts")
+                .cmp(&(a.verdict == "contradicts"))
+                .then(b.score.total_cmp(&a.score))
+        });
+        Ok(out)
     }
 
     /// `update_node` plus conflict warnings and freshly-queued suspects when
@@ -761,7 +1212,7 @@ impl Engine {
             || patch.code_refs.is_some();
         let node = self.update_node(id, patch)?;
         let missing_refs = self.missing_refs(&node.code_refs);
-        let (warnings, suspects) = if touches_text {
+        let (warnings, suspects, canon) = if touches_text {
             let vec = self.embedder.embed_one(&embed_text(
                 &node.title,
                 node.body.as_deref(),
@@ -773,15 +1224,18 @@ impl Engine {
             } else {
                 Vec::new()
             };
-            (self.write_warnings(&vec, &node.id)?, suspects)
+            let canon = self.canon_verdicts(&vec, &claim(&node), &node.id)?;
+
+            (self.write_warnings(&vec, &node.id)?, suspects, canon)
         } else {
-            (Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), Vec::new())
         };
         Ok(CheckedUpdate {
             node,
             warnings,
             suspects,
             missing_refs,
+            canon,
         })
     }
 
@@ -801,12 +1255,13 @@ impl Engine {
     /// may be re-treading contested or stale ground (PLAN §7, pull-based).
     fn write_warnings(&self, vec: &[f32], exclude_id: &str) -> Result<Vec<WriteWarning>> {
         let mut warnings = Vec::new();
+        let warn_similarity = self.store.config().policy.warn_similarity;
         for (id, distance) in self.store.search_vec(vec, WRITE_CHECK_K)? {
             if id == exclude_id {
                 continue;
             }
             let similarity = 1.0 - distance;
-            if similarity < crate::policy::WARN_SIMILARITY {
+            if similarity < warn_similarity {
                 break;
             }
             let Some(node) = self.store.get_node(&id)? else {
@@ -831,10 +1286,15 @@ impl Engine {
 
     /// The session-start brief: a token-budgeted markdown digest of the graph's
     /// canon — unresolved conflicts, suspects to judge, what changed recently,
-    /// the open worklist, then principles/decisions/cautions. Every record uses
+    /// the open worklist, then the per-type canon sections. Composition —
+    /// which sections, their caps and excerpt lengths, the total budget —
+    /// comes from the graph's config (PLAN §7D); the shipped defaults render
+    /// the classic principles/decisions/cautions shape. Every record uses
     /// one line shape and carries its node id. Every included node's decay
     /// clock is refreshed: being briefed counts as reuse.
     pub fn brief(&self, max_chars: usize) -> Result<String> {
+        let cfg = self.store.config();
+        let bc = &cfg.brief;
         let mut out = String::from("# Engram brief\n");
         let mut included: Vec<String> = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -849,10 +1309,69 @@ impl Engine {
         };
 
         'assemble: {
+            // Teach the ontology up front when configured (custom ontologies
+            // the assistant's skill can't know; off in the shipped preset —
+            // `describe_ontology` serves the same content on demand).
+            if bc.ontology.show {
+                for line in cfg.describe_ontology().lines() {
+                    if !push_line(&mut out, line) {
+                        break 'assemble;
+                    }
+                }
+            }
+
+            // Version tracking: the current working version leads the brief
+            // (every version-bound note is stamped with it; set_version
+            // moves it when the project does).
+            if cfg.versioning.enabled {
+                let line = match self.store.current_version()? {
+                    Some(v) => format!(
+                        "Current working version: {v} — new notes are stamped with it; call `set_version` when the project moves on."
+                    ),
+                    None => "Current working version: not set — call `set_version` once you know it (a release tag, a date, anything).".to_string(),
+                };
+                if !push_line(&mut out, &line) {
+                    break 'assemble;
+                }
+            }
+
+            // Handoff notes ([`crate::config::HANDOFF_TAG`]): what the LAST
+            // session left for THIS one — guaranteed top placement, never
+            // sampled away. Resolve one once it is acted on; volatile decay
+            // burns forgotten leftovers. The open worklist is fetched once
+            // here and partitioned; the open-work section below reuses it.
+            let (handoff, worklist): (Vec<Node>, Vec<Node>) = self
+                .store
+                .list_open(&[])?
+                .into_iter()
+                .partition(|n| n.tags.iter().any(|t| t == crate::config::HANDOFF_TAG));
+            if bc.handoff.show {
+                if !handoff.is_empty()
+                    && !push_line(
+                        &mut out,
+                        "\n## Handoff — left for this session, read first\nAct on each, then mark it resolved (`update_node` status resolved).",
+                    )
+                {
+                    break 'assemble;
+                }
+                for n in handoff.iter().take(bc.handoff.cap) {
+                    let line = node_line(n, bc.handoff.excerpt);
+                    if !push_line(&mut out, &line) {
+                        break 'assemble;
+                    }
+                    seen.insert(n.id.clone());
+                    included.push(n.id.clone());
+                }
+            }
+
             // The live tag vocabulary, up front: one cheap line the writing
             // assistant must see (a budget-cut tail section never surfaces on
             // a mature graph). A genuinely new tag is fine — created on write.
-            let tags = self.store.tag_stats(BRIEF_TAG_CAP)?;
+            let tags = if bc.tags.show {
+                self.store.tag_stats(bc.tags.cap)?
+            } else {
+                Vec::new()
+            };
             if !tags.is_empty() {
                 let list = tags
                     .iter()
@@ -865,7 +1384,11 @@ impl Engine {
                 }
             }
 
-            let conflicts = self.store.active_conflict_edges()?;
+            let conflicts = if bc.conflicts.show {
+                self.store.active_conflict_edges()?
+            } else {
+                Vec::new()
+            };
             if !conflicts.is_empty() && !push_line(&mut out, "\n## Unresolved conflicts") {
                 break 'assemble;
             }
@@ -895,7 +1418,11 @@ impl Engine {
                 }
             }
 
-            let mut suspects = self.store.suspects_pending()?;
+            let mut suspects = if bc.suspects.show {
+                self.store.suspects_pending()?
+            } else {
+                Vec::new()
+            };
             // NLI-hinted contradictions first (the pairs most worth the
             // judge's attention), then strongest similarity; capped — the
             // brief is a digest, the full queue lives in list_suspects/pane.
@@ -905,8 +1432,8 @@ impl Engine {
                     .cmp(&contra(x))
                     .then(y.similarity.total_cmp(&x.similarity))
             });
-            let overflow = suspects.len().saturating_sub(BRIEF_SUSPECT_CAP);
-            suspects.truncate(BRIEF_SUSPECT_CAP);
+            let overflow = suspects.len().saturating_sub(bc.suspects.cap);
+            suspects.truncate(bc.suspects.cap);
             if !suspects.is_empty() {
                 let heading = "\n## Suspected conflicts — judge these\nThe local scan flagged \
                      unlinked look-alike pairs. For each: `resolve_suspect(id, verdict)` with \
@@ -918,7 +1445,11 @@ impl Engine {
                 for s in suspects {
                     let hint = match (&s.nli_label, s.nli_score) {
                         (Some(label), Some(score)) => {
-                            format!("; hint: {label} {:.0}%", score * 100.0)
+                            let side = match s.nli_direction.as_deref() {
+                                Some(side) => format!(", negation likely on the {side} side"),
+                                None => String::new(),
+                            };
+                            format!("; hint: {label} {:.0}%{side}", score * 100.0)
                         }
                         _ => String::new(),
                     };
@@ -951,17 +1482,20 @@ impl Engine {
             // the context the assistant continues from, so it must never fall
             // into the budget-cut tail. A node shown here is claimed — later
             // sections skip it rather than repeat it.
-            let recent: Vec<Node> = self
-                .store
-                .recent_nodes(BRIEF_RECENT_CAP)?
-                .into_iter()
-                .filter(|n| !seen.contains(&n.id))
-                .collect();
+            let recent: Vec<Node> = if bc.recent.show {
+                self.store
+                    .recent_nodes(bc.recent.cap)?
+                    .into_iter()
+                    .filter(|n| !seen.contains(&n.id))
+                    .collect()
+            } else {
+                Vec::new()
+            };
             if !recent.is_empty() && !push_line(&mut out, "\n## Recently added") {
                 break 'assemble;
             }
             for n in recent {
-                let line = node_line(&n, EXCERPT_CHARS);
+                let line = node_line(&n, bc.recent.excerpt);
                 if !push_line(&mut out, &line) {
                     break 'assemble;
                 }
@@ -973,59 +1507,66 @@ impl Engine {
             // worklist, it doesn't mirror it — uncapped, a dogfood-sized
             // worklist ate a third of the budget and starved every later
             // section. The overflow line keeps the full count honest.
-            let open: Vec<Node> = self
-                .store
-                .list_open(&[])?
-                .into_iter()
-                .filter(|n| !seen.contains(&n.id))
-                .collect();
-            if !open.is_empty() && !push_line(&mut out, "\n## Open problems & intents") {
+            let open: Vec<Node> = if bc.open.show {
+                worklist
+                    .into_iter()
+                    .filter(|n| !seen.contains(&n.id))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            // "## Open problems & intents" in the shipped set — the heading
+            // names whatever types carry the worklist role here.
+            let open_heading = format!(
+                "\n## Open {}",
+                cfg.worklist_types()
+                    .iter()
+                    .map(|t| format!("{}s", t.to_lowercase()))
+                    .collect::<Vec<_>>()
+                    .join(" & ")
+            );
+            if !open.is_empty() && !push_line(&mut out, &open_heading) {
                 break 'assemble;
             }
-            for n in open.iter().take(BRIEF_OPEN_CAP) {
-                let line = node_line(n, EXCERPT_CHARS);
+            for n in open.iter().take(bc.open.cap) {
+                let line = node_line(n, bc.open.excerpt);
                 if !push_line(&mut out, &line) {
                     break 'assemble;
                 }
                 seen.insert(n.id.clone());
                 included.push(n.id.clone());
             }
-            if open.len() > BRIEF_OPEN_CAP {
+            if open.len() > bc.open.cap {
                 let line = format!(
                     "- …and {} more — `list_open` has the full worklist.",
-                    open.len() - BRIEF_OPEN_CAP
+                    open.len() - bc.open.cap
                 );
                 if !push_line(&mut out, &line) {
                     break 'assemble;
                 }
             }
 
-            // Decisions carry the shortest excerpt: they're the widest section
-            // and their titles are already declarative — breadth over depth.
-            for (heading, node_type, cap, excerpt) in [
-                ("\n## Principles", NodeType::Principle, 8, EXCERPT_CHARS),
-                (
-                    "\n## Decisions",
-                    NodeType::Decision,
-                    7,
-                    DECISION_EXCERPT_CHARS,
-                ),
-                ("\n## Cautions", NodeType::Caution, 10, EXCERPT_CHARS),
-            ] {
+            // The per-type canon sections, in ontology order (the shipped set
+            // shows Principles, then Decisions with a shorter excerpt —
+            // their titles are already declarative — then Cautions).
+            for t in cfg.ontology.types.iter().filter(|t| t.brief.show) {
+                let heading = format!("\n## {}s", t.name);
+                let node_type = NodeType::parse(&t.name)?;
+                let (cap, excerpt) = (t.brief.cap, t.brief.excerpt);
                 // Fetch the full active set: nodes already claimed by an
                 // earlier section (conflicts, recent) must not starve this
                 // one, and `elsewhere` must count every such node — a capped
                 // window misses seen nodes ranked below it and the overflow
                 // line then double-counts them as "more".
-                let total = self.store.count_by_type_active(node_type)? as usize;
-                let fetched = self.store.nodes_by_type_active(node_type, total)?;
+                let total = self.store.count_by_type_active(&node_type)? as usize;
+                let fetched = self.store.nodes_by_type_active(&node_type, total)?;
                 let elsewhere = fetched.iter().filter(|n| seen.contains(&n.id)).count();
                 let nodes: Vec<Node> = fetched
                     .into_iter()
                     .filter(|n| !seen.contains(&n.id))
                     .take(cap)
                     .collect();
-                if !nodes.is_empty() && !push_line(&mut out, heading) {
+                if !nodes.is_empty() && !push_line(&mut out, &heading) {
                     break 'assemble;
                 }
                 let shown = nodes.len();
@@ -1059,12 +1600,31 @@ impl Engine {
         }
 
         self.store.touch(&included)?;
+        // Activity journal: a served brief is the trace of a session starting
+        // work (whoever asked — hook, MCP tool, pane lens, CLI).
+        self.audit_activity(
+            "brief_served",
+            Some(format!(
+                "{} chars, {} nodes included",
+                out.len(),
+                included.len()
+            )),
+        )?;
         Ok(out)
     }
 
     // ---- conflict scan (PLAN §7): detection is local and automatic; judgment
     // stays with Claude in-session or the user in the pane. The daemon never
     // calls an LLM.
+
+    /// The loaded logic layer, or the uniform sweeps-need-NLI error.
+    fn require_nli(&self) -> Result<&dyn Nli> {
+        self.nli.as_deref().ok_or_else(|| {
+            crate::Error::Embedding(
+                "the NLI model is not loaded — audit sweeps need the local logic layer".into(),
+            )
+        })
+    }
 
     /// Queue suspects near one freshly-written node — the write-time half of
     /// the scan, reusing the vector the write already computed.
@@ -1167,7 +1727,10 @@ impl Engine {
     /// Reaching lower waits for a domain-calibrated model via the
     /// judged-suspects eval corpus.
     pub fn audit_conflicts(&self) -> Result<AuditSweep> {
-        self.audit_sweep("contradiction", crate::policy::CONFLICT_SUSPECT_SIMILARITY)
+        self.audit_sweep(
+            "contradiction",
+            self.store.config().policy.conflict_suspect_similarity,
+        )
     }
 
     /// Duplicate sweep (the Audit panel's "Find duplicates"): mutual
@@ -1183,11 +1746,8 @@ impl Engine {
     /// run me again".
     fn audit_sweep(&self, target: &'static str, floor: f64) -> Result<AuditSweep> {
         const NLI_PAIR_BUDGET: usize = 300;
-        if self.nli.is_none() {
-            return Err(crate::Error::Embedding(
-                "the NLI model is not loaded — audit sweeps need the local logic layer".into(),
-            ));
-        }
+        let cfg = self.store.config();
+        self.require_nli()?;
         let mut sweep = AuditSweep {
             queued: 0,
             examined: 0,
@@ -1208,7 +1768,7 @@ impl Engine {
                 let Some(other) = self.store.get_node(&id)? else {
                     continue;
                 };
-                if other.node_type == NodeType::Anchor
+                if is_anchor(&cfg, &other)
                     || other.valid_until.is_some()
                     || self.store.pair_linked(&node.id, &other.id)?
                     || self.store.suspect_between(&node.id, &other.id)?
@@ -1220,10 +1780,10 @@ impl Engine {
                     break 'nodes;
                 }
                 sweep.examined += 1;
-                let Some((label, score)) = self.nli_hint(&node, &other) else {
+                let Some((label, score, direction)) = self.nli_hint(&node, &other) else {
                     continue;
                 };
-                if label != target || score < crate::policy::NLI_SWEEP_MIN_CONFIDENCE as f64 {
+                if label != target || score < cfg.policy.nli_sweep_min_confidence {
                     continue;
                 }
                 let (newer, older) = if node.created_at >= other.created_at {
@@ -1231,8 +1791,12 @@ impl Engine {
                 } else {
                     (&other.id, &node.id)
                 };
-                self.store
-                    .add_suspect(newer, older, similarity, Some((label, score)))?;
+                self.store.add_suspect(
+                    newer,
+                    older,
+                    similarity,
+                    Some((label, score, direction)),
+                )?;
                 sweep.queued += 1;
             }
         }
@@ -1244,20 +1808,25 @@ impl Engine {
 
     /// "Check open problems": does any current node entail an answer to an
     /// open Problem/Intent? Returns nominations — the human (or assistant)
-    /// still links `answers` and resolves.
+    /// still links `answers` and resolves. Pairs already linked with the
+    /// answer-role verb are dropped (nothing to suggest); pairs linked some
+    /// OTHER way keep their nomination but rank under a penalty, carrying
+    /// the existing verb — "these are connected, but maybe the answer link
+    /// is the one that's missing".
     pub fn audit_answered(&self) -> Result<Vec<AnsweredHint>> {
         const NLI_PAIR_BUDGET: usize = 150;
-        let Some(nli) = &self.nli else {
-            return Err(crate::Error::Embedding(
-                "the NLI model is not loaded — audit sweeps need the local logic layer".into(),
-            ));
-        };
+        let nli = self.require_nli()?;
+        let cfg = self.store.config();
+        let answer_verb = cfg.ontology.verbs.iter().find(|v| v.roles.answer);
         let mut hints = Vec::new();
         let mut examined = 0;
         for problem in self.store.list_open(&[])? {
             let Some(vec) = self.store.embedding_of(&problem.id)? else {
                 continue;
             };
+            // The problem's incident edges, fetched once for all candidates.
+            let mut incident = self.store.edges_out(&problem.id)?;
+            incident.extend(self.store.edges_in(&problem.id)?);
             for (id, distance) in self.store.search_vec(&vec, 8)? {
                 if id == problem.id || 1.0 - distance < 0.6 {
                     continue;
@@ -1265,12 +1834,13 @@ impl Engine {
                 let Some(candidate) = self.store.get_node(&id)? else {
                     continue;
                 };
-                if candidate.valid_until.is_some()
-                    || !matches!(
-                        candidate.node_type,
-                        NodeType::Resolution | NodeType::Decision | NodeType::Insight
-                    )
-                {
+                // Answer candidates by role: any non-worklist, non-anchor
+                // type can settle an open item (Resolution/Decision/Insight
+                // and the canon types in the shipped set).
+                let can_answer = cfg
+                    .type_def(candidate.node_type.as_str())
+                    .is_some_and(|t| !t.roles.worklist && !t.roles.anchor);
+                if candidate.valid_until.is_some() || !can_answer {
                     continue;
                 }
                 if examined >= NLI_PAIR_BUDGET {
@@ -1282,10 +1852,24 @@ impl Engine {
                 };
                 let entailment = j[0].entailment;
                 if entailment >= 0.6 {
+                    // Already linked? With the answer verb: nothing left to
+                    // suggest. With another verb: keep the nomination at a
+                    // penalty — the connection exists, but the answer link
+                    // may be the missing one.
+                    let existing: Vec<String> = incident
+                        .iter()
+                        .filter(|e| e.to_id == candidate.id || e.from_id == candidate.id)
+                        .map(|e| e.edge_type.as_str().to_string())
+                        .collect();
+                    if let Some(av) = answer_verb
+                        && existing.contains(&av.name)
+                    {
+                        continue;
+                    }
                     hints.push(AnsweredHint {
                         problem: SuspectEndpoint {
                             id: problem.id.clone(),
-                            node_type: problem.node_type,
+                            node_type: problem.node_type.clone(),
                             title: problem.title.clone(),
                         },
                         candidate: SuspectEndpoint {
@@ -1294,12 +1878,103 @@ impl Engine {
                             title: candidate.title,
                         },
                         entailment: entailment as f64,
+                        existing_link: existing.into_iter().next(),
                     });
                 }
             }
         }
-        hints.sort_by(|a, b| b.entailment.total_cmp(&a.entailment));
+        // Fresh pairs first: an existing (non-answer) link halves the rank.
+        let rank =
+            |h: &AnsweredHint| h.entailment * if h.existing_link.is_some() { 0.5 } else { 1.0 };
+        hints.sort_by(|a, b| rank(b).total_cmp(&rank(a)));
         Ok(hints)
+    }
+
+    /// "Triage stale notes": judge each stale node against its nearest live
+    /// canon and say what the evidence suggests — `reconfirm` (a current node
+    /// still entails it: confirm-still-true restores its trust),
+    /// `contradicted` (a current node disputes it — judge as a conflict;
+    /// gated on the suspect similarity band because MNLI presupposes
+    /// co-reference), or `isolated` (nothing current speaks to it — an
+    /// archive candidate). Nominations only; nothing self-applies.
+    pub fn audit_stale_triage(&self) -> Result<Vec<StaleTriage>> {
+        const NLI_PAIR_BUDGET: usize = 150;
+        const TRIAGE_ENTAILMENT: f32 = 0.60;
+        let nli = self.require_nli()?;
+        let cfg = self.store.config();
+        let mut out = Vec::new();
+        let mut examined = 0;
+        'stale: for node in self.store.recent_nodes(usize::MAX)? {
+            if !node.stale || node.valid_until.is_some() || node.trust_override.is_some() {
+                continue;
+            }
+            let endpoint = SuspectEndpoint {
+                id: node.id.clone(),
+                node_type: node.node_type.clone(),
+                title: node.title.clone(),
+            };
+            let Some(vec) = self.store.embedding_of(&node.id)? else {
+                continue;
+            };
+            let mut spoke = false;
+            for (id, distance) in self.store.search_vec(&vec, 6)? {
+                let similarity = 1.0 - distance;
+                if id == node.id || similarity < 0.6 {
+                    continue;
+                }
+                let Some(other) = self.store.get_node(&id)? else {
+                    continue;
+                };
+                if other.valid_until.is_some() || other.stale {
+                    continue;
+                }
+                if examined >= NLI_PAIR_BUDGET {
+                    break 'stale;
+                }
+                examined += 1;
+                let Ok(j) = nli.judge_pair(&claim(&other), &claim(&node)) else {
+                    continue;
+                };
+                let evidence = SuspectEndpoint {
+                    id: other.id,
+                    node_type: other.node_type,
+                    title: other.title,
+                };
+                if j.contradiction() >= TRIAGE_ENTAILMENT
+                    && similarity >= cfg.policy.conflict_suspect_similarity
+                {
+                    out.push(StaleTriage {
+                        node: endpoint.clone(),
+                        trust: node.trust,
+                        verdict: "contradicted".into(),
+                        evidence: Some(evidence),
+                        score: j.contradiction() as f64,
+                    });
+                    continue 'stale;
+                }
+                if j.forward.entailment >= TRIAGE_ENTAILMENT {
+                    out.push(StaleTriage {
+                        node: endpoint.clone(),
+                        trust: node.trust,
+                        verdict: "reconfirm".into(),
+                        evidence: Some(evidence),
+                        score: j.forward.entailment as f64,
+                    });
+                    continue 'stale;
+                }
+                spoke = true;
+            }
+            if !spoke {
+                out.push(StaleTriage {
+                    node: endpoint,
+                    trust: node.trust,
+                    verdict: "isolated".into(),
+                    evidence: None,
+                    score: 0.0,
+                });
+            }
+        }
+        Ok(out)
     }
 
     /// Timeline (PLAN §10): the chronological story of one piece of
@@ -1308,6 +1983,8 @@ impl Engine {
     /// yields a single-entry timeline. Each superseded generation carries the
     /// note of the `replaces` edge that retired it (the why of the change).
     pub fn timeline(&self, id: &str) -> Result<Vec<TimelineEntry>> {
+        let cfg = self.store.config();
+        let supersession = cfg.supersession_verb();
         let Some(start) = self.store.get_node(id)? else {
             return Err(crate::Error::NotFound(format!("node {id}")));
         };
@@ -1322,7 +1999,7 @@ impl Engine {
             let mut edges = self.store.edges_out(&cur)?;
             edges.extend(self.store.edges_in(&cur)?);
             for e in edges {
-                if e.edge_type != EdgeType::Replaces {
+                if e.edge_type.as_str() != supersession {
                     continue;
                 }
                 // The edge reads "from replaces to": its note explains why
@@ -1407,7 +2084,8 @@ impl Engine {
     /// both active and non-anchor, not already linked by any edge, pair never
     /// raised before. Stored newer-first so `replaces` verdicts read forward.
     fn suspects_near(&self, node: &Node, vec: &[f32]) -> Result<usize> {
-        if node.node_type == NodeType::Anchor || node.valid_until.is_some() {
+        let cfg = self.store.config();
+        if is_anchor(&cfg, node) || node.valid_until.is_some() {
             return Ok(0);
         }
         let mut added = 0;
@@ -1416,13 +2094,13 @@ impl Engine {
                 continue;
             }
             let similarity = 1.0 - distance;
-            if similarity < crate::policy::CONFLICT_SUSPECT_SIMILARITY {
+            if similarity < cfg.policy.conflict_suspect_similarity {
                 break; // distance-ordered: nothing closer follows
             }
             let Some(other) = self.store.get_node(&id)? else {
                 continue;
             };
-            if other.node_type == NodeType::Anchor
+            if is_anchor(&cfg, &other)
                 || other.valid_until.is_some()
                 || self.store.pair_linked(&node.id, &other.id)?
                 || self.store.suspect_between(&node.id, &other.id)?
@@ -1435,12 +2113,7 @@ impl Engine {
                 (&other.id, &node.id)
             };
             let hint = self.nli_hint(node, &other);
-            self.store.add_suspect(
-                newer,
-                older,
-                similarity,
-                hint.as_ref().map(|(l, s)| (*l, *s)),
-            )?;
+            self.store.add_suspect(newer, older, similarity, hint)?;
             added += 1;
         }
         Ok(added)
@@ -1448,12 +2121,42 @@ impl Engine {
 
     /// The logic layer's triage hint for a candidate pair — a nomination for
     /// the judge, never a verdict (PLAN §7A: models don't validate). `None`
-    /// when the NLI model isn't loaded or judgment fails (hints are best-effort).
-    fn nli_hint(&self, a: &Node, b: &Node) -> Option<(&'static str, f64)> {
+    /// when the NLI model isn't loaded or judgment fails (hints are
+    /// best-effort). For contradiction hints the third element says which
+    /// SIDE the model reads as carrying the negation, already mapped to
+    /// `"newer"`/`"older"` by the nodes' own timestamps — the side that,
+    /// judged as the hypothesis, contradicts hardest. Absent under a 0.15
+    /// asymmetry margin — near-symmetric contradictions carry no direction
+    /// worth showing.
+    fn nli_hint(&self, a: &Node, b: &Node) -> Option<(&'static str, f64, Option<&'static str>)> {
+        const DIRECTION_MARGIN: f32 = 0.15;
         let nli = self.nli.as_ref()?;
         let sym = nli.judge_pair(&claim(a), &claim(b)).ok()?;
         let (label, score) = sym.hint();
-        Some((label, score as f64))
+        let direction = if label == "contradiction" {
+            // forward = (a premise → b hypothesis): high forward
+            // contradiction reads b as the negated claim.
+            let carrier = if sym.forward.contradiction
+                >= sym.backward.contradiction + DIRECTION_MARGIN
+            {
+                Some(b)
+            } else if sym.backward.contradiction >= sym.forward.contradiction + DIRECTION_MARGIN {
+                Some(a)
+            } else {
+                None
+            };
+            let a_is_newer = a.created_at >= b.created_at;
+            carrier.map(|c| {
+                if std::ptr::eq(c, a) == a_is_newer {
+                    "newer"
+                } else {
+                    "older"
+                }
+            })
+        } else {
+            None
+        };
+        Some((label, score as f64, direction))
     }
 
     /// The pending queue, ready for judgment.
@@ -1485,7 +2188,7 @@ impl Engine {
         let edge = match verdict {
             SuspectVerdict::Dismiss => None,
             SuspectVerdict::Conflict => Some(self.add_edge(NewEdge {
-                edge_type: EdgeType::ConflictsWith,
+                edge_type: self.store.config().contradiction_edge(),
                 from_id: suspect.a_id.clone(),
                 to_id: suspect.b_id.clone(),
                 source,
@@ -1509,7 +2212,7 @@ impl Engine {
                     )));
                 }
                 let edge = self.add_edge(NewEdge {
-                    edge_type: EdgeType::Replaces,
+                    edge_type: self.store.config().supersession_edge(),
                     from_id: suspect.a_id.clone(),
                     to_id: suspect.b_id.clone(),
                     source,
@@ -1783,17 +2486,18 @@ fn embed_text(title: &str, body: Option<&str>, tags: &[String], code_refs: &[Str
 /// graph: at 240 the budget died mid-Cautions; ~140 still carries the leading
 /// sentence and lets every section (and its overflow counts) surface —
 /// breadth over depth, since the full node is one `search` away.
-pub(crate) const EXCERPT_CHARS: usize = 140;
-/// The Decisions section runs shorter excerpts: decision titles are already
-/// declarative sentences, so the body preview only needs to hint at the why.
-const DECISION_EXCERPT_CHARS: usize = 80;
+pub const EXCERPT_CHARS: usize = 140;
 
 /// One brief line per node, one uniform shape everywhere:
 /// `- Title [Type id status STALE] — excerpt`. Every record carries its id so
 /// the assistant can act on it directly (`get_node`, `traverse`,
 /// `update_node`) without a `search` round-trip.
-pub(crate) fn node_line(n: &Node, excerpt_max: usize) -> String {
+pub fn node_line(n: &Node, excerpt_max: usize) -> String {
     let mut line = format!("- {} [{} {}", n.title, n.node_type.as_str(), n.id);
+    if let Some(version) = n.version.as_deref() {
+        line.push(' ');
+        line.push_str(version);
+    }
     if let Some(status) = n.status {
         line.push(' ');
         line.push_str(status.as_str());
@@ -1810,6 +2514,13 @@ pub(crate) fn node_line(n: &Node, excerpt_max: usize) -> String {
         line.push_str(&excerpt_words(&body.replace('\n', " "), excerpt_max));
     }
     line
+}
+
+/// Whether a node's type carries the `anchor` role under this graph's
+/// ontology (code-subject labels: similar by nature, not by contradiction).
+fn is_anchor(cfg: &crate::config::GraphConfig, n: &Node) -> bool {
+    cfg.type_def(n.node_type.as_str())
+        .is_some_and(|t| t.roles.anchor)
 }
 
 /// Cut text at the last word boundary within `max` chars, appending `…` when

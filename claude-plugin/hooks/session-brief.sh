@@ -9,7 +9,8 @@
 # all three (only the settings registration differs per harness).
 #
 # A memory hook must never break a session: every failure path exits 0 with
-# no output. Budget override: ENGRAM_BRIEF_CHARS (default 16000 — keep in
+# no output. Daemon discovery (daemon.json port + /health db match) is
+# mirrored in hooks/file-read-match.sh — fix both when fixing one. Budget override: ENGRAM_BRIEF_CHARS (default 16000 — keep in
 # sync with DEFAULT_BRIEF_CHARS in crates/engram-core/src/policy.rs).
 set -u
 
@@ -19,8 +20,9 @@ ROOT="$(cd -P "${CLAUDE_PROJECT_DIR:-$PWD}" 2>/dev/null && pwd)" || exit 0
 DB="$ROOT/.engram/graph.db"
 MAX_CHARS="${ENGRAM_BRIEF_CHARS:-16000}"
 
-# Not an Engram-wired repo (or a brand-new one) — stay silent.
-[ -e "$DB" ] || exit 0
+# Not an Engram-wired repo (or a brand-new one) — stay silent. Either
+# backend counts: tepin-born repos never have a graph.db.
+[ -e "$DB" ] || [ -e "${DB%.db}.tepin" ] || exit 0
 
 # The Claude Code plugin runs this script too (ENGRAM_HOOK_SOURCE=plugin).
 # When the repo also registers its own copy (engram-alpha setup, or a checkout of
@@ -38,7 +40,7 @@ if [ -f "$ROOT/.engram/daemon.json" ]; then
     if [ -n "$PORT" ]; then
         HEALTH="$(curl -sf --max-time 2 "http://127.0.0.1:${PORT}/health" 2>/dev/null || true)"
         case "$HEALTH" in
-            *"$DB"*)
+            *"$ROOT/.engram/graph."*)
                 BRIEF="$(curl -sf --max-time 5 "http://127.0.0.1:${PORT}/brief?max_chars=${MAX_CHARS}" 2>/dev/null || true)"
                 if [ -n "$BRIEF" ]; then
                     printf '%s\n' "$BRIEF"

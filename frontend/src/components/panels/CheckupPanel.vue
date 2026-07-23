@@ -2,10 +2,16 @@
 import { computed, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import SidePanel from '@/components/common/SidePanel.vue'
-import { NODE_ACCENT_VAR } from '@/constants/ontology'
+import { useConfigStore } from '@/stores/config'
 import { api } from '@/services/api'
 import { useGraphStore } from '@/stores/graph'
-import type { AnsweredHint, ClaimReport, GraphNode, PromotionCandidate } from '@/types/graph'
+import type {
+    AnsweredHint,
+    ClaimReport,
+    GraphNode,
+    PromotionCandidate,
+    StaleTriage,
+} from '@/types/graph'
 
 /**
  * The Checkup panel (PLAN §7A): one-click audit passes over the whole graph,
@@ -14,6 +20,7 @@ import type { AnsweredHint, ClaimReport, GraphNode, PromotionCandidate } from '@
  * nothing here applies a verdict or moves trust.
  */
 const store = useGraphStore()
+const config = useConfigStore()
 const { nodeList, edgeList } = storeToRefs(store)
 
 const open = ref(false)
@@ -61,6 +68,27 @@ async function runAnswered(): Promise<void> {
         answered.value = await api.auditAnswered()
     } catch (e) {
         sweepNote.value.answered = e instanceof Error ? e.message : String(e)
+    } finally {
+        running.value = null
+    }
+}
+
+// --- stale triage (0.7.0 NLI sweep) ------------------------------------------
+
+const staleTriage = ref<StaleTriage[] | null>(null)
+
+const TRIAGE_WORDS: Record<string, string> = {
+    reconfirm: 'still backed by',
+    contradicted: 'disputed by',
+    isolated: 'nothing current speaks to it',
+}
+
+async function runStaleTriage(): Promise<void> {
+    running.value = 'stale'
+    try {
+        staleTriage.value = await api.auditStale()
+    } catch (e) {
+        sweepNote.value.stale = e instanceof Error ? e.message : String(e)
     } finally {
         running.value = null
     }
@@ -131,7 +159,7 @@ const active = (n: GraphNode): boolean => n.valid_until == null
 /** Decisions with no outgoing `because` — canon without recorded reasons. */
 const unjustified = computed(() => {
     const because = new Set(
-        edgeList.value.filter((e) => e.type === 'because').map((e) => e.from_id),
+        edgeList.value.filter((e) => e.type === (config.reasonVerb ?? 'because')).map((e) => e.from_id),
     )
     return nodeList.value.filter(
         (n) => active(n) && n.type === 'Decision' && !because.has(n.id),
@@ -226,11 +254,46 @@ const STRUCT_CAP = 8
                     <button class="row-link" type="button" :title="h.problem.title" @click="store.select(h.problem.id)">
                         {{ h.problem.title }}
                     </button>
-                    <span class="verb">maybe answered by</span>
+                    <span class="verb">{{
+                        h.existing_link
+                            ? `linked (${h.existing_link}) — maybe answers too:`
+                            : 'maybe answered by'
+                    }}</span>
                     <button class="row-link" type="button" :title="h.candidate.title" @click="store.select(h.candidate.id)">
                         {{ h.candidate.title }}
                     </button>
                     <span class="pct">{{ Math.round(h.entailment * 100) }}%</span>
+                </div>
+            </div>
+            <div class="sweep">
+                <button
+                    class="run"
+                    type="button"
+                    :disabled="running != null"
+                    title="What does the live canon suggest for each stale note — confirm it, judge it as a conflict, or archive it?"
+                    @click="runStaleTriage"
+                >
+                    {{ running === 'stale' ? 'Triaging…' : 'Triage stale notes' }}
+                </button>
+                <span v-if="sweepNote.stale" class="note">{{ sweepNote.stale }}</span>
+            </div>
+            <div v-if="staleTriage" class="results">
+                <p v-if="staleTriage.length === 0" class="note">no stale notes to triage</p>
+                <div v-for="t in staleTriage" :key="t.node.id" class="pair-row">
+                    <button class="row-link" type="button" :title="t.node.title" @click="store.select(t.node.id)">
+                        {{ t.node.title }}
+                    </button>
+                    <span class="verb">{{ TRIAGE_WORDS[t.verdict] ?? t.verdict }}</span>
+                    <button
+                        v-if="t.evidence"
+                        class="row-link"
+                        type="button"
+                        :title="t.evidence.title"
+                        @click="store.select(t.evidence.id)"
+                    >
+                        {{ t.evidence.title }}
+                    </button>
+                    <span v-if="t.score" class="pct">{{ Math.round(t.score * 100) }}%</span>
                 </div>
             </div>
         </section>
@@ -255,7 +318,7 @@ const STRUCT_CAP = 8
                 </p>
                 <div v-for="c in promotions" :key="c.node.id" class="promo-row">
                     <button class="row-link" type="button" :title="c.node.title" @click="store.select(c.node.id)">
-                        <span class="dot" :style="{ background: NODE_ACCENT_VAR[c.node.type] }" />
+                        <span class="dot" :style="{ background: config.accent(c.node.type) }" />
                         {{ c.node.title }}
                     </button>
                     <span class="verb">
@@ -299,7 +362,7 @@ const STRUCT_CAP = 8
                         :title="v.title"
                         @click="store.select(v.id)"
                     >
-                        <span class="dot" :style="{ background: NODE_ACCENT_VAR[v.type] }" />
+                        <span class="dot" :style="{ background: config.accent(v.type) }" />
                         <span class="row-title">{{ v.title }}</span>
                         <span class="pct">{{ Math.round(Math.max(v.entailment, v.contradiction, v.neutral) * 100) }}%</span>
                     </button>
@@ -322,7 +385,7 @@ const STRUCT_CAP = 8
                 type="button"
                 @click="store.select(n.id)"
             >
-                <span class="dot" :style="{ background: NODE_ACCENT_VAR[n.type] }" />
+                <span class="dot" :style="{ background: config.accent(n.type) }" />
                 <span class="row-title">{{ n.title }}</span>
             </button>
             <p class="struct-line">
@@ -335,7 +398,7 @@ const STRUCT_CAP = 8
                 type="button"
                 @click="store.select(n.id)"
             >
-                <span class="dot" :style="{ background: NODE_ACCENT_VAR[n.type] }" />
+                <span class="dot" :style="{ background: config.accent(n.type) }" />
                 <span class="row-title">{{ n.title }}</span>
             </button>
             <p class="struct-line">
@@ -348,7 +411,7 @@ const STRUCT_CAP = 8
                 type="button"
                 @click="store.select(n.id)"
             >
-                <span class="dot" :style="{ background: NODE_ACCENT_VAR[n.type] }" />
+                <span class="dot" :style="{ background: config.accent(n.type) }" />
                 <span class="row-title">{{ n.title }}</span>
             </button>
         </section>

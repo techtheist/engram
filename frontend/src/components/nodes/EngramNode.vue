@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { Handle, Position, type NodeProps } from '@vue-flow/core'
 import MarkdownView from '@/components/common/MarkdownView.vue'
-import { NODE_ACCENT_VAR } from '@/constants/ontology'
+import { useConfigStore } from '@/stores/config'
 import { BADGE_TIPS } from '@/constants/trust'
 import type { GraphNode } from '@/types/graph'
 
@@ -10,7 +10,8 @@ const props = defineProps<NodeProps<GraphNode>>()
 
 const node = computed(() => props.data)
 const body = computed(() => node.value.body ?? '')
-const accent = computed(() => NODE_ACCENT_VAR[node.value.type])
+const config = useConfigStore()
+const accent = computed(() => config.accent(node.value.type))
 
 const archived = computed(() => node.value.valid_until != null)
 const pinned = computed(() => node.value.trust_override != null)
@@ -100,8 +101,11 @@ const isUser = computed(() => node.value.source === 'user')
 }
 
 .engram-node.selected {
-    outline: 0.2rem solid var(--interactive-primary);
-    outline-offset: 0.3rem;
+    /* Width/offset are zoom-compensated by GraphCanvas so the selection ring
+       stays readable at any zoom (fixed rem would vanish under the canvas
+       transform at 0.1×). */
+    outline: var(--selected-outline-w, 0.2rem) solid var(--interactive-primary);
+    outline-offset: var(--selected-outline-o, 0.3rem);
 }
 
 .engram-node.archived {

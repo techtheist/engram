@@ -108,6 +108,24 @@ pub trait Store: Send {
     fn embed_model(&self) -> Result<Option<EmbedModelId>>;
     fn set_embed_model(&self, model: &EmbedModelId) -> Result<()>;
 
+    /// The per-graph configuration document (PLAN §7D) as raw JSON; `None`
+    /// on a graph that never customized — defaults apply. Stored beside the
+    /// other store-level facts so it travels with `migrate`.
+    fn graph_config(&self) -> Result<Option<String>>;
+    fn set_graph_config(&self, json: &str) -> Result<()>;
+
+    /// The graph's CURRENT WORKING VERSION (version tracking, 0.7.0) —
+    /// free-form ("v0.7.0"), stored in meta so it travels with migrate.
+    /// `None` = not set.
+    fn current_version(&self) -> Result<Option<String>>;
+    fn set_current_version(&self, version: Option<&str>) -> Result<()>;
+
+    /// The parsed configuration this graph runs on — cached at open (stored
+    /// document, or the shipped defaults; corrupt reads as defaults) and
+    /// refreshed by [`Store::set_graph_config`]. Every behavior knob the
+    /// engine and the provided composites consult comes through here.
+    fn config(&self) -> std::sync::Arc<crate::config::GraphConfig>;
+
     /// Drop every stored vector and re-shape vector storage for `dim`-wide
     /// embeddings. The engine calls this only inside the guarded re-embed
     /// that immediately repopulates the vectors (model swap, PLAN §7A).
@@ -142,6 +160,33 @@ pub trait Store: Send {
     fn delete_node(&self, id: &str) -> Result<bool>;
     /// Insert or replace a node by id, preserving its timestamps (import).
     fn upsert_node(&self, n: &Node) -> Result<()>;
+    /// Rewrite every node of one type name to another (the ontology rename's
+    /// bulk retype, PLAN §7D — archived nodes included: history follows the
+    /// rename). Embeddings are untouched (type is not embedded). Returns how
+    /// many nodes changed.
+    fn retype_nodes(&self, from: &str, to: &str) -> Result<u64> {
+        let mut n = 0;
+        for mut node in self.all_nodes()? {
+            if node.node_type.as_str() == from {
+                node.node_type = NodeType::parse(to)?;
+                self.upsert_node(&node)?;
+                n += 1;
+            }
+        }
+        Ok(n)
+    }
+    /// Rewrite every edge of one verb to another (ontology verb rename).
+    fn retype_edges(&self, from: &str, to: &str) -> Result<u64> {
+        let mut n = 0;
+        for mut edge in self.all_edges()? {
+            if edge.edge_type.as_str() == from {
+                edge.edge_type = EdgeType::parse(to)?;
+                self.upsert_edge(&edge)?;
+                n += 1;
+            }
+        }
+        Ok(n)
+    }
     fn all_nodes(&self) -> Result<Vec<Node>>;
     /// Stamp `last_seen`: retrieval surfaced these nodes. Observability only —
     /// trust never reads this stamp.
@@ -195,14 +240,15 @@ pub trait Store: Send {
     /// judged (confirmed/dismissed) pairs are never re-raised.
     fn suspect_between(&self, a: &str, b: &str) -> Result<bool>;
     /// Queue a suspected pair (caller orders newer-first: a = newer). The
-    /// optional NLI hint rides along for queue triage — it suggests, never
-    /// judges.
+    /// optional NLI hint `(label, score, direction)` rides along for queue
+    /// triage — it suggests, never judges; `direction` ("newer"|"older") says
+    /// which side a contradiction hint reads as the negation carrier.
     fn add_suspect(
         &self,
         a_id: &str,
         b_id: &str,
         similarity: f64,
-        hint: Option<(&str, f64)>,
+        hint: Option<(&str, f64, Option<&str>)>,
     ) -> Result<Suspect>;
     fn get_suspect(&self, id: &str) -> Result<Option<Suspect>>;
     fn set_suspect_status(&self, id: &str, status: SuspectStatus) -> Result<Suspect>;
@@ -239,20 +285,23 @@ pub trait Store: Send {
 
     // ---- provided composites (shared behavior, pure Rust) ----------------
 
-    /// Open Problems/Intents — the live worklist.
+    /// The live worklist: open nodes of the types carrying the `worklist`
+    /// role (Problem/Intent in the shipped set).
     fn list_open(&self, types: &[NodeType]) -> Result<Vec<Node>> {
-        let types = if types.is_empty() {
-            &[NodeType::Problem, NodeType::Intent][..]
-        } else {
-            types
+        let cfg = self.config();
+        let is_worklist = |n: &Node| {
+            if types.is_empty() {
+                cfg.type_def(n.node_type.as_str())
+                    .is_some_and(|t| t.roles.worklist)
+            } else {
+                types.contains(&n.node_type)
+            }
         };
         let mut out: Vec<Node> = self
             .all_nodes()?
             .into_iter()
             .filter(|n| {
-                n.valid_until.is_none()
-                    && n.status == Some(NodeStatus::Open)
-                    && types.contains(&n.node_type)
+                n.valid_until.is_none() && n.status == Some(NodeStatus::Open) && is_worklist(n)
             })
             .collect();
         sort_newest_first(&mut out);
@@ -280,13 +329,16 @@ pub trait Store: Send {
         Ok(out)
     }
 
-    /// Active `conflicts-with` edges — the unresolved contradiction list.
+    /// Active contradiction edges (the verb carrying the `contradiction`
+    /// role — `conflicts-with` in the shipped set): the unresolved list.
     fn active_conflict_edges(&self) -> Result<Vec<Edge>> {
+        let cfg = self.config();
+        let verb = cfg.contradiction_verb();
         let mut out: Vec<Edge> = self
             .all_edges()?
             .into_iter()
             .filter(|e| {
-                e.edge_type == EdgeType::ConflictsWith
+                e.edge_type.as_str() == verb
                     && matches!(e.status, None | Some(EdgeStatus::Active))
                     && e.valid_until.is_none()
             })
@@ -295,11 +347,12 @@ pub trait Store: Send {
         Ok(out)
     }
 
-    /// Whether a node sits on an active `conflicts-with` edge.
+    /// Whether a node sits on an active contradiction edge.
     fn has_active_conflict(&self, id: &str) -> Result<bool> {
+        let cfg = self.config();
+        let verb = cfg.contradiction_verb();
         let on_edge = |e: &Edge| {
-            e.edge_type == EdgeType::ConflictsWith
-                && matches!(e.status, None | Some(EdgeStatus::Active))
+            e.edge_type.as_str() == verb && matches!(e.status, None | Some(EdgeStatus::Active))
         };
         Ok(self.edges_out(id)?.iter().any(on_edge) || self.edges_in(id)?.iter().any(on_edge))
     }
@@ -311,24 +364,30 @@ pub trait Store: Send {
             || self.edges_in(a)?.iter().any(|e| e.from_id == b))
     }
 
-    /// Active non-anchor nodes — the conflict scan's iteration set (anchor
-    /// labels are similar by nature, not by contradiction).
+    /// Active non-anchor nodes — the conflict scan's iteration set (anchor-
+    /// role labels are similar by nature, not by contradiction).
     fn scannable_nodes(&self) -> Result<Vec<Node>> {
+        let cfg = self.config();
         let mut out: Vec<Node> = self
             .all_nodes()?
             .into_iter()
-            .filter(|n| n.valid_until.is_none() && n.node_type != NodeType::Anchor)
+            .filter(|n| {
+                n.valid_until.is_none()
+                    && !cfg
+                        .type_def(n.node_type.as_str())
+                        .is_some_and(|t| t.roles.anchor)
+            })
             .collect();
         sort_newest_first(&mut out);
         Ok(out)
     }
 
     /// How many current (non-archived) nodes of one type exist.
-    fn count_by_type_active(&self, t: NodeType) -> Result<i64> {
+    fn count_by_type_active(&self, t: &NodeType) -> Result<i64> {
         Ok(self
             .all_nodes()?
             .iter()
-            .filter(|n| n.valid_until.is_none() && n.node_type == t)
+            .filter(|n| n.valid_until.is_none() && n.node_type == *t)
             .count() as i64)
     }
 
@@ -336,11 +395,11 @@ pub trait Store: Send {
     /// by deliberate-act timestamps, never last_seen — otherwise the brief
     /// would re-select whatever it briefed yesterday (inclusion stamps
     /// last_seen), a self-reinforcing loop.
-    fn nodes_by_type_active(&self, t: NodeType, limit: usize) -> Result<Vec<Node>> {
+    fn nodes_by_type_active(&self, t: &NodeType, limit: usize) -> Result<Vec<Node>> {
         let mut out: Vec<Node> = self
             .all_nodes()?
             .into_iter()
-            .filter(|n| n.valid_until.is_none() && n.node_type == t)
+            .filter(|n| n.valid_until.is_none() && n.node_type == *t)
             .collect();
         out.sort_by(|a, b| {
             let key = |n: &Node| {
@@ -387,9 +446,10 @@ pub trait Store: Send {
             })
             .collect();
         pool.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+        let policy = self.config().policy.clone();
         let mut out = Vec::new();
         for node in pool {
-            let Some(since) = crate::policy::stale_since(&node.trust_inputs()) else {
+            let Some(since) = crate::policy::stale_since(&node.trust_inputs(), &policy) else {
                 continue;
             };
             if now_ts - since >= ttl_secs {
@@ -413,6 +473,7 @@ pub trait Store: Send {
     ) -> Result<Vec<SearchHit>> {
         use std::collections::HashMap;
 
+        let cfg = self.config();
         let over = (limit * 4).max(20);
         let fts = self.search_fts(query, types, over)?;
         let vec_hits = match query_vec {
@@ -459,7 +520,7 @@ pub trait Store: Send {
                 continue;
             }
             let age = now() - node.created_at;
-            let score = relevance * (1.0 + trust_boost(&node)) * recency_factor(age);
+            let score = relevance * (1.0 + trust_boost(&node, &cfg)) * recency_factor(age);
             let snippet = snippets
                 .remove(id.as_str())
                 .unwrap_or_else(|| excerpt(&node));
@@ -521,10 +582,15 @@ pub trait Store: Send {
                 archived: n.valid_until.is_some(),
             });
         }
-        refs.sort_by_key(|r| match r.edge_type {
-            EdgeType::ConflictsWith => 0,
-            EdgeType::Replaces => 1,
-            _ => 2,
+        let cfg = self.config();
+        refs.sort_by_key(|r| {
+            if r.edge_type.as_str() == cfg.contradiction_verb() {
+                0
+            } else if r.edge_type.as_str() == cfg.supersession_verb() {
+                1
+            } else {
+                2
+            }
         });
         refs.truncate(cap);
         Ok(refs)
@@ -600,7 +666,7 @@ pub(crate) fn recency_factor_for_tests(age_secs: i64) -> f64 {
     recency_factor(age_secs)
 }
 
-fn trust_boost(node: &Node) -> f64 {
+fn trust_boost(node: &Node, cfg: &crate::config::GraphConfig) -> f64 {
     let mut b = 0.0;
     if node.source == Source::User {
         b += 0.15;
@@ -612,11 +678,10 @@ fn trust_boost(node: &Node) -> f64 {
     }
     // Small type prior: the reasoning canon (why / decided / what-bit-us)
     // outranks scratch on near-ties. A ranking preference only — type never
-    // touches trust itself, durability is the decay knob.
-    match node.node_type {
-        NodeType::Principle | NodeType::Caution => b += 0.05,
-        NodeType::Decision | NodeType::Insight => b += 0.04,
-        _ => {}
+    // touches trust itself, durability is the decay knob. The prior is the
+    // type's `rank_prior` role flag (PLAN §7D: roles, never names).
+    if let Some(t) = cfg.type_def(node.node_type.as_str()) {
+        b += t.roles.rank_prior;
     }
     b += 0.15 * node.trust;
     b

@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import SidePanel from '@/components/common/SidePanel.vue'
 import { api } from '@/services/api'
-import { NODE_ACCENT_VAR } from '@/constants/ontology'
+import { useConfigStore } from '@/stores/config'
 import { useGraphStore } from '@/stores/graph'
 import type { GraphEdge, GraphNode } from '@/types/graph'
 
@@ -14,6 +14,7 @@ import type { GraphEdge, GraphNode } from '@/types/graph'
  * canvas, so this drawer and the right-hand NodeDetail work as a pair.
  */
 const store = useGraphStore()
+const config = useConfigStore()
 const { nodeList, edgeList, nodes, suspects, drift } = storeToRefs(store)
 
 const open = ref(false)
@@ -28,7 +29,7 @@ const active = (n: GraphNode): boolean => n.valid_until == null
 
 const conflicts = computed(() =>
     edgeList.value.filter(
-        (e) => e.type === 'conflicts-with' && (e.status == null || e.status === 'active'),
+        (e) => config.isActiveConflict(e),
     ),
 )
 
@@ -77,7 +78,7 @@ function title(id: string): string {
 }
 
 function accent(n: GraphNode): string {
-    return NODE_ACCENT_VAR[n.type]
+    return config.accent(n.type)
 }
 
 function fmtDate(secs: number): string {
@@ -168,8 +169,8 @@ async function scanNow(): Promise<void> {
                         v-if="s.nli_label"
                         class="nli-hint"
                         :class="s.nli_label"
-                        :title="`Local NLI hint (${Math.round((s.nli_score ?? 0) * 100)}%) — a suggestion for your judgment, never a verdict`"
-                    >{{ s.nli_label }}</span>
+                        :title="`Local NLI hint (${Math.round((s.nli_score ?? 0) * 100)}%)${s.nli_direction ? ` — negation likely on the ${s.nli_direction} side` : ''} — a suggestion for your judgment, never a verdict`"
+                    >{{ s.nli_label }}{{ s.nli_direction ? ` · ${s.nli_direction} negates` : '' }}</span>
                 </div>
                 <div class="row-actions">
                     <button class="mini" type="button" :disabled="busyId === s.id" title="They contradict — record a conflicts-with edge" @click="judge(s.id, 'conflict')">
@@ -212,7 +213,7 @@ async function scanNow(): Promise<void> {
             <h3 class="block-title">Drifted code refs — the code moved, the memory didn't</h3>
             <div v-for="d in drift" :key="d.id" class="conflict">
                 <button class="row" type="button" :title="d.title" @click="store.select(d.id)">
-                    <span class="dot" :style="{ background: NODE_ACCENT_VAR[d.type] }" />
+                    <span class="dot" :style="{ background: config.accent(d.type) }" />
                     <span class="row-title">{{ d.title }}</span>
                 </button>
                 <div class="missing-refs">

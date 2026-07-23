@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { TRUSTED_TRUST } from '@/constants/ontology'
+import { useConfigStore } from '@/stores/config'
 import { api } from '@/services/api'
 import type {
     DriftEntry,
@@ -50,7 +51,8 @@ interface ChangeEvent {
         | 'edge_updated'
         | 'edge_deleted'
         | 'suspects_changed'
-    data: GraphNode | GraphEdge | { id: string }
+        | 'config_changed'
+    data: GraphNode | GraphEdge | { id: string } | Record<string, never>
 }
 
 export const useGraphStore = defineStore('graph', () => {
@@ -253,6 +255,13 @@ export const useGraphStore = defineStore('graph', () => {
             }
             case 'suspects_changed':
                 void loadSuspects()
+                break
+            case 'config_changed':
+                // Ontology/policy/brief changed (possibly a bulk retype):
+                // re-derive colors and labels, and refetch the graph so
+                // renamed types land everywhere at once.
+                void useConfigStore().load()
+                void refresh()
                 break
         }
     }

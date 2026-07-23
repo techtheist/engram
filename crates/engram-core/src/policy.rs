@@ -38,6 +38,7 @@
 //! searchable (buried by the trust multiplier), flagged to the assistant, and
 //! surfaced in the pane's review queue for a human decision.
 
+use crate::config::PolicyConfig;
 use crate::types::{Durability, NodeStatus};
 
 /// Starting trust for a node that was never confirmed or approved.
@@ -149,37 +150,39 @@ fn ramp(start: f64, floor: f64, window: i64, age: i64) -> f64 {
     start - (start - floor) * (age as f64 / window as f64)
 }
 
-fn provisional_window(durability: Durability) -> i64 {
+fn provisional_window(durability: Durability, p: &PolicyConfig) -> i64 {
     match durability {
-        Durability::Volatile => VOLATILE_TRUST_WINDOW_SECS,
+        Durability::Volatile => p.volatile_window_days * 86_400,
         // Stable only ramps after a demotion; it borrows the episodic window.
-        Durability::Stable | Durability::Episodic => PROVISIONAL_TRUST_WINDOW_SECS,
+        Durability::Stable | Durability::Episodic => p.episodic_window_days * 86_400,
     }
 }
 
-/// The computed trust of a node at `now` (see module docs for the model).
-pub fn trust(n: &TrustInputs, now: i64) -> f64 {
+/// The computed trust of a node at `now` under the graph's policy (see module
+/// docs for the model; the constants above are only the shipped defaults —
+/// the live numbers come from the graph's config, PLAN §7D).
+pub fn trust(n: &TrustInputs, now: i64, p: &PolicyConfig) -> f64 {
     if let Some(o) = n.trust_override {
         return o.clamp(0.0, 1.0);
     }
     let (start, anchor, floor, window) = match (n.approved_at, n.confirmed_at) {
         (Some(a), _) => (
-            TRUST_APPROVED_START,
+            p.trust_approved,
             a,
-            TRUST_APPROVED_FLOOR,
-            APPROVED_TRUST_WINDOW_SECS,
+            p.trust_approved_floor,
+            p.approved_window_days * 86_400,
         ),
         (None, Some(c)) => (
-            TRUST_CONFIRMED_START,
+            p.trust_confirmed,
             c,
-            TRUST_FLOOR,
-            provisional_window(n.durability),
+            p.trust_floor,
+            provisional_window(n.durability, p),
         ),
         (None, None) => (
-            TRUST_UNSEEN_START,
+            p.trust_created,
             n.created_at,
-            TRUST_FLOOR,
-            provisional_window(n.durability),
+            p.trust_floor,
+            provisional_window(n.durability, p),
         ),
     };
     // Live worklist: an open Problem/Intent is never buried by age.
@@ -195,15 +198,16 @@ pub fn trust(n: &TrustInputs, now: i64) -> f64 {
     }
 }
 
-pub fn is_stale(trust: f64) -> bool {
-    trust < STALE_TRUST
+pub fn is_stale(trust: f64, p: &PolicyConfig) -> bool {
+    trust < p.stale_trust
 }
 
-/// When a node's computed trust crosses [`STALE_TRUST`] — the clock the decay
-/// pass measures its TTL against. `None` for nodes that never cross on their
-/// own: approved or pinned (PLAN §6B — confirmed/trusted persist), stable
-/// (decays only on evidence, and never auto-archives), and open worklist.
-pub fn stale_since(n: &TrustInputs) -> Option<i64> {
+/// When a node's computed trust crosses the policy's stale threshold — the
+/// clock the decay pass measures its TTL against. `None` for nodes that never
+/// cross on their own: approved or pinned (PLAN §6B — confirmed/trusted
+/// persist), stable (decays only on evidence, and never auto-archives), and
+/// open worklist.
+pub fn stale_since(n: &TrustInputs, p: &PolicyConfig) -> Option<i64> {
     if n.approved_at.is_some()
         || n.trust_override.is_some()
         || n.status == Some(NodeStatus::Open)
@@ -211,11 +215,16 @@ pub fn stale_since(n: &TrustInputs) -> Option<i64> {
     {
         return None;
     }
+    // A tuned floor at/above the stale threshold means trust never crosses
+    // it — such nodes bottom out but are never stale, so they never decay.
+    if p.trust_floor >= p.stale_trust {
+        return None;
+    }
     let (start, anchor) = match n.confirmed_at {
-        Some(c) => (TRUST_CONFIRMED_START, c),
-        None => (TRUST_UNSEEN_START, n.created_at),
+        Some(c) => (p.trust_confirmed, c),
+        None => (p.trust_created, n.created_at),
     };
-    let window = provisional_window(n.durability);
-    let fraction = (start - STALE_TRUST) / (start - TRUST_FLOOR);
+    let window = provisional_window(n.durability, p);
+    let fraction = ((start - p.stale_trust) / (start - p.trust_floor)).clamp(0.0, 1.0);
     Some(anchor + (window as f64 * fraction) as i64)
 }

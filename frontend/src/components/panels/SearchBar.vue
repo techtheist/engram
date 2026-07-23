@@ -4,7 +4,7 @@ import { watchDebounced } from '@vueuse/core'
 import DOMPurify from 'dompurify'
 import { api } from '@/services/api'
 import { useGraphStore } from '@/stores/graph'
-import { NODE_ACCENT_VAR } from '@/constants/ontology'
+import { useConfigStore } from '@/stores/config'
 import type { SearchHit } from '@/types/graph'
 
 /**
@@ -18,6 +18,7 @@ const safeSnippet = (s: string): string =>
         .replaceAll('\uE001', '</mark>')
 
 const store = useGraphStore()
+const config = useConfigStore()
 
 const query = ref('')
 const hits = ref<SearchHit[]>([])
@@ -88,7 +89,7 @@ watch(query, (q) => {
     <ul v-if="open && hits.length" class="results glass-panel">
         <li v-for="hit in hits" :key="hit.id">
             <button class="result" type="button" @click="pick(hit)">
-                <span class="type-dot" :style="{ backgroundColor: NODE_ACCENT_VAR[hit.type] }" />
+                <span class="type-dot" :style="{ backgroundColor: config.accent(hit.type) }" />
                 <span class="result-text">
                     <span class="result-title">{{ hit.title }}</span>
                     <!-- snippet sanitized to <mark>-only above -->

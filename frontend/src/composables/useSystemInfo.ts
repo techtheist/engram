@@ -1,12 +1,8 @@
-import { ref } from 'vue'
+import { makeDrawerToggle } from '@/composables/drawerToggle'
 
-// Module-scoped so the SettingsMenu trigger and the panel share one state.
-const open = ref(false)
+// Module-scoped singleton: trigger and panel share one open state.
+const toggle = makeDrawerToggle()
 
 export function useSystemInfo() {
-    return {
-        open,
-        show: () => (open.value = true),
-        hide: () => (open.value = false),
-    }
+    return toggle
 }

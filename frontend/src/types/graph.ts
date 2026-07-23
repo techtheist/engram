@@ -1,23 +1,12 @@
 // Mirrors the engram-core wire types (serde output of Node / Edge).
 
-export type NodeType =
-    | 'Principle'
-    | 'Decision'
-    | 'Caution'
-    | 'Problem'
-    | 'Resolution'
-    | 'Insight'
-    | 'Intent'
-    | 'Anchor'
-
-export type EdgeType =
-    | 'about'
-    | 'because'
-    | 'answers'
-    | 'builds-on'
-    | 'replaces'
-    | 'conflicts-with'
-    | 'needs'
+/**
+ * Open names since 0.7 (PLAN §7D ontology-as-data): the graph's config
+ * defines which type and verb names exist — the pane renders whatever the
+ * config declares, so these are strings, not closed unions.
+ */
+export type NodeType = string
+export type EdgeType = string
 
 export type Durability = 'stable' | 'episodic' | 'volatile'
 export type Source = 'user' | 'claude'
@@ -50,6 +39,8 @@ export interface GraphNode {
     code_refs: string[]
     /** Free-form slice labels (kebab-cased by the backend). */
     tags: string[]
+    /** Project version this node was captured at (version tracking). */
+    version?: string | null
 }
 
 /** POST /nodes payload — the pane creates user-sourced nodes. */
@@ -121,6 +112,8 @@ export interface SuspectView {
     /** Local-NLI triage hint: contradiction | entailment | neutral. A suggestion, never a verdict. */
     nli_label?: string
     nli_score?: number
+    /** For contradiction hints: "newer" | "older" — which side likely carries the negation. */
+    nli_direction?: string
     a: SuspectEndpoint
     b: SuspectEndpoint
 }
@@ -298,6 +291,8 @@ export interface AnsweredHint {
     problem: SuspectEndpoint
     candidate: SuspectEndpoint
     entailment: number
+    /** Already connected by this (non-answer) verb — ranked at a penalty. */
+    existing_link?: string
 }
 
 /** One row of the hub's project listing (PLAN §7C): current + home + registry. */
@@ -353,4 +348,124 @@ export interface FsListing {
     parent: string | null
     home: string | null
     dirs: FsDir[]
+}
+
+// ---------------------------------------------------------------------------
+// Per-graph configuration (PLAN §7D) — mirrors engram_core::config.
+// ---------------------------------------------------------------------------
+
+export interface TypeRoles {
+    /** Open/resolved lifecycle: lives in the worklist, never decays while open. */
+    worklist: boolean
+    /** A code subject: carries code_refs, excluded from the conflict scan. */
+    anchor: boolean
+    /** Ranking prior added in search's trust boost (0 = none). */
+    rank_prior: number
+    /** May the pane accent/highlight this type (false renders muted). */
+    highlight: boolean
+    /** Binds to the current working version when tracking is on. */
+    versioned: boolean
+}
+
+export interface BriefSectionCfg {
+    show: boolean
+    cap: number
+    excerpt: number
+}
+
+export interface BriefToggle {
+    show: boolean
+    cap: number
+}
+
+export interface TypeDef {
+    name: string
+    /** The one color input (0..360) — everything else is derived. */
+    hue: number
+    /** The thought this type captures — the teaching line. */
+    thought: string
+    durability: Durability
+    roles: TypeRoles
+    /** This type's canon section in the brief. */
+    brief: BriefSectionCfg
+}
+
+export interface VerbRoles {
+    /** Creating it archives the older endpoint and chains history. */
+    supersession: boolean
+    /** A judged one demotes trust and feeds the conflict worklist. */
+    contradiction: boolean
+    /** The reason-edge (its absence is what the checkup flags). */
+    reason: boolean
+    /** Closes worklist nodes. */
+    answer: boolean
+    /** A live dependency. */
+    dependency: boolean
+}
+
+export interface VerbDef {
+    name: string
+    /** A worked example ("Decision because Principle"). */
+    reads_as: string
+    roles: VerbRoles
+}
+
+export interface OntologyConfig {
+    preset: string
+    types: TypeDef[]
+    verbs: VerbDef[]
+}
+
+export interface PolicyConfig {
+    trust_created: number
+    trust_confirmed: number
+    trust_approved: number
+    trust_approved_floor: number
+    trust_floor: number
+    stale_trust: number
+    episodic_window_days: number
+    volatile_window_days: number
+    approved_window_days: number
+    decay_ttl_days: number
+    duplicate_similarity: number
+    conflict_suspect_similarity: number
+    warn_similarity: number
+    nli_sweep_min_confidence: number
+}
+
+export interface BriefConfig {
+    total_chars: number
+    tags: BriefToggle
+    conflicts: BriefToggle
+    suspects: BriefToggle
+    recent: BriefSectionCfg
+    open: BriefSectionCfg
+    home_reserve: number
+    /** Teach the graph's ontology at the top of the brief. */
+    ontology: BriefToggle
+}
+
+export interface GraphConfig {
+    ontology: OntologyConfig
+    policy: PolicyConfig
+    brief: BriefConfig
+    versioning: { enabled: boolean }
+}
+
+/** One curated ontology template (GET /config/presets). */
+export interface ConfigPreset {
+    id: string
+    name: string
+    description: string
+    config: GraphConfig
+}
+
+/** A stale node triaged against the live canon (POST /audit/stale). */
+export interface StaleTriage {
+    node: SuspectEndpoint
+    trust: number
+    /** reconfirm | contradicted | isolated */
+    verdict: string
+    evidence?: SuspectEndpoint | null
+    score: number
 }

@@ -110,10 +110,20 @@ impl Nli for FakeNli {
             .map(|(p, h)| {
                 let (pl, hl) = (p.to_lowercase(), h.to_lowercase());
                 if pl.contains("contra") && hl.contains("contra") {
+                    // Directional variant for tests: a "neg"-marked side
+                    // judged as the HYPOTHESIS contradicts hardest — lets
+                    // tests exercise the contradiction-carrier asymmetry.
+                    let contradiction = if hl.contains("neg") && !pl.contains("neg") {
+                        0.95
+                    } else if pl.contains("neg") && !hl.contains("neg") {
+                        0.7
+                    } else {
+                        0.9
+                    };
                     NliJudgment {
                         entailment: 0.02,
                         neutral: 0.08,
-                        contradiction: 0.9,
+                        contradiction,
                     }
                 } else if pl.contains(&hl) || hl.contains(&pl) {
                     NliJudgment {

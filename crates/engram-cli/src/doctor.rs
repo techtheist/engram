@@ -220,10 +220,21 @@ fn check_daemon(r: &mut Report, db: &Path) {
 /// Minimal localhost POST (HTTP/1.0, JSON body) — enough to register a repo
 /// with a running core. Returns the response body on any 2xx.
 pub(crate) fn http_post(port: u16, path: &str, json_body: &str) -> Option<String> {
+    http_post_timeout(port, path, json_body, Duration::from_secs(5))
+}
+
+/// POST with a caller-chosen read timeout — an import re-embeds every node
+/// under the daemon's engine lock, which outlives the quick-probe default.
+pub(crate) fn http_post_timeout(
+    port: u16,
+    path: &str,
+    json_body: &str,
+    read_timeout: Duration,
+) -> Option<String> {
     use std::io::{Read, Write};
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     let mut stream = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).ok()?;
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    stream.set_read_timeout(Some(read_timeout)).ok()?;
     write!(
         stream,
         "POST {path} HTTP/1.0\r\nHost: 127.0.0.1\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{json_body}",

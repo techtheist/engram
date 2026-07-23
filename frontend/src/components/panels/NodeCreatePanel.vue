@@ -2,7 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import SidePanel from '@/components/common/SidePanel.vue'
 import TagEditor from '@/components/common/TagEditor.vue'
-import { ALL_NODE_TYPES, NODE_ACCENT_VAR } from '@/constants/ontology'
+import { useConfigStore } from '@/stores/config'
 import { useGraphStore } from '@/stores/graph'
 import type { Durability, NodeType } from '@/types/graph'
 
@@ -13,41 +13,32 @@ import type { Durability, NodeType } from '@/types/graph'
 const open = defineModel<boolean>({ required: true })
 
 const store = useGraphStore()
+const config = useConfigStore()
 const busy = ref(false)
 const error = ref<string | null>(null)
 
 const DURABILITIES: Durability[] = ['stable', 'episodic', 'volatile']
 
-/** Mirrors the MCP server's default durability per type. */
-const NATURAL_DURABILITY: Record<NodeType, Durability> = {
-    Principle: 'stable',
-    Decision: 'stable',
-    Caution: 'stable',
-    Anchor: 'stable',
-    Problem: 'episodic',
-    Resolution: 'episodic',
-    Insight: 'episodic',
-    Intent: 'volatile',
-}
-
 const draft = reactive({
-    type: 'Decision' as NodeType,
+    type: (config.typeNames[0] ?? 'Decision') as NodeType,
     title: '',
     body: '',
     durability: 'stable' as Durability,
     tags: [] as string[],
 })
 
-// Picking a type re-seeds the natural durability; the user can still override.
+// Picking a type re-seeds the ontology's default durability; the user can
+// still override.
 watch(
     () => draft.type,
-    (t) => (draft.durability = NATURAL_DURABILITY[t]),
+    (t) => (draft.durability = config.typeDef(t)?.durability ?? 'episodic'),
+    { immediate: true },
 )
 
-const accent = computed(() => NODE_ACCENT_VAR[draft.type])
+const accent = computed(() => config.accent(draft.type))
 
 function reset(): void {
-    draft.type = 'Decision'
+    draft.type = config.typeNames[0] ?? 'Decision'
     draft.title = ''
     draft.body = ''
     draft.durability = 'stable'
@@ -64,8 +55,8 @@ async function save(): Promise<void> {
             title: draft.title.trim(),
             body: draft.body.trim() || undefined,
             durability: draft.durability,
-            // Problems and Intents are live worklist items from birth.
-            status: draft.type === 'Problem' || draft.type === 'Intent' ? 'open' : undefined,
+            // Worklist-role types are live items from birth.
+            status: config.typeDef(draft.type)?.roles.worklist ? 'open' : undefined,
             tags: draft.tags,
         })
         open.value = false
@@ -98,12 +89,12 @@ function close(): void {
 >
     <div class="type-row">
         <button
-            v-for="t in ALL_NODE_TYPES"
+            v-for="t in config.typeNames"
             :key="t"
             class="type-chip"
             type="button"
             :class="{ on: draft.type === t }"
-            :style="{ '--chip-accent': NODE_ACCENT_VAR[t] }"
+            :style="{ '--chip-accent': config.accent(t) }"
             @click="draft.type = t"
         >
             {{ t }}

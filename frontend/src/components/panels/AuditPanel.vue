@@ -210,9 +210,12 @@ function fmtDate(secs: number): string {
 }
 
 .action {
+    /* Sized by its text: activity actions (mcp_session_started, brief_served)
+       run longer than the mutation verbs the old fixed width was cut for. */
     flex-shrink: 0;
-    width: 7.2rem;
-    padding: 0.2rem 0;
+    min-width: 7.2rem;
+    width: fit-content;
+    padding: 0.2rem 0.6rem;
     border-radius: var(--radius-sm);
     font-size: var(--text-caption);
     font-weight: 600;

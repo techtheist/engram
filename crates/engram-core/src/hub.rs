@@ -84,16 +84,24 @@ impl ConflictFeed {
     }
 }
 
-/// The listener every hub-owned engine gets: watches for live
-/// `conflicts-with` edges and drops them on the bus.
-fn conflict_tap(bus: Arc<AlertBus>, project: String) -> Listener {
+/// The listener every hub-owned engine gets: watches for live contradiction
+/// edges and drops them on the bus. The verb is captured from the engine's
+/// ontology at attach time (config edits that move the contradiction role
+/// land at the next open).
+fn attach_conflict_tap(engine: &Arc<Mutex<Engine>>, bus: Arc<AlertBus>, project: String) {
+    let mut engine = engine.lock().unwrap();
+    let verb = engine.config().contradiction_verb().to_string();
+    engine.add_listener(conflict_tap(bus, project, verb));
+}
+
+fn conflict_tap(bus: Arc<AlertBus>, project: String, contradiction_verb: String) -> Listener {
     Box::new(move |event| {
         let edge = match &event {
             ChangeEvent::EdgeAdded(e) | ChangeEvent::EdgeUpdated(e) => e,
             _ => return,
         };
         let live = matches!(edge.status, None | Some(EdgeStatus::Active));
-        if edge.edge_type == EdgeType::ConflictsWith && live && edge.valid_until.is_none() {
+        if edge.edge_type.as_str() == contradiction_verb && live && edge.valid_until.is_none() {
             bus.push(ConflictAlert {
                 project: project.clone(),
                 edge_id: edge.id.clone(),
@@ -159,11 +167,7 @@ impl Hub {
             }
         };
         let alerts = AlertBus::new();
-        current
-            .engine
-            .lock()
-            .unwrap()
-            .add_listener(conflict_tap(alerts.clone(), current.id.clone()));
+        attach_conflict_tap(&current.engine, alerts.clone(), current.id.clone());
         Self {
             current,
             factory,
@@ -179,10 +183,7 @@ impl Hub {
     /// the factory, and the pane's switcher does the navigating.
     pub fn new_home(engine: Arc<Mutex<Engine>>, factory: Option<EngineFactory>) -> Self {
         let alerts = AlertBus::new();
-        engine
-            .lock()
-            .unwrap()
-            .add_listener(conflict_tap(alerts.clone(), HOME_PROJECT.into()));
+        attach_conflict_tap(&engine, alerts.clone(), HOME_PROJECT.into());
         Self {
             current: ProjectHandle {
                 id: HOME_PROJECT.into(),
@@ -352,11 +353,7 @@ impl Hub {
     }
 
     fn insert_open(&self, handle: ProjectHandle) -> Arc<Mutex<Engine>> {
-        handle
-            .engine
-            .lock()
-            .unwrap()
-            .add_listener(conflict_tap(self.alerts.clone(), handle.id.clone()));
+        attach_conflict_tap(&handle.engine, self.alerts.clone(), handle.id.clone());
         if let Some(f) = self.listener_factory.lock().unwrap().as_ref() {
             handle.engine.lock().unwrap().add_listener(f(&handle.id));
         }
@@ -532,7 +529,15 @@ impl Hub {
     /// exceeds what the caller asked for; with no siblings and no home graph
     /// they cost nothing.
     pub fn brief(&self, max_chars: usize) -> Result<String> {
-        let home = self.home_brief_section(crate::policy::HOME_BRIEF_RESERVE);
+        let reserve = self
+            .current
+            .engine
+            .lock()
+            .unwrap()
+            .config()
+            .brief
+            .home_reserve;
+        let home = self.home_brief_section(reserve);
         let roster = self.projects_brief_section();
         let reserve = home.as_deref().map(str::len).unwrap_or(0)
             + roster.as_deref().map(str::len).unwrap_or(0);
@@ -589,12 +594,16 @@ impl Hub {
         let engine = self.open_home().ok()?;
         let engine = engine.lock().unwrap();
         let mut out = String::new();
-        for (node_type, cap) in [
-            (NodeType::Principle, 4usize),
-            (NodeType::Caution, 3),
-            (NodeType::Decision, 2),
-        ] {
-            let nodes = engine.store().nodes_by_type_active(node_type, cap).ok()?;
+        // The home graph's own canon sections, scaled to a ride-along sample:
+        // strongest rank priors first (Principles/Cautions before Decisions
+        // in the shipped set), each at about a third of its full brief cap.
+        let cfg = engine.config();
+        let mut sections: Vec<_> = cfg.ontology.types.iter().filter(|t| t.brief.show).collect();
+        sections.sort_by(|a, b| b.roles.rank_prior.total_cmp(&a.roles.rank_prior));
+        for t in sections {
+            let node_type = NodeType::parse(&t.name).ok()?;
+            let cap = t.brief.cap.div_ceil(3).max(2);
+            let nodes = engine.store().nodes_by_type_active(&node_type, cap).ok()?;
             for n in nodes {
                 let line = crate::engine::node_line(&n, crate::engine::EXCERPT_CHARS);
                 if out.len() + line.len() + 1 > max_chars.saturating_sub(HOME_HEADING.len()) {
@@ -619,10 +628,13 @@ impl Hub {
         // then release its lock before touching any sibling engine.
         let mut seeds: Vec<(Node, Vec<f32>)> = Vec::new();
         {
+            // Promotion stays keyed on the shipped canon names for now:
+            // cross-ontology role mapping is a tracked §7D risk — a custom
+            // ontology without these types simply yields no candidates.
             let engine = self.current.engine.lock().unwrap();
             for node_type in [NodeType::Principle, NodeType::Caution] {
-                let total = engine.store().count_by_type_active(node_type)? as usize;
-                for node in engine.store().nodes_by_type_active(node_type, total)? {
+                let total = engine.store().count_by_type_active(&node_type)? as usize;
+                for node in engine.store().nodes_by_type_active(&node_type, total)? {
                     if let Some(vec) = engine.store().embedding_of(&node.id)? {
                         seeds.push((node, vec));
                     }
@@ -639,14 +651,15 @@ impl Hub {
             // Already promoted? A same-type near-duplicate in the home graph
             // means this knowledge is user-level already.
             if let Some(home) = &home
-                && !similar_same_type(&home.lock().unwrap(), &vec, node.node_type)?.is_empty()
+                && !similar_same_type(&home.lock().unwrap(), &vec, node.node_type.clone())?
+                    .is_empty()
             {
                 continue;
             }
             let mut matches = Vec::new();
             for (name, engine) in &others {
                 for (id, title, similarity) in
-                    similar_same_type(&engine.lock().unwrap(), &vec, node.node_type)?
+                    similar_same_type(&engine.lock().unwrap(), &vec, node.node_type.clone())?
                 {
                     matches.push(PromotionMatch {
                         project: name.clone(),

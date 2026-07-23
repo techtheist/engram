@@ -53,6 +53,23 @@ pub trait ModelAdmin: Send + Sync {
     fn apply(&self, request: serde_json::Value) -> engram_core::Result<serde_json::Value>;
 }
 
+/// Skill installation hands (PLAN §7D teaching surface): generate the
+/// capture skill from a graph's ontology and write it into the project.
+/// Implemented CLI-side, where the canonical skill texts are embedded.
+pub trait SkillAdmin: Send + Sync {
+    /// Install the skill for `cfg` under `repo_root`. Returns
+    /// `{installed: true, path, generated, variant}` on a write, or
+    /// `{installed: false, symlink: true, path, target, note}` when the
+    /// skill dir is a symlink into a source tree (deliberate sourcing —
+    /// reported, left untouched, never written through).
+    fn install(
+        &self,
+        repo_root: &std::path::Path,
+        cfg: &engram_core::GraphConfig,
+        variant: &str,
+    ) -> engram_core::Result<serde_json::Value>;
+}
+
 pub struct AppState {
     hub: Arc<Hub>,
     events: EventMap,
@@ -63,6 +80,11 @@ pub struct AppState {
     started: std::time::Instant,
     /// Model selection hands, when a daemon provides them.
     model_admin: Option<Arc<dyn ModelAdmin>>,
+    /// Skill installation hands, when a daemon provides them.
+    skill_admin: Option<Arc<dyn SkillAdmin>>,
+    /// Per-session already-injected node ids for /refs/match — the ambient
+    /// hook's dedupe memory (bounded; evicted wholesale when it grows).
+    refs_seen: Mutex<HashMap<String, std::collections::HashSet<String>>>,
 }
 
 impl AppState {
@@ -98,6 +120,8 @@ impl AppState {
             db_path,
             started: std::time::Instant::now(),
             model_admin: None,
+            skill_admin: None,
+            refs_seen: Mutex::new(HashMap::new()),
         }
     }
 
@@ -172,6 +196,7 @@ fn encode_event(ev: &ChangeEvent) -> String {
         ChangeEvent::EdgeUpdated(e) => ("edge_updated", json!(e)),
         ChangeEvent::EdgeDeleted(id) => ("edge_deleted", json!({ "id": id })),
         ChangeEvent::SuspectsChanged => ("suspects_changed", json!({})),
+        ChangeEvent::ConfigChanged => ("config_changed", json!({})),
     };
     json!({ "type": kind, "data": data }).to_string()
 }
@@ -254,6 +279,19 @@ pub fn router_hub_with_models(
     router(Arc::new(state))
 }
 
+/// [`router_hub_with_models`] plus skill-installation hands (PLAN §7D).
+pub fn router_hub_with_admins(
+    hub: Arc<Hub>,
+    db_path: Option<String>,
+    models: Arc<dyn ModelAdmin>,
+    skills: Arc<dyn SkillAdmin>,
+) -> Router {
+    let mut state = AppState::from_hub(hub, db_path);
+    state.model_admin = Some(models);
+    state.skill_admin = Some(skills);
+    router(Arc::new(state))
+}
+
 fn api_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health))
@@ -297,6 +335,14 @@ fn api_router(state: Arc<AppState>) -> Router {
         .route("/graph", get(graph))
         .route("/export", get(export))
         .route("/import", post(import))
+        .route("/config", get(get_config).put(put_config))
+        .route("/config/presets", get(config_presets))
+        .route("/version", get(get_version).put(put_version))
+        .route("/config/rename-type", post(rename_type))
+        .route("/config/rename-verb", post(rename_verb))
+        .route("/skills/install", post(skills_install))
+        .route("/refs/match", get(refs_match))
+        .route("/audit/stale", post(audit_stale))
         .route("/events", get(sse))
         // Anything not an API route is the Vue pane (served from the embedded
         // build), so `engram-alpha serve` is a complete browser-standalone app and
@@ -965,12 +1011,14 @@ async fn decay(
     scope: Scope,
     Query(p): Query<DecayParams>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let ttl = p.ttl_days.unwrap_or(engram_core::policy::DECAY_TTL_DAYS);
     let engine = state.engine_arc(&scope)?;
-    let ids = engine
-        .lock()
-        .unwrap()
-        .decay(ttl, p.dry_run.unwrap_or(false))?;
+    let ids = {
+        let engine = engine.lock().unwrap();
+        let ttl = p
+            .ttl_days
+            .unwrap_or_else(|| engine.config().policy.decay_ttl_days);
+        engine.decay(ttl, p.dry_run.unwrap_or(false))?
+    };
     Ok(Json(json!({ "archived": ids.len(), "ids": ids })))
 }
 
@@ -982,15 +1030,13 @@ async fn brief(
     scope: Scope,
     Query(p): Query<BriefParams>,
 ) -> Result<Response, AppError> {
-    let max_chars = p
-        .max_chars
-        .unwrap_or(engram_core::policy::DEFAULT_BRIEF_CHARS);
+    // Resolve the briefed engine first (unscoped = the launch project),
+    // compute the budget once, then branch only on hub-vs-pane rendering.
+    let engine = state.engine_arc(&scope)?;
+    let max_chars = engine.lock().unwrap().brief_chars(p.max_chars);
     let text = match &scope.0 {
         None => state.hub.brief(max_chars)?,
-        Some(_) => {
-            let engine = state.engine_arc(&scope)?;
-            pane(&engine).brief(max_chars)?
-        }
+        Some(_) => pane(&engine).brief(max_chars)?,
     };
     Ok((
         [(
@@ -1122,6 +1168,199 @@ async fn import(
     Ok(Json(summary))
 }
 
+async fn get_config(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+) -> Result<Json<engram_core::GraphConfig>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    let cfg = pane(&engine).graph_config();
+    Ok(Json(cfg))
+}
+
+async fn put_config(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+    Json(cfg): Json<engram_core::GraphConfig>,
+) -> Result<Json<engram_core::GraphConfig>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    pane(&engine).set_graph_config(&cfg)?;
+    Ok(Json(cfg))
+}
+
+#[derive(Deserialize)]
+struct PutVersionParams {
+    version: Option<String>,
+}
+
+/// The graph's current working version (version tracking, 0.7.0).
+async fn get_version(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    let (enabled, current) = {
+        let engine = pane(&engine);
+        (
+            engine.graph_config().versioning.enabled,
+            engine.current_version()?,
+        )
+    };
+    Ok(Json(json!({ "enabled": enabled, "current": current })))
+}
+
+async fn put_version(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+    Json(p): Json<PutVersionParams>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    let previous = pane(&engine).set_current_version(p.version.as_deref())?;
+    Ok(Json(json!({ "previous": previous, "current": p.version })))
+}
+
+/// The curated ontology templates (PLAN §7D stage 4) — machine-level data,
+/// same shelf for every project; applying one is a plain PUT /config.
+async fn config_presets() -> Json<Vec<engram_core::config::Preset>> {
+    Json(engram_core::config::presets())
+}
+
+#[derive(Deserialize)]
+struct RenameParams {
+    from: String,
+    to: String,
+}
+
+#[derive(Deserialize)]
+struct RefsMatchParams {
+    /// Repo-relative file path the assistant just read or edited.
+    path: String,
+    /// Acting session — the server deduplicates per session so the same
+    /// node is never re-injected on every read (ambient value, not noise).
+    #[serde(default)]
+    session: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// The file-read match hook's lookup (PLAN §10 ambient hooks): nodes whose
+/// code_refs cover the path, as ready-to-inject markdown. Noise control is
+/// server-side — non-stale only, trust-ordered, capped, and per-session
+/// deduplicated. An empty body means "nothing new to say".
+async fn refs_match(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+    Query(p): Query<RefsMatchParams>,
+) -> Result<Response, AppError> {
+    const INJECT_CAP: usize = 3;
+    let limit = p.limit.unwrap_or(INJECT_CAP).clamp(1, 10);
+    let engine = state.engine_arc(&scope)?;
+    let hits = pane(&engine).match_code_refs(&p.path, limit * 4)?;
+
+    let fresh: Vec<_> = match &p.session {
+        None => hits.into_iter().take(limit).collect(),
+        Some(session) => {
+            let mut seen = state.refs_seen.lock().unwrap();
+            // Bounded memory: sessions come and go; keep the map small.
+            if seen.len() > 64 {
+                seen.clear();
+            }
+            let set = seen.entry(session.clone()).or_default();
+            hits.into_iter()
+                .filter(|n| set.insert(n.id.clone()))
+                .take(limit)
+                .collect()
+        }
+    };
+    let mut out = String::new();
+    if !fresh.is_empty() {
+        out.push_str(&format!(
+            "Engram memory attached to {} — read before relying on or changing this code:
+",
+            p.path
+        ));
+        for n in &fresh {
+            out.push_str(&engram_core::brief_line(n));
+            out.push('\n');
+        }
+    }
+    Ok((
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/markdown; charset=utf-8",
+        )],
+        out,
+    )
+        .into_response())
+}
+
+/// "Triage stale notes" (Checkup): what the live canon suggests doing with
+/// each stale node — reconfirm / contradicted / isolated.
+async fn audit_stale(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+) -> Result<Json<Vec<engram_core::StaleTriage>>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    let hints = pane(&engine).audit_stale_triage()?;
+    Ok(Json(hints))
+}
+
+#[derive(Deserialize)]
+struct SkillInstallParams {
+    #[serde(default)]
+    variant: Option<String>,
+}
+
+/// (Re)install the assistant capture skill into the scoped project's repo —
+/// generated from the graph's ontology when it is customized, the canonical
+/// variant text when it runs the shipped set (PLAN §7D teaching surface).
+async fn skills_install(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+    Json(p): Json<SkillInstallParams>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let Some(admin) = state.skill_admin.clone() else {
+        return Err(AppError::Core(engram_core::Error::Config(
+            "this daemon has no skill-installation hands".into(),
+        )));
+    };
+    let engine = state.engine_arc(&scope)?;
+    let (root, cfg) = {
+        let engine = engine.lock().unwrap();
+        let root = engine.repo_root().map(std::path::Path::to_path_buf);
+        (root, engine.graph_config())
+    };
+    let Some(root) = root else {
+        return Err(AppError::Core(engram_core::Error::Config(
+            "this graph has no repository — skills install into a project working tree".into(),
+        )));
+    };
+    let variant = p.variant.as_deref().unwrap_or("relaxed");
+    Ok(Json(admin.install(&root, &cfg, variant)?))
+}
+
+/// Rename a node type and bulk-retype its stored nodes — the ontology
+/// migration gesture; a plain PUT can't do this (it refuses to strand rows).
+async fn rename_type(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+    Json(p): Json<RenameParams>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    let renamed = pane(&engine).rename_type(&p.from, &p.to)?;
+    Ok(Json(json!({ "renamed": renamed })))
+}
+
+/// Rename an edge verb and bulk-retype its stored edges.
+async fn rename_verb(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+    Json(p): Json<RenameParams>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    let renamed = pane(&engine).rename_verb(&p.from, &p.to)?;
+    Ok(Json(json!({ "renamed": renamed })))
+}
+
 async fn sse(
     State(state): State<Arc<AppState>>,
     scope: Scope,
@@ -1223,7 +1462,7 @@ impl IntoResponse for AppError {
         let (status, msg) = match self {
             AppError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
             AppError::Core(Error::NotFound(s)) => (StatusCode::NOT_FOUND, s),
-            AppError::Core(e @ (Error::Parse { .. } | Error::Project(_))) => {
+            AppError::Core(e @ (Error::Parse { .. } | Error::Project(_) | Error::Config(_))) => {
                 (StatusCode::BAD_REQUEST, e.to_string())
             }
             AppError::Core(e @ Error::Pinned(_)) => (StatusCode::CONFLICT, e.to_string()),

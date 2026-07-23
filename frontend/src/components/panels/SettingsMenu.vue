@@ -5,6 +5,7 @@ import { api } from '@/services/api'
 import { useAuditLog } from '@/composables/useAuditLog'
 import { useMemoryLens } from '@/composables/useMemoryLens'
 import { useSystemInfo } from '@/composables/useSystemInfo'
+import { useGraphSettings } from '@/composables/useGraphSettings'
 import { useGraphStore } from '@/stores/graph'
 import { useLayoutStore, type LayoutMode } from '@/stores/layout'
 import { useThemeStore } from '@/stores/theme'
@@ -23,27 +24,20 @@ const store = useGraphStore()
 const lens = useMemoryLens()
 const auditLog = useAuditLog()
 const systemInfo = useSystemInfo()
+const graphSettings = useGraphSettings()
 
-function openBrief(): void {
+// The drawers share the left edge — opening one closes the rest.
+const leftDrawers = [lens, auditLog, systemInfo, graphSettings]
+function openDrawer(drawer: { show: () => void }): void {
     open.value = false
-    auditLog.hide() // the drawers share the left edge — one at a time
-    systemInfo.hide()
-    lens.show()
+    for (const d of leftDrawers) if (d !== drawer) d.hide()
+    drawer.show()
 }
 
-function openAudit(): void {
-    open.value = false
-    lens.hide()
-    systemInfo.hide()
-    auditLog.show()
-}
-
-function openSystem(): void {
-    open.value = false
-    lens.hide()
-    auditLog.hide()
-    systemInfo.show()
-}
+const openBrief = () => openDrawer(lens)
+const openAudit = () => openDrawer(auditLog)
+const openSystem = () => openDrawer(systemInfo)
+const openGraphSettings = () => openDrawer(graphSettings)
 
 const open = ref(false)
 const root = useTemplateRef<HTMLElement>('root')
@@ -204,6 +198,9 @@ function message(e: unknown): string {
             <div class="divider" />
 
             <div class="section-label">System</div>
+            <button class="row" type="button" @click="openGraphSettings">
+                <span class="row-icon">⚙</span> Graph settings
+            </button>
             <button class="row" type="button" @click="openSystem">
                 <span class="row-icon">ⓘ</span> System info
             </button>

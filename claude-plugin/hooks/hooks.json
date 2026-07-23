@@ -10,6 +10,17 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Read|Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ENGRAM_HOOK_SOURCE=plugin \"${CLAUDE_PLUGIN_ROOT}\"/hooks/file-read-match.sh"
+          }
+        ]
+      }
     ]
   }
 }

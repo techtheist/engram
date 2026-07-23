@@ -19,13 +19,14 @@ import EngramNode from '@/components/nodes/EngramNode.vue'
 import EngramEdge from '@/components/nodes/EngramEdge.vue'
 import ConnectDialog from '@/components/panels/ConnectDialog.vue'
 import { layoutGraph, type XY } from '@/composables/useLayout'
-import { EDGE_ANIMATED, EDGE_COLOR, EDGE_DASHED, NODE_ACCENT_VAR } from '@/constants/ontology'
+import { useConfigStore } from '@/stores/config'
 import { useGraphStore } from '@/stores/graph'
 import { useLayoutStore } from '@/stores/layout'
 import { useProjectsStore } from '@/stores/projects'
 import type { GraphNode } from '@/types/graph'
 
 const store = useGraphStore()
+const config = useConfigStore()
 const layout = useLayoutStore()
 const projects = useProjectsStore()
 const { visibleNodeList, visibleEdgeList, selectedId } = storeToRefs(store)
@@ -33,6 +34,41 @@ const { fitView, setCenter, viewport } = useVueFlow()
 
 const nodeTypes = { engram: markRaw(EngramNode) }
 const edgeTypes = { engram: markRaw(EngramEdge) }
+
+/**
+ * Zoom-compensated selection outline: a fixed 0.2rem outline scales down
+ * with the canvas transform until the selected node is unfindable. Width
+ * follows a continuous piecewise-linear curve through the tuned stops
+ * (zoom → rem): 1→0.2, 0.5→0.4, 0.25→0.8, 0.1→1.2, 0.01→3.2 — clamped at
+ * both ends. The offset rides along proportionally.
+ */
+const OUTLINE_STOPS: [number, number][] = [
+    [1, 0.2],
+    [0.5, 0.4],
+    [0.25, 0.8],
+    [0.1, 1.2],
+    [0.01, 3.2],
+]
+
+const selectedOutlineRem = computed(() => {
+    const z = viewport.value.zoom
+    let [hiZ, hiW] = OUTLINE_STOPS[0]!
+    if (z >= hiZ) return hiW
+    // Stops are zoom-descending: lerp inside the first segment containing z.
+    for (const [loZ, loW] of OUTLINE_STOPS.slice(1)) {
+        if (z >= loZ) {
+            const t = (hiZ - z) / (hiZ - loZ)
+            return hiW + (loW - hiW) * t
+        }
+        ;[hiZ, hiW] = [loZ, loW]
+    }
+    return hiW
+})
+
+const outlineVars = computed(() => ({
+    '--selected-outline-w': `${selectedOutlineRem.value.toFixed(3)}rem`,
+    '--selected-outline-o': `${(selectedOutlineRem.value * 1.5).toFixed(3)}rem`,
+}))
 
 /**
  * Fit with a 3% breathing margin on every side, except a 64px top gap so the
@@ -101,11 +137,11 @@ const flowEdges = computed<Edge[]>(() =>
         label: e.type,
         type: 'engram',
         data: { note: e.note },
-        animated: EDGE_ANIMATED.has(e.type),
+        animated: config.edgeAnimated(e.type),
         style: {
-            stroke: EDGE_COLOR[e.type],
+            stroke: config.edgeColor(e.type),
             strokeWidth: 2,
-            strokeDasharray: EDGE_DASHED.has(e.type) ? '6 4' : undefined,
+            strokeDasharray: config.edgeDashed(e.type) ? '6 4' : undefined,
         },
     })),
 )
@@ -136,7 +172,7 @@ function onPaneClick(): void {
 }
 
 const minimapColor = (node: Node<GraphNode>): string =>
-    NODE_ACCENT_VAR[node.data?.type ?? 'Anchor']
+    config.accent(node.data?.type ?? '')
 
 /** Click-to-navigate: center the viewport on the clicked minimap spot (flow
  * coords), keeping the current zoom — replaces drag-panning, whose axes felt
@@ -164,7 +200,7 @@ watch(
 </script>
 
 <template>
-<div class="canvas-root">
+<div class="canvas-root" :style="outlineVars">
     <VueFlow
         :nodes="flowNodes"
         :edges="flowEdges"

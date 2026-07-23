@@ -219,6 +219,43 @@ async fn list_open_and_graph() {
 }
 
 #[tokio::test]
+async fn config_get_put_validation_and_400_leaves_store_untouched() {
+    let app = test_app();
+    let (status, cfg) = req(&app, "GET", "/config", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cfg["ontology"]["preset"], "engram");
+    assert_eq!(cfg["brief"]["suspects"]["cap"], 8);
+    assert_eq!(cfg["policy"]["conflict_suspect_similarity"], 0.88);
+
+    let mut modified = cfg.clone();
+    modified["brief"]["recent"]["cap"] = json!(3);
+    modified["ontology"]["preset"] = json!("custom");
+    let (status, echoed) = req(&app, "PUT", "/config", Some(modified)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(echoed["brief"]["recent"]["cap"], 3);
+    let (_, got) = req(&app, "GET", "/config", None).await;
+    assert_eq!(got["brief"]["recent"]["cap"], 3);
+    assert_eq!(got["ontology"]["preset"], "custom");
+
+    // An invariant break is a 400 with the rule in the message, and the
+    // stored document is untouched.
+    let mut broken = got.clone();
+    broken["ontology"]["types"][0]["hue"] = json!(720);
+    let (status, err) = req(&app, "PUT", "/config", Some(broken)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(err["error"].as_str().unwrap().contains("hue"));
+    let (_, still) = req(&app, "GET", "/config", None).await;
+    assert_eq!(
+        still["ontology"]["types"][0]["hue"],
+        cfg["ontology"]["types"][0]["hue"]
+    );
+    assert_eq!(
+        still["brief"]["recent"]["cap"], 3,
+        "the last valid config survives"
+    );
+}
+
+#[tokio::test]
 async fn export_then_import_into_fresh_app() {
     let app = test_app();
     let (_, a) = req(

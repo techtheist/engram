@@ -2,6 +2,8 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { api, setApiProject } from '@/services/api'
 import { useGraphStore } from '@/stores/graph'
+import { useConfigStore } from '@/stores/config'
+import { usePanels } from '@/composables/usePanels'
 import type { ProjectInfo } from '@/types/graph'
 
 /**
@@ -42,8 +44,14 @@ export const useProjectsStore = defineStore('projects', () => {
         activeId.value = next
         setApiProject(next)
         const graph = useGraphStore()
+        // Close every open drawer first: they render the OLD graph's state
+        // (a node card, an in-progress settings draft) and would silently
+        // present it as the new project's.
+        usePanels().closeAll()
+        graph.select(null)
         graph.disconnect()
-        await graph.load()
+        // Each project's graph carries its own ontology/policy config.
+        await Promise.all([graph.load(), useConfigStore().load()])
         graph.connect()
         switchEpoch.value += 1
     }

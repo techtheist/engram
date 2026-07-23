@@ -5,11 +5,12 @@
 //! provided methods; this file overrides only what SQL answers faster.
 
 use std::path::Path;
-use std::sync::Once;
+use std::sync::{Arc, Once, RwLock};
 
 use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, Row, ToSql, params};
 
+use crate::config::{GraphConfig, PolicyConfig};
 use crate::rag::EMBED_DIM;
 use crate::schema::{FTS_SCHEMA, SCHEMA};
 use crate::store::{SNIPPET_CLOSE, SNIPPET_OPEN, Store, normalize_tags, now};
@@ -37,6 +38,9 @@ fn ensure_vec_extension() {
 
 pub struct SqliteStore {
     conn: Connection,
+    /// The parsed per-graph configuration, cached at open and refreshed by
+    /// `set_graph_config` — trust hydration reads it on every row.
+    cfg: RwLock<Arc<GraphConfig>>,
 }
 
 impl SqliteStore {
@@ -68,9 +72,19 @@ impl SqliteStore {
                embedding float[{dim}] distance_metric=cosine
              );"
         ))?;
-        let store = Self { conn };
+        let cfg = GraphConfig::from_stored(meta_get(&conn, "graph_config")?.as_deref());
+        let store = Self {
+            conn,
+            cfg: RwLock::new(Arc::new(cfg)),
+        };
         store.shorten_legacy_ids()?;
         Ok(store)
+    }
+
+    /// The live policy numbers, cloned out of the cached config for row
+    /// hydration closures.
+    fn policy(&self) -> PolicyConfig {
+        self.cfg.read().unwrap().policy.clone()
     }
 
     /// Forward-only migrations for databases created before a column existed.
@@ -125,12 +139,21 @@ impl SqliteStore {
         if !column_exists(conn, "nodes", "trust_override")? {
             conn.execute_batch("ALTER TABLE nodes ADD COLUMN trust_override REAL;")?;
         }
+        // Version tracking (0.7.0): the project version a node was captured
+        // at, stamped from the graph's current working version.
+        if !column_exists(conn, "nodes", "version")? {
+            conn.execute_batch("ALTER TABLE nodes ADD COLUMN version TEXT;")?;
+        }
         // Local cortex (v0.5.0): suspects carry an optional NLI hint.
         if !column_exists(conn, "suspects", "nli_label")? {
             conn.execute_batch(
                 "ALTER TABLE suspects ADD COLUMN nli_label TEXT;
                  ALTER TABLE suspects ADD COLUMN nli_score REAL;",
             )?;
+        }
+        // Directional conflict hints (0.7.0): which side carries the negation.
+        if !column_exists(conn, "suspects", "nli_direction")? {
+            conn.execute_batch("ALTER TABLE suspects ADD COLUMN nli_direction TEXT;")?;
         }
         Ok(())
     }
@@ -264,6 +287,35 @@ impl Store for SqliteStore {
         }
     }
 
+    fn graph_config(&self) -> Result<Option<String>> {
+        meta_get(&self.conn, "graph_config")
+    }
+
+    fn set_graph_config(&self, json: &str) -> Result<()> {
+        meta_set(&self.conn, "graph_config", json)?;
+        *self.cfg.write().unwrap() = Arc::new(GraphConfig::from_stored(Some(json)));
+        Ok(())
+    }
+
+    fn config(&self) -> Arc<GraphConfig> {
+        self.cfg.read().unwrap().clone()
+    }
+
+    fn current_version(&self) -> Result<Option<String>> {
+        meta_get(&self.conn, "current_version")
+    }
+
+    fn set_current_version(&self, version: Option<&str>) -> Result<()> {
+        match version {
+            Some(v) => meta_set(&self.conn, "current_version", v),
+            None => {
+                self.conn
+                    .execute("DELETE FROM meta WHERE key='current_version'", [])?;
+                Ok(())
+            }
+        }
+    }
+
     fn set_embed_model(&self, model: &EmbedModelId) -> Result<()> {
         meta_set(&self.conn, "embed_model", &serde_json::to_string(model)?)
     }
@@ -318,8 +370,9 @@ impl Store for SqliteStore {
         self.conn.execute(
             "INSERT INTO nodes
                (id, type, title, body, durability, source, session_id,
-                created_at, valid_from, valid_until, status, code_refs, tags, last_seen, approved_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                created_at, valid_from, valid_until, status, code_refs, tags, last_seen,
+                approved_at, version)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
             params![
                 id,
                 n.node_type.as_str(),
@@ -337,6 +390,7 @@ impl Store for SqliteStore {
                 Option::<i64>::None,
                 // User-authored knowledge is approved by construction.
                 (n.source == Source::User).then_some(created),
+                n.version,
             ],
         )?;
         // Trust anchors at created_at until a deliberate act confirms the node.
@@ -344,8 +398,12 @@ impl Store for SqliteStore {
     }
 
     fn get_node(&self, id: &str) -> Result<Option<Node>> {
+        let policy = self.policy();
         let sql = format!("{NODE_SELECT} WHERE id=?1");
-        Ok(self.conn.query_row(&sql, [id], row_to_node).optional()?)
+        Ok(self
+            .conn
+            .query_row(&sql, [id], |r| row_to_node(r, &policy))
+            .optional()?)
     }
 
     fn update_node(&self, id: &str, p: NodePatch) -> Result<Node> {
@@ -382,6 +440,10 @@ impl Store for SqliteStore {
         if let Some(v) = p.tags {
             sets.push("tags=?");
             vals.push(Box::new(serde_json::to_string(&normalize_tags(&v))?));
+        }
+        if let Some(v) = p.version {
+            sets.push("version=?");
+            vals.push(Box::new(v));
         }
         // A deliberate update is re-validation: it confirms the node (the
         // unapproved trust anchor) and clears any evidence demotion. This —
@@ -460,19 +522,20 @@ impl Store for SqliteStore {
     }
 
     fn list_open(&self, types: &[NodeType]) -> Result<Vec<Node>> {
-        let types = if types.is_empty() {
-            &[NodeType::Problem, NodeType::Intent][..]
+        let policy = self.policy();
+        let cfg = Store::config(self);
+        let strs: Vec<String> = if types.is_empty() {
+            cfg.worklist_types().iter().map(|s| s.to_string()).collect()
         } else {
-            types
+            types.iter().map(|t| t.as_str().to_string()).collect()
         };
         let sql = format!(
             "{NODE_SELECT} WHERE valid_until IS NULL AND status='open' AND type IN ({}) ORDER BY created_at DESC",
-            placeholders(types.len())
+            placeholders(strs.len())
         );
-        let strs: Vec<&'static str> = types.iter().map(|t| t.as_str()).collect();
         let params: Vec<&dyn ToSql> = strs.iter().map(|s| s as &dyn ToSql).collect();
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params.as_slice(), row_to_node)?;
+        let rows = stmt.query_map(params.as_slice(), |r| row_to_node(r, &policy))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
@@ -488,8 +551,8 @@ impl Store for SqliteStore {
             "INSERT INTO nodes
                (id, type, title, body, durability, source, session_id,
                 created_at, valid_from, valid_until, status, code_refs, tags, last_seen,
-                approved_at, confirmed_at, demoted_at, trust_override)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
+                approved_at, confirmed_at, demoted_at, trust_override, version)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
              ON CONFLICT(id) DO UPDATE SET
                type=excluded.type, title=excluded.title, body=excluded.body,
                durability=excluded.durability, source=excluded.source,
@@ -498,7 +561,8 @@ impl Store for SqliteStore {
                status=excluded.status, code_refs=excluded.code_refs,
                tags=excluded.tags, last_seen=excluded.last_seen,
                approved_at=excluded.approved_at, confirmed_at=excluded.confirmed_at,
-               demoted_at=excluded.demoted_at, trust_override=excluded.trust_override",
+               demoted_at=excluded.demoted_at, trust_override=excluded.trust_override,
+               version=excluded.version",
             params![
                 n.id,
                 n.node_type.as_str(),
@@ -518,28 +582,47 @@ impl Store for SqliteStore {
                 n.confirmed_at,
                 n.demoted_at,
                 n.trust_override,
+                n.version,
             ],
         )?;
         Ok(())
     }
 
+    fn retype_nodes(&self, from: &str, to: &str) -> Result<u64> {
+        Ok(self
+            .conn
+            .execute("UPDATE nodes SET type=?2 WHERE type=?1", params![from, to])?
+            as u64)
+    }
+
+    fn retype_edges(&self, from: &str, to: &str) -> Result<u64> {
+        Ok(self
+            .conn
+            .execute("UPDATE edges SET type=?2 WHERE type=?1", params![from, to])?
+            as u64)
+    }
+
     fn nodes_in_active_conflicts(&self) -> Result<Vec<Node>> {
+        let policy = self.policy();
         let sql = format!(
             "{NODE_SELECT} WHERE id IN (\
-               SELECT from_id FROM edges WHERE type='conflicts-with' AND (status IS NULL OR status='active') \
+               SELECT from_id FROM edges WHERE type=?1 AND (status IS NULL OR status='active') \
                UNION \
-               SELECT to_id FROM edges WHERE type='conflicts-with' AND (status IS NULL OR status='active')\
+               SELECT to_id FROM edges WHERE type=?1 AND (status IS NULL OR status='active')\
              ) ORDER BY created_at DESC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], row_to_node)?;
+        let rows = stmt.query_map([Store::config(self).contradiction_verb()], |r| {
+            row_to_node(r, &policy)
+        })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     fn all_nodes(&self) -> Result<Vec<Node>> {
+        let policy = self.policy();
         let sql = format!("{NODE_SELECT} ORDER BY created_at");
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], row_to_node)?;
+        let rows = stmt.query_map([], |r| row_to_node(r, &policy))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
@@ -689,11 +772,11 @@ impl Store for SqliteStore {
     fn active_conflict_edges(&self) -> Result<Vec<Edge>> {
         let base = EDGE_SELECT.rsplit_once(" WHERE ").map(|(s, _)| s).unwrap();
         let sql = format!(
-            "{base} WHERE type='conflicts-with' AND (status IS NULL OR status='active') \
+            "{base} WHERE type=?1 AND (status IS NULL OR status='active') \
              AND valid_until IS NULL ORDER BY created_at DESC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], row_to_edge)?;
+        let rows = stmt.query_map([Store::config(self).contradiction_verb()], row_to_edge)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
@@ -709,9 +792,9 @@ impl Store for SqliteStore {
 
     fn has_active_conflict(&self, id: &str) -> Result<bool> {
         let n: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM edges WHERE type='conflicts-with' \
+            "SELECT COUNT(*) FROM edges WHERE type=?2 \
              AND (status IS NULL OR status='active') AND (from_id=?1 OR to_id=?1)",
-            [id],
+            params![id, Store::config(self).contradiction_verb()],
             |r| r.get(0),
         )?;
         Ok(n > 0)
@@ -746,6 +829,7 @@ impl Store for SqliteStore {
     // ---- search primitives ----------------------------------------------
 
     fn search_fts(&self, query: &str, types: &[NodeType], limit: usize) -> Result<Vec<SearchHit>> {
+        let policy = self.policy();
         let fts = fts_query(query);
         if fts.is_empty() {
             return Ok(Vec::new());
@@ -789,6 +873,7 @@ impl Store for SqliteStore {
                     status,
                 },
                 now(),
+                &policy,
             );
             Ok(SearchHit {
                 id: row.get(0)?,
@@ -800,7 +885,7 @@ impl Store for SqliteStore {
                 durability,
                 status,
                 trust,
-                stale: crate::policy::is_stale(trust),
+                stale: crate::policy::is_stale(trust, &policy),
                 neighbors: Vec::new(),
                 project: None,
             })
@@ -892,20 +977,21 @@ impl Store for SqliteStore {
         a_id: &str,
         b_id: &str,
         similarity: f64,
-        hint: Option<(&str, f64)>,
+        hint: Option<(&str, f64, Option<&str>)>,
     ) -> Result<Suspect> {
         let id = crate::id::new_id();
         self.conn.execute(
-            "INSERT INTO suspects (id, a_id, b_id, similarity, created_at, status, nli_label, nli_score)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'suspected', ?6, ?7)",
+            "INSERT INTO suspects (id, a_id, b_id, similarity, created_at, status, nli_label, nli_score, nli_direction)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'suspected', ?6, ?7, ?8)",
             params![
                 id,
                 a_id,
                 b_id,
                 similarity,
                 now(),
-                hint.map(|(l, _)| l),
-                hint.map(|(_, s)| s)
+                hint.map(|(l, _, _)| l),
+                hint.map(|(_, s, _)| s),
+                hint.and_then(|(_, _, d)| d),
             ],
         )?;
         self.get_suspect(&id)?.ok_or(Error::NotFound(id))
@@ -915,8 +1001,8 @@ impl Store for SqliteStore {
         Ok(self
             .conn
             .query_row(
-                "SELECT id, a_id, b_id, similarity, created_at, status, nli_label, nli_score \
-                 FROM suspects WHERE id=?1",
+                "SELECT id, a_id, b_id, similarity, created_at, status, nli_label, nli_score, \
+                 nli_direction FROM suspects WHERE id=?1",
                 [id],
                 row_to_suspect,
             )
@@ -935,7 +1021,7 @@ impl Store for SqliteStore {
     fn suspects_pending(&self) -> Result<Vec<SuspectView>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.id, s.similarity, s.created_at, s.nli_label, s.nli_score,
-                    a.id, a.type, a.title, b.id, b.type, b.title
+                    a.id, a.type, a.title, b.id, b.type, b.title, s.nli_direction
              FROM suspects s
              JOIN nodes a ON a.id = s.a_id
              JOIN nodes b ON b.id = s.b_id
@@ -952,6 +1038,7 @@ impl Store for SqliteStore {
                 created_at: r.get(2)?,
                 nli_label: r.get(3)?,
                 nli_score: r.get(4)?,
+                nli_direction: r.get(11)?,
                 a: SuspectEndpoint {
                     id: r.get(5)?,
                     node_type: conv(6, &a_type, NodeType::parse)?,
@@ -969,8 +1056,8 @@ impl Store for SqliteStore {
 
     fn all_suspects(&self) -> Result<Vec<Suspect>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, a_id, b_id, similarity, created_at, status, nli_label, nli_score \
-             FROM suspects ORDER BY created_at",
+            "SELECT id, a_id, b_id, similarity, created_at, status, nli_label, nli_score, \
+             nli_direction FROM suspects ORDER BY created_at",
         )?;
         let rows = stmt.query_map([], row_to_suspect)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -999,17 +1086,32 @@ impl Store for SqliteStore {
     }
 
     fn scannable_nodes(&self) -> Result<Vec<Node>> {
-        let sql = format!(
-            "{NODE_SELECT} WHERE valid_until IS NULL AND type != 'Anchor' ORDER BY created_at DESC"
-        );
+        let policy = self.policy();
+        let cfg = Store::config(self);
+        let anchors: Vec<&str> = cfg
+            .ontology
+            .types
+            .iter()
+            .filter(|t| t.roles.anchor)
+            .map(|t| t.name.as_str())
+            .collect();
+        let exclude = if anchors.is_empty() {
+            String::new()
+        } else {
+            format!(" AND type NOT IN ({})", placeholders(anchors.len()))
+        };
+        let sql =
+            format!("{NODE_SELECT} WHERE valid_until IS NULL{exclude} ORDER BY created_at DESC");
+        let params: Vec<&dyn ToSql> = anchors.iter().map(|s| s as &dyn ToSql).collect();
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], row_to_node)?;
+        let rows = stmt.query_map(params.as_slice(), |r| row_to_node(r, &policy))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     // ---- decay -----------------------------------------------------------
 
     fn decay_candidates(&self, ttl_secs: i64, now_ts: i64) -> Result<Vec<Node>> {
+        let policy = self.policy();
         let sql = format!(
             "{NODE_SELECT} WHERE valid_until IS NULL AND source='claude' \
              AND approved_at IS NULL AND trust_override IS NULL \
@@ -1017,11 +1119,11 @@ impl Store for SqliteStore {
              ORDER BY created_at"
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], row_to_node)?;
+        let rows = stmt.query_map([], |r| row_to_node(r, &policy))?;
         let mut out = Vec::new();
         for node in rows {
             let node = node?;
-            let Some(since) = crate::policy::stale_since(&node.trust_inputs()) else {
+            let Some(since) = crate::policy::stale_since(&node.trust_inputs(), &policy) else {
                 continue;
             };
             if now_ts - since >= ttl_secs {
@@ -1084,7 +1186,7 @@ impl Store for SqliteStore {
 
     // ---- brief queries ---------------------------------------------------
 
-    fn count_by_type_active(&self, t: NodeType) -> Result<i64> {
+    fn count_by_type_active(&self, t: &NodeType) -> Result<i64> {
         Ok(self.conn.query_row(
             "SELECT COUNT(*) FROM nodes WHERE valid_until IS NULL AND type=?1",
             [t.as_str()],
@@ -1092,25 +1194,29 @@ impl Store for SqliteStore {
         )?)
     }
 
-    fn nodes_by_type_active(&self, t: NodeType, limit: usize) -> Result<Vec<Node>> {
+    fn nodes_by_type_active(&self, t: &NodeType, limit: usize) -> Result<Vec<Node>> {
+        let policy = self.policy();
         let sql = format!(
             "{NODE_SELECT} WHERE valid_until IS NULL AND type=?1 \
              ORDER BY (trust_override IS NOT NULL) DESC, (approved_at IS NOT NULL) DESC, \
              COALESCE(approved_at, confirmed_at, created_at) DESC, rowid DESC LIMIT ?2"
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![t.as_str(), limit as i64], row_to_node)?;
+        let rows = stmt.query_map(params![t.as_str(), limit as i64], |r| {
+            row_to_node(r, &policy)
+        })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     fn recent_nodes(&self, limit: usize) -> Result<Vec<Node>> {
+        let policy = self.policy();
         // created_at has second granularity; rowid breaks ties by insertion order.
         let sql = format!(
             "{NODE_SELECT} WHERE valid_until IS NULL \
              ORDER BY created_at DESC, rowid DESC LIMIT ?1"
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([limit as i64], row_to_node)?;
+        let rows = stmt.query_map([limit as i64], |r| row_to_node(r, &policy))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
@@ -1152,7 +1258,7 @@ fn meta_set(conn: &Connection, key: &str, value: &str) -> Result<()> {
 
 const NODE_SELECT: &str = "SELECT id, type, title, body, durability, source, session_id, \
      created_at, valid_from, valid_until, status, code_refs, last_seen, approved_at, tags, \
-     confirmed_at, demoted_at, trust_override FROM nodes";
+     confirmed_at, demoted_at, trust_override, version FROM nodes";
 
 const EDGE_SELECT: &str = "SELECT id, type, from_id, to_id, source, created_at, \
      confidence, strength, note, valid_from, valid_until, status FROM edges WHERE id=?1";
@@ -1177,7 +1283,7 @@ fn conv<T>(idx: usize, val: &str, f: impl Fn(&str) -> Result<T>) -> rusqlite::Re
     f(val).map_err(|e| rusqlite::Error::FromSqlConversionFailure(idx, Type::Text, Box::new(e)))
 }
 
-fn row_to_node(row: &Row) -> rusqlite::Result<Node> {
+fn row_to_node(row: &Row, policy: &PolicyConfig) -> rusqlite::Result<Node> {
     let type_s: String = row.get(1)?;
     let dur_s: String = row.get(4)?;
     let src_s: String = row.get(5)?;
@@ -1205,6 +1311,7 @@ fn row_to_node(row: &Row) -> rusqlite::Result<Node> {
             status,
         },
         now(),
+        policy,
     );
     Ok(Node {
         id: row.get(0)?,
@@ -1224,7 +1331,8 @@ fn row_to_node(row: &Row) -> rusqlite::Result<Node> {
         demoted_at,
         trust_override,
         trust,
-        stale: crate::policy::is_stale(trust),
+        stale: crate::policy::is_stale(trust, policy),
+        version: row.get(18)?,
         code_refs: match refs_s {
             Some(s) => serde_json::from_str(&s).map_err(|e| {
                 rusqlite::Error::FromSqlConversionFailure(11, Type::Text, Box::new(e))
@@ -1277,6 +1385,7 @@ fn row_to_suspect(row: &Row) -> rusqlite::Result<Suspect> {
         status: conv(5, &status_s, SuspectStatus::parse)?,
         nli_label: row.get(6)?,
         nli_score: row.get(7)?,
+        nli_direction: row.get(8)?,
     })
 }
 

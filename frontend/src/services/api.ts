@@ -1,6 +1,7 @@
 import type {
     AnsweredHint,
     AuditPage,
+    StaleTriage,
     AuditSweep,
     ClaimReport,
     DriftEntry,
@@ -20,6 +21,8 @@ import type {
     SuspectView,
     ModelApplyResult,
     ModelSelection,
+    GraphConfig,
+    ConfigPreset,
     SystemInfo,
     TagStat,
     TimelineEntry,
@@ -153,6 +156,8 @@ export const api = {
 
     /** Checkup: open Problems an existing node may already answer. */
     auditAnswered: () => request<AnsweredHint[]>('/audit/answered', { method: 'POST' }),
+    /** "Triage stale notes": reconfirm / contradicted / isolated. */
+    auditStale: () => request<StaleTriage[]>('/audit/stale', { method: 'POST' }),
 
     /** Nodes whose path-shaped code_refs no longer exist in the project. */
     drift: () => request<DriftEntry[]>('/drift'),
@@ -162,6 +167,46 @@ export const api = {
 
     /** Daemon-side diagnostics for the System info panel (launch project). */
     system: () => metaRequest<SystemInfo>('/system'),
+
+    /** The per-graph configuration (PLAN §7D) — project-scoped. */
+    config: () => request<GraphConfig>('/config'),
+    putConfig: (cfg: GraphConfig) =>
+        request<GraphConfig>('/config', { method: 'PUT', body: JSON.stringify(cfg) }),
+    configPresets: () => request<ConfigPreset[]>('/config/presets'),
+    /** The graph's current working version (version tracking). */
+    getVersion: () => request<{ enabled: boolean; current: string | null }>('/version'),
+    putVersion: (version: string | null) =>
+        request<{ previous: string | null; current: string | null }>('/version', {
+            method: 'PUT',
+            body: JSON.stringify({ version }),
+        }),
+    /** Rename a type/verb AND bulk-retype its stored rows (the migration gesture). */
+    renameType: (from: string, to: string) =>
+        request<{ renamed: number }>('/config/rename-type', {
+            method: 'POST',
+            body: JSON.stringify({ from, to }),
+        }),
+    renameVerb: (from: string, to: string) =>
+        request<{ renamed: number }>('/config/rename-verb', {
+            method: 'POST',
+            body: JSON.stringify({ from, to }),
+        }),
+    /** (Re)install the assistant capture skill into the project's repo,
+     * generated from this graph's ontology when it is customized. A
+     * symlinked skill dir is reported (`installed: false`), never written. */
+    installSkill: (variant: string) =>
+        request<{
+            installed: boolean
+            path: string
+            generated?: boolean
+            variant?: string
+            symlink?: boolean
+            target?: string
+            note?: string
+        }>('/skills/install', {
+            method: 'POST',
+            body: JSON.stringify({ variant }),
+        }),
 
     /** The machine-level cortex model selection (PLAN §7A). */
     models: () => metaRequest<ModelSelection>('/models'),

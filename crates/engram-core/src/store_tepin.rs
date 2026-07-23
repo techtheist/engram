@@ -16,6 +16,9 @@ use serde_json::{Value, json};
 use tepin_core::ServeMode;
 use tepindb::{BatchOp, Db};
 
+use std::sync::{Arc, RwLock};
+
+use crate::config::{GraphConfig, PolicyConfig};
 use crate::rag::DEFAULT_EMBED_MODEL;
 use crate::store::{SNIPPET_CLOSE, SNIPPET_OPEN, Store, normalize_tags, now};
 use crate::types::*;
@@ -42,6 +45,9 @@ pub fn is_tepin_path(path: &Path) -> bool {
 /// needs replacing and the struct is just the `Db`.
 pub struct TepinStore {
     db: Db,
+    /// The parsed per-graph configuration, cached at open and refreshed by
+    /// `set_graph_config` — trust hydration reads it on every document.
+    cfg: RwLock<Arc<GraphConfig>>,
 }
 
 impl TepinStore {
@@ -54,17 +60,36 @@ impl TepinStore {
             .retry_for(std::time::Duration::from_secs(3))
             .serve(ServeMode::Host)
             .open(path.as_ref())?;
-        let store = Self { db };
+        let store = Self {
+            db,
+            cfg: RwLock::new(Arc::new(GraphConfig::default())),
+        };
         configure(store.db())?;
+        store.reload_config()?;
         Ok(store)
     }
 
     pub fn open_in_memory() -> Result<Self> {
         let store = Self {
             db: Db::open_in_memory()?,
+            cfg: RwLock::new(Arc::new(GraphConfig::default())),
         };
         configure(store.db())?;
+        store.reload_config()?;
         Ok(store)
+    }
+
+    /// Re-parse the stored config document into the cache.
+    fn reload_config(&self) -> Result<()> {
+        let raw = Store::graph_config(self)?;
+        *self.cfg.write().unwrap() = Arc::new(GraphConfig::from_stored(raw.as_deref()));
+        Ok(())
+    }
+
+    /// The live policy numbers, cloned out of the cached config for document
+    /// hydration.
+    fn policy(&self) -> PolicyConfig {
+        self.cfg.read().unwrap().policy.clone()
     }
 
     fn db(&self) -> &Db {
@@ -87,6 +112,18 @@ impl TepinStore {
         doc["_id"] = json!(key);
         self.db().upsert(META, doc)?;
         Ok(())
+    }
+
+    /// String meta values ride a `{ value }` wrapper doc — one shape for
+    /// graph_config, current_version and friends.
+    fn meta_str(&self, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .get_meta(key)?
+            .and_then(|d| d["value"].as_str().map(str::to_string)))
+    }
+
+    fn set_meta_str(&self, key: &str, value: &str) -> Result<()> {
+        self.set_meta(key, json!({ "value": value }))
     }
 
     fn write_node(&self, node: &Node, _exists: bool) -> Result<()> {
@@ -195,6 +232,35 @@ impl Store for TepinStore {
         )
     }
 
+    fn graph_config(&self) -> Result<Option<String>> {
+        self.meta_str("graph_config")
+    }
+
+    fn set_graph_config(&self, json: &str) -> Result<()> {
+        self.set_meta_str("graph_config", json)?;
+        *self.cfg.write().unwrap() = Arc::new(GraphConfig::from_stored(Some(json)));
+        Ok(())
+    }
+
+    fn config(&self) -> Arc<GraphConfig> {
+        self.cfg.read().unwrap().clone()
+    }
+
+    fn current_version(&self) -> Result<Option<String>> {
+        self.meta_str("current_version")
+    }
+
+    fn set_current_version(&self, version: Option<&str>) -> Result<()> {
+        match version {
+            Some(v) => self.set_meta_str("current_version", v),
+            None => {
+                // Purposed-but-missing docs read as absent; delete is enough.
+                let _ = self.db().delete(META, "current_version");
+                Ok(())
+            }
+        }
+    }
+
     fn reset_vectors(&self, _dim: usize) -> Result<()> {
         // tepin 0.4's reset_embedder (an Engram dossier ask): clears the
         // per-file model pin and every stored vector as a metadata operation
@@ -269,13 +335,16 @@ impl Store for TepinStore {
             stale: false,
             code_refs: n.code_refs,
             tags: normalize_tags(&n.tags),
+            version: n.version,
         };
         self.write_node(&node, false)?;
         self.get_node(&id)?.ok_or(Error::NotFound(id))
     }
 
     fn get_node(&self, id: &str) -> Result<Option<Node>> {
-        self.get_doc(NODES, id)?.map(doc_node).transpose()
+        self.get_doc(NODES, id)?
+            .map(|d| doc_node(d, &self.policy()))
+            .transpose()
     }
 
     fn update_node(&self, id: &str, p: NodePatch) -> Result<Node> {
@@ -305,6 +374,9 @@ impl Store for TepinStore {
         }
         if let Some(v) = p.tags {
             node.tags = normalize_tags(&v);
+        }
+        if let Some(v) = p.version {
+            node.version = Some(v);
         }
         // A deliberate update is re-validation: it confirms the node (the
         // unapproved trust anchor) and clears any evidence demotion.
@@ -428,7 +500,10 @@ impl Store for TepinStore {
         let mut out: Vec<Node> = self
             .find_docs(NODES, &json!({}))?
             .into_iter()
-            .map(doc_node)
+            .map({
+                let policy = self.policy();
+                move |d| doc_node(d, &policy)
+            })
             .collect::<Result<_>>()?;
         out.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
         Ok(out)
@@ -615,7 +690,7 @@ impl Store for TepinStore {
             }
             out.push(SearchHit {
                 id: node.id.clone(),
-                node_type: node.node_type,
+                node_type: node.node_type.clone(),
                 title: node.title.clone(),
                 snippet: make_snippet(&node, &terms),
                 score: hit.score as f64,
@@ -670,7 +745,7 @@ impl Store for TepinStore {
         a_id: &str,
         b_id: &str,
         similarity: f64,
-        hint: Option<(&str, f64)>,
+        hint: Option<(&str, f64, Option<&str>)>,
     ) -> Result<Suspect> {
         let id = crate::id::new_id();
         let suspect = Suspect {
@@ -680,8 +755,9 @@ impl Store for TepinStore {
             similarity,
             created_at: now(),
             status: SuspectStatus::Suspected,
-            nli_label: hint.map(|(l, _)| l.to_string()),
-            nli_score: hint.map(|(_, s)| s),
+            nli_label: hint.map(|(l, _, _)| l.to_string()),
+            nli_score: hint.map(|(_, s, _)| s),
+            nli_direction: hint.and_then(|(_, _, d)| d.map(str::to_string)),
         };
         let mut doc = serde_json::to_value(&suspect)?;
         doc["_id"] = json!(id);
@@ -725,6 +801,7 @@ impl Store for TepinStore {
                 created_at: s.created_at,
                 nli_label: s.nli_label,
                 nli_score: s.nli_score,
+                nli_direction: s.nli_direction,
                 a: SuspectEndpoint {
                     id: a.id,
                     node_type: a.node_type,
@@ -863,10 +940,10 @@ fn node_doc(n: &Node) -> Result<Value> {
     Ok(doc)
 }
 
-fn doc_node(doc: Value) -> Result<Node> {
+fn doc_node(doc: Value, policy: &PolicyConfig) -> Result<Node> {
     let mut n: Node = serde_json::from_value(doc)?;
-    n.trust = crate::policy::trust(&n.trust_inputs(), now());
-    n.stale = crate::policy::is_stale(n.trust);
+    n.trust = crate::policy::trust(&n.trust_inputs(), now(), policy);
+    n.stale = crate::policy::is_stale(n.trust, policy);
     Ok(n)
 }
 

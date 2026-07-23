@@ -15,6 +15,7 @@ use tracing_subscriber::EnvFilter;
 
 mod doctor;
 mod setup;
+mod skillgen;
 
 #[derive(Parser)]
 #[command(
@@ -119,9 +120,10 @@ struct ImportArgs {
 struct BriefArgs {
     #[arg(long, default_value = ".engram/graph.db")]
     db: PathBuf,
-    /// Character budget for the digest.
-    #[arg(long, default_value_t = engram_core::policy::DEFAULT_BRIEF_CHARS)]
-    max_chars: usize,
+    /// Character budget for the digest (default: the graph's configured
+    /// brief budget).
+    #[arg(long)]
+    max_chars: Option<usize>,
     #[arg(long)]
     fake_embeddings: bool,
 }
@@ -294,58 +296,12 @@ fn run_migrate(args: MigrateArgs) -> anyhow::Result<()> {
     }
 
     let models = load_models(args.fake_embeddings, false)?;
-    let src = Engine::new(
-        engram_core::SqliteStore::open(&src_path)
-            .with_context(|| format!("opening {}", src_path.display()))?,
-        Box::new(models.current().embedder.clone()),
-    );
-    let graph = src.export()?;
-    let suspects = src.store().all_suspects()?;
-    let audit_total = src.store().audit_page(None, None, 1)?.total.max(0) as usize;
-    let audit = src.store().audit_page(None, None, audit_total)?;
-
-    let mut dst = Engine::new(
-        engram_core::TepinStore::open(&dst_path)
-            .with_context(|| format!("creating {}", dst_path.display()))?,
-        Box::new(models.current().embedder.clone()),
-    );
-    dst.set_audit_origin(engram_core::AuditOrigin::cli());
-    // Journal first (oldest-first so seq keeps chronological order), then the
-    // graph — import appends its own "imported" row, which lands last, as the
-    // migration's own mark in the history.
-    for entry in audit.entries.iter().rev() {
-        dst.store().add_audit(entry)?;
-    }
-    for s in &suspects {
-        dst.store().upsert_suspect(s)?;
-    }
-    let summary = dst.import(graph)?;
-    dst.store()
-        .set_embed_version(src.store().embed_version()?)?;
-    if !args.fake_embeddings {
-        dst.store().set_embed_model(&engram_core::EmbedModelId {
-            name: engram_core::rag::DEFAULT_EMBED_MODEL.to_string(),
-            dim: engram_core::rag::EMBED_DIM,
-        })?;
-    }
-
-    // Verify before declaring victory — counts must survive the move.
-    let src_stats = src.store().stats()?;
-    let dst_stats = dst.store().stats()?;
-    anyhow::ensure!(
-        src_stats.nodes == dst_stats.nodes && src_stats.edges == dst_stats.edges,
-        "count mismatch after migration (nodes {} -> {}, edges {} -> {}) — graph.tepin is incomplete, graph.db is untouched",
-        src_stats.nodes,
-        dst_stats.nodes,
-        src_stats.edges,
-        dst_stats.edges
-    );
-    let dst_suspects = dst.store().all_suspects()?.len();
-    anyhow::ensure!(
-        suspects.len() == dst_suspects,
-        "suspect queue mismatch after migration ({} -> {dst_suspects})",
-        suspects.len()
-    );
+    let summary = engram_core::migrate_to_tepin(
+        &src_path,
+        models.current().embedder,
+        engram_core::AuditOrigin::cli(),
+    )
+    .with_context(|| format!("migrating {}", src_path.display()))?;
 
     // Repoint this repo's registry entry so every hub opens the new store.
     if let Some(root) = dst_path
@@ -365,8 +321,8 @@ fn run_migrate(args: MigrateArgs) -> anyhow::Result<()> {
         "migrated {} nodes / {} edges / {} suspects / {} audit rows to {}",
         summary.nodes,
         summary.edges,
-        suspects.len(),
-        audit_total,
+        summary.suspects,
+        summary.audit,
         dst_path.display()
     );
     println!(
@@ -544,19 +500,30 @@ fn scopeguard(dir: PathBuf) -> impl Drop {
     G(dir)
 }
 
+/// Resolve the owning daemon's route for one of this store's endpoints:
+/// `{suffix}` on a repo-local daemon, `/projects/{id}{suffix}` on the machine
+/// core (registering the repo on the way). `None` = no daemon owns the store
+/// and the caller may open the file directly.
+fn daemon_route(db: &Path, suffix: &str) -> Option<(u16, String)> {
+    let url = resolve_mcp_target(db)?.replace("/mcp", suffix);
+    let rest = url.strip_prefix("http://127.0.0.1:")?;
+    let (port, path) = rest.split_once('/')?;
+    Some((port.parse().ok()?, format!("/{path}")))
+}
+
 fn run_brief(args: BriefArgs) -> anyhow::Result<()> {
     // Thin client first: a running daemon owns the store (and on TepinDB is
     // the only process allowed to). A repo-launched daemon serves this
     // project at /brief; the machine core serves it at the scoped route.
     let db = engram_core::resolve_db_path(&args.db);
-    let brief_url = resolve_mcp_target(&db)
-        .map(|mcp| mcp.replace("/mcp", &format!("/brief?max_chars={}", args.max_chars)));
-    if let Some(url) = brief_url
-        && let Some((port, path)) = url
-            .strip_prefix("http://127.0.0.1:")
-            .and_then(|rest| rest.split_once('/'))
-        && let Ok(port) = port.parse::<u16>()
-        && let Some(text) = doctor::http_get(port, &format!("/{path}"))
+    // No explicit budget → the owning graph's configured one (daemon-side
+    // when bridged, config read when opening directly).
+    let suffix = match args.max_chars {
+        Some(n) => format!("/brief?max_chars={n}"),
+        None => "/brief".to_string(),
+    };
+    if let Some((port, path)) = daemon_route(&db, &suffix)
+        && let Some(text) = doctor::http_get(port, &path)
     {
         println!("{}", text.trim_end());
         return Ok(());
@@ -564,13 +531,26 @@ fn run_brief(args: BriefArgs) -> anyhow::Result<()> {
     // The hub form appends the home-graph section (PLAN §7C); a brief is a
     // read, so it deliberately does not touch the registry.
     let (hub, _) = build_hub(&db, args.fake_embeddings, false, false)?;
-    println!("{}", hub.brief(args.max_chars)?);
+    let max_chars = hub
+        .current_engine()
+        .lock()
+        .unwrap()
+        .brief_chars(args.max_chars);
+    println!("{}", hub.brief(max_chars)?);
     Ok(())
 }
 
 fn run_export(args: ExportArgs) -> anyhow::Result<()> {
-    let engine = build_engine(&args.db, args.fake_embeddings, false)?;
-    let snapshot = engine.export()?;
+    // Thin client first (PLAN §7D): a daemon owning this store serves
+    // GET /export — a direct open would trip the tepin single-owner lock.
+    let db = engram_core::resolve_db_path(&args.db);
+    let snapshot: ExportGraph = if let Some((port, path)) = daemon_route(&db, "/export")
+        && let Some(body) = doctor::http_get(port, &path)
+    {
+        serde_json::from_str(&body).context("parsing the daemon's export")?
+    } else {
+        build_engine(&db, args.fake_embeddings, false)?.export()?
+    };
     let json = serde_json::to_string_pretty(&snapshot)?;
     match args.out {
         Some(path) => {
@@ -590,15 +570,30 @@ fn run_export(args: ExportArgs) -> anyhow::Result<()> {
 fn run_import(args: ImportArgs) -> anyhow::Result<()> {
     let data = std::fs::read_to_string(&args.file)
         .with_context(|| format!("reading {}", args.file.display()))?;
+    // Parse locally first — a malformed file fails here, not at the daemon.
     let graph: ExportGraph = serde_json::from_str(&data).context("parsing export JSON")?;
-    let mut engine = build_engine(&args.db, args.fake_embeddings, false)?;
-    engine.set_audit_origin(engram_core::AuditOrigin::cli());
-    let summary = engine.import(graph)?;
+    let db = engram_core::resolve_db_path(&args.db);
+    // Thin client first: the owning daemon runs the import (re-embedding
+    // takes a while — generous timeout), which also feeds the pane's SSE.
+    let (nodes, edges) = if let Some((port, path)) = daemon_route(&db, "/import") {
+        let resp =
+            doctor::http_post_timeout(port, &path, &data, std::time::Duration::from_secs(600))
+                .context("the daemon rejected the import — check its log")?;
+        let v: serde_json::Value =
+            serde_json::from_str(&resp).context("parsing the daemon's import summary")?;
+        (
+            v["nodes"].as_u64().unwrap_or_default() as usize,
+            v["edges"].as_u64().unwrap_or_default() as usize,
+        )
+    } else {
+        let mut engine = build_engine(&db, args.fake_embeddings, false)?;
+        engine.set_audit_origin(engram_core::AuditOrigin::cli());
+        let summary = engine.import(graph)?;
+        (summary.nodes, summary.edges)
+    };
     tracing::info!(
-        "imported {} nodes / {} edges into {}",
-        summary.nodes,
-        summary.edges,
-        args.db.display()
+        "imported {nodes} nodes / {edges} edges into {}",
+        db.display()
     );
     Ok(())
 }
@@ -764,8 +759,34 @@ fn open_engine(db: &Path, models: &Models) -> engram_core::Result<Engine> {
         std::fs::create_dir_all(dir)
             .map_err(|e| engram_core::Error::Io(format!("creating {}: {e}", dir.display())))?;
     }
-    let store = engram_core::open_store(db)?;
     let set = models.current();
+    // 0.7.*: tepin is the default store — an unmigrated graph.db silently
+    // migrates at open, leaving the SQLite file behind as the backup. Gated
+    // on a real embedder: migration regenerates vectors, and fake vectors
+    // over a real graph would be noise (the fake-opening thin commands
+    // bounce through the core anyway). Failure is non-fatal — the store
+    // opens on SQLite exactly as before.
+    let resolved = engram_core::resolve_db_path(db);
+    if resolved.extension().is_some_and(|e| e == "db")
+        && resolved.exists()
+        && !set.embedder.is_fake()
+    {
+        match engram_core::migrate_to_tepin(
+            &resolved,
+            set.embedder.clone(),
+            engram_core::AuditOrigin::daemon(),
+        ) {
+            Ok(s) => tracing::info!(
+                "migrated {} nodes / {} edges to {} — {} is untouched (your backup)",
+                s.nodes,
+                s.edges,
+                s.dst.display(),
+                resolved.display()
+            ),
+            Err(e) => tracing::warn!("auto-migration to TepinDB failed, staying on SQLite: {e}"),
+        }
+    }
+    let store = engram_core::open_store(db)?;
     let mut engine = Engine::with_store(store, Box::new(set.embedder.clone()));
     // Write-time code_ref checks resolve against the repo the DB lives in
     // (<root>/.engram/graph.db), falling back to the launch cwd.
@@ -1241,12 +1262,17 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             }
         },
     );
-    let router = engram_http::router_hub_with_models(hub.clone(), Some(db_display.clone()), admin)
-        // The daemon-hosted MCP endpoints (PLAN §0 transport migration):
-        // `engram-alpha mcp` bridges stdio sessions here, so exactly one
-        // process — this core — holds every store (redb requires it).
-        .route_service("/mcp", engram_mcp::streamable_http_service(hub.clone()))
-        .route("/projects/{id}/mcp", scoped_mcp);
+    let router = engram_http::router_hub_with_admins(
+        hub.clone(),
+        Some(db_display.clone()),
+        admin,
+        std::sync::Arc::new(skillgen::SkillInstaller),
+    )
+    // The daemon-hosted MCP endpoints (PLAN §0 transport migration):
+    // `engram-alpha mcp` bridges stdio sessions here, so exactly one
+    // process — this core — holds every store (redb requires it).
+    .route_service("/mcp", engram_mcp::streamable_http_service(hub.clone()))
+    .route("/projects/{id}/mcp", scoped_mcp);
     let (listener, port) = match bind_or_converge(args.http_port).await? {
         Bound::Listener(l, port) => (l, port),
         Bound::CoreWonTheRace(port) => return converge_with_core(port),
@@ -1298,7 +1324,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     // daemon's own — attribute them as such in the journal.
                     engine.set_audit_origin(engram_core::AuditOrigin::daemon());
                     engine
-                        .decay(engram_core::policy::DECAY_TTL_DAYS, false)
+                        .decay(engine.graph_config().policy.decay_ttl_days, false)
                         .and_then(|archived| {
                             engine.scan_conflicts().map(|added| (archived.len(), added))
                         })

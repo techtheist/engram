@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useGraphStore } from '@/stores/graph'
+import { useConfigStore } from '@/stores/config'
 import type { GraphNode } from '@/types/graph'
 
 /**
@@ -10,6 +11,7 @@ import type { GraphNode } from '@/types/graph'
  * the work happens.
  */
 const store = useGraphStore()
+const config = useConfigStore()
 const { nodeList, edgeList, suspects, drift } = storeToRefs(store)
 
 const active = (n: GraphNode): boolean => n.valid_until == null
@@ -19,7 +21,7 @@ const staleCount = computed(() => activeNodes.value.filter((n) => n.stale).lengt
 const conflictCount = computed(
     () =>
         edgeList.value.filter(
-            (e) => e.type === 'conflicts-with' && (e.status == null || e.status === 'active'),
+            (e) => config.isActiveConflict(e),
         ).length,
 )
 const provisionalCount = computed(

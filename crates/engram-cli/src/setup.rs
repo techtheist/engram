@@ -31,6 +31,7 @@ const AGENT_NORMAL: &str = include_str!("../../../skills/engram/agents/normal.md
 const AGENT_AGGRESSIVE: &str = include_str!("../../../skills/engram/agents/aggressive.md");
 // SessionStart hook: injects the brief so sessions start pre-briefed.
 const SESSION_BRIEF_HOOK: &str = include_str!("../../../hooks/session-brief.sh");
+const FILE_READ_MATCH_HOOK: &str = include_str!("../../../hooks/file-read-match.sh");
 
 pub fn claude_skill(variant: &str) -> &'static str {
     match variant {
@@ -50,6 +51,11 @@ pub fn agent_block(variant: &str) -> &'static str {
 
 fn say(msg: &str) {
     println!("==> {msg}");
+}
+
+/// Whether the path itself is a symlink (never follows it).
+pub(crate) fn is_symlink(p: &Path) -> bool {
+    fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink())
 }
 
 pub struct Setup {
@@ -257,8 +263,6 @@ impl Setup {
         // A symlinked skill dir (this repo dogfoods that way) points into
         // someone's source tree — writing through it would clobber the
         // original. Leave symlinks strictly alone.
-        let is_symlink =
-            |p: &Path| fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink());
         if is_symlink(&dir) || is_symlink(&dir.join("SKILL.md")) {
             say("claude: .claude/skills/engram is a symlink — leaving it untouched");
             return Ok(());
@@ -287,28 +291,61 @@ impl Setup {
     fn install_claude_brief_hook(&self) -> anyhow::Result<()> {
         let hooks_dir = self.repo.join(".claude/hooks");
         fs::create_dir_all(&hooks_dir)?;
-        let script = hooks_dir.join("engram-brief.sh");
-        fs::write(&script, SESSION_BRIEF_HOOK)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
+        for (name, body) in [
+            ("engram-brief.sh", SESSION_BRIEF_HOOK),
+            ("engram-refs.sh", FILE_READ_MATCH_HOOK),
+        ] {
+            let script = hooks_dir.join(name);
+            fs::write(&script, body)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
+            }
         }
 
-        let registration = "{\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"matcher\": \"startup|clear|compact\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"\\\"$CLAUDE_PROJECT_DIR\\\"/.claude/hooks/engram-brief.sh\"\n          }\n        ]\n      }\n    ]\n  }\n}\n";
+        let registration = r#"{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/engram-brief.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Read|Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/engram-refs.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+"#;
         let settings = self.repo.join(".claude/settings.json");
         if settings.exists() {
             let current = fs::read_to_string(&settings)?;
-            if current.contains("engram-brief") || current.contains("session-brief") {
-                say("claude: .claude/settings.json already runs the brief hook — leaving it");
+            let has_brief = current.contains("engram-brief") || current.contains("session-brief");
+            let has_refs = current.contains("engram-refs") || current.contains("file-read-match");
+            if has_brief && has_refs {
+                say("claude: .claude/settings.json already runs both hooks — leaving it");
             } else {
-                say("claude: .claude/settings.json exists — add this SessionStart hook manually:");
+                say("claude: .claude/settings.json exists — merge the missing hook(s) from:");
                 println!("{registration}");
             }
             return Ok(());
         }
         fs::write(&settings, registration)?;
-        say("claude: session-start brief hook installed (.claude/hooks + settings.json)");
+        say("claude: brief + file-read-match hooks installed (.claude/hooks + settings.json)");
         Ok(())
     }
 
@@ -470,6 +507,11 @@ mod tests {
         assert_eq!(
             plugin, SESSION_BRIEF_HOOK,
             "claude-plugin/hooks/session-brief.sh drifted from hooks/session-brief.sh — re-copy it"
+        );
+        let refs = include_str!("../../../claude-plugin/hooks/file-read-match.sh");
+        assert_eq!(
+            refs, FILE_READ_MATCH_HOOK,
+            "claude-plugin/hooks/file-read-match.sh drifted from hooks/file-read-match.sh — re-copy it"
         );
     }
 

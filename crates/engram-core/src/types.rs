@@ -35,7 +35,65 @@ macro_rules! str_enum {
     };
 }
 
-str_enum!(NodeType {
+/// Declares an open string-backed name type (PLAN §7D: the ontology is
+/// per-graph data, so node types and edge verbs are names validated against
+/// the graph's config, not closed enums). The shipped ontology's names stay
+/// available as consts (`NodeType::Decision`) — zero-cost `Cow::Borrowed`
+/// values — but any name the graph's ontology declares is equally first-class.
+/// `parse` checks only shape; whether a name *exists* is the engine's
+/// config-driven write-time check.
+macro_rules! name_type {
+    ($(#[$m:meta])* $name:ident, $kind:literal { $($variant:ident => $s:literal),+ $(,)? }) => {
+        $(#[$m])*
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        pub struct $name(std::borrow::Cow<'static, str>);
+
+        #[allow(non_upper_case_globals)]
+        impl $name {
+            $(pub const $variant: $name = $name(std::borrow::Cow::Borrowed($s));)+
+
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+            /// Shape-only validation: a non-empty name within the config
+            /// length bound. Existence in the ontology is checked at the
+            /// engine's write boundary, where the graph's config is known.
+            /// Shipped names come back borrowed — hydration is the innermost
+            /// loop of every scan, so the common case stays zero-alloc.
+            pub fn parse(s: &str) -> crate::Result<Self> {
+                match s {
+                    $($s => return Ok(Self::$variant),)+
+                    _ => {}
+                }
+                if s.trim().is_empty() || s.len() > 64 {
+                    return Err(crate::Error::Parse { kind: $kind, value: s.to_string() });
+                }
+                Ok(Self(std::borrow::Cow::Owned(s.to_string())))
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(&self.0)
+            }
+        }
+
+        impl Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.serialize_str(self.as_str())
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                let s = String::deserialize(d)?;
+                Self::parse(&s).map_err(serde::de::Error::custom)
+            }
+        }
+    };
+}
+
+name_type!(NodeType, "NodeType" {
     Principle => "Principle",
     Decision => "Decision",
     Caution => "Caution",
@@ -46,7 +104,7 @@ str_enum!(NodeType {
     Anchor => "Anchor",
 });
 
-str_enum!(EdgeType {
+name_type!(EdgeType, "EdgeType" {
     About => "about",
     Because => "because",
     Answers => "answers",
@@ -135,6 +193,13 @@ pub struct Node {
     /// is about. Normalized to kebab-case on write.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// The project version this node was captured at (version tracking,
+    /// 0.7.0): auto-stamped from the graph's current working version when
+    /// tracking is on and the node's type binds to versions. Free-form
+    /// ("v0.5.1", "26.7.23"); absent when tracking was off or the type is
+    /// version-less.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 impl Node {
@@ -174,10 +239,17 @@ pub struct NewNode {
     pub code_refs: Vec<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Explicit captured-at version; omitted = auto-stamped from the graph's
+    /// current working version when tracking is on.
+    #[serde(default)]
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct NodePatch {
+    /// Set (or correct) the node's captured-at version.
+    #[serde(default)]
+    pub version: Option<String>,
     /// Reclassification (PLAN §10 Phase 1): the type was Claude's guess,
     /// correcting it must not require delete-and-recreate.
     #[serde(default, rename = "type")]
@@ -239,6 +311,11 @@ pub struct ExportGraph {
     pub version: u32,
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
+    /// The graph's configuration (PLAN §7D) — present only when customized,
+    /// so pre-0.7 dumps and default graphs stay byte-identical in meaning.
+    /// Additive and optional: old binaries ignore it on import.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<crate::config::GraphConfig>,
 }
 
 pub const EXPORT_VERSION: u32 = 1;
@@ -357,6 +434,11 @@ pub struct Suspect {
     /// A nomination for the judge, never a verdict (PLAN §7A).
     pub nli_label: Option<String>,
     pub nli_score: Option<f64>,
+    /// For contradiction hints: which side the model reads as carrying the
+    /// negation — "newer" | "older" (a = newer by construction). Absent when
+    /// the asymmetry is below the confidence margin. A hint, never a verdict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nli_direction: Option<String>,
 }
 
 /// A pending suspect joined with what the judge (pane or Claude) needs to see.
@@ -370,6 +452,9 @@ pub struct SuspectView {
     pub nli_label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nli_score: Option<f64>,
+    /// "newer" | "older": which side likely carries the negation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nli_direction: Option<String>,
     pub a: SuspectEndpoint,
     pub b: SuspectEndpoint,
 }
@@ -426,6 +511,28 @@ pub struct AnsweredHint {
     pub problem: SuspectEndpoint,
     pub candidate: SuspectEndpoint,
     pub entailment: f64,
+    /// The pair is ALREADY connected by this verb (not the answer verb) —
+    /// the nomination survives at a rank penalty: connected-but-maybe-
+    /// misconnected beats blind re-suggestion, but fresh pairs rank first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub existing_link: Option<String>,
+}
+
+/// A stale node triaged against the current canon (the NLI stale-triage
+/// sweep): what the evidence suggests doing with it. Nominations only —
+/// confirming, judging, or archiving stays a human/assistant act.
+#[derive(Debug, Clone, Serialize)]
+pub struct StaleTriage {
+    pub node: SuspectEndpoint,
+    pub trust: f64,
+    /// "reconfirm" (live canon still entails it — confirm still true),
+    /// "contradicted" (live canon disputes it — judge as a conflict), or
+    /// "isolated" (nothing current speaks to it — an archive candidate).
+    pub verdict: String,
+    /// The canon node the verdict rests on (absent for "isolated").
+    pub evidence: Option<SuspectEndpoint>,
+    /// The NLI score behind the verdict (0 for "isolated").
+    pub score: f64,
 }
 
 /// What a checked node update did — the same-turn verdict set every write
@@ -437,6 +544,24 @@ pub struct CheckedUpdate {
     pub warnings: Vec<WriteWarning>,
     pub suspects: Vec<SuspectView>,
     pub missing_refs: Vec<String>,
+    /// Write-time canon check verdicts (see [`WriteOutcome::Created`]).
+    pub canon: Vec<CanonVerdict>,
+}
+
+/// One canon node's NLI verdict on freshly-written text — the graph's
+/// same-turn answer to "does existing knowledge support or dispute this".
+/// `supports` rides plain entailment; `contradicts` is only issued inside
+/// the suspect similarity band, where co-reference holds.
+#[derive(Debug, Clone, Serialize)]
+pub struct CanonVerdict {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub node_type: NodeType,
+    pub title: String,
+    /// "supports" | "contradicts"
+    pub verdict: String,
+    pub score: f64,
+    pub similarity: f64,
 }
 
 /// One row of the hub's project listing (PLAN §7C): the registry entries plus
@@ -545,6 +670,11 @@ pub enum WriteOutcome {
         /// Path-shaped code_refs that don't resolve right now — the
         /// write-time half of the drift check, caught in the same turn.
         missing_refs: Vec<String>,
+        /// The write-time canon check (PLAN §7A): NLI verdicts from the
+        /// nearest existing knowledge — `supports` (canon backs the new
+        /// text; consider linking it) or `contradicts` (canon disputes it;
+        /// read before proceeding). Empty without the logic layer.
+        canon: Vec<CanonVerdict>,
     },
     Matched {
         node: Node,

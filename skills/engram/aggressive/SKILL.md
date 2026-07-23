@@ -32,6 +32,8 @@ You interact with it through the `engram` MCP tools. Three jobs: **recall** (rea
   - They're **complementary** — most often a Resolution or Decision next to the Intent/Problem it *implements* → `dismiss`, then make sure the real relationship exists (`answers` edge) and the implemented item is closed.
 - **Close the loop.** Whenever a Resolution `answers` a Problem or Intent, also set the answered node's `status` to `resolved` (`update_node`) — unless work genuinely remains. Open worklist items that are actually done pollute every future brief.
 - **Repair drift.** `list_drift` names nodes whose path-shaped `code_refs` no longer exist — the code moved and the memory didn't. For each: fix the paths via `update_node`, and *re-read the claim* — if the code change invalidated the knowledge itself, supersede or `conflicts-with` it instead of just fixing the path.
+- **Version tracking** (when the brief opens with "Current working version"): every new version-bound note is stamped automatically — you never pass `version` for live capture (only for digesting historical material). When the project moves on — a release is cut, a version bump lands — call `set_version` with the new one; `set_version(null)` unsets it between versions.
+- **Handoff notes.** Something the NEXT session must see before anything else — an unfinished cutover, a warning, a "start here"? Write an open Intent tagged `handoff` (volatile): the brief guarantees it top placement. When you ACT on a handoff note, mark it resolved (`update_node`) — that is what stops it from re-appearing; forgotten ones burn by decay.
 - **Stale hits** (`stale: true`): trust has decayed — verify before relying. Still true → `update_node` refreshes it; wrong → supersede or `conflicts-with`.
 
 ## Cold start — the graph is empty
@@ -92,7 +94,7 @@ Capture **liberally**:
 ## How to write
 
 1. **Avoid duplicates — proportionally.** On a small graph, or right after you've already searched/recalled the area, write directly: `add_note` self-checks similarity and returns `{ matched, created: false }` instead of duping — then `update_node` the match. **Search first when the graph has grown large or the topic is plausibly already covered.**
-2. **Pick the type** from the list above. Don't invent types — there are exactly 8 (the 7 above + **Anchor**).
+2. **Pick the type** from the list above. Don't invent types — there are exactly 8 (the 7 above + **Anchor**). *(0.7+: a graph can run a **customized ontology** — renamed types, different verbs. If the brief opens by teaching one, or a write is refused with "unknown node type", call `describe_ontology` and use *that* vocabulary: the graph defines its ontology, not this skill. Reshaping it is the user's gesture — the pane's Settings or `GET/PUT /config` over HTTP; never write config yourself.)*
 3. **Title**: a short, declarative label. **Body**: the reasoning in 1–3 sentences — the *why*, not a transcript.
 4. **Link it.** Edges must read as an English sentence: subject → verb → object. Use:
    - `because` — Decision/Caution **because** Principle (the reason).
@@ -108,6 +110,7 @@ Capture **liberally**:
    - `{ matched, created: false }` — a same-type near-duplicate exists. Merge into it with `update_node`; never re-add.
    - `warnings` — your note landed near a node that is `in-active-conflict` or `superseded`. Read the flagged node: align with the canon, or record the disagreement deliberately (`conflicts-with` / `replaces`).
    - `suspects` — the write queued unlinked look-alike pairs, returned so *you* judge them now with `resolve_suspect`: they contradict → `conflict`, **and say so in chat** ("heads-up: this contradicts a standing decision — *\<title\>*") — that alert is the one exception to silent capture; your note is the fresher claim → `replaces`; fine together → `dismiss`, then add the real edge if one fits (`answers`, `about`).
+   - `canon` — NLI verdicts from nearby existing knowledge: `supports` means the canon already backs your text (link it — `because` / `builds-on` — instead of leaving the reinforcement implicit); `contradicts` means canon disputes it (read the flagged node; if the disagreement is real, `conflicts-with` and tell the user).
    An unhandled verdict is how graphs rot: unjudged suspects pile up in the next session's brief and become someone else's archaeology.
 7. **Repair mislinks.** A wrong edge (bad verb, wrong endpoints) is yours to fix: `unlink` deletes it; `update_edge` changes its status (`resolved`/`dismissed` for settled conflicts), note, or confidence.
 

@@ -8,10 +8,30 @@
 //  - open Problems/Intents never decay while open
 //  - retrieval (last_seen) never moves trust — it only proves findability
 
-import type { GraphNode } from '@/types/graph'
+import type { GraphNode, PolicyConfig } from '@/types/graph'
 
-function pct(v: number): string {
+/** The shipped policy numbers — the fallback while /config is in flight. */
+const DEFAULT_POLICY = {
+    trust_created: 0.5,
+    trust_confirmed: 0.6,
+    trust_approved: 1.0,
+    trust_approved_floor: 0.2,
+    stale_trust: 0.3,
+    episodic_window_days: 183,
+    volatile_window_days: 30,
+    approved_window_days: 365,
+}
+
+export function pct(v: number): string {
     return `${Math.round(v * 100)}%`
+}
+
+/** "about six months" from a day count — plain words over precision. */
+export function humanDays(days: number): string {
+    if (days < 14) return `about ${days} day${days === 1 ? '' : 's'}`
+    if (days < 60) return `about ${Math.round(days / 7)} weeks`
+    if (days < 700) return `about ${Math.round(days / 30.4)} months`
+    return `about ${Math.round(days / 365)} years`
 }
 
 function ago(secs: number): string {
@@ -24,10 +44,15 @@ function ago(secs: number): string {
 }
 
 /** The anchor a node's trust currently stands on. */
-function anchor(n: GraphNode): { word: string; ts: number; start: string } {
-    if (n.approved_at != null) return { word: 'Approved', ts: n.approved_at, start: '100%' }
-    if (n.confirmed_at != null) return { word: 'Confirmed', ts: n.confirmed_at, start: '60%' }
-    return { word: 'Created', ts: n.created_at, start: '50%' }
+function anchor(
+    n: GraphNode,
+    p: typeof DEFAULT_POLICY,
+): { word: string; ts: number; start: string } {
+    if (n.approved_at != null)
+        return { word: 'Approved', ts: n.approved_at, start: pct(p.trust_approved) }
+    if (n.confirmed_at != null)
+        return { word: 'Confirmed', ts: n.confirmed_at, start: pct(p.trust_confirmed) }
+    return { word: 'Created', ts: n.created_at, start: pct(p.trust_created) }
 }
 
 /**
@@ -36,13 +61,14 @@ function anchor(n: GraphNode): { word: string; ts: number; start: string } {
  * has a human explanation; if this ever says something the backend doesn't
  * do, that's a bug worth a report.
  */
-export function explainTrust(n: GraphNode): string {
+export function explainTrust(n: GraphNode, policy?: PolicyConfig | null): string {
+    const p = policy ?? DEFAULT_POLICY
     if (n.trust_override != null) {
         return n.trust_override >= 1
             ? 'Pinned: trust is locked at 100%. It never decays or auto-archives; contradicting evidence still surfaces for review but cannot demote it. Unpin to hand it back to the model.'
             : `Trust is manually locked at ${pct(n.trust_override)}. Decay is off until the override is cleared.`
     }
-    const a = anchor(n)
+    const a = anchor(n, p)
     if (n.status === 'open') {
         return `Held at ${a.start} while open — worklist items are never buried by age.`
     }
@@ -53,9 +79,11 @@ export function explainTrust(n: GraphNode): string {
         return `${a.word} ${ago(a.ts)}, holding at ${a.start}: stable knowledge does not decay with time — only contradicting evidence lowers it.`
     }
     if (n.approved_at != null) {
-        return `Approved ${ago(n.approved_at)}, now ${pct(n.trust)}: approved knowledge decays slowly to a 20% floor over about a year — re-approve to reset it.`
+        return `Approved ${ago(n.approved_at)}, now ${pct(n.trust)}: approved knowledge decays slowly to a ${pct(p.trust_approved_floor)} floor over ${humanDays(p.approved_window_days)} — re-approve to reset it.`
     }
-    const window = n.durability === 'volatile' ? 'about a month' : 'about six months'
+    const window = humanDays(
+        n.durability === 'volatile' ? p.volatile_window_days : p.episodic_window_days,
+    )
     return `${a.word} ${ago(a.ts)}, now ${pct(n.trust)}: ${n.durability} notes decay over ${window}. Retrieval alone never refreshes this — confirm, edit, or approve the node to reset it.`
 }
 
