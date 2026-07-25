@@ -237,6 +237,15 @@ impl Engine {
             ));
         }
         let previous = self.store.current_version()?;
+        // Setting a version IS the "I want version tracking" gesture: when
+        // tracking is off the stamp would be silently ignored, so enable it
+        // here rather than confuse a caller who was asked to set the
+        // version. Clearing never toggles anything.
+        if version.is_some() && !self.store.config().versioning.enabled {
+            let mut cfg = self.graph_config();
+            cfg.versioning.enabled = true;
+            self.set_graph_config(&cfg)?;
+        }
         self.store.set_current_version(version)?;
         self.audit(
             "version_switched",

@@ -42,6 +42,9 @@
     /* glass ON */
     --surface-glass: rgb(22 22 42 / 70%);
     --glass-backdrop: blur(14px) saturate(180%) contrast(105%);
+
+    /* Accent-strip wash at full strength — part of the brand look. */
+    --accent-wash: 1;
 }
 
 /* ── JetBrains dark (New UI / Darcula) ───────────────────────────────── */
@@ -78,6 +81,9 @@
     /* glass OFF */
     --surface-glass: var(--surface-elevated);
     --glass-backdrop: none;
+
+    /* IDE themes stay flat: the accent-strip wash is barely-there. */
+    --accent-wash: 0.2;
 }
 
 /* ── JetBrains light ─────────────────────────────────────────────────── */
@@ -113,6 +119,9 @@
 
     --surface-glass: var(--surface-elevated);
     --glass-backdrop: none;
+
+    /* IDE themes stay flat: the accent-strip wash is barely-there. */
+    --accent-wash: 0.2;
 }
 
 /* ── VS Code dark ────────────────────────────────────────────────────── */
@@ -148,6 +157,9 @@
 
     --surface-glass: var(--surface-elevated);
     --glass-backdrop: none;
+
+    /* IDE themes stay flat: the accent-strip wash is barely-there. */
+    --accent-wash: 0.2;
 }
 
 /* ── VS Code light ───────────────────────────────────────────────────── */
@@ -183,4 +195,7 @@
 
     --surface-glass: var(--surface-elevated);
     --glass-backdrop: none;
+
+    /* IDE themes stay flat: the accent-strip wash is barely-there. */
+    --accent-wash: 0.2;
 }

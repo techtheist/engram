@@ -41,3 +41,25 @@ jobs:
             --generate-notes \
             --title "v${{ inputs.version }}" \
             --target "$GITHUB_SHA"
+
+      # Release notes convention: CHANGELOG.md carries a "## v<version>" section
+      # per release; it becomes the release body, with the auto-generated
+      # commit summary appended under a divider. No section → auto notes only.
+      - name: Apply release notes from CHANGELOG.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="v${{ inputs.version }}"
+          awk -v ver="$V" '
+            $0 ~ "^## " ver "( |$)" { on = 1; next }
+            on && /^## / { exit }
+            on { print }
+          ' CHANGELOG.md > /tmp/notes.md
+          if [ -s /tmp/notes.md ]; then
+            gh release view "$V" --json body --jq .body > /tmp/auto.md
+            printf '\n---\n\n' >> /tmp/notes.md
+            cat /tmp/auto.md >> /tmp/notes.md
+            gh release edit "$V" --notes-file /tmp/notes.md
+          else
+            echo "No CHANGELOG.md section for $V — keeping auto-generated notes"
+          fi

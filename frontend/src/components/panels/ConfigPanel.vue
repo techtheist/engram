@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import HueRail from '@/components/common/HueRail.vue'
+import SegmentedControl from '@/components/common/SegmentedControl.vue'
 import SidePanel from '@/components/common/SidePanel.vue'
+import StepperInput from '@/components/common/StepperInput.vue'
+import ToggleChip from '@/components/common/ToggleChip.vue'
 import { useGraphSettings } from '@/composables/useGraphSettings'
 import { humanDays, pct } from '@/constants/trust'
 import { useConfigStore } from '@/stores/config'
@@ -125,7 +129,17 @@ async function applyPreset(id: string): Promise<void> {
 
 // ---- types -----------------------------------------------------------------
 
-const DURABILITIES: Durability[] = ['stable', 'episodic', 'volatile']
+const DURABILITY_OPTIONS: { value: Durability; label: string }[] = [
+    { value: 'episodic', label: 'Episodic' },
+    { value: 'stable', label: 'Stable' },
+    { value: 'volatile', label: 'Volatile' },
+]
+
+const SKILL_OPTIONS = [
+    { value: 'relaxed', label: 'relaxed' },
+    { value: 'normal', label: 'normal' },
+    { value: 'aggressive', label: 'aggressive' },
+]
 
 /** Which type/verb is mid-rename (renames bypass the draft: they bulk-retype). */
 const renaming = ref<{ kind: 'type' | 'verb'; from: string; to: string } | null>(null)
@@ -409,76 +423,79 @@ const policyWords = computed(() => {
 
                 <label class="row-label">
                     Hue
-                    <input
-                        v-model.number="t.hue"
-                        class="hue-slider"
-                        type="range"
-                        min="0"
-                        max="359"
-                        :aria-label="`${t.name} hue`"
-                    />
-                    <span class="hue-value">{{ t.hue }}°</span>
+                    <HueRail v-model="t.hue" :aria-label="`${t.name} hue`" />
                 </label>
 
                 <label class="row-label">
-                    Thought
                     <input
                         v-model="t.thought"
                         class="edit-input grow"
                         type="text"
-                        placeholder="e.g. &quot;we chose this, for a reason&quot;"
+                        placeholder="the thought this type captures — e.g. &quot;we chose this, for a reason&quot;"
                         :aria-label="`${t.name} thought`"
                     />
                 </label>
 
                 <div class="row-label">
                     Durability
-                    <select v-model="t.durability" class="edit-select" :aria-label="`${t.name} durability`">
-                        <option v-for="d in DURABILITIES" :key="d" :value="d">{{ d }}</option>
-                    </select>
+                    <SegmentedControl
+                        v-model="t.durability"
+                        :options="DURABILITY_OPTIONS"
+                        :aria-label="`${t.name} durability`"
+                    />
                     <span class="spacer" />
                     Rank prior
-                    <input
-                        v-model.number="t.roles.rank_prior"
-                        class="edit-input num"
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        max="0.5"
+                    <StepperInput
+                        v-model="t.roles.rank_prior"
+                        :step="0.01"
+                        :max="0.5"
+                        :decimals="2"
                         :aria-label="`${t.name} rank prior`"
                     />
                 </div>
 
                 <div class="checks">
-                    <label class="check" title="Open/resolved lifecycle: lives in the worklist, never decays while open">
-                        <input v-model="t.roles.worklist" type="checkbox" /> worklist
-                    </label>
-                    <label class="check" title="A code subject: carries code refs, excluded from the conflict scan, renders muted">
-                        <input v-model="t.roles.anchor" type="checkbox" /> anchor
-                    </label>
-                    <label class="check" title="Off renders this type muted (gray-toned) everywhere">
-                        <input v-model="t.roles.highlight" type="checkbox" /> highlight
-                    </label>
-                    <label
+                    <ToggleChip
+                        v-model="t.roles.worklist"
+                        label="worklist"
+                        title="Open/resolved lifecycle: lives in the worklist, never decays while open"
+                    />
+                    <ToggleChip
+                        v-model="t.roles.anchor"
+                        label="anchor"
+                        title="A code subject: carries code refs, excluded from the conflict scan, renders muted"
+                    />
+                    <ToggleChip
+                        v-model="t.roles.highlight"
+                        label="highlight"
+                        title="Off renders this type muted (gray-toned) everywhere"
+                    />
+                    <ToggleChip
                         v-if="draft.versioning.enabled"
-                        class="check"
+                        v-model="t.roles.versioned"
+                        label="versioned"
                         title="Stamp new nodes of this type with the current working version (off for types that transcend releases)"
-                    >
-                        <input v-model="t.roles.versioned" type="checkbox" /> versioned
-                    </label>
-                    <span class="spacer" />
-                    <label class="check" title="Give this type its own canon section in the brief">
-                        <input v-model="t.brief.show" type="checkbox" /> brief section
-                    </label>
+                    />
+                    <ToggleChip
+                        v-model="t.brief.show"
+                        label="brief section"
+                        title="Give this type its own canon section in the brief"
+                    />
                     <template v-if="t.brief.show">
-                        <label class="check">
+                        <span class="check">
                             cap
-                            <input v-model.number="t.brief.cap" class="edit-input num" type="number" min="0" max="100" :aria-label="`${t.name} brief cap`" />
-                        </label>
-                        <label class="check">
+                            <StepperInput v-model="t.brief.cap" :max="100" :aria-label="`${t.name} brief cap`" />
+                        </span>
+                        <span class="check">
                             excerpt
-                            <input v-model.number="t.brief.excerpt" class="edit-input num" type="number" min="20" max="2000" :aria-label="`${t.name} brief excerpt chars`" />
-                        </label>
+                            <StepperInput
+                                v-model="t.brief.excerpt"
+                                :min="20"
+                                :max="2000"
+                                :step="10"
+                                :aria-label="`${t.name} brief excerpt chars`"
+                            />
+                        </span>
                     </template>
                 </div>
             </article>
@@ -536,33 +553,33 @@ const policyWords = computed(() => {
                     />
                 </label>
                 <div class="checks">
-                    <label class="check" title="Creating it archives the older endpoint and chains history — exactly one verb carries this">
-                        <input
-                            type="radio"
-                            name="role-supersession"
-                            :checked="v.roles.supersession"
-                            @change="setRoleCarrier('supersession', v)"
-                        />
-                        supersedes
-                    </label>
-                    <label class="check" title="A judged one demotes the older claim's trust and feeds the conflict worklist — exactly one verb carries this">
-                        <input
-                            type="radio"
-                            name="role-contradiction"
-                            :checked="v.roles.contradiction"
-                            @change="setRoleCarrier('contradiction', v)"
-                        />
-                        contradicts
-                    </label>
-                    <label class="check" title="The reason edge — its absence on reasoning nodes is what the checkup flags">
-                        <input v-model="v.roles.reason" type="checkbox" /> reason
-                    </label>
-                    <label class="check" title="Closes worklist nodes (Resolution answers Problem)">
-                        <input v-model="v.roles.answer" type="checkbox" /> answer
-                    </label>
-                    <label class="check" title="A live dependency / blocker">
-                        <input v-model="v.roles.dependency" type="checkbox" /> dependency
-                    </label>
+                    <ToggleChip
+                        :model-value="v.roles.supersession"
+                        label="supersedes"
+                        title="Creating it archives the older endpoint and chains history — exactly one verb carries this (click to move the role here)"
+                        @update:model-value="setRoleCarrier('supersession', v)"
+                    />
+                    <ToggleChip
+                        :model-value="v.roles.contradiction"
+                        label="contradicts"
+                        title="A judged one demotes the older claim's trust and feeds the conflict worklist — exactly one verb carries this (click to move the role here)"
+                        @update:model-value="setRoleCarrier('contradiction', v)"
+                    />
+                    <ToggleChip
+                        v-model="v.roles.reason"
+                        label="reason"
+                        title="The reason edge — its absence on reasoning nodes is what the checkup flags"
+                    />
+                    <ToggleChip
+                        v-model="v.roles.answer"
+                        label="answer"
+                        title="Closes worklist nodes (Resolution answers Problem)"
+                    />
+                    <ToggleChip
+                        v-model="v.roles.dependency"
+                        label="dependency"
+                        title="A live dependency / blocker"
+                    />
                 </div>
             </article>
             <button class="mini add" type="button" @click="addVerb">+ add verb</button>
@@ -571,20 +588,20 @@ const policyWords = computed(() => {
         <section class="block">
             <h3 class="block-title">Trust &amp; decay policy</h3>
             <div class="grid">
-                <label>start trust <input v-model.number="draft.policy.trust_created" class="edit-input num" type="number" step="0.05" min="0" max="1" /></label>
-                <label>confirmed <input v-model.number="draft.policy.trust_confirmed" class="edit-input num" type="number" step="0.05" min="0" max="1" /></label>
-                <label>approved <input v-model.number="draft.policy.trust_approved" class="edit-input num" type="number" step="0.05" min="0" max="1" /></label>
-                <label>approved floor <input v-model.number="draft.policy.trust_approved_floor" class="edit-input num" type="number" step="0.05" min="0" max="1" /></label>
-                <label>floor <input v-model.number="draft.policy.trust_floor" class="edit-input num" type="number" step="0.01" min="0" max="1" /></label>
-                <label>stale below <input v-model.number="draft.policy.stale_trust" class="edit-input num" type="number" step="0.05" min="0" max="1" /></label>
-                <label>episodic days <input v-model.number="draft.policy.episodic_window_days" class="edit-input num" type="number" min="1" max="36500" /></label>
-                <label>volatile days <input v-model.number="draft.policy.volatile_window_days" class="edit-input num" type="number" min="1" max="36500" /></label>
-                <label>approved days <input v-model.number="draft.policy.approved_window_days" class="edit-input num" type="number" min="1" max="36500" /></label>
-                <label>decay TTL days <input v-model.number="draft.policy.decay_ttl_days" class="edit-input num" type="number" min="1" max="36500" /></label>
-                <label>duplicate ≥ <input v-model.number="draft.policy.duplicate_similarity" class="edit-input num" type="number" step="0.01" min="0" max="1" /></label>
-                <label>suspect ≥ <input v-model.number="draft.policy.conflict_suspect_similarity" class="edit-input num" type="number" step="0.01" min="0" max="1" /></label>
-                <label>warn ≥ <input v-model.number="draft.policy.warn_similarity" class="edit-input num" type="number" step="0.01" min="0" max="1" /></label>
-                <label>NLI gate ≥ <input v-model.number="draft.policy.nli_sweep_min_confidence" class="edit-input num" type="number" step="0.05" min="0" max="1" /></label>
+                <label>start trust <StepperInput v-model="draft.policy.trust_created" :step="0.05" :max="1" aria-label="start trust" /></label>
+                <label>confirmed <StepperInput v-model="draft.policy.trust_confirmed" :step="0.05" :max="1" aria-label="confirmed trust" /></label>
+                <label>approved <StepperInput v-model="draft.policy.trust_approved" :step="0.05" :max="1" aria-label="approved trust" /></label>
+                <label>approved floor <StepperInput v-model="draft.policy.trust_approved_floor" :step="0.05" :max="1" aria-label="approved floor" /></label>
+                <label>floor <StepperInput v-model="draft.policy.trust_floor" :step="0.01" :max="1" aria-label="trust floor" /></label>
+                <label>stale below <StepperInput v-model="draft.policy.stale_trust" :step="0.05" :max="1" aria-label="stale threshold" /></label>
+                <label>episodic days <StepperInput v-model="draft.policy.episodic_window_days" :min="1" :max="36500" aria-label="episodic window days" /></label>
+                <label>volatile days <StepperInput v-model="draft.policy.volatile_window_days" :min="1" :max="36500" aria-label="volatile window days" /></label>
+                <label>approved days <StepperInput v-model="draft.policy.approved_window_days" :min="1" :max="36500" aria-label="approved window days" /></label>
+                <label>decay TTL days <StepperInput v-model="draft.policy.decay_ttl_days" :min="1" :max="36500" aria-label="decay TTL days" /></label>
+                <label>duplicate ≥ <StepperInput v-model="draft.policy.duplicate_similarity" :step="0.01" :max="1" aria-label="duplicate similarity" /></label>
+                <label>suspect ≥ <StepperInput v-model="draft.policy.conflict_suspect_similarity" :step="0.01" :max="1" aria-label="suspect similarity" /></label>
+                <label>warn ≥ <StepperInput v-model="draft.policy.warn_similarity" :step="0.01" :max="1" aria-label="warn similarity" /></label>
+                <label>NLI gate ≥ <StepperInput v-model="draft.policy.nli_sweep_min_confidence" :step="0.05" :max="1" aria-label="NLI gate" /></label>
             </div>
             <p v-for="(line, i) in policyWords" :key="i" class="hint words">{{ line }}</p>
         </section>
@@ -592,26 +609,28 @@ const policyWords = computed(() => {
         <section class="block">
             <h3 class="block-title">Brief composition</h3>
             <div class="grid">
-                <label>budget (chars) <input v-model.number="draft.brief.total_chars" class="edit-input num wide" type="number" min="1000" max="200000" /></label>
-                <label>home reserve <input v-model.number="draft.brief.home_reserve" class="edit-input num wide" type="number" min="0" max="200000" /></label>
+                <label>budget (chars) <StepperInput v-model="draft.brief.total_chars" :min="1000" :max="200000" :step="1000" aria-label="brief budget chars" /></label>
+                <label>home reserve <StepperInput v-model="draft.brief.home_reserve" :max="200000" :step="500" aria-label="home reserve chars" /></label>
             </div>
             <div class="checks">
-                <label class="check"><input v-model="draft.brief.tags.show" type="checkbox" /> tags</label>
-                <label class="check"><input v-model="draft.brief.conflicts.show" type="checkbox" /> conflicts</label>
-                <label class="check"><input v-model="draft.brief.suspects.show" type="checkbox" /> suspects</label>
-                <label class="check"><input v-model="draft.brief.recent.show" type="checkbox" /> recent</label>
-                <label class="check"><input v-model="draft.brief.open.show" type="checkbox" /> open work</label>
-                <label class="check" title="Teach this graph's ontology at the top of every brief — for customized ontologies the assistant's skill can't know">
-                    <input v-model="draft.brief.ontology.show" type="checkbox" /> teach ontology
-                </label>
+                <ToggleChip v-model="draft.brief.tags.show" label="tags" />
+                <ToggleChip v-model="draft.brief.conflicts.show" label="conflicts" />
+                <ToggleChip v-model="draft.brief.suspects.show" label="suspects" />
+                <ToggleChip v-model="draft.brief.recent.show" label="recent" />
+                <ToggleChip v-model="draft.brief.open.show" label="open work" />
+                <ToggleChip
+                    v-model="draft.brief.ontology.show"
+                    label="teach ontology"
+                    title="Teach this graph's ontology at the top of every brief — for customized ontologies the assistant's skill can't know"
+                />
             </div>
             <div class="grid">
-                <label>tags cap <input v-model.number="draft.brief.tags.cap" class="edit-input num" type="number" min="0" max="100" /></label>
-                <label>suspects cap <input v-model.number="draft.brief.suspects.cap" class="edit-input num" type="number" min="0" max="100" /></label>
-                <label>recent cap <input v-model.number="draft.brief.recent.cap" class="edit-input num" type="number" min="0" max="100" /></label>
-                <label>recent excerpt <input v-model.number="draft.brief.recent.excerpt" class="edit-input num" type="number" min="20" max="2000" /></label>
-                <label>open cap <input v-model.number="draft.brief.open.cap" class="edit-input num" type="number" min="0" max="100" /></label>
-                <label>open excerpt <input v-model.number="draft.brief.open.excerpt" class="edit-input num" type="number" min="20" max="2000" /></label>
+                <label>tags cap <StepperInput v-model="draft.brief.tags.cap" :max="100" aria-label="tags cap" /></label>
+                <label>suspects cap <StepperInput v-model="draft.brief.suspects.cap" :max="100" aria-label="suspects cap" /></label>
+                <label>recent cap <StepperInput v-model="draft.brief.recent.cap" :max="100" aria-label="recent cap" /></label>
+                <label>recent excerpt <StepperInput v-model="draft.brief.recent.excerpt" :min="20" :max="2000" :step="10" aria-label="recent excerpt" /></label>
+                <label>open cap <StepperInput v-model="draft.brief.open.cap" :max="100" aria-label="open cap" /></label>
+                <label>open excerpt <StepperInput v-model="draft.brief.open.excerpt" :min="20" :max="2000" :step="10" aria-label="open excerpt" /></label>
             </div>
             <p class="hint">
                 Per-type canon sections (Principles, Decisions, …) are configured on each type
@@ -622,10 +641,12 @@ const policyWords = computed(() => {
         <section class="block">
             <h3 class="block-title">Version tracking</h3>
             <div class="checks">
-                <label class="check" title="Stamp every new version-bound note with the graph's current working version; the brief announces it and set_version (MCP) moves it">
-                    <input v-model="draft.versioning.enabled" type="checkbox" /> track versions
-                    (save to apply)
-                </label>
+                <ToggleChip
+                    v-model="draft.versioning.enabled"
+                    label="track versions"
+                    title="Stamp every new version-bound note with the graph's current working version; the brief announces it and set_version (MCP) moves it"
+                />
+                <span class="check">(save to apply)</span>
             </div>
             <div v-if="draft.versioning.enabled" class="skill-row">
                 <input
@@ -661,15 +682,19 @@ const policyWords = computed(() => {
                 </template>
             </p>
             <div class="skill-row">
-                <select v-model="skillVariant" class="edit-select" aria-label="Skill capture intensity">
-                    <option value="relaxed">relaxed — capture sparingly</option>
-                    <option value="normal">normal — the middle ground</option>
-                    <option value="aggressive">aggressive — maximum capture</option>
-                </select>
+                <SegmentedControl
+                    v-model="skillVariant"
+                    :options="SKILL_OPTIONS"
+                    aria-label="Skill capture intensity"
+                />
                 <button class="mini" type="button" :disabled="busy" @click="installSkill">
                     Install into project
                 </button>
             </div>
+            <p class="hint">
+                relaxed captures sparingly · normal is the middle ground · aggressive is
+                maximum capture.
+            </p>
             <p class="hint">
                 Writes <span class="mono">.claude/skills/engram/SKILL.md</span> in the project's
                 repository. Symlinked skill folders are left untouched.
@@ -743,11 +768,25 @@ const policyWords = computed(() => {
 .card {
     display: flex;
     flex-direction: column;
-    gap: 0.55rem;
-    padding: 0.7rem 0.8rem;
+    gap: 0.7rem;
+    padding: 0.9rem 1rem;
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md, 8px);
-    background: var(--surface-muted);
+    background-color: var(--surface-muted);
+
+    /* The type's own hue marks the card's spine — a gradient, not a border,
+       so it follows the rounded corners instead of cutting at the curve.
+       Sized to the strip: full-width gradient textures bleed a 1px wrap
+       line at the far edge on transformed/fractional-scale surfaces. */
+    background-image: linear-gradient(
+        90deg,
+        var(--check-accent, var(--border-strong)) 0,
+        var(--check-accent, var(--border-strong)) 0.3rem,
+        color-mix(in srgb, var(--check-accent, var(--border-strong)) calc(8% * var(--accent-wash, 1)), transparent) 0.3rem,
+        transparent 100%
+    );
+    background-repeat: no-repeat;
+    background-size: 5rem 100%;
 }
 
 .card-head {
@@ -786,37 +825,17 @@ const policyWords = computed(() => {
     color: var(--text-tertiary);
 }
 
-.hue-slider {
-    flex: 1;
-    accent-color: var(--interactive-primary);
-}
-
-.hue-value {
-    min-width: 2.6rem;
-    text-align: right;
-    font-family: var(--font-mono);
-}
-
-.edit-input,
-.edit-select {
-    padding: 0.25rem 0.5rem;
+.edit-input {
+    padding: 0.5rem 0.9rem;
     border: 1px solid var(--border-default);
-    border-radius: var(--radius-sm, 6px);
-    background: var(--surface-base);
+    border-radius: var(--radius-md);
+    background: var(--surface-sunken);
     font-size: var(--text-body-sm);
     color: var(--text-primary);
 }
 
 .edit-input.grow {
     flex: 1;
-}
-
-.edit-input.num {
-    width: 4.6rem;
-}
-
-.edit-input.num.wide {
-    width: 6.5rem;
 }
 
 .rename-input {
@@ -841,7 +860,7 @@ const policyWords = computed(() => {
 
 .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
     gap: 0.45rem 0.9rem;
 }
 

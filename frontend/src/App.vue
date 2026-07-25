@@ -2,8 +2,10 @@
 import { onBeforeUnmount, onMounted, ref, useTemplateRef } from 'vue'
 import { onClickOutside } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
+import FeedView from '@/components/FeedView.vue'
 import GraphCanvas from '@/components/GraphCanvas.vue'
 import EngramMark from '@/components/common/EngramMark.vue'
+import SegmentedControl from '@/components/common/SegmentedControl.vue'
 import AuditPanel from '@/components/panels/AuditPanel.vue'
 import CheckupPanel from '@/components/panels/CheckupPanel.vue'
 import ConfigPanel from '@/components/panels/ConfigPanel.vue'
@@ -19,13 +21,20 @@ import SettingsMenu from '@/components/panels/SettingsMenu.vue'
 import SystemInfoPanel from '@/components/panels/SystemInfoPanel.vue'
 import { useConfigStore } from '@/stores/config'
 import { useGraphStore } from '@/stores/graph'
+import { useLayoutStore, type ViewMode } from '@/stores/layout'
 import { useThemeStore } from '@/stores/theme'
 import { useGraphSync } from '@/composables/useGraphSync'
 
 useThemeStore() // applies the persisted theme on mount via its watcher
 const store = useGraphStore()
 const config = useConfigStore()
+const layout = useLayoutStore()
 const { loading, error, connected, nodeList } = storeToRefs(store)
+
+const VIEW_OPTIONS = [
+    { value: 'graph', label: 'Graph' },
+    { value: 'feed', label: 'Feed' },
+]
 
 useGraphSync() // poll-reconcile cross-process writes, but only while the user is active
 
@@ -54,11 +63,17 @@ onBeforeUnmount(() => store.disconnect())
 
 <template>
 <div class="app">
-    <GraphCanvas class="canvas-layer" />
+    <!-- v-show keeps the canvas's zoom/positions alive across view switches;
+         the feed mounts fresh (its keyboard handling must not run under the
+         graph screen). -->
+    <GraphCanvas v-show="layout.view === 'graph'" class="canvas-layer" />
+    <FeedView v-if="layout.view === 'feed'" />
 
     <header class="topbar">
         <div class="brand">
-            <EngramMark class="brand-mark" />
+            <span class="brand-chip">
+                <EngramMark class="brand-mark" />
+            </span>
             <ProjectSwitcher />
             <span class="conn" :class="{ live: connected }" :title="connected ? 'Live' : 'Disconnected'">
                 {{ connected ? 'live' : 'offline' }}
@@ -68,6 +83,13 @@ onBeforeUnmount(() => store.disconnect())
             <SearchBar />
         </div>
         <div ref="actionsRoot" class="topbar-actions">
+            <SegmentedControl
+                class="view-toggle"
+                :model-value="layout.view"
+                :options="VIEW_OPTIONS"
+                aria-label="Screen"
+                @update:model-value="layout.setView($event as ViewMode)"
+            />
             <button
                 class="burger"
                 type="button"
@@ -99,7 +121,9 @@ onBeforeUnmount(() => store.disconnect())
     <AuditPanel />
     <SystemInfoPanel />
     <ConfigPanel />
-    <HealthStrip />
+    <!-- Graph view only: the feed's bottom row belongs to the action bar,
+         and the strip earned no other home there. -->
+    <HealthStrip v-if="layout.view === 'graph'" />
 
     <Transition name="fade">
         <div v-if="loading" class="overlay glass-panel">Loading memory…</div>
@@ -190,6 +214,12 @@ onBeforeUnmount(() => store.disconnect())
     display: contents;
 }
 
+/* The Graph/Feed switch rides the floating bar — glass like its siblings. */
+.view-toggle {
+    background-color: var(--surface-glass);
+    backdrop-filter: var(--glass-backdrop);
+}
+
 .burger {
     display: none;
     align-items: center;
@@ -215,7 +245,7 @@ onBeforeUnmount(() => store.disconnect())
     height: 1.6rem;
 }
 
-@media (width <= 770px) {
+@media (width <= 850px) {
     .burger {
         display: flex;
     }
@@ -232,8 +262,13 @@ onBeforeUnmount(() => store.disconnect())
         padding: 0.8rem;
         border-radius: var(--radius-lg);
         border: 1px solid var(--border-default);
-        background-color: var(--surface-glass);
-        backdrop-filter: var(--glass-backdrop);
+        /* Opaque, deliberately NOT glass: a backdrop-filter here would make
+           this box the containing block for position:fixed descendants, and
+           the Review/Checkup drawers are exactly that — their left:0 would
+           mean the dropdown's corner, not the viewport, hiding the drawer
+           off-screen. (Glass would also sample nothing over the feed's
+           scroller — same Chromium limit as the search bar.) */
+        background-color: var(--surface-elevated);
         box-shadow: var(--shadow-lg);
         /* visibility, not display: the Review drawer is a fixed-position
            descendant and must survive the menu closing. */
@@ -258,7 +293,9 @@ onBeforeUnmount(() => store.disconnect())
     }
 }
 
-@media (width <= 390px) {
+/* Too narrow for a useful search pill (IDE side panels) — the grid's middle
+   track goes with it, so the bar falls back to flex. */
+@media (width <= 530px) {
     .topbar {
         display: flex;
         justify-content: space-between;
@@ -269,13 +306,23 @@ onBeforeUnmount(() => store.disconnect())
     }
 }
 
+/* Bare minimum chrome: the connection badge and the actions burger.
+   (.brand-qualified so this outranks the base .brand-chip rule, which
+   sits later in the file.) */
+@media (width <= 400px) {
+    .brand .brand-chip,
+    .brand .switcher-root {
+        display: none;
+    }
+}
+
+/* The one primary action in the bar — filled, unlike its ghost siblings. */
 .new-node {
     padding: 0.6rem 1.2rem;
     border-radius: var(--radius-full);
-    border: 1px solid var(--border-default);
-    background-color: var(--surface-glass);
-    backdrop-filter: var(--glass-backdrop);
-    color: var(--text-secondary);
+    border: 1px solid transparent;
+    background-color: var(--interactive-primary);
+    color: var(--text-inverse);
     font-size: var(--text-label);
     font-weight: 600;
     cursor: pointer;
@@ -283,8 +330,7 @@ onBeforeUnmount(() => store.disconnect())
 }
 
 .new-node:hover {
-    color: var(--text-primary);
-    background-color: var(--node-hover-surface);
+    background-color: var(--interactive-primary-hover);
 }
 
 .brand {
@@ -293,11 +339,21 @@ onBeforeUnmount(() => store.disconnect())
     gap: 0.8rem;
 }
 
-.brand-mark {
+.brand-chip {
+    display: grid;
+    flex-shrink: 0;
+    place-content: center;
     width: 3.2rem;
     height: 3.2rem;
-    color: var(--interactive-primary);
-    filter: drop-shadow(0 0 1rem color-mix(in srgb, var(--interactive-primary) 55%, transparent));
+    border-radius: var(--radius-md);
+    background: var(--interactive-primary);
+    color: var(--text-inverse);
+    box-shadow: 0 0 1.2rem color-mix(in srgb, var(--interactive-primary) 45%, transparent);
+}
+
+.brand-mark {
+    width: 2.2rem;
+    height: 2.2rem;
 }
 
 .conn {

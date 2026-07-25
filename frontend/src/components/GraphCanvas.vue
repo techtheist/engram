@@ -30,7 +30,7 @@ const config = useConfigStore()
 const layout = useLayoutStore()
 const projects = useProjectsStore()
 const { visibleNodeList, visibleEdgeList, selectedId } = storeToRefs(store)
-const { fitView, setCenter, viewport } = useVueFlow()
+const { findNode, fitView, setCenter, viewport } = useVueFlow()
 
 const nodeTypes = { engram: markRaw(EngramNode) }
 const edgeTypes = { engram: markRaw(EngramEdge) }
@@ -71,6 +71,21 @@ const outlineVars = computed(() => ({
 }))
 
 /**
+ * Zoom-gated glass: below ~0.7 zoom the cards are minimal-form thumbnails and
+ * per-card backdrop blur (engram-purple) + big shadows only burn compositor
+ * time. Hysteresis (off < 0.72, back on ≥ 0.8) so the boundary never flickers.
+ */
+const lowZoom = ref(false)
+watch(
+    () => viewport.value.zoom,
+    (z) => {
+        if (lowZoom.value && z >= 0.8) lowZoom.value = false
+        else if (!lowZoom.value && z < 0.72) lowZoom.value = true
+    },
+    { immediate: true },
+)
+
+/**
  * Fit with a 3% breathing margin on every side, except a 64px top gap so the
  * floating search/settings bar never covers the topmost nodes.
  */
@@ -102,6 +117,25 @@ watch(
     async () => {
         await nextTick()
         await fitView({ ...FIT_VIEW_PARAMS, duration: 400 })
+    },
+)
+
+// Feed→graph sync: coming back to the canvas with a selection (the feed's
+// centered card, pushed into the store as it unmounts), center on that node
+// — an off-screen selection outline reads as "the sync didn't happen". Zoom
+// stays the user's; the zoom-compensated outline keeps it findable anyway.
+watch(
+    () => layout.view,
+    async (v) => {
+        if (v !== 'graph') return
+        await nextTick()
+        const node = selectedId.value ? findNode(selectedId.value) : undefined
+        if (!node) return
+        void setCenter(
+            node.position.x + node.dimensions.width / 2,
+            node.position.y + node.dimensions.height / 2,
+            { zoom: viewport.value.zoom, duration: 300 },
+        )
     },
 )
 
@@ -200,7 +234,7 @@ watch(
 </script>
 
 <template>
-<div class="canvas-root" :style="outlineVars">
+<div class="canvas-root" :class="{ 'low-zoom': lowZoom }" :style="outlineVars">
     <VueFlow
         :nodes="flowNodes"
         :edges="flowEdges"
@@ -273,6 +307,17 @@ watch(
  * Unscoped: Vue Flow renders nodes/handles into its own DOM, so scoped
  * selectors wouldn't reach them. Kept minimal and namespaced to .engram-canvas.
  */
+/* Zoom-gated glass (see lowZoom above): cheap flat cards while zoomed out —
+ * the :hover variant is listed too so it can't re-enable the heavy styles.
+ * With no blur behind it, a translucent surface (the hover reveal) would
+ * show raw canvas through the card — so the surface goes fully opaque too. */
+.canvas-root.low-zoom .engram-node,
+.canvas-root.low-zoom .engram-node:hover {
+    backdrop-filter: none;
+    box-shadow: var(--shadow-sm);
+    background-color: var(--surface-elevated);
+}
+
 .engram-canvas .vue-flow__handle.engram-handle {
     width: 0.9rem;
     height: 0.9rem;

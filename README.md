@@ -26,6 +26,13 @@
 ![Engram pane in VS Code's secondary sidebar: the memory graph fills in while the assistant explains the project](.screenshots/engram-alpha-vscode.png)
 </details>
 
+<details>
+<summary><b>The timeline feed</b> <i>(click to expand)</i></summary>
+<br>
+
+![The Feed screen: the same memory as a scrollable timeline — the centered card opens its full story, with the judgment bar at the bottom](.screenshots/layout-feed.png)
+</details>
+
 Unlike a flat note pile, Engram's graph is *active*: superseded knowledge is
 archived behind a `replaces` edge instead of silently contradicting the new
 canon, look-alike claims get flagged and judged, contradictions become
@@ -69,6 +76,10 @@ per-assistant wiring, and updating: [Getting started](./docs/getting-started.md)
 - **A graph you can read and edit** — the whole graph rendered live, four
   layouts, tags and filters that slice it by concern, and full by-hand
   editing. Hard-delete is deliberately user-only. → [The pane](./docs/pane.md)
+- **A timeline you can scroll** — the second screen renders the same memory
+  as a vertical feed: the project's story in order with version markers, a
+  review lens for what needs an eye, edge-hopping with a back-trail, and
+  judgment actions right on the centered card. → [The pane](./docs/pane.md)
 - **An assistant that starts briefed** — a session-start digest of conflicts
   to judge, open work, and standing decisions; mid-session recall via hybrid
   search where every hit carries its conflicts and supersessions first.

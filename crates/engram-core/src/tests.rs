@@ -4838,14 +4838,22 @@ fn version_tracking_stamps_bound_types_only() {
         ),
     ];
     for e in engines {
-        // Off by default: nothing is stamped even with a version set.
+        // Off by default — but setting a version IS the tracking opt-in,
+        // so set_current_version flips it on.
+        assert!(!e.config().versioning.enabled);
         e.set_current_version(Some("v0.7.0")).unwrap();
+        assert!(e.config().versioning.enabled);
+
+        // Tracking deliberately switched off again: the stamp stops even
+        // with a version still set.
+        let mut cfg = GraphConfig::default();
+        cfg.versioning.enabled = false;
+        e.set_graph_config(&cfg).unwrap();
         let off = e
-            .add_node(new_node(NodeType::Decision, "before tracking", "x"))
+            .add_node(new_node(NodeType::Decision, "tracking off", "x"))
             .unwrap();
         assert_eq!(off.version, None);
 
-        let mut cfg = GraphConfig::default();
         cfg.versioning.enabled = true;
         e.set_graph_config(&cfg).unwrap();
 
@@ -4917,6 +4925,26 @@ fn version_tracking_stamps_bound_types_only() {
             "node lines carry the stamp: {brief}"
         );
     }
+}
+
+#[test]
+fn setting_a_version_enables_tracking_clearing_never_toggles() {
+    let e = engine();
+    assert!(!e.config().versioning.enabled);
+    // Clearing on a graph that never tracked stays a no-op.
+    e.set_current_version(None).unwrap();
+    assert!(!e.config().versioning.enabled);
+    // Setting is the opt-in gesture: tracking turns on and the very next
+    // version-bound write carries the stamp.
+    e.set_current_version(Some("0.7.1")).unwrap();
+    assert!(e.config().versioning.enabled);
+    let d = e
+        .add_node(new_node(NodeType::Decision, "first tracked note", "x"))
+        .unwrap();
+    assert_eq!(d.version.as_deref(), Some("0.7.1"));
+    // Clearing the version leaves tracking on.
+    e.set_current_version(None).unwrap();
+    assert!(e.config().versioning.enabled);
 }
 
 #[test]

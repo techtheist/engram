@@ -23,6 +23,36 @@ JetBrains dark/light, VS Code dark/light), a click-to-center minimap handles
 big graphs, and a health strip keeps the counts that matter — suspected
 conflicts, stale nodes, provisional writes — in the corner of your eye.
 
+## The timeline feed
+
+The **Graph / Feed** toggle in the topbar switches to the pane's second
+screen: the same memory as a vertical feed of cards, neighbors peeking above
+and below so you always see where you are in the stream.
+
+![The Feed screen: a centered card expanded to its full story, version markers between eras, and the judgment bar at the bottom](../.screenshots/layout-feed.png)
+
+Two lenses over the same feed:
+
+- **Timeline** — everything in chronological order, with version markers
+  wherever the project's
+  [working version](./customization.md) moved on. History reads as a story:
+  the problem, the decision that answered it, the caution it left behind.
+- **Review** — only what needs a human eye (provisional, stale, drifted),
+  with the judgment actions inline.
+
+Every card shows its full markdown clipped to a fixed preview; the card you
+stop on opens to its whole body, however long — scroll inside it, then move
+on (`j`/`k` and the arrow keys navigate too). The bottom bar carries the
+side drawer's actions for whichever card is centered — **Approve / Still
+true / Pin / Edit / Delete** — so a review pass never leaves the feed.
+
+The feed also *traverses*: click any edge chip on a card and the feed jumps
+to that node — even one the current lens filters out — while **← back**
+walks the trail home (session-scoped, forty hops deep). And the two screens
+share one notion of "current": select a node on the canvas and the feed
+opens centered on it; leave the feed and the canvas selects and centers the
+card you were reading.
+
 ## Tags and filters
 
 Nodes carry free-form tags, settable by you in the pane or by the assistant

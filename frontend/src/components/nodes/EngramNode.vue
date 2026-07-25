@@ -74,8 +74,23 @@ const isUser = computed(() => node.value.source === 'user')
     padding: 1.4rem 1.6rem;
     border-radius: var(--radius-xl);
     border: 1px solid var(--border-default);
-    border-left: 3px solid var(--accent);
     background-color: var(--surface-elevated);
+
+    /* The type strip, painted as a background instead of a border-left:
+       backgrounds clip to the rounded corners, so the strip tapers cleanly
+       into the curve instead of cutting off mid-turn. Solid bar + soft wash.
+       background-size confines the gradient texture to the left strip — a
+       full-width gradient on a zoom-transformed element bleeds its first
+       stop as a 1px line at the far edge (GPU texture wrap). */
+    background-image: linear-gradient(
+        90deg,
+        var(--accent) 0,
+        var(--accent) 0.3rem,
+        color-mix(in srgb, var(--accent) calc(13% * var(--accent-wash, 1)), transparent) 0.3rem,
+        transparent 100%
+    );
+    background-repeat: no-repeat;
+    background-size: 6.4rem 100%;
     /* Frosted glass behind the node — resolves to a blur only in engram-purple
        (where --glass-backdrop is a blur); every other theme sets it to `none`.
        Invisible at rest (opaque surface) and revealed on hover, where the
@@ -109,8 +124,9 @@ const isUser = computed(() => node.value.source === 'user')
 }
 
 .engram-node.archived {
-    opacity: 0.5;
-    filter: saturate(0.6);
+    /* Gray, not ghostly: full opacity (a see-through card reads as a glass
+       bug), desaturated instead — the accent strip and pills gray with it. */
+    filter: grayscale(0.65);
 }
 
 /* The body is the only flex child allowed to shrink under the height cap. */

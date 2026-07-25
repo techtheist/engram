@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue'
 import { watchDebounced } from '@vueuse/core'
 import DOMPurify from 'dompurify'
 import { api } from '@/services/api'
 import { useGraphStore } from '@/stores/graph'
 import { useConfigStore } from '@/stores/config'
+import { useLayoutStore } from '@/stores/layout'
 import type { SearchHit } from '@/types/graph'
 
 /**
@@ -19,6 +20,7 @@ const safeSnippet = (s: string): string =>
 
 const store = useGraphStore()
 const config = useConfigStore()
+const layout = useLayoutStore()
 
 const query = ref('')
 const hits = ref<SearchHit[]>([])
@@ -66,23 +68,45 @@ function clear(): void {
 watch(query, (q) => {
     if (!q) open.value = false
 })
+
+// ⌘K / Ctrl+K focuses search from anywhere; the keycap in the field teaches it.
+const input = useTemplateRef<HTMLInputElement>('input')
+const focused = ref(false)
+const kbd = /mac/i.test(navigator.platform) ? '⌘K' : 'Ctrl K'
+
+function onGlobalKey(e: KeyboardEvent): void {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        input.value?.focus()
+    }
+}
+
+onMounted(() => window.addEventListener('keydown', onGlobalKey))
+onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKey))
 </script>
 
 <template>
-<div class="search">
+<!-- Feed view goes solid: the feed is a composited scroller, and Chromium's
+     backdrop-filter can't sample its content — cards slid under the glass
+     pixel-crisp, reading as a bug. Opaque beats broken glass there; the
+     graph view (transform-panned, samples fine) keeps the blur. -->
+<div class="search" :class="{ solid: layout.view === 'feed' }">
     <div class="field glass-panel">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
             <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2" />
             <line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
         </svg>
         <input
+            ref="input"
             v-model="query"
             class="input"
             type="search"
             placeholder="Search memory…"
             aria-label="Search the graph"
-            @focus="open = hits.length > 0"
+            @focus="((open = hits.length > 0), (focused = true))"
+            @blur="focused = false"
         />
+        <kbd v-if="!query && !focused" class="kbd" aria-hidden="true">{{ kbd }}</kbd>
         <button v-if="query" class="clear" type="button" aria-label="Clear" @click="clear">×</button>
     </div>
 
@@ -113,6 +137,14 @@ watch(query, (q) => {
     position: relative;
     width: 36rem;
     max-width: 100%;
+}
+
+/* Solid variant (feed view): opaque surface, no backdrop sampling. Covers
+   the field and its dropdowns; a no-op outside engram-purple, where the
+   glass tokens are already opaque. */
+.search.solid .glass-panel {
+    background-color: var(--surface-elevated);
+    backdrop-filter: none;
 }
 
 .field {
@@ -149,6 +181,17 @@ watch(query, (q) => {
 
 .input::-webkit-search-cancel-button {
     display: none;
+}
+
+.kbd {
+    flex-shrink: 0;
+    padding: 0.2rem 0.6rem;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    background: var(--surface-sunken);
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+    font-size: var(--text-caption);
 }
 
 .clear {

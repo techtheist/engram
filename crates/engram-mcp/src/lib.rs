@@ -629,14 +629,16 @@ impl Engram {
         VERSION — version tracking stamps it on every new version-bound note \
         so the graph shows when each piece of knowledge was captured. Call it \
         when the project moves to a new version (release cut, version bump). \
-        The response carries the recent switch history.")]
+        Setting a version turns version tracking on if it was off (clearing \
+        never does). The response carries the recent switch history.")]
     async fn set_version(
         &self,
         Parameters(a): Parameters<SetVersionArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let engine = self.engine_for(&a.project)?;
-        let (previous, history) = {
+        let (previous, history, enabled_by_this_call) = {
             let engine = self.mcp(&engine);
+            let was_on = engine.config().versioning.enabled;
             let previous = engine
                 .set_current_version(a.version.as_deref())
                 .map_err(map_err)?;
@@ -647,14 +649,20 @@ impl Engram {
                 .into_iter()
                 .filter_map(|r| r.title)
                 .collect();
-            (previous, history)
+            (previous, history, a.version.is_some() && !was_on)
         };
-        self.reply(&json!({
+        let mut reply = json!({
             "ok": true,
             "previous": previous,
             "current": a.version,
             "history": history,
-        }))
+        });
+        if enabled_by_this_call {
+            reply["versioning"] = json!(
+                "was off — enabled by this call; new version-bound notes are stamped from now on"
+            );
+        }
+        self.reply(&reply)
     }
 
     #[tool(description = "Delete one edge by id — for repairing a mislink. \

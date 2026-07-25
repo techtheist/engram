@@ -33,13 +33,27 @@ const props = defineProps<{
     title?: string
 }>()
 
-const { widths, claim, release } = usePanels()
+const { widths, claim, release, reconcile } = usePanels()
+
+const remPx = (): number =>
+    parseFloat(getComputedStyle(document.documentElement).fontSize) || 10
 
 watch(
     () => props.open,
     (open) => {
-        if (open) claim(props.side, props.panelId, props.dismiss)
-        else release(props.side, props.panelId)
+        if (open) {
+            const rem = remPx()
+            claim(props.side, {
+                id: props.panelId,
+                dismiss: props.dismiss,
+                minPx: props.minRem * rem,
+                defaultPx: props.defaultRem * rem,
+            })
+            // Opening into an already-wide opposite drawer: push it now.
+            reconcile(props.side)
+        } else {
+            release(props.side, props.panelId)
+        }
     },
     { immediate: true },
 )
@@ -58,12 +72,13 @@ function startResize(down: PointerEvent): void {
     const grip = down.currentTarget as HTMLElement
     grip.setPointerCapture(down.pointerId)
     resizing.value = true
-    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 10
-    const min = props.minRem * rem
+    const min = props.minRem * remPx()
     const onMove = (e: PointerEvent) => {
         const raw = props.side === 'left' ? e.clientX : window.innerWidth - e.clientX
-        const half = Math.max(window.innerWidth / 2, min)
-        widths[props.panelId] = Math.round(Math.min(Math.max(raw, min), half))
+        // No midline cap: grow to the whole pane; when the opposite drawer is
+        // open, reconcile() pushes it away instead of clipping (dynamic center).
+        widths[props.panelId] = Math.round(Math.min(Math.max(raw, min), window.innerWidth))
+        reconcile(props.side)
     }
     // pointercancel too: touch interruptions and OS gestures end a drag
     // without ever firing pointerup, and must not leave onMove attached.
@@ -123,10 +138,11 @@ function startResize(down: PointerEvent): void {
     flex-direction: column;
     overflow: hidden;
     width: min(var(--panel-width), 100vw);
-    /* The content floor wins over the half-screen cap (min-width beats
-       max-width in CSS), but never exceeds the pane itself. */
+    /* No midline cap (dynamic center: overlapping drawers push each other via
+       usePanels.reconcile) — only the content floor and the pane itself bound
+       the width. min-width beats max-width in CSS, so the floor always wins. */
     min-width: min(var(--panel-min), 100vw);
-    max-width: clamp(var(--panel-min), 50vw, 100vw);
+    max-width: 100vw;
     box-shadow: var(--shadow-lg);
 }
 
@@ -142,12 +158,36 @@ function startResize(down: PointerEvent): void {
     border-bottom-right-radius: var(--radius-xl);
 }
 
+/* The inner-edge accent as a gradient, not a border: a one-sided border cuts
+ * off mid-curve at the rounded corners; a background clips to the shape, so
+ * the strip tapers into the curve — with a soft wash trailing inward.
+ * background-size confines the texture to the strip: a full-width gradient
+ * can bleed its first stop as a 1px line at the opposite edge. */
+.side-panel.has-accent {
+    background-repeat: no-repeat;
+    background-size: 9rem 100%;
+}
+
 .side-panel.right.has-accent {
-    border-left: 3px solid var(--panel-accent);
+    background-image: linear-gradient(
+        90deg,
+        var(--panel-accent) 0,
+        var(--panel-accent) 0.3rem,
+        color-mix(in srgb, var(--panel-accent) calc(9% * var(--accent-wash, 1)), transparent) 0.3rem,
+        transparent 100%
+    );
+    background-position: 0 0;
 }
 
 .side-panel.left.has-accent {
-    border-right: 3px solid var(--panel-accent);
+    background-image: linear-gradient(
+        270deg,
+        var(--panel-accent) 0,
+        var(--panel-accent) 0.3rem,
+        color-mix(in srgb, var(--panel-accent) calc(9% * var(--accent-wash, 1)), transparent) 0.3rem,
+        transparent 100%
+    );
+    background-position: 100% 0;
 }
 
 /* The top bar lives outside the scroller, so close/actions stay reachable
