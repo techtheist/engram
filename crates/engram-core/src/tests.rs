@@ -889,6 +889,68 @@ fn check_claim_buckets_supports_contradicts_silent() {
 }
 
 #[test]
+fn an_unconfident_contradiction_is_reported_as_silence() {
+    // The gate the contradiction benchmark bought: every asserted
+    // contradiction costs a human judgment, so a verdict the model is not
+    // confident about is withheld rather than spent. FakeNli scores this pair
+    // at 0.9, so a floor above it must move the verdict without changing what
+    // the model said.
+    let e = engine_with_nli();
+    e.add_node(new_node(
+        NodeType::Decision,
+        "contra: we store sessions in cookies",
+        "",
+    ))
+    .unwrap();
+    // A second node the model has no opinion about, so the ordering assertion
+    // below has something to out-rank. FakeNli scores an unrelated pair at
+    // 0.05 entailment / 0.02 contradiction.
+    e.add_node(new_node(
+        NodeType::Decision,
+        "sessions are unrelated to the deployment pipeline",
+        "",
+    ))
+    .unwrap();
+
+    let report = e
+        .check_claim("contra: sessions live in localStorage", 8)
+        .unwrap();
+    assert_eq!(report.contradicts.len(), 1, "ungated baseline");
+
+    let mut cfg = e.graph_config();
+    cfg.policy.claim_contradiction_min_confidence = 0.95;
+    e.set_graph_config(&cfg).unwrap();
+
+    let report = e
+        .check_claim("contra: sessions live in localStorage", 8)
+        .unwrap();
+    assert!(report.contradicts.is_empty(), "{report:?}");
+    let silent = report
+        .silent
+        .iter()
+        .find(|v| v.title.contains("cookies"))
+        .expect("the verdict is withheld, not dropped");
+    // The evidence survives the gate — only the assertion is withheld, so a
+    // caller can still see exactly what the model thought.
+    assert!(silent.contradiction > 0.5, "{silent:?}");
+
+    // ...and it sorts to the front of the bucket. `silent` is where the layer's
+    // declined-to-assert cases collect — a gated contradiction, or a claim that
+    // agrees but was judged neutral (about a fifth of them, per
+    // eval/CONTRADICTIONS.md) — so the near-misses have to be readable first.
+    assert_eq!(
+        report.silent.len(),
+        2,
+        "both nodes reach the bucket, or the ordering assertion below is vacuous: {report:?}"
+    );
+    let front = report.silent.first().expect("non-empty");
+    assert!(
+        front.title.contains("cookies"),
+        "strongest signal leads the bucket, got {front:?}"
+    );
+}
+
+#[test]
 fn audit_sweeps_queue_only_their_target_label() {
     let e = engine_with_nli();
     // A contradiction pair (shared "contra" marker) and a duplicate pair

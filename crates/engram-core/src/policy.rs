@@ -139,6 +139,40 @@ pub const RERANK_TRUST_WEIGHT: f64 = 0.15;
 /// from the candidate set before the reranker is ever called, so no amount of
 /// re-ordering can recover it. Change them together or not at all.
 pub const RERANK_VOTE_K: Option<f64> = Some(10.0);
+/// Minimum contradiction confidence before `check_claim` reports a claim as
+/// contradicted. Below it the verdict lands in `silent` instead — the raw
+/// probabilities ride along either way, so nothing is hidden, only unasserted.
+///
+/// This is a DIFFERENT gate from [`NLI_SWEEP_MIN_CONFIDENCE`], which guards the
+/// suspect queue and pairs with a similarity floor. `check_claim` had neither,
+/// and judged whatever the top-8 retrieval returned.
+///
+/// 0.80 chosen on five seeds of the contradiction benchmark
+/// (`eval/CONTRADICTIONS.md`), for stability rather than for the best headline.
+/// Mean catch / false alarms per gate, MobileBERT, shipping ONNX file:
+///
+/// ```text
+///   gate   catch (min)  spread   false alarms   agreeing claims
+///                                                called conflicts
+///   0.00      96 (95)        2     61            7-13%
+///   0.70      95 (94)        1     44            2-6%
+///   0.80      92 (90)        4     38            1-2%   <- shipped
+///   0.90      85 (79)       11     27            0-2%
+///   0.95      77 (71)       13     18            0-1%
+/// ```
+///
+/// Tighter gates keep scoring a better catch-minus-false-alarm gap right up to
+/// 0.95, where catch falls to seven in ten and swings thirteen points between
+/// seeds — so the gap is not the criterion. 0.80 is the last gate before catch
+/// comes apart, and it is already where the layer's worst output (asserting
+/// conflict against a note the claim AGREES with) drops from one agreeing claim
+/// in ten to one or two in a hundred.
+///
+/// Corroborated on this repo's own graph (`--real-graph`), where the same gate
+/// is the tightest one that still flags the single genuine contradiction in the
+/// project's recorded history, and takes queue false alarms to 19%.
+pub const CLAIM_CONTRADICTION_MIN_CONFIDENCE: f64 = 0.80;
+
 /// Minimum NLI confidence before an audit sweep queues a pair. One of two
 /// guards learned on the dogfood graph (2026-07-13): MNLI-class models
 /// presuppose co-reference, so below the ~0.85 similarity band unrelated

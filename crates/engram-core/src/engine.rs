@@ -1744,15 +1744,39 @@ impl Engine {
                 contradiction: j.contradiction,
                 project: None,
             };
+            // A contradiction the model is not confident about is reported as
+            // silence, not as a conflict. Every assertion here costs a human
+            // judgment, and the benchmark in `eval/CONTRADICTIONS.md` measured
+            // what the ungated layer was spending: the model calls most
+            // UNRELATED claims contradictions, and the gate is what separates
+            // the populations. The raw probabilities ride along on the verdict
+            // either way, so nothing is hidden — only unasserted.
+            //
+            // Deliberately contradiction-only: false `supports` has never been
+            // measured, and gating it on the same number would be guessing.
+            let floor = self.config().policy.claim_contradiction_min_confidence;
             match j.label() {
                 "entailment" => report.supports.push(verdict),
-                "contradiction" => report.contradicts.push(verdict),
+                "contradiction" if f64::from(verdict.contradiction) >= floor => {
+                    report.contradicts.push(verdict)
+                }
                 _ => report.silent.push(verdict),
             }
         }
         report
             .contradicts
             .sort_by(|a, b| b.contradiction.total_cmp(&a.contradiction));
+        // Strongest near-miss first. Roughly a fifth of claims that restate a
+        // stored note verbatim are judged neutral rather than entailment
+        // (`eval/CONTRADICTIONS.md`), and a gated contradiction lands here too
+        // — so this bucket is where the layer's declined-to-assert cases
+        // collect, and reading it top-down is reading them in order of how
+        // close the model came.
+        report.silent.sort_by(|a, b| {
+            b.entailment
+                .max(b.contradiction)
+                .total_cmp(&a.entailment.max(a.contradiction))
+        });
         report
             .supports
             .sort_by(|a, b| b.entailment.total_cmp(&a.entailment));
@@ -2169,7 +2193,16 @@ impl Engine {
     /// judged as the hypothesis, contradicts hardest. Absent under a 0.15
     /// asymmetry margin — near-symmetric contradictions carry no direction
     /// worth showing.
-    fn nli_hint(&self, a: &Node, b: &Node) -> Option<(&'static str, f64, Option<&'static str>)> {
+    ///
+    /// Public so the eval harness can score the suspect queue's judgment on a
+    /// real graph's judged pairs. Calibrating that gate against a
+    /// reimplementation of this composition would measure the
+    /// reimplementation.
+    pub fn nli_hint(
+        &self,
+        a: &Node,
+        b: &Node,
+    ) -> Option<(&'static str, f64, Option<&'static str>)> {
         const DIRECTION_MARGIN: f32 = 0.15;
         let nli = self.nli.as_ref()?;
         let sym = nli.judge_pair(&claim(a), &claim(b)).ok()?;

@@ -193,6 +193,11 @@ pub struct PolicyConfig {
     /// How much trust tilts the reranker's ordering.
     #[serde(default = "default_rerank_trust_weight")]
     pub rerank_trust_weight: f64,
+    /// Minimum contradiction confidence before `check_claim` asserts a
+    /// contradiction; below it the verdict is reported as silent. See
+    /// [`crate::policy::CLAIM_CONTRADICTION_MIN_CONFIDENCE`].
+    #[serde(default = "default_claim_contradiction_min_confidence")]
+    pub claim_contradiction_min_confidence: f64,
     /// Damping constant for the reciprocal-rank vote between the retrieval
     /// ordering and the cross-encoder's. `None` lets the cross-encoder's score
     /// replace the fused one outright — it then has the final word.
@@ -218,6 +223,9 @@ fn default_search_relative_cut() -> f64 {
 }
 fn default_rerank_trust_weight() -> f64 {
     crate::policy::RERANK_TRUST_WEIGHT
+}
+fn default_claim_contradiction_min_confidence() -> f64 {
+    crate::policy::CLAIM_CONTRADICTION_MIN_CONFIDENCE
 }
 fn default_rerank_vote_k() -> Option<f64> {
     crate::policy::RERANK_VOTE_K
@@ -246,6 +254,7 @@ impl Default for PolicyConfig {
             search_min_score: SEARCH_MIN_SCORE,
             search_relative_cut: SEARCH_RELATIVE_CUT,
             rerank_trust_weight: RERANK_TRUST_WEIGHT,
+            claim_contradiction_min_confidence: CLAIM_CONTRADICTION_MIN_CONFIDENCE,
             rerank_vote_k: RERANK_VOTE_K,
         }
     }
@@ -1017,6 +1026,10 @@ impl GraphConfig {
             ("search_min_score", p.search_min_score),
             ("search_relative_cut", p.search_relative_cut),
             ("rerank_trust_weight", p.rerank_trust_weight),
+            (
+                "claim_contradiction_min_confidence",
+                p.claim_contradiction_min_confidence,
+            ),
         ] {
             if !(0.0..=1.0).contains(&value) {
                 return fail(format!("policy.{name} {value} out of 0..=1"));
