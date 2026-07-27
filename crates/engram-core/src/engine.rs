@@ -1043,6 +1043,17 @@ impl Engine {
     /// modulates the hybrid blend — relevance dominates, trust breaks ties
     /// (PLAN §6A). A reranker failure keeps hybrid order: precision is an
     /// upgrade, never a dependency.
+    ///
+    /// With `rerank_vote_k` set (the default), the cross-encoder does not get
+    /// the final word: its ordering is combined with the retrieval ordering by
+    /// a reciprocal-rank vote, so a hit two independent channels ranked highly
+    /// cannot be buried by one confident cross-encoder mistake.
+    ///
+    /// The *reported* score stays the cross-encoder's calibrated relevance
+    /// either way. The vote decides order only — reciprocal-rank sums encode
+    /// rank, not confidence, and `score` is surfaced to assistants over MCP and
+    /// to the pane, where a number that no longer means "how good is this
+    /// match" would quietly mislead both.
     fn rerank(&self, reranker: &dyn Reranker, query: &str, hits: &mut [SearchHit]) {
         let docs: Vec<String> = hits
             .iter()
@@ -1060,11 +1071,32 @@ impl Engine {
         if scores.len() != hits.len() {
             return;
         }
-        for (hit, logit) in hits.iter_mut().zip(scores) {
-            let relevance = 1.0 / (1.0 + (-logit as f64).exp());
-            hit.score = relevance * (1.0 + crate::policy::RERANK_TRUST_WEIGHT * hit.trust);
+        let config = self.config();
+        let trust_weight = config.policy.rerank_trust_weight;
+
+        // `hits` arrives in retrieval order, so a hit's index IS its incoming
+        // rank — captured before anything re-scores or re-sorts.
+        let retrieval_rank: Vec<usize> = (1..=hits.len()).collect();
+        for (hit, logit) in hits.iter_mut().zip(&scores) {
+            let relevance = 1.0 / (1.0 + (-*logit as f64).exp());
+            hit.score = relevance * (1.0 + trust_weight * hit.trust);
         }
-        hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+
+        let Some(k) = config.policy.rerank_vote_k else {
+            hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+            return;
+        };
+
+        let mut by_rerank: Vec<usize> = (0..hits.len()).collect();
+        by_rerank.sort_by(|a, b| scores[*b].total_cmp(&scores[*a]));
+        let mut vote = vec![0.0_f64; hits.len()];
+        for (rank, idx) in by_rerank.into_iter().enumerate() {
+            vote[idx] = 1.0 / (k + retrieval_rank[idx] as f64) + 1.0 / (k + (rank + 1) as f64);
+        }
+        let mut order: Vec<usize> = (0..hits.len()).collect();
+        order.sort_by(|a, b| vote[*b].total_cmp(&vote[*a]).then(a.cmp(b)));
+        let reordered: Vec<SearchHit> = order.into_iter().map(|i| hits[i].clone()).collect();
+        hits.clone_from_slice(&reordered);
     }
 
     /// Claude-side note write with the PLAN §6A safety net: if a same-type,

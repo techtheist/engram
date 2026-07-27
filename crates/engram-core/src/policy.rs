@@ -84,6 +84,23 @@ pub const DECAY_TTL_DAYS: i64 = 14;
 pub const WARN_SIMILARITY: f64 = 0.70;
 /// Character budget for the session-start brief (~4k tokens).
 pub const DEFAULT_BRIEF_CHARS: usize = 16000;
+/// How much of a hit's relevance comes from the keyword channel; the rest
+/// comes from vector similarity.
+///
+/// 0.15 rather than the even split it started at, measured 2026-07-27 on the
+/// eval bench. A query that never names its subject scores zero on keywords by
+/// construction, so a high weight caps its relevance while a distractor
+/// sharing one common word scores on both channels. Dropping the weight to
+/// 0.15 and letting the reranker vote (see `RERANK_VOTE_K`) is worth +0.17
+/// recall on those queries and costs nothing on the ones that do name their
+/// subject, which stay at 1.00.
+///
+/// Not zero, deliberately: the keyword channel is also what produces the
+/// 12-token FTS snippet and the match highlighting, so silencing it would
+/// raise the tokens delivered per query by roughly a third to buy another
+/// 0.07.
+pub const SEARCH_KEYWORD_WEIGHT: f64 = 0.15;
+
 /// Cosine similarity below which a vector hit carries no semantic signal.
 /// bge-small compresses unrelated pairs into roughly [0.5, 0.7]; the semantic
 /// component rescales from this floor to 1.0 and is zero underneath it.
@@ -104,6 +121,24 @@ pub const SEARCH_RECENCY_HALF_LIFE_SECS: i64 = 30 * 24 * 60 * 60; // 30 days
 /// How much trust modulates a reranked hit's score (mirrors the trust weight
 /// inside the hybrid blend): relevance dominates, trust breaks near-ties.
 pub const RERANK_TRUST_WEIGHT: f64 = 0.15;
+/// Damping constant for the reciprocal-rank vote that combines the retrieval
+/// ordering with the cross-encoder's. `None` gives the cross-encoder the final
+/// word instead.
+///
+/// A voting reranker contributes `1/(k + rank)` from each ordering rather than
+/// overwriting the fused score, so one confident cross-encoder mistake can no
+/// longer send a hit from rank 2 to rank 20 against two agreeing channels — it
+/// has to out-vote them. This is the ranking form of the rule the rest of the
+/// project already follows: a model's judgment nominates, it does not decide.
+///
+/// Small `k` lets rank 1 dominate; large `k` flattens the contributions toward
+/// equality. 10 was measured against the alternative on the eval bench and is
+/// worth +0.065 recall on queries that never name their subject — but only at
+/// a low [`SEARCH_KEYWORD_WEIGHT`]. The two interact, and the vote is actually
+/// *harmful* at the even keyword split this used to ship: the gold is dropped
+/// from the candidate set before the reranker is ever called, so no amount of
+/// re-ordering can recover it. Change them together or not at all.
+pub const RERANK_VOTE_K: Option<f64> = Some(10.0);
 /// Minimum NLI confidence before an audit sweep queues a pair. One of two
 /// guards learned on the dogfood graph (2026-07-13): MNLI-class models
 /// presuppose co-reference, so below the ~0.85 similarity band unrelated

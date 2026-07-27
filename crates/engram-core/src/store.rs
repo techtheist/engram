@@ -512,10 +512,10 @@ pub trait Store: Send {
             }
             let kw = keyword.get(&id).copied().unwrap_or(0.0);
             let sem_raw = semantic.get(&id).copied().unwrap_or(0.0);
-            let sem = ((sem_raw - crate::policy::SEARCH_SEMANTIC_FLOOR)
-                / (1.0 - crate::policy::SEARCH_SEMANTIC_FLOOR))
-                .clamp(0.0, 1.0);
-            let relevance = 0.5 * kw + 0.5 * sem;
+            let floor = cfg.policy.semantic_floor;
+            let sem = ((sem_raw - floor) / (1.0 - floor).max(f64::EPSILON)).clamp(0.0, 1.0);
+            let kw_weight = cfg.policy.keyword_weight;
+            let relevance = kw_weight * kw + (1.0 - kw_weight) * sem;
             if relevance <= 0.0 {
                 continue;
             }
@@ -545,8 +545,8 @@ pub trait Store: Send {
         });
         if let Some(top) = hits.first().map(|h| h.score) {
             hits.retain(|h| {
-                h.score >= crate::policy::SEARCH_MIN_SCORE
-                    && h.score >= top * crate::policy::SEARCH_RELATIVE_CUT
+                h.score >= cfg.policy.search_min_score
+                    && h.score >= top * cfg.policy.search_relative_cut
             });
         }
         hits.truncate(limit);

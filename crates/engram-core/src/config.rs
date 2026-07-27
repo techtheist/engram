@@ -170,6 +170,57 @@ pub struct PolicyConfig {
     pub warn_similarity: f64,
     /// Minimum NLI confidence before an audit sweep queues a pair.
     pub nli_sweep_min_confidence: f64,
+    /// How much of a search hit's relevance comes from the keyword channel;
+    /// the remainder comes from vector similarity. At 1.0 search is pure
+    /// BM25, at 0.0 pure vectors.
+    ///
+    /// This is the knob that decides whether a query which never names its
+    /// subject can be answered at all: such a query scores zero on the
+    /// keyword channel, so its relevance is capped at `1 - keyword_weight`
+    /// while a distractor sharing one common word can score on both.
+    #[serde(default = "default_keyword_weight")]
+    pub keyword_weight: f64,
+    /// Cosine below which a vector match contributes nothing; the range above
+    /// it is rescaled into 0..1.
+    #[serde(default = "default_semantic_floor")]
+    pub semantic_floor: f64,
+    /// Absolute score below which a hit is dropped.
+    #[serde(default = "default_search_min_score")]
+    pub search_min_score: f64,
+    /// Fraction of the top hit's score below which a hit is dropped.
+    #[serde(default = "default_search_relative_cut")]
+    pub search_relative_cut: f64,
+    /// How much trust tilts the reranker's ordering.
+    #[serde(default = "default_rerank_trust_weight")]
+    pub rerank_trust_weight: f64,
+    /// Damping constant for the reciprocal-rank vote between the retrieval
+    /// ordering and the cross-encoder's. `None` lets the cross-encoder's score
+    /// replace the fused one outright — it then has the final word.
+    ///
+    /// Interacts with `keyword_weight`, and the pair only makes sense moved
+    /// together: the vote is worth +0.12 recall on name-free queries at
+    /// `keyword_weight` 0 and *negative* at 0.5. See [`crate::policy::RERANK_VOTE_K`].
+    #[serde(default = "default_rerank_vote_k")]
+    pub rerank_vote_k: Option<f64>,
+}
+
+fn default_keyword_weight() -> f64 {
+    crate::policy::SEARCH_KEYWORD_WEIGHT
+}
+fn default_semantic_floor() -> f64 {
+    crate::policy::SEARCH_SEMANTIC_FLOOR
+}
+fn default_search_min_score() -> f64 {
+    crate::policy::SEARCH_MIN_SCORE
+}
+fn default_search_relative_cut() -> f64 {
+    crate::policy::SEARCH_RELATIVE_CUT
+}
+fn default_rerank_trust_weight() -> f64 {
+    crate::policy::RERANK_TRUST_WEIGHT
+}
+fn default_rerank_vote_k() -> Option<f64> {
+    crate::policy::RERANK_VOTE_K
 }
 
 impl Default for PolicyConfig {
@@ -190,6 +241,12 @@ impl Default for PolicyConfig {
             conflict_suspect_similarity: CONFLICT_SUSPECT_SIMILARITY,
             warn_similarity: WARN_SIMILARITY,
             nli_sweep_min_confidence: NLI_SWEEP_MIN_CONFIDENCE as f64,
+            keyword_weight: SEARCH_KEYWORD_WEIGHT,
+            semantic_floor: SEARCH_SEMANTIC_FLOOR,
+            search_min_score: SEARCH_MIN_SCORE,
+            search_relative_cut: SEARCH_RELATIVE_CUT,
+            rerank_trust_weight: RERANK_TRUST_WEIGHT,
+            rerank_vote_k: RERANK_VOTE_K,
         }
     }
 }
@@ -585,7 +642,7 @@ impl Default for OntologyConfig {
                     Durability::Stable,
                     TypeRoles {
                         versioned: false,
-                        ..TypeRoles::plain(0.05)
+                        ..TypeRoles::plain(0.025)
                     },
                     shown(8, 140),
                 ),
@@ -594,7 +651,7 @@ impl Default for OntologyConfig {
                     217,
                     "we chose this, for a reason",
                     Durability::Stable,
-                    TypeRoles::plain(0.04),
+                    TypeRoles::plain(0.02),
                     shown(7, 80),
                 ),
                 t(
@@ -602,7 +659,7 @@ impl Default for OntologyConfig {
                     38,
                     "watch out — this bites",
                     Durability::Stable,
-                    TypeRoles::plain(0.05),
+                    TypeRoles::plain(0.025),
                     shown(10, 140),
                 ),
                 t(
@@ -629,7 +686,7 @@ impl Default for OntologyConfig {
                     292,
                     "I realized something non-obvious",
                     Durability::Episodic,
-                    TypeRoles::plain(0.04),
+                    TypeRoles::plain(0.02),
                     hidden.clone(),
                 ),
                 t(
@@ -955,10 +1012,23 @@ impl GraphConfig {
             ("conflict_suspect_similarity", p.conflict_suspect_similarity),
             ("warn_similarity", p.warn_similarity),
             ("nli_sweep_min_confidence", p.nli_sweep_min_confidence),
+            ("keyword_weight", p.keyword_weight),
+            ("semantic_floor", p.semantic_floor),
+            ("search_min_score", p.search_min_score),
+            ("search_relative_cut", p.search_relative_cut),
+            ("rerank_trust_weight", p.rerank_trust_weight),
         ] {
             if !(0.0..=1.0).contains(&value) {
                 return fail(format!("policy.{name} {value} out of 0..=1"));
             }
+        }
+        // A rank-fusion constant, not a 0..1 weight: it is added to a 1-based
+        // rank, so anything non-positive divides by zero at rank 0 or inverts
+        // the ordering outright.
+        if let Some(k) = p.rerank_vote_k
+            && !(k.is_finite() && k > 0.0)
+        {
+            return fail(format!("policy.rerank_vote_k {k} must be positive"));
         }
         if p.conflict_suspect_similarity > p.duplicate_similarity {
             return fail(

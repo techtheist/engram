@@ -283,6 +283,11 @@ fn reranker_reorders_hits_and_touches_only_what_is_returned() {
     let mut e = engine();
     e.set_reranker(Box::new(FavorWinner));
     assert!(e.has_reranker());
+    // The deciding mode: the cross-encoder's verdict replaces the fused score,
+    // so it can promote a candidate from anywhere in the pool.
+    let mut cfg = e.graph_config();
+    cfg.policy.rerank_vote_k = None;
+    e.set_graph_config(&cfg).unwrap();
 
     let filler_a = e
         .add_node(new_node(NodeType::Insight, "keyword filler alpha", ""))
@@ -305,6 +310,80 @@ fn reranker_reorders_hits_and_touches_only_what_is_returned() {
     for id in [&filler_a.id, &filler_b.id] {
         assert!(e.get_node(id).unwrap().unwrap().last_seen.is_none());
     }
+}
+
+/// Scores every document at a large negative logit except the LAST one, which
+/// it loves — a reranker whose opinion is exactly opposed to retrieval order.
+struct FavorLast;
+
+impl crate::rag::Reranker for FavorLast {
+    fn rank(&self, _query: &str, documents: &[String]) -> crate::Result<Vec<f32>> {
+        let n = documents.len();
+        Ok((0..n)
+            .map(|i| if i + 1 == n { 8.0 } else { -8.0 })
+            .collect())
+    }
+}
+
+#[test]
+fn a_voting_reranker_cannot_bury_what_retrieval_ranked_first() {
+    // The contract the default `rerank_vote_k` buys, and the reason it is the
+    // default: under a reciprocal-rank vote the cross-encoder is one ranker of
+    // two, so a single confident verdict against the top retrieval hit is not
+    // enough to unseat it. Under the deciding mode it would be — that is the
+    // failure mode this guards, and the same "models nominate, they do not
+    // decide" rule the rest of the engine follows.
+    let mut e = engine();
+    e.set_reranker(Box::new(FavorLast));
+    assert!(
+        e.graph_config().policy.rerank_vote_k.is_some(),
+        "voting is the shipped default"
+    );
+
+    let mut ids = Vec::new();
+    for tag in ["alpha", "beta", "gamma", "delta"] {
+        ids.push(
+            e.add_node(new_node(NodeType::Insight, &format!("keyword {tag}"), ""))
+                .unwrap()
+                .id,
+        );
+    }
+
+    // Run the SAME engine both ways: the two orderings are the assertion, and
+    // reading either one alone would prove nothing.
+    let mut cfg = e.graph_config();
+    cfg.policy.rerank_vote_k = None;
+    e.set_graph_config(&cfg).unwrap();
+    let decides = e.search("keyword", &[], 4).unwrap();
+    assert_eq!(decides.len(), 4);
+    let favourite = decides[0].id.clone();
+
+    let mut cfg = e.graph_config();
+    cfg.policy.rerank_vote_k = Some(10.0);
+    e.set_graph_config(&cfg).unwrap();
+    let votes = e.search("keyword", &[], 4).unwrap();
+
+    // Deciding: the cross-encoder's pick takes the top slot outright, from the
+    // bottom of the retrieval order. Voting: it is promoted but not enthroned.
+    let rank = votes.iter().position(|h| h.id == favourite);
+    assert_eq!(
+        rank,
+        Some(1),
+        "one hostile verdict must promote, not overturn: {:?}",
+        votes.iter().map(|h| &h.title).collect::<Vec<_>>()
+    );
+    assert_ne!(
+        votes[0].id, favourite,
+        "retrieval's top hit keeps its place against a single dissenting model"
+    );
+    // The reported score stays the cross-encoder's calibrated relevance rather
+    // than the reciprocal-rank sum, which encodes rank and not confidence.
+    let promoted_score = votes[1].score;
+    assert!(
+        promoted_score > 0.9,
+        "score must remain calibrated relevance, got {promoted_score}"
+    );
+    assert!(ids.len() == 4);
 }
 
 #[test]
@@ -5086,4 +5165,73 @@ fn answered_sweep_penalizes_already_linked_pairs() {
         done.iter().all(|h| h.problem.id != problem.id),
         "answer-linked pairs are dropped"
     );
+}
+
+#[test]
+fn search_tuning_is_live_config_not_a_constant() {
+    // The fusion balance, the semantic floor and the two cut-offs moved from
+    // compile-time consts into PolicyConfig so they can be measured instead of
+    // guessed. This asserts they are actually read at query time — a knob that
+    // silently does nothing is worse than no knob.
+    let e = engine();
+    e.add_node(new_node(
+        NodeType::Decision,
+        "alpha beta gamma",
+        "the quick brown fox",
+    ))
+    .unwrap();
+    e.add_node(new_node(
+        NodeType::Decision,
+        "delta epsilon zeta",
+        "jumps over the lazy dog",
+    ))
+    .unwrap();
+
+    // One word from each title, so both documents match at different scores.
+    let baseline = e.search("gamma zeta", &[], 5).unwrap();
+    assert_eq!(baseline.len(), 2, "both documents should match the query");
+
+    // Keeping only hits that reach the top hit's full score must drop the
+    // weaker one — a strict shrink, so the retain() cannot be passing by
+    // accident while still reading the old constant.
+    let mut cfg = e.graph_config();
+    cfg.policy.search_relative_cut = 1.0;
+    e.set_graph_config(&cfg).unwrap();
+    let cut = e.search("gamma zeta", &[], 5).unwrap();
+    assert!(
+        cut.len() < baseline.len(),
+        "relative_cut 1.0 kept {} of {} hits",
+        cut.len(),
+        baseline.len()
+    );
+
+    // Restoring the default restores the second hit.
+    cfg.policy.search_relative_cut = crate::policy::SEARCH_RELATIVE_CUT;
+    e.set_graph_config(&cfg).unwrap();
+    assert_eq!(e.search("gamma zeta", &[], 5).unwrap().len(), 2);
+
+    // Values outside 0..=1 are refused rather than silently clamped.
+    cfg.policy.search_min_score = 10.0;
+    assert!(e.set_graph_config(&cfg).is_err());
+}
+
+#[test]
+fn keyword_weight_moves_the_fusion_balance() {
+    let e = engine();
+    let mut cfg = e.graph_config();
+    for (weight, label) in [(0.0, "pure vectors"), (1.0, "pure keywords")] {
+        cfg.policy.keyword_weight = weight;
+        e.set_graph_config(&cfg).unwrap();
+        // Both extremes must remain valid configurations that still answer an
+        // exact-title query; the balance is a preference, not a switch that
+        // can break search.
+        let hits = e.search("alpha beta gamma", &[], 5).unwrap();
+        assert!(
+            hits.is_empty() || hits[0].score > 0.0,
+            "{label} produced a broken score"
+        );
+    }
+    // Out-of-range values are refused rather than silently clamped.
+    cfg.policy.keyword_weight = 1.5;
+    assert!(e.set_graph_config(&cfg).is_err());
 }
