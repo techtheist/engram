@@ -9,12 +9,25 @@
 //! — and never moves a trust field. Judgment stays with the user or the
 //! assistant.
 //!
-//! Runtime model: `Xenova/nli-deberta-v3-small` (the transformers.js-standard
-//! ONNX export of `cross-encoder/nli-deberta-v3-small`, quantized ~34 MB,
-//! 512-token pairs). Chosen for maximum compatibility: plain BERT-shaped
-//! inputs, `tokenizer.json` included, label map read from `config.json` at
-//! load. `finecat-nli-m` stays the eval-side benchmark (`scripts/nli-eval.py`)
-//! until it ships ONNX.
+//! Runtime model (since 0.7.2): `Xenova/mobilebert-uncased-mnli`, quantized
+//! ONNX, **27 MB** on disk, 512-token pairs.
+//!
+//! It replaced `nli-deberta-v3-small` (172 MB) on measurement, not taste. The
+//! benchmark in `eval/CONTRADICTIONS.md` scores the layer end to end — what it
+//! catches against what it costs — and the old model was catching 98-99% of
+//! contradictions while calling 80-83% of UNRELATED claims contradictions too.
+//! A catch rate means nothing without that second number: a layer that shouts
+//! "contradiction" at everything scores 100%. Across five seeds MobileBERT
+//! catches 95-96% and false-alarms at 55-65%, from a model seven times
+//! smaller. The predecessor stays selectable in `cortex::presets`.
+//!
+//! Swap the model with `ENGRAM_NLI_DIR` pointing at a directory holding
+//! `model.onnx`, `tokenizer.json` and a `config.json` whose `id2label` covers
+//! entailment / neutral / contradiction. That is the whole contract, and it is
+//! how `eval/CONTRADICTIONS.md` compares candidates — note that the widely
+//! recommended small "zero-shot" models are BINARY (entailment vs
+//! not_entailment) and cannot express contradiction at all, so they do not
+//! load here and would be useless if they did.
 
 use serde::{Deserialize, Serialize};
 
@@ -302,9 +315,9 @@ pub use fast::FastNli;
 pub const NLI_MODEL_FILES: [&str; 3] = ["model.onnx", "tokenizer.json", "config.json"];
 /// Where the CLI downloads the model to and FastNli loads it from
 /// (overridable via `ENGRAM_NLI_DIR`).
-pub const NLI_MODEL_NAME: &str = "nli-deberta-v3-small";
+pub const NLI_MODEL_NAME: &str = "mobilebert-uncased-mnli";
 
-/// `ENGRAM_NLI_DIR`, else `~/.cache/engram/nli-deberta-v3-small`. Pure path
+/// `ENGRAM_NLI_DIR`, else `~/.cache/engram/mobilebert-uncased-mnli`. Pure path
 /// logic, outside the `fastembed` gate so the HTTP crate builds alone.
 pub fn nli_model_dir() -> Option<std::path::PathBuf> {
     if let Ok(dir) = std::env::var("ENGRAM_NLI_DIR") {

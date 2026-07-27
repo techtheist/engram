@@ -186,13 +186,27 @@ pub fn presets(role: Role) -> Vec<ModelSpec> {
                 pooling: None,
             },
         ],
-        Role::Nli => vec![ModelSpec {
-            name: "nli-deberta-v3-small".into(),
-            base_url: hf("Xenova/nli-deberta-v3-small"),
-            model_file: default_model_file(),
-            dim: None,
-            pooling: None,
-        }],
+        // First entry is the default (see `effective`). MobileBERT replaced
+        // deberta-v3-small in 0.7.2 on the contradiction benchmark: a third
+        // fewer false alarms at comparable catch, and a seventh of the size.
+        // The predecessor stays listed so an existing explicit selection keeps
+        // resolving and so the choice can be reversed from the pane.
+        Role::Nli => vec![
+            ModelSpec {
+                name: "mobilebert-uncased-mnli".into(),
+                base_url: hf("Xenova/mobilebert-uncased-mnli"),
+                model_file: default_model_file(),
+                dim: None,
+                pooling: None,
+            },
+            ModelSpec {
+                name: "nli-deberta-v3-small".into(),
+                base_url: hf("Xenova/nli-deberta-v3-small"),
+                model_file: default_model_file(),
+                dim: None,
+                pooling: None,
+            },
+        ],
     }
 }
 

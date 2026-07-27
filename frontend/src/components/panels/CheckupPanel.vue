@@ -206,7 +206,7 @@ const STRUCT_CAP = 8
         style="--panel-gap: 1.4rem"
     >
         <p v-if="nliReady === false" class="nli-off">
-            The local NLI model isn't loaded yet (it downloads on daemon startup, ~35 MB) —
+            The local NLI model isn't loaded yet (it downloads on daemon startup, 27 MB) —
             the sweeps below will report it; structural checks still work.
         </p>
 
