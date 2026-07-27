@@ -3,6 +3,153 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
+## v0.7.2 — measured, not guessed
+
+Engram grew an eval harness, pointed it at itself, and two layers lost. The
+NLI model was replaced and search was retuned — both on numbers, both
+reproducible from `eval/`.
+
+### Search finds more of what you meant
+
+Two knobs moved together, and only together:
+
+- **Keyword weight 0.5 → 0.15.** A question that never names its subject
+  scores zero on the keyword channel by construction, so a high weight caps
+  how relevant it can ever be — while a distractor sharing one common word
+  scores on both channels. 
+- **The reranker votes instead of deciding.** Its ordering is folded into the
+  retrieval ordering by a reciprocal-rank vote, so a result two independent
+  channels ranked highly can't be buried by one confident cross-encoder
+  mistake.
+
+| | before | after |
+|---|---|---|
+| recall, questions that name their subject | 1.00 | 1.00 |
+| recall, questions that describe it instead | 0.18 | **0.32** |
+| weighted recall | 0.916 | **0.929** |
+| tokens per query | 525 | 521 |
+
+Nothing costs more. The gain is entirely on questions phrased the way people
+actually ask them months later — *"which thing did we pick because the
+storage layer closes a chunk at a fixed cadence?"* — where the subject's name
+is the one word you've forgotten.
+
+Measured alone, each knob looks dead: at the old keyword weight the vote is
+actively *harmful*, because the right answer is dropped from the candidate
+set before the reranker is ever called. Their doc comments say to change them
+together or not at all.
+
+Search tuning now lives in `PolicyConfig` (`keyword_weight`, `semantic_floor`,
+`search_min_score`, `search_relative_cut`, `rerank_trust_weight`,
+`rerank_vote_k`) instead of compile-time constants, so a graph can be swept
+rather than argued about. Existing graphs pick up the new defaults; anything
+you set explicitly is untouched.
+
+### MobileBERT replaces DeBERTa-v3-small for NLI
+
+Engram detects contradictions locally, with a small cross-encoder, where most
+agent-memory tools spend an LLM call. That layer had never been scored end to
+end — only the model in isolation, on sentence pairs, which is the wrong unit:
+in `check_claim` the model only ever judges what retrieval hands it.
+
+The new benchmark (`eval/CONTRADICTIONS.md`, `--contradictions`) scores the
+whole path, and reports what the layer *catches* against what it *costs*. That
+second number is the one that mattered: a layer answering "contradiction" to
+everything scores a perfect catch rate. Measured on claims that restate a
+stored note verbatim — statements the graph literally contains — the old model
+called **80-86% of them contradictions**.
+
+`Xenova/mobilebert-uncased-mnli` is now the default:
+
+| | catch | false alarms | ONNX |
+|---|---|---|---|
+| `nli-deberta-v3-small` (old) | 97-99% | 80-86% | 172 MB |
+| `mobilebert-uncased-mnli` (new) | 95-97% | **57-62%** | **27 MB** |
+
+Five seeds, same corpus and retrieval, only the model swapped. Two points of
+catch for twenty-three points of false alarms, from a model a seventh of the
+size. Retrieval never missed once in any run — the entire headroom was the
+model's.
+
+**Nothing to do on upgrade.** The NLI layer is stateless, so there is no data
+migration: the new model downloads on first `serve`/`mcp` (27 MB, one time).
+The old model stays selectable under Settings → Choose models, and an existing
+explicit selection keeps working. If you never picked one, you get the new
+default. Suspects already queued keep the hints the old model gave them —
+those only ever affected queue ordering.
+
+Also corrected: `nli.rs` had long claimed the shipped model was "~34 MB". It
+was 172 MB. Every candidate tested was smaller than what shipped.
+
+### `check_claim` gained a confidence gate
+
+A contradiction the model is not confident about is now reported as **silence**
+rather than as a conflict. The raw probabilities still ride along on the
+verdict, so nothing is hidden — only unasserted.
+
+This gate did not exist before. Its sibling, the write-time conflict sweep, has
+held a similarity floor and a confidence gate for a year precisely because
+MNLI-class models call unrelated same-shaped titles confident contradictions.
+`check_claim` had neither and judged whatever the top-8 retrieval returned.
+
+The threshold is **0.80**, chosen on five seeds for stability rather than for
+the best headline:
+
+| gate | catch (worst seed) | spread | false alarms | agreeing claims called conflicts |
+|---|---|---|---|---|
+| 0.00 | 96% (95%) | 2 pts | 61% | 7–13% |
+| 0.70 | 95% (94%) | 1 pt | 44% | 2–6% |
+| **0.80** | **92% (90%)** | **4 pts** | **38%** | **1–2%** |
+| 0.90 | 85% (79%) | 11 pts | 27% | 0–2% |
+| 0.95 | 77% (71%) | 13 pts | 18% | 0–1% |
+
+Tighter gates keep scoring a better catch-minus-false-alarms gap all the way to
+0.95, where catch falls to seven in ten and swings thirteen points between
+seeds — so the gap is not the criterion. 0.80 is the last gate before catch
+comes apart.
+
+The last column is the second reason for it. Asserting *conflict* against a note
+a claim plainly **agrees** with is the worst thing this layer can do, and it was
+happening to one agreeing claim in ten. The gate takes that to one or two in a
+hundred.
+
+Tunable per graph as `policy.claim_contradiction_min_confidence`. It is
+deliberately contradiction-only: false `supports` has never been measured, and
+gating it on the same number would be guessing.
+
+**End to end**, against what 0.7.1 shipped: false alarms **80–86% → 38%**, catch
+**98–99% → 92%**.
+
+### Checked against a real graph
+
+New `--real-graph` eval mode scores the suspect queue against every pair a human
+has actually ruled on in a live graph, plus every `conflicts-with` edge. Run
+against this repo's own memory (297 nodes, 42 judged pairs), it says three
+things the synthetic corpus could not:
+
+- **Real prose is not harder.** Ungated false alarms are 62% on real notes
+  against 61% on generated ones. The worry that mushier multi-paragraph notes
+  would be worse turned out to be wrong.
+- **In the product, the rate is 19%, not 38%.** The queue skips pairs whose
+  nodes are already linked, before the model is called — and nine of the
+  thirteen pairs the model still flags at the shipped gate carry an edge
+  already. Structure the user recorded, spent as precision.
+- **The new model is the only candidate that catches the one real
+  contradiction** in this project's recorded history — at 0.80, and not at
+  0.90. Both DeBERTas and DistilBERT miss it at every threshold. The incumbent's
+  quiet queue was quiet because it barely fires on real technical prose at all.
+
+`check_claim`'s `silent` bucket is now sorted strongest-signal-first, so the
+claims the model came closest to ruling on sit at the top of it.
+
+### Still open
+
+19–38% false alarms is better, not good. The catch rate rests entirely on
+generated prose: in 297 nodes this project has recorded exactly one
+contradiction, so real data validates the cost side precisely and the benefit
+side anecdotally. One graph, one project, one register. See
+`eval/CONTRADICTIONS.md`.
+
 ## v0.7.1 — the timeline release
 
 The graph gets a second screen: your memory as a story you can scroll.
