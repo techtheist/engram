@@ -1,0 +1,23 @@
+[package]
+name = "engram-eval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+engram-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+
+[features]
+# Real embeddings. The default (fake) embedder is a character-frequency bag —
+# it exercises the harness and the lexical path, but its semantic numbers are
+# noise. Only `--features fastembed` produces retrieval scores worth quoting.
+fastembed = ["engram-core/fastembed"]
+
+[[bin]]
+name = "engram-eval"
+path = "src/main.rs"

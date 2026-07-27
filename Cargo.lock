@@ -864,6 +864,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "engram-eval"
+version = "0.7.1"
+dependencies = [
+ "anyhow",
+ "engram-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "engram-http"
 version = "0.7.1"
 dependencies = [

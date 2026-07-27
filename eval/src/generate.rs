@@ -1,0 +1,1684 @@
+//! The corpus generator.
+//!
+//! Every fact is about an **invented** subject ("Kelnor lease broker"), so no
+//! model can answer it from pretraining and no agent can answer it from having
+//! read this repo. The answer arrives through retrieval or it does not arrive.
+//! That is the whole point: it makes the measurement immune to the bias that
+//! sinks every dogfood benchmark.
+//!
+//! Every vocabulary carries two columns — the wording the fact uses, and a
+//! word-disjoint paraphrase used only by oblique questions. That is what lets
+//! an oblique question describe a fact without sharing its vocabulary, which
+//! is the only way to tell semantic retrieval apart from keyword matching.
+//!
+//! Slots are enumerated by mixed radix rather than drawn randomly, so each
+//! fact's (component, descriptor, qualifier) triple is unique by construction
+//! up to `MAX_PER_KIND`. The seed permutes the vocabularies, so runs differ
+//! without ever colliding.
+
+use std::collections::HashSet;
+
+use serde::Serialize;
+
+use engram_core::{NodeStatus, NodeType};
+
+use crate::profile::Profile;
+use crate::rng::Rng;
+
+/// 8 × 8 × 8 slot combinations per kind before oblique questions would stop
+/// being uniquely answerable.
+pub const MAX_PER_KIND: usize = 512;
+
+const ONSET: [&str; 16] = [
+    "kel", "van", "tor", "mel", "dru", "zan", "fir", "lor", "bre", "quen", "sil", "har", "nov",
+    "yss", "garn", "ulm",
+];
+// 16 × 16 × 16 = 4096 distinct invented names, which has to cover the largest
+// graph the slot enumeration allows (2560 facts) plus its control subjects.
+const MID: [&str; 16] = [
+    "a", "o", "i", "en", "ar", "ul", "ei", "yn", "ae", "ou", "ir", "el", "or", "um", "ai", "yr",
+];
+const CODA: [&str; 16] = [
+    "nor", "vis", "thi", "dex", "lun", "mar", "tek", "sen", "vor", "qui", "dal", "rin", "bek",
+    "tos", "fen", "wyn",
+];
+
+const COMPONENTS: [&str; 8] = [
+    "ingest job",
+    "lease broker",
+    "shard router",
+    "replay buffer",
+    "token vault",
+    "edge cache",
+    "sweep worker",
+    "index writer",
+];
+
+/// (parameter, unit, paraphrase)
+const PARAMS: [(&str, &str, &str); 8] = [
+    ("retry budget", "attempts", "how often it tries again"),
+    ("lease window", "seconds", "how long a grant stays valid"),
+    ("flush interval", "milliseconds", "how often it writes out"),
+    ("fan-out limit", "branches", "how wide it spreads work"),
+    (
+        "backoff ceiling",
+        "seconds",
+        "the longest it waits between tries",
+    ),
+    ("batch size", "records", "how much it groups per pass"),
+    (
+        "probe timeout",
+        "milliseconds",
+        "how long a health check may hang",
+    ),
+    (
+        "spill threshold",
+        "megabytes",
+        "when it starts writing to disk",
+    ),
+];
+
+/// Every pair below is (wording the fact uses, word-disjoint paraphrase).
+const CONSTRAINTS: [(&str, &str); 8] = [
+    (
+        "the upstream limiter resets on a fixed window",
+        "the throttle above it starts over each period",
+    ),
+    (
+        "the coordinator drops idle sessions",
+        "inactive connections get reaped centrally",
+    ),
+    (
+        "the replica set votes once per epoch",
+        "followers only elect at term boundaries",
+    ),
+    (
+        "the vault rotates its keys on a schedule",
+        "secrets are cycled on a timer",
+    ),
+    (
+        "the archive seals one segment per interval",
+        "storage closes a chunk at a steady cadence",
+    ),
+    (
+        "the fence tokens all expire together",
+        "barrier grants lapse simultaneously",
+    ),
+    (
+        "the scheduler admits a single drain at a time",
+        "only one flush is allowed through at once",
+    ),
+    (
+        "the manifest is rewritten wholesale",
+        "the index file is replaced in full",
+    ),
+];
+
+const FAILURES: [(&str, &str); 8] = [
+    ("drops writes", "loses acknowledged data"),
+    ("double-counts rows", "reports inflated totals"),
+    ("loses its cursor", "forgets how far it had read"),
+    ("stalls the queue", "wedges everything behind it"),
+    ("corrupts its checkpoint", "leaves unreadable restart state"),
+    ("re-emits duplicates", "sends the same payload twice"),
+    ("truncates the tail", "discards the newest entries"),
+    ("skips the fsync", "acknowledges before durability"),
+];
+
+const TRIGGERS: [(&str, &str); 8] = [
+    (
+        "the lease expires mid-flush",
+        "a grant lapses while data is still moving",
+    ),
+    ("the shard rebalances", "ownership moves between partitions"),
+    ("a replica lags behind", "a follower falls out of step"),
+    ("the clock steps backwards", "time jumps in reverse"),
+    (
+        "the ring buffer wraps",
+        "the circular store overtakes itself",
+    ),
+    (
+        "a retry lands out of order",
+        "a repeat arrives before the original",
+    ),
+    (
+        "the segment seals early",
+        "a chunk closes ahead of schedule",
+    ),
+    (
+        "two drains overlap",
+        "a second flush starts before the first ends",
+    ),
+];
+
+const FORBIDDEN: [(&str, &str); 8] = [
+    (
+        "share a cursor between shards",
+        "one read position serving two partitions",
+    ),
+    (
+        "write before the fence lands",
+        "publishing ahead of the barrier",
+    ),
+    (
+        "trust the replica clock",
+        "relying on a follower's sense of time",
+    ),
+    (
+        "retry inside the lock",
+        "repeating work while still holding exclusion",
+    ),
+    ("cache the lease token", "keeping a grant past its issue"),
+    (
+        "widen the fence without a drain",
+        "growing the barrier while work is in flight",
+    ),
+    (
+        "ack before the segment seals",
+        "confirming receipt ahead of the seal",
+    ),
+    (
+        "reuse a spill file",
+        "recycling scratch storage between runs",
+    ),
+];
+
+const REASONS: [(&str, &str); 8] = [
+    (
+        "the invariant it protects cannot be re-derived after the fact",
+        "nothing downstream can reconstruct the guarantee later",
+    ),
+    (
+        "recovery has no way to tell a stale value from a fresh one",
+        "restart cannot distinguish old state from new",
+    ),
+    (
+        "the failure is silent and only shows up as drift much later",
+        "the damage surfaces long after its cause",
+    ),
+    (
+        "there is no ordering left to reconstruct once it is violated",
+        "sequence information is gone for good",
+    ),
+    (
+        "the audit trail becomes unusable for the whole epoch",
+        "the record of what happened stops being trustworthy",
+    ),
+    (
+        "downstream consumers assume it and cannot defend themselves",
+        "everything after it is written expecting the guarantee",
+    ),
+    (
+        "it turns a recoverable fault into a permanent one",
+        "a fixable error becomes unfixable",
+    ),
+    (
+        "the repair costs more than the operation ever saved",
+        "cleanup outweighs any gain",
+    ),
+];
+
+const SYMPTOMS: [(&str, &str); 8] = [
+    ("stalls", "stops making progress"),
+    ("leaks handles", "never returns its file descriptors"),
+    ("reorders acks", "confirms out of sequence"),
+    ("spins on backoff", "burns cpu waiting"),
+    (
+        "drifts its watermark",
+        "loses track of its own progress marker",
+    ),
+    ("thrashes the cache", "evicts what it is about to need"),
+    ("duplicates its fence", "issues the same barrier twice"),
+    ("starves the drain", "never lets the flush finish"),
+];
+
+const CONDITIONS: [(&str, &str); 8] = [
+    ("under shard rebalance", "while partitions are moving"),
+    (
+        "during a cold replay",
+        "when history is re-read from scratch",
+    ),
+    ("when the vault rotates", "as secrets are cycled"),
+    ("past the spill threshold", "once it starts writing to disk"),
+    ("on a partial restore", "when only some state comes back"),
+    (
+        "while a follower catches up",
+        "as a lagging copy is brought current",
+    ),
+    ("at epoch rollover", "when the term boundary passes"),
+    (
+        "under sustained backpressure",
+        "while the pipeline stays saturated",
+    ),
+];
+
+const BEHAVIOURS: [(&str, &str); 8] = [
+    (
+        "prefers the older replica",
+        "picks the staler of two copies",
+    ),
+    ("batches past its ceiling", "exceeds its own size limit"),
+    ("re-reads the manifest", "fetches the same index repeatedly"),
+    ("holds the fence open", "keeps the barrier from closing"),
+    ("serialises its probes", "checks health one at a time"),
+    ("rounds the window down", "shortens its own interval"),
+    ("skips the warm path", "always takes the slow route"),
+    (
+        "retries before backing off",
+        "repeats immediately on failure",
+    ),
+];
+
+const CAUSES: [(&str, &str); 8] = [
+    (
+        "the ranker keys on arrival order rather than freshness",
+        "ordering is decided by when things showed up",
+    ),
+    (
+        "the budget is computed before the drain, not after",
+        "the allowance is calculated too early",
+    ),
+    (
+        "the manifest cache is per-thread and never shared",
+        "each worker keeps a private copy of the index",
+    ),
+    (
+        "the fence release rides the same lock as the write",
+        "the barrier and the update contend for one mutex",
+    ),
+    (
+        "the probe pool is sized from the old topology",
+        "health checking was scaled for a layout that changed",
+    ),
+    (
+        "integer division truncates the interval",
+        "the arithmetic rounds the period down",
+    ),
+    (
+        "the warm path is gated on a flag nobody sets",
+        "the fast route is disabled by default",
+    ),
+    (
+        "the backoff timer starts only after the first success",
+        "waiting does not begin until something works",
+    ),
+];
+
+/// How often each kind gets asked about.
+///
+/// A stated assumption, not a measurement: nobody has data on what developers
+/// actually ask their memory. Decisions dominate because "what did we settle
+/// on" is the common question; Principles are rare because they are recalled
+/// by being injected in the brief rather than searched for. Override with
+/// `--type-mix`, and note that the report prints whatever mix produced it, so
+/// a number can never be quoted without its weighting.
+pub const DEFAULT_TYPE_MIX: [(Kind, u32); 5] = [
+    (Kind::Decision, 35),
+    (Kind::Caution, 20),
+    (Kind::Insight, 20),
+    (Kind::Problem, 15),
+    (Kind::Principle, 10),
+];
+
+/// Resolve a per-kind question weight, defaulting to the mix above.
+pub fn weight_of(mix: &[(Kind, u32)], kind: Kind) -> u32 {
+    mix.iter()
+        .find(|(k, _)| *k == kind)
+        .map(|(_, w)| *w)
+        .unwrap_or(0)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    Decision,
+    Caution,
+    Principle,
+    Problem,
+    Insight,
+}
+
+pub const KINDS: [Kind; 5] = [
+    Kind::Decision,
+    Kind::Caution,
+    Kind::Principle,
+    Kind::Problem,
+    Kind::Insight,
+];
+
+impl Kind {
+    pub fn node_type(self) -> NodeType {
+        match self {
+            Kind::Decision => NodeType::Decision,
+            Kind::Caution => NodeType::Caution,
+            Kind::Principle => NodeType::Principle,
+            Kind::Problem => NodeType::Problem,
+            Kind::Insight => NodeType::Insight,
+        }
+    }
+
+    pub fn status(self) -> Option<NodeStatus> {
+        match self {
+            Kind::Problem => Some(NodeStatus::Open),
+            _ => None,
+        }
+    }
+}
+
+/// How a question refers to the thing it is asking about. The split is the
+/// point of the whole exercise: lexical questions are winnable by `grep`,
+/// oblique ones are winnable only by meaning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Phrasing {
+    /// Reuses the subject name and the fact's own wording.
+    Lexical,
+    /// Names the subject, rewords everything else.
+    Paraphrase,
+    /// Never names the subject, and describes it entirely in paraphrase.
+    Oblique,
+}
+
+pub const PHRASINGS: [Phrasing; 3] = [Phrasing::Lexical, Phrasing::Paraphrase, Phrasing::Oblique];
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Question {
+    pub text: String,
+    pub phrasing: Phrasing,
+    /// Key of the fact that answers it; `None` = deliberately unanswerable.
+    pub gold: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Fact {
+    pub key: String,
+    pub kind: Kind,
+    pub subject: String,
+    pub title: String,
+    pub body: String,
+    /// The substring a correct free-text answer must contain — the online
+    /// half grades on this and never needs a judge.
+    pub answer: String,
+    /// The fact's verb phrase, already conjugated for its subject ("loses its
+    /// cursor"). Kept so restatements can be built as grammatical sentences —
+    /// an NLI model reading "is known to loses its cursor" is being scored on
+    /// our bad English rather than on its own judgement.
+    pub predicate: String,
+    /// Empty for distractors — they are written to the graph and never asked
+    /// about.
+    pub questions: Vec<Question>,
+    /// False = pure noise. Distractors exist so that recall is measured
+    /// against a realistically crowded graph instead of one where every stored
+    /// fact is also a right answer to something.
+    pub tested: bool,
+    /// The oblique question this fact *would* answer, tested or not. Held so a
+    /// test can assert that no distractor is a legitimate answer to a tested
+    /// question — the property that makes a miss a real miss.
+    pub oblique_key: String,
+    /// Set when this fact's subject name is one syllable from another fact's,
+    /// which is how we measure whether ranking survives near-collisions.
+    pub twin_of: Option<String>,
+    /// Plausible file paths, because the embed composition covers code_refs
+    /// and real nodes carry a median of one.
+    pub code_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NliLabel {
+    Entailment,
+    Neutral,
+    Contradiction,
+}
+
+impl NliLabel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NliLabel::Entailment => "entailment",
+            NliLabel::Neutral => "neutral",
+            NliLabel::Contradiction => "contradiction",
+        }
+    }
+}
+
+/// A labelled premise/hypothesis pair in this domain's register — the thing
+/// the shipped NLI model has never been evaluated on.
+#[derive(Debug, Clone, Serialize)]
+pub struct Pair {
+    pub premise: String,
+    pub hypothesis: String,
+    pub gold: NliLabel,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Corpus {
+    pub seed: u64,
+    pub facts: Vec<Fact>,
+    /// Questions about subjects that were never written. The control arm:
+    /// a retriever that answers these confidently is the failure mode nobody
+    /// measures.
+    pub unanswerable: Vec<Question>,
+    /// The invented subjects those questions ask about — guaranteed absent
+    /// from every fact.
+    pub phantom_subjects: Vec<String>,
+    pub pairs: Vec<Pair>,
+    /// The graph itself. Without these the corpus measures a graph memory on
+    /// a graph with no edges, which is what the first version of this harness
+    /// did.
+    pub edges: Vec<GeneratedEdge>,
+}
+
+/// One sentence-shaped link between two generated facts.
+#[derive(Debug, Clone, Serialize)]
+pub struct GeneratedEdge {
+    pub from: String,
+    pub to: String,
+    pub verb: &'static str,
+}
+
+impl Corpus {
+    pub fn questions(&self) -> impl Iterator<Item = &Question> {
+        self.facts.iter().flat_map(|f| f.questions.iter())
+    }
+
+    /// Facts anything is ever asked about.
+    pub fn tested(&self) -> usize {
+        self.facts.iter().filter(|f| f.tested).count()
+    }
+
+    /// Facts written to the graph purely as noise.
+    pub fn distractors(&self) -> usize {
+        self.facts.len() - self.tested()
+    }
+
+    pub fn fact(&self, key: &str) -> Option<&Fact> {
+        self.facts.iter().find(|f| f.key == key)
+    }
+
+    /// Every fact as one markdown record — the flat-file arms read this.
+    pub fn flat_file(&self) -> String {
+        let mut out = String::new();
+        for f in &self.facts {
+            out.push_str(&format!("## {}\n{}\n\n", f.title, f.body));
+        }
+        out
+    }
+
+    pub fn records(&self) -> Vec<(String, String)> {
+        self.facts
+            .iter()
+            .map(|f| (f.key.clone(), format!("## {}\n{}", f.title, f.body)))
+            .collect()
+    }
+}
+
+fn coined(idx: usize) -> String {
+    let o = ONSET[idx % ONSET.len()];
+    let m = MID[(idx / ONSET.len()) % MID.len()];
+    let c = CODA[(idx / (ONSET.len() * MID.len())) % CODA.len()];
+    let mut s = format!("{o}{m}{c}");
+    let head = s.remove(0).to_uppercase().to_string();
+    format!("{head}{s}")
+}
+
+/// Same onset and mid, next coda — a name a ranker can plausibly confuse.
+fn twin_index(idx: usize) -> usize {
+    let stride = ONSET.len() * MID.len();
+    let coda = (idx / stride) % CODA.len();
+    idx - coda * stride + ((coda + 1) % CODA.len()) * stride
+}
+
+/// Hands out invented names, never twice.
+struct Names {
+    order: Vec<usize>,
+    cursor: usize,
+    used: HashSet<usize>,
+}
+
+impl Names {
+    fn new(rng: &mut Rng) -> Self {
+        let mut order: Vec<usize> = (0..ONSET.len() * MID.len() * CODA.len()).collect();
+        rng.shuffle(&mut order);
+        Self {
+            order,
+            cursor: 0,
+            used: HashSet::new(),
+        }
+    }
+
+    fn next(&mut self) -> usize {
+        while self.cursor < self.order.len() {
+            let idx = self.order[self.cursor];
+            self.cursor += 1;
+            if self.used.insert(idx) {
+                return idx;
+            }
+        }
+        panic!("exhausted the invented-name space");
+    }
+
+    /// The near-collision partner of an already-issued name, if it is free.
+    fn twin_of(&mut self, idx: usize) -> Option<usize> {
+        let t = twin_index(idx);
+        self.used.insert(t).then_some(t)
+    }
+}
+
+struct Vocab {
+    components: Vec<usize>,
+    a: Vec<usize>,
+    b: Vec<usize>,
+    order: Vec<usize>,
+}
+
+impl Vocab {
+    fn new(rng: &mut Rng) -> Self {
+        let mut components: Vec<usize> = (0..COMPONENTS.len()).collect();
+        let mut a: Vec<usize> = (0..8).collect();
+        let mut b: Vec<usize> = (0..8).collect();
+        let mut order: Vec<usize> = (0..MAX_PER_KIND).collect();
+        rng.shuffle(&mut components);
+        rng.shuffle(&mut a);
+        rng.shuffle(&mut b);
+        rng.shuffle(&mut order);
+        Self {
+            components,
+            a,
+            b,
+            order,
+        }
+    }
+
+    /// Mixed-radix slots for the j-th fact of a kind: unique while
+    /// `j < MAX_PER_KIND`.
+    ///
+    /// `j` is permuted first, and that permutation is load-bearing. Raw
+    /// mixed radix walks slot space in order, so tested facts (the first
+    /// block of indices) would occupy one contiguous region and distractors
+    /// another — making the noise systematically unlike the signal, and
+    /// easier to rank against than a real neighbour would be. A fixed
+    /// permutation scatters distractors through the same space while keeping
+    /// each tested fact's slots identical however many distractors follow it.
+    fn slots(&self, j: usize) -> (usize, usize, usize) {
+        let j = self.order[j % MAX_PER_KIND];
+        (
+            self.components[j % 8],
+            self.a[(j / 8) % 8],
+            self.b[(j / 64) % 8],
+        )
+    }
+}
+
+/// Build a graph of `tested + distractors` facts (spread evenly across the
+/// five kinds), the questions for the tested ones, a matching set of
+/// unanswerable questions, and the labelled NLI pairs.
+///
+/// Distractors are written to the graph and never asked about. They cannot
+/// contradict a tested fact and cannot answer a tested question: every fact
+/// gets its own invented subject, and the mixed-radix slot enumeration simply
+/// continues past the tested range, so no distractor ever repeats a tested
+/// fact's (component, descriptor, qualifier) triple. Contradiction lives only
+/// in `pairs`, where it is deliberate and labelled.
+pub fn corpus(tested: usize, distractors: usize, seed: u64) -> Corpus {
+    corpus_with(tested, distractors, seed, &Profile::default())
+}
+
+/// As `corpus`, against an explicit structural profile — the knob that asks
+/// "what if our notes were shaped differently?".
+pub fn corpus_with(tested: usize, distractors: usize, seed: u64, profile: &Profile) -> Corpus {
+    corpus_full(tested, distractors, seed, profile, &DEFAULT_TYPE_MIX)
+}
+
+/// The full form: as `corpus_with`, plus the per-kind question weighting.
+///
+/// Facts stay evenly spread across kinds — the graph holds what it holds — but
+/// the *questions* follow the mix, so a run reflects what gets asked rather
+/// than what gets stored.
+pub fn corpus_full(
+    tested: usize,
+    distractors: usize,
+    seed: u64,
+    profile: &Profile,
+    type_mix: &[(Kind, u32)],
+) -> Corpus {
+    let mut rng = Rng::new(seed);
+    let vocab = Vocab::new(&mut rng);
+    let mut names = Names::new(&mut rng);
+
+    let total = tested + distractors;
+    let mut facts: Vec<Fact> = Vec::with_capacity(total);
+    let mut allocated: Vec<usize> = Vec::with_capacity(total);
+
+    for i in 0..total {
+        let kind = KINDS[i % KINDS.len()];
+        let j = i / KINDS.len();
+        assert!(
+            j < MAX_PER_KIND,
+            "{total} facts exceeds unique slot combinations ({} max)",
+            MAX_PER_KIND * KINDS.len()
+        );
+
+        // Every 7th fact is deliberately named one syllable from an earlier
+        // one, so the report can separate "ranking works" from "ranking works
+        // because the names were all far apart". If that name is already
+        // taken the fact simply gets a fresh one — a twin nobody can confuse
+        // is not worth a collision.
+        let source = (i >= 7 && i.is_multiple_of(7)).then(|| i - 7);
+        let (name_idx, twin_of) = match source.and_then(|src| {
+            names
+                .twin_of(allocated[src])
+                .map(|idx| (idx, format!("f{src:04}")))
+        }) {
+            Some((idx, src_key)) => (idx, Some(src_key)),
+            None => (names.next(), None),
+        };
+        allocated.push(name_idx);
+
+        let (c, s1, s2) = vocab.slots(j);
+        let component = COMPONENTS[c];
+        let subject = format!("{} {component}", coined(name_idx));
+        let slots = Slots {
+            component,
+            s1,
+            s2,
+            j,
+        };
+        facts.push(build(
+            kind,
+            format!("f{i:04}"),
+            subject,
+            slots,
+            twin_of,
+            i < tested,
+            profile,
+            i as u64,
+        ));
+    }
+
+    apply_type_mix(&mut facts, type_mix, seed);
+
+    let (unanswerable, phantom_subjects) = controls(tested, &mut names);
+    let pairs = pairs(&facts, &mut rng);
+    let edges = edges(&facts, profile, &mut rng);
+
+    Corpus {
+        seed,
+        facts,
+        unanswerable,
+        phantom_subjects,
+        pairs,
+        edges,
+    }
+}
+
+/// Verbs the generator will emit, with the kinds each one legally joins.
+///
+/// `replaces` and `conflicts-with` are deliberately absent even though the
+/// real graph carries a few: both mutate node state at write time (archival
+/// and trust demotion), which would silently remove gold facts from search and
+/// confound every recall number. Together they are 2.7% of real edges — a
+/// cheap thing to give up for a measurement that means something.
+const EDGE_RULES: [(&str, Kind, Kind); 6] = [
+    ("because", Kind::Decision, Kind::Principle),
+    ("about", Kind::Caution, Kind::Decision),
+    ("about", Kind::Problem, Kind::Decision),
+    ("builds-on", Kind::Insight, Kind::Decision),
+    ("answers", Kind::Insight, Kind::Problem),
+    ("needs", Kind::Decision, Kind::Decision),
+];
+
+/// Roughly the share of edges joining facts about the same component.
+///
+/// Real edges connect things that are topically related, and in this corpus
+/// the component is the topic handle. Linking only across components would be
+/// unrealistically pessimistic (a neighbour that shares nothing with the query
+/// never ranks, so the graph could never help); linking only within one would
+/// be unrealistically flattering. The remainder are cross-component — a
+/// Principle cited from somewhere else entirely — which is the case where the
+/// edge carries information no embedding could infer.
+const SAME_COMPONENT_SHARE: u64 = 70;
+
+fn component_of(f: &Fact) -> &str {
+    f.subject.split_once(' ').map(|(_, c)| c).unwrap_or("")
+}
+
+fn edges(facts: &[Fact], profile: &Profile, rng: &mut Rng) -> Vec<GeneratedEdge> {
+    let target = (facts.len() as f64 * profile.edges_per_node) as usize;
+    if target == 0 || facts.is_empty() {
+        return Vec::new();
+    }
+    // A slice of the corpus stays deliberately unlinked, matching the ~4% of
+    // real nodes that never got connected to anything.
+    let isolated: HashSet<usize> = (0..facts.len())
+        .filter(|i| (*i as f64) < facts.len() as f64 * profile.isolated)
+        .collect();
+
+    let by_kind = |k: Kind| -> Vec<usize> {
+        (0..facts.len())
+            .filter(|i| facts[*i].kind == k && !isolated.contains(i))
+            .collect()
+    };
+    let pools: Vec<(&str, Vec<usize>, Vec<usize>)> = EDGE_RULES
+        .iter()
+        .map(|(verb, from, to)| (*verb, by_kind(*from), by_kind(*to)))
+        .collect();
+
+    let mut out = Vec::with_capacity(target);
+    let mut seen: HashSet<(usize, usize)> = HashSet::new();
+    let mut attempts = 0;
+    while out.len() < target && attempts < target * 20 {
+        attempts += 1;
+        let (verb, from_pool, to_pool) = &pools[rng.below(pools.len())];
+        if from_pool.is_empty() || to_pool.is_empty() {
+            continue;
+        }
+        let a = from_pool[rng.below(from_pool.len())];
+        let want_same = rng.below(100) < SAME_COMPONENT_SHARE as usize;
+        let comp = component_of(&facts[a]);
+        let candidates: Vec<usize> = to_pool
+            .iter()
+            .copied()
+            .filter(|b| *b != a && (component_of(&facts[*b]) == comp) == want_same)
+            .collect();
+        let Some(&b) = candidates.get(rng.below(candidates.len().max(1))) else {
+            continue;
+        };
+        if !seen.insert((a.min(b), a.max(b))) {
+            continue;
+        }
+        out.push(GeneratedEdge {
+            from: facts[a].key.clone(),
+            to: facts[b].key.clone(),
+            verb,
+        });
+    }
+    out
+}
+
+/// The resolved vocabulary slots for one fact: which component it is about,
+/// two descriptor indices, and its ordinal within the kind (which sets the
+/// numeric value a Decision commits to).
+struct Slots<'a> {
+    component: &'a str,
+    s1: usize,
+    s2: usize,
+    j: usize,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build(
+    kind: Kind,
+    key: String,
+    subject: String,
+    slots: Slots<'_>,
+    twin_of: Option<String>,
+    tested: bool,
+    profile: &Profile,
+    ord: u64,
+) -> Fact {
+    let Slots {
+        component,
+        s1,
+        s2,
+        j,
+    } = slots;
+
+    let (title, body, answer, predicate, questions) = match kind {
+        Kind::Decision => {
+            let (param, unit, param_desc) = PARAMS[s1];
+            let (constraint, constraint_desc) = CONSTRAINTS[s2];
+            let value = 3 + (j * 13) % 977;
+            (
+                format!("{subject} uses a {param} of {value} {unit}"),
+                format!(
+                    "Chosen deliberately: {constraint}, so anything larger re-enters a window \
+                     that has already closed."
+                ),
+                format!("{value} {unit}"),
+                format!("uses a {param} of {value} {unit}"),
+                vec![
+                    (Phrasing::Lexical, format!("{subject} {param}")),
+                    (
+                        Phrasing::Paraphrase,
+                        format!("what {param} did we settle on for the {subject}?"),
+                    ),
+                    (
+                        Phrasing::Oblique,
+                        format!(
+                            "which {component} picked {param_desc} around the fact that \
+                             {constraint_desc}?"
+                        ),
+                    ),
+                ],
+            )
+        }
+        Kind::Caution => {
+            let (failure, failure_desc) = FAILURES[s1];
+            let (trigger, trigger_desc) = TRIGGERS[s2];
+            (
+                format!("{subject} {failure} when {trigger}"),
+                "Found the hard way. The window is narrow enough that a healthy run never \
+                 shows it, which is exactly why it survived review."
+                    .to_string(),
+                failure.to_string(),
+                failure.to_string(),
+                vec![
+                    (Phrasing::Lexical, format!("{subject} {failure}")),
+                    (
+                        Phrasing::Paraphrase,
+                        format!("what goes wrong with the {subject}?"),
+                    ),
+                    (
+                        Phrasing::Oblique,
+                        format!("which {component} {failure_desc} once {trigger_desc}?"),
+                    ),
+                ],
+            )
+        }
+        Kind::Principle => {
+            let (forbidden, forbidden_desc) = FORBIDDEN[s1];
+            let (reason, reason_desc) = REASONS[s2];
+            (
+                format!("{subject} must never {forbidden}"),
+                format!("Not negotiable: {reason}."),
+                forbidden.to_string(),
+                format!("must never {forbidden}"),
+                vec![
+                    (Phrasing::Lexical, format!("{subject} {forbidden}")),
+                    (
+                        Phrasing::Paraphrase,
+                        format!("is it acceptable to {forbidden} in the {subject}?"),
+                    ),
+                    (
+                        Phrasing::Oblique,
+                        format!(
+                            "which {component} is barred from {forbidden_desc} because \
+                             {reason_desc}?"
+                        ),
+                    ),
+                ],
+            )
+        }
+        Kind::Problem => {
+            let (symptom, symptom_desc) = SYMPTOMS[s1];
+            let (condition, condition_desc) = CONDITIONS[s2];
+            (
+                format!("{subject} {symptom} {condition}"),
+                format!(
+                    "Still open. Reproduces roughly one run in six, and only {condition}, so the \
+                     usual smoke pass never catches it."
+                ),
+                symptom.to_string(),
+                symptom.to_string(),
+                vec![
+                    (Phrasing::Lexical, format!("{subject} {symptom}")),
+                    (
+                        Phrasing::Paraphrase,
+                        format!("what is still broken in the {subject}?"),
+                    ),
+                    (
+                        Phrasing::Oblique,
+                        format!("which {component} {symptom_desc} {condition_desc}?"),
+                    ),
+                ],
+            )
+        }
+        Kind::Insight => {
+            let (behaviour, behaviour_desc) = BEHAVIOURS[s1];
+            let (cause, cause_desc) = CAUSES[s2];
+            (
+                format!("{subject} {behaviour} because {cause}"),
+                format!("Worked this out while tracing a report: {cause}."),
+                cause.to_string(),
+                behaviour.to_string(),
+                vec![
+                    (Phrasing::Lexical, format!("{subject} {behaviour}")),
+                    (
+                        Phrasing::Paraphrase,
+                        format!("what explains why the {subject} {behaviour}?"),
+                    ),
+                    (
+                        Phrasing::Oblique,
+                        format!("which {component} {behaviour_desc} because {cause_desc}?"),
+                    ),
+                ],
+            )
+        }
+    };
+
+    let oblique_key = questions
+        .iter()
+        .find(|(p, _)| *p == Phrasing::Oblique)
+        .map(|(_, text)| text.clone())
+        .expect("every kind generates an oblique question");
+
+    // A distractor is written to the graph but never asked about.
+    let questions = if tested {
+        questions
+            .into_iter()
+            .map(|(phrasing, text)| Question {
+                text,
+                phrasing,
+                gold: Some(key.clone()),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let mix = ord.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let title = extend_title(title, mix);
+    let body = pad_body(
+        body,
+        &subject,
+        component,
+        profile.body_chars.sample(mix),
+        mix,
+    );
+    let code_refs = code_refs(component, profile.code_refs.sample(mix >> 3), mix);
+
+    Fact {
+        key,
+        kind,
+        subject,
+        title,
+        body,
+        answer,
+        predicate,
+        questions,
+        tested,
+        oblique_key,
+        twin_of,
+        code_refs,
+    }
+}
+
+/// Real titles run to a median of 89 characters and carry a trailing clause
+/// that says why the note exists. The tails below deliberately share no
+/// vocabulary with any paraphrase column, so extending a title cannot make an
+/// oblique question lexically findable — the property the whole oblique
+/// measurement rests on, and one a test enforces.
+const TITLE_TAILS: [&str; 8] = [
+    " — surfaced on the third occurrence, not the one everybody remembers",
+    " — corroborated independently by two separate investigations",
+    ", and no surrounding layer makes up for it",
+    ", which is why it is recorded rather than quietly patched around",
+    " — the workaround proved costlier than simply honouring the rule",
+    ", and it only shows up under sustained production traffic",
+    " — reproduced in staging by somebody who did not believe it",
+    ", so the engineer who follows is spared the same expense",
+];
+
+fn extend_title(title: String, mix: u64) -> String {
+    format!("{title}{}", TITLE_TAILS[(mix % 8) as usize])
+}
+
+/// Sentences that add realistic bulk without adding retrievable claims. They
+/// name only the fact's own subject and component, never another fact's slot
+/// vocabulary — a filler sentence containing some other fact's answer would
+/// manufacture a false positive and quietly corrupt every recall number.
+const FILLER: [&str; 12] = [
+    "Recorded only once three separate sightings had accumulated, at which point bad luck stopped looking plausible.",
+    "The {component} is maintained by the same group that owns its callers, and they have approved this phrasing.",
+    "Kept deliberately narrow, since broadening it would sweep in neighbouring situations that behave quite unlike this one.",
+    "A ticket for this exists somewhere in the tracker, but it carries far less context than this note.",
+    "Somebody will eventually want to promote this into a general rule. That experiment has already run its course, unhappily.",
+    "Figures quoted here were collected in staging under representative traffic, not in a controlled harness.",
+    "Revisited at the following planning session and carried forward without amendment.",
+    "This note exists because working the reasoning out was costly while stating the conclusion is trivial.",
+    "Arriving here mid-investigation? Start from the {component} and work outward from there.",
+    "Two engineers examined it separately, roughly a month apart, and landed in precisely the same place.",
+    "The obvious alternative got weighed and turned down on operational grounds rather than technical ones.",
+    "{subject} remains the only place this has ever been observed, which is why it is filed against it directly.",
+];
+
+fn pad_body(core: String, subject: &str, component: &str, target: usize, mix: u64) -> String {
+    let mut out = core;
+    let mut i = (mix >> 16) as usize;
+    while out.chars().count() < target {
+        let f = FILLER[i % FILLER.len()]
+            .replace("{component}", component)
+            .replace("{subject}", subject);
+        out.push(' ');
+        out.push_str(&f);
+        i += 1;
+        // One pass through the pool is enough bulk for the longest real body;
+        // repeating it would make every long note read identically.
+        if i > (mix >> 16) as usize + FILLER.len() {
+            break;
+        }
+    }
+    out
+}
+
+fn code_refs(component: &str, n: usize, mix: u64) -> Vec<String> {
+    let slug: String = component.replace(' ', "_");
+    const FILES: [&str; 4] = ["mod.rs", "state.rs", "handler.rs", "config.rs"];
+    (0..n)
+        .map(|k| {
+            let f = FILES[((mix >> (k * 3)) % 4) as usize];
+            format!("src/{slug}/{f}")
+        })
+        .collect()
+}
+
+/// Thin the questions of over-represented kinds until the surviving mix
+/// matches the requested weighting.
+///
+/// Questions are dropped rather than duplicated: asking the same question
+/// twice would double-count one retrieval outcome and quietly narrow the
+/// confidence of every number derived from it.
+fn apply_type_mix(facts: &mut [Fact], mix: &[(Kind, u32)], seed: u64) {
+    let tested: Vec<usize> = (0..facts.len()).filter(|i| facts[*i].tested).collect();
+    if tested.is_empty() {
+        return;
+    }
+    let counts: Vec<(Kind, usize)> = KINDS
+        .iter()
+        .map(|k| (*k, tested.iter().filter(|i| facts[**i].kind == *k).count()))
+        .collect();
+
+    // Proportional thinning: the most-asked kind keeps every question it has,
+    // and each other kind keeps its share relative to that one.
+    let max_weight = KINDS.iter().map(|k| weight_of(mix, *k)).max().unwrap_or(0);
+    if max_weight == 0 {
+        return;
+    }
+
+    let mut rng = Rng::new(seed ^ 0xA5A5_A5A5);
+    for k in KINDS {
+        let n = counts
+            .iter()
+            .find(|(c, _)| *c == k)
+            .map(|(_, n)| *n)
+            .unwrap_or(0);
+        let keep = ((weight_of(mix, k) as f64 / max_weight as f64) * n as f64).round() as usize;
+        let keep = keep.min(n);
+        let mut of_kind: Vec<usize> = tested
+            .iter()
+            .copied()
+            .filter(|i| facts[*i].kind == k)
+            .collect();
+        rng.shuffle(&mut of_kind);
+        for i in of_kind.into_iter().skip(keep) {
+            facts[i].questions.clear();
+        }
+    }
+}
+
+/// Questions shaped like the answerable ones, about subjects that were never
+/// written. Any hit here is a false positive.
+fn controls(tested: usize, names: &mut Names) -> (Vec<Question>, Vec<String>) {
+    let n = (tested / 4).max(1);
+    let mut questions = Vec::with_capacity(n);
+    let mut subjects = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let component = COMPONENTS[i % COMPONENTS.len()];
+        let subject = format!("{} {component}", coined(names.next()));
+        let phrasing = PHRASINGS[i % PHRASINGS.len()];
+        questions.push(Question {
+            text: match phrasing {
+                Phrasing::Lexical => format!("{subject} retry budget"),
+                Phrasing::Paraphrase => format!("what did we decide about the {subject}?"),
+                Phrasing::Oblique => format!("who owns the {subject} these days?"),
+            },
+            phrasing,
+            gold: None,
+        });
+        subjects.push(subject);
+    }
+    (questions, subjects)
+}
+
+/// One contradiction, one entailment and one neutral pair per tested fact —
+/// ground truth by construction, so scoring an NLI model costs nothing. The
+/// neutral partner may be a distractor: two facts about different invented
+/// subjects are unrelated, which is exactly what neutral means.
+fn pairs(facts: &[Fact], rng: &mut Rng) -> Vec<Pair> {
+    let mut out = Vec::with_capacity(facts.len() * 3);
+    for (i, f) in facts.iter().enumerate().filter(|(_, f)| f.tested) {
+        let (contra, entail) = restatements(f, i);
+        out.push(Pair {
+            premise: f.title.clone(),
+            hypothesis: contra,
+            gold: NliLabel::Contradiction,
+        });
+        out.push(Pair {
+            premise: f.title.clone(),
+            hypothesis: entail,
+            gold: NliLabel::Entailment,
+        });
+        if facts.len() > 1 {
+            let mut other = rng.below(facts.len());
+            if other == i {
+                other = (other + 1) % facts.len();
+            }
+            out.push(Pair {
+                premise: f.title.clone(),
+                hypothesis: facts[other].title.clone(),
+                gold: NliLabel::Neutral,
+            });
+        }
+    }
+    out
+}
+
+/// (contradicting restatement, entailed restatement) for one fact.
+fn restatements(f: &Fact, salt: usize) -> (String, String) {
+    let subject = &f.subject;
+    match f.kind {
+        Kind::Decision => {
+            // Same subject and parameter, a different value: the cleanest
+            // contradiction there is, and the one similarity alone cannot see.
+            let value = &f.answer;
+            let altered = alter_number(value, salt);
+            (
+                format!("{subject} is configured with {altered}"),
+                format!("The agreed setting for the {subject} is {value}."),
+            )
+        }
+        Kind::Caution => (
+            format!("{subject} never {}, whatever happens", f.predicate),
+            format!("In production, {subject} {} without warning.", f.predicate),
+        ),
+        Kind::Principle => (
+            format!("{subject} may freely {}", f.answer),
+            format!("It is forbidden for the {subject} to {}.", f.answer),
+        ),
+        Kind::Problem => (
+            format!("{subject} no longer {}", f.predicate),
+            format!(
+                "There is an open issue where the {subject} {}.",
+                f.predicate
+            ),
+        ),
+        Kind::Insight => (
+            format!(
+                "It is not true that {subject} {} because {}",
+                f.predicate, f.answer
+            ),
+            format!(
+                "The reason the {subject} {} is that {}.",
+                f.predicate, f.answer
+            ),
+        ),
+    }
+}
+
+fn alter_number(answer: &str, salt: usize) -> String {
+    match answer.split_once(' ') {
+        Some((num, unit)) => match num.parse::<usize>() {
+            Ok(v) => format!("{} {unit}", v + 1 + salt % 40),
+            Err(_) => format!("something other than {answer}"),
+        },
+        None => format!("something other than {answer}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deterministic_for_a_seed() {
+        let a = corpus(40, 80, 42);
+        let b = corpus(40, 80, 42);
+        let c = corpus(40, 80, 43);
+        assert_eq!(
+            a.facts.iter().map(|f| &f.title).collect::<Vec<_>>(),
+            b.facts.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+        assert_ne!(
+            a.facts.iter().map(|f| &f.title).collect::<Vec<_>>(),
+            c.facts.iter().map(|f| &f.title).collect::<Vec<_>>(),
+            "a different seed must produce a different corpus"
+        );
+    }
+
+    #[test]
+    fn subjects_and_titles_are_unique() {
+        for size in [50, 200, 800] {
+            let c = corpus(size, size * 2, 1);
+            let n = c.facts.len();
+            let subjects: HashSet<_> = c.facts.iter().map(|f| &f.subject).collect();
+            let titles: HashSet<_> = c.facts.iter().map(|f| &f.title).collect();
+            assert_eq!(subjects.len(), n, "subject collision at {size}");
+            assert_eq!(titles.len(), n, "title collision at {size}");
+        }
+    }
+
+    #[test]
+    fn oblique_questions_never_name_their_subject() {
+        let c = corpus(120, 240, 5);
+        for f in &c.facts {
+            let name = f.subject.split(' ').next().unwrap();
+            for q in f
+                .questions
+                .iter()
+                .filter(|q| q.phrasing == Phrasing::Oblique)
+            {
+                assert!(
+                    !q.text.contains(name),
+                    "oblique question leaked the subject name: {}",
+                    q.text
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_fact_can_answer_another_facts_oblique_question() {
+        // The load-bearing invariant. Two facts sharing an oblique descriptor
+        // would make the question genuinely ambiguous, and a retriever that
+        // returned the other one would be scored as wrong for being right.
+        // Distractors are included: a distractor that answers a tested
+        // question is not a distractor, it is a second correct answer.
+        for size in [50, 200, 800] {
+            let c = corpus(size, size * 2, 9);
+            let mut seen = HashSet::new();
+            for f in &c.facts {
+                assert!(
+                    seen.insert(f.oblique_key.clone()),
+                    "two facts answer the same oblique question at size {size}: {}",
+                    f.oblique_key
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn oblique_questions_share_almost_no_words_with_their_fact() {
+        // The whole reason the oblique column means anything: if it shared the
+        // fact's vocabulary, grep would win it and the metric would be noise.
+        // The component ("shard router") is the one handle an oblique question
+        // is allowed to share — it names the category, not the fact, and it is
+        // the same for every eighth fact in the corpus.
+        let c = corpus(100, 200, 7);
+        for f in &c.facts {
+            let component: HashSet<String> = f
+                .subject
+                .split(' ')
+                .skip(1)
+                .map(|w| w.to_lowercase())
+                .collect();
+            // Connectives are structural, not content — both a fact and a
+            // question about it will say "because".
+            const CONNECTIVES: [&str; 8] = [
+                "because", "which", "while", "after", "before", "these", "those", "still",
+            ];
+            let fact_words: HashSet<String> = format!("{} {}", f.title, f.body)
+                .split(|ch: char| !ch.is_alphanumeric())
+                .filter(|w| w.len() > 4)
+                .map(|w| w.to_lowercase())
+                .filter(|w| !component.contains(w) && !CONNECTIVES.contains(&w.as_str()))
+                .collect();
+            for q in f
+                .questions
+                .iter()
+                .filter(|q| q.phrasing == Phrasing::Oblique)
+            {
+                let shared = q
+                    .text
+                    .split(|ch: char| !ch.is_alphanumeric())
+                    .filter(|w| w.len() > 4)
+                    .map(|w| w.to_lowercase())
+                    .filter(|w| fact_words.contains(w))
+                    .count();
+                assert!(
+                    shared <= 1,
+                    "oblique question shares {shared} content words with its fact:\n  {}\n  {}",
+                    q.text,
+                    f.title
+                );
+            }
+        }
+    }
+
+    /// Connectives are structural and shared by any two English sentences
+    /// about the same thing.
+    const CONNECTIVES: [&str; 9] = [
+        "because", "which", "while", "after", "before", "these", "those", "still", "there",
+    ];
+
+    fn content_words(text: &str) -> HashSet<String> {
+        text.split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() > 4)
+            .map(|w| w.to_lowercase())
+            .filter(|w| !CONNECTIVES.contains(&w.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn filler_shares_no_vocabulary_with_any_paraphrase() {
+        // The load-bearing guard behind the oblique column. Body filler exists
+        // to make documents realistically long; if a filler sentence reuses a
+        // paraphrase word, an oblique question becomes lexically findable and
+        // the one measurement that separates meaning from keywords quietly
+        // turns into noise. Checked here rather than by eye, because it was
+        // by eye that thirteen collisions got in.
+        let mut paraphrases: Vec<&str> = Vec::new();
+        paraphrases.extend(PARAMS.iter().map(|(_, _, p)| *p));
+        for table in [
+            &CONSTRAINTS[..],
+            &FAILURES[..],
+            &TRIGGERS[..],
+            &FORBIDDEN[..],
+            &REASONS[..],
+            &SYMPTOMS[..],
+            &CONDITIONS[..],
+            &BEHAVIOURS[..],
+            &CAUSES[..],
+        ] {
+            paraphrases.extend(table.iter().map(|(_, p)| *p));
+        }
+        let para: HashSet<String> = paraphrases.iter().flat_map(|p| content_words(p)).collect();
+
+        let mut leaked: Vec<String> = FILLER
+            .iter()
+            .chain(TITLE_TAILS.iter())
+            .flat_map(|f| content_words(f))
+            .filter(|w| para.contains(w))
+            .collect();
+        leaked.sort();
+        leaked.dedup();
+        assert!(
+            leaked.is_empty(),
+            "filler reuses paraphrase vocabulary: {leaked:?}"
+        );
+    }
+
+    #[test]
+    fn no_fact_body_contains_another_facts_answer() {
+        // Filler that happened to contain some other fact's checkable answer
+        // would manufacture a false positive in the online half and corrupt
+        // every recall number in the offline half.
+        let c = corpus(40, 80, 21);
+        for f in &c.facts {
+            let hay = format!("{} {}", f.title, f.body).to_lowercase();
+            for other in c.facts.iter().filter(|o| o.key != f.key) {
+                // Two facts can legitimately draw the same slot value, so an
+                // identical answer is a shared vocabulary entry, not a leak.
+                // (It is still a grading hazard for the online half, which is
+                // why that grader also requires the subject name.)
+                if other.answer == f.answer {
+                    continue;
+                }
+                let needle = other.answer.to_lowercase();
+                // Answers are phrases; single shared words are unavoidable and
+                // harmless. Only a whole answer appearing verbatim is a leak.
+                if needle.split_whitespace().count() > 1 {
+                    assert!(
+                        !hay.contains(&needle),
+                        "{} contains {}'s answer {:?}",
+                        f.key,
+                        other.key,
+                        other.answer
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn generated_nodes_match_the_real_shape() {
+        use crate::profile::Profile;
+        let p = Profile::default();
+        let c = corpus(60, 120, 22);
+        let median = |mut v: Vec<usize>| {
+            v.sort_unstable();
+            v[v.len() / 2]
+        };
+        let body = median(c.facts.iter().map(|f| f.body.chars().count()).collect());
+        let title = median(c.facts.iter().map(|f| f.title.chars().count()).collect());
+        assert!(
+            body > p.body_chars.p25 && body < p.body_chars.p75,
+            "median body {body} outside the real p25..p75 ({}..{})",
+            p.body_chars.p25,
+            p.body_chars.p75
+        );
+        assert!(
+            title > 60,
+            "median title {title} is far below the real median of {}",
+            p.title_chars.median
+        );
+        assert!(c.facts.iter().any(|f| !f.code_refs.is_empty()));
+    }
+
+    #[test]
+    fn the_generated_graph_matches_the_real_topology() {
+        use crate::profile::Profile;
+        let p = Profile::default();
+        let c = corpus(100, 200, 31);
+        let n = c.facts.len();
+        let per_node = c.edges.len() as f64 / n as f64;
+        assert!(
+            (per_node - p.edges_per_node).abs() < 0.25,
+            "{per_node} edges per node vs a real {}",
+            p.edges_per_node
+        );
+
+        let mut degree: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for e in &c.edges {
+            *degree.entry(e.from.as_str()).or_default() += 1;
+            *degree.entry(e.to.as_str()).or_default() += 1;
+        }
+        let isolated = c
+            .facts
+            .iter()
+            .filter(|f| !degree.contains_key(f.key.as_str()))
+            .count();
+        let share = isolated as f64 / n as f64;
+        assert!(
+            share < 0.35,
+            "{share} of nodes isolated — a real graph leaves about 4% unlinked"
+        );
+
+        // Every edge must read as English in the ontology's terms.
+        for e in &c.edges {
+            let (from, to) = (c.fact(&e.from).unwrap(), c.fact(&e.to).unwrap());
+            assert!(
+                EDGE_RULES
+                    .iter()
+                    .any(|(v, a, b)| *v == e.verb && *a == from.kind && *b == to.kind),
+                "{:?} {} {:?} is not a legal triple",
+                from.kind,
+                e.verb,
+                to.kind
+            );
+            assert_ne!(e.from, e.to, "no self-links");
+        }
+    }
+
+    #[test]
+    fn edges_never_mutate_node_state() {
+        // `replaces` archives its older endpoint and `conflicts-with` demotes
+        // trust. Either would remove a gold fact from search results and
+        // corrupt recall without any test failing.
+        let c = corpus(60, 120, 32);
+        assert!(
+            c.edges
+                .iter()
+                .all(|e| e.verb != "replaces" && e.verb != "conflicts-with"),
+            "a state-mutating verb reached the corpus"
+        );
+    }
+
+    #[test]
+    fn edges_mix_same_and_cross_component_links() {
+        let c = corpus(100, 200, 33);
+        let same = c
+            .edges
+            .iter()
+            .filter(|e| {
+                component_of(c.fact(&e.from).unwrap()) == component_of(c.fact(&e.to).unwrap())
+            })
+            .count();
+        let share = same as f64 / c.edges.len() as f64;
+        assert!(
+            (0.4..0.95).contains(&share),
+            "same-component share {share}: all-same is flattering, all-cross is pessimistic"
+        );
+    }
+
+    #[test]
+    fn questions_follow_the_type_mix() {
+        let c = corpus(200, 0, 41);
+        let count = |k: Kind| {
+            c.facts
+                .iter()
+                .filter(|f| f.kind == k)
+                .map(|f| f.questions.len())
+                .sum::<usize>() as f64
+        };
+        let (d, p) = (count(Kind::Decision), count(Kind::Principle));
+        assert!(d > 0.0 && p > 0.0);
+        let ratio = d / p;
+        let want = 35.0 / 10.0;
+        assert!(
+            (ratio - want).abs() < 1.0,
+            "decision:principle questions {ratio:.2}, mix asks for {want:.2}"
+        );
+        assert!(
+            count(Kind::Caution) > count(Kind::Problem),
+            "cautions are asked about more often than problems"
+        );
+    }
+
+    #[test]
+    fn phantom_subjects_appear_nowhere_in_the_corpus() {
+        let c = corpus(100, 200, 2);
+        let flat = c.flat_file().to_lowercase();
+        assert!(!c.phantom_subjects.is_empty());
+        for s in &c.phantom_subjects {
+            let name = s.split(' ').next().unwrap().to_lowercase();
+            assert!(
+                !flat.contains(&name),
+                "control question names something we wrote: {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_fact_carries_a_checkable_answer() {
+        let c = corpus(60, 120, 4);
+        for f in &c.facts {
+            assert!(!f.answer.is_empty());
+            let hay = format!("{} {}", f.title, f.body).to_lowercase();
+            assert!(
+                hay.contains(&f.answer.to_lowercase()),
+                "answer '{}' is not present in its own fact",
+                f.answer
+            );
+        }
+    }
+
+    #[test]
+    fn pairs_are_balanced_and_labelled() {
+        let c = corpus(30, 60, 8);
+        assert_eq!(c.pairs.len(), c.tested() * 3);
+        for label in [
+            NliLabel::Contradiction,
+            NliLabel::Entailment,
+            NliLabel::Neutral,
+        ] {
+            assert_eq!(
+                c.pairs.iter().filter(|p| p.gold == label).count(),
+                c.tested()
+            );
+        }
+    }
+
+    #[test]
+    fn distractors_are_written_but_never_asked_about() {
+        let c = corpus(50, 100, 11);
+        assert_eq!(c.tested(), 50);
+        assert_eq!(c.distractors(), 100);
+        assert_eq!(c.facts.len(), 150);
+        // Questions follow the type mix, so the count is no longer 3x tested.
+        assert!(
+            c.questions().count() > 0 && c.questions().count() <= 50 * 3,
+            "questions come only from tested facts, thinned by the type mix"
+        );
+        assert!(
+            c.facts
+                .iter()
+                .filter(|f| !f.tested)
+                .all(|f| f.questions.is_empty()),
+            "a distractor with a question is not a distractor"
+        );
+        // ...but they are in the graph, so every arm has to rank past them.
+        let flat = c.flat_file();
+        for f in c.facts.iter().filter(|f| !f.tested) {
+            assert!(
+                flat.contains(&f.title),
+                "distractor missing from the corpus"
+            );
+        }
+    }
+
+    #[test]
+    fn no_distractor_contradicts_a_tested_fact() {
+        // Contradiction requires talking about the same thing. Every fact owns
+        // a unique invented subject, so no two facts in the graph are ever
+        // about the same entity — the only contradictions in the whole corpus
+        // are the ones `pairs` constructs deliberately, and those are never
+        // written to the graph.
+        let c = corpus(60, 120, 12);
+        let subjects: HashSet<&String> = c.facts.iter().map(|f| &f.subject).collect();
+        assert_eq!(subjects.len(), c.facts.len());
+
+        let titles: HashSet<&String> = c.facts.iter().map(|f| &f.title).collect();
+        for p in &c.pairs {
+            if p.gold == NliLabel::Contradiction {
+                assert!(
+                    !titles.contains(&p.hypothesis),
+                    "a constructed contradiction leaked into the graph: {}",
+                    p.hypothesis
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn distractors_scale_the_graph_without_scaling_the_questions() {
+        // What makes a density sweep mean anything: hold the tested set fixed,
+        // grow only the noise.
+        let a = corpus(40, 0, 13);
+        let b = corpus(40, 400, 13);
+        assert_eq!(a.questions().count(), b.questions().count());
+        assert_eq!(a.pairs.len(), b.pairs.len());
+        assert_eq!(a.unanswerable.len(), b.unanswerable.len());
+        assert!(b.flat_file().len() > a.flat_file().len() * 5);
+        // The tested facts themselves must be identical, or the two runs are
+        // not comparable.
+        let tested = |c: &Corpus| {
+            c.facts
+                .iter()
+                .filter(|f| f.tested)
+                .map(|f| f.title.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(tested(&a), tested(&b));
+    }
+
+    #[test]
+    fn twins_exist_and_differ_by_one_syllable() {
+        let c = corpus(60, 120, 6);
+        let twins: Vec<_> = c.facts.iter().filter(|f| f.twin_of.is_some()).collect();
+        assert!(!twins.is_empty(), "no near-collision names were generated");
+        for t in twins {
+            let src = c.fact(t.twin_of.as_ref().unwrap()).unwrap();
+            let (a, b) = (
+                t.subject.split(' ').next().unwrap(),
+                src.subject.split(' ').next().unwrap(),
+            );
+            assert_ne!(a, b, "a twin must not be the same name");
+            assert_eq!(
+                a.chars().next(),
+                b.chars().next(),
+                "twins share an onset: {a} vs {b}"
+            );
+        }
+    }
+}

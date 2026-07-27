@@ -1,6 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["crates/engram-core", "crates/engram-http", "crates/engram-mcp", "crates/engram-cli"]
+members = [
+    "crates/engram-core",
+    "crates/engram-http",
+    "crates/engram-mcp",
+    "crates/engram-cli",
+    "eval",
+]
 
 [workspace.package]
 # One version for every crate: audit rows, /health, MCP server info and
