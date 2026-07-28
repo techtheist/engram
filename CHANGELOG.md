@@ -3,6 +3,55 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
+## v0.7.3 — retired means retired
+
+### Superseded knowledge leaves the canon
+
+A `replaces` edge has always meant *the newer claim wins, the older is
+archived into history*. Only the conflict-verdict path actually did it — a
+`replaces` link written by the assistant, or a verb retyped in the pane, left
+the superseded note sitting in retrieval, on the canvas, and in the review
+queue, competing with the claim that replaced it.
+
+Now every live `replaces` edge retires the node it replaces, wherever it came
+from. Retired notes keep their place in the successor's **History** section
+and nothing is deleted. Two deliberate exceptions: pinned nodes are never
+auto-archived (the pane's replaces verdict still overrides a pin, because a
+human unsays a human's pin), and withdrawing the edge never un-archives —
+`valid_until` is also set by the decay pass and by you. Graphs written before
+this rule heal themselves: the session-boundary validation sweeps up whatever
+a `replaces` edge left behind.
+
+The pane follows: **archived notes are hidden by default**, one *Show
+archived* click away in the filter menu.
+
+### Feed
+
+- **Review lens** opens on the weakest trust first, at the top of the list.
+- **↑ / ↓** in the toolbar jump to the ends of the feed.
+- Cards show their **code refs** (struck through where the file is gone) and
+  say **stale** once, as the badge the Review drawer uses; the card date
+  spells out creation and last retrieval on hover.
+- A short card at either end of the feed can be focused again — the center
+  line now clamps to the first and last card, which the feed's padding could
+  never let them reach.
+- Switching to the feed closes the detail drawer — the feed acts on the card
+  at its center, and **Edit** is what opens the full form.
+
+### Starting from empty
+
+An empty graph shows one card (not two), on either screen. It now points at
+the gesture that actually exists — `/engram:digest`, or *"digest this
+project"* — and carries an **Ontology** picker: an empty graph is the one
+moment a preset can be applied with nothing to retype, so the choice lives
+where you meet it.
+
+### Switching projects starts clean
+
+Pane state that describes one graph — the feed's back trail, search hits,
+Checkup reports, the audit page, filters and selection — is reset on a
+project switch instead of being carried into the next graph.
+
 ## v0.7.2 — measured, not guessed
 
 Engram grew an eval harness, pointed it at itself, and two layers lost. The
