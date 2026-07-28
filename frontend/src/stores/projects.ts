@@ -48,7 +48,10 @@ export const useProjectsStore = defineStore('projects', () => {
         // (a node card, an in-progress settings draft) and would silently
         // present it as the new project's.
         usePanels().closeAll()
-        graph.select(null)
+        // Filters, selection and queues describe the graph we are leaving;
+        // component-level state (search, trails, sweep results) resets off
+        // `switchEpoch` via the onProjectSwitch composable.
+        graph.resetView()
         graph.disconnect()
         // Each project's graph carries its own ontology/policy config.
         await Promise.all([graph.load(), useConfigStore().load()])

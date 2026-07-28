@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import EmptyGraph from '@/components/common/EmptyGraph.vue'
 import MarkdownView from '@/components/common/MarkdownView.vue'
 import SegmentedControl from '@/components/common/SegmentedControl.vue'
+import { onProjectSwitch } from '@/composables/onProjectSwitch'
 import { trustLevel, useGraphStore } from '@/stores/graph'
 import { useConfigStore } from '@/stores/config'
 import type { GraphEdge, GraphNode } from '@/types/graph'
@@ -44,8 +46,12 @@ const sortOptions = computed(() =>
           ],
 )
 
-watch(mode, () => {
-    if (!sortOptions.value.some((o) => o.value === sort.value)) sort.value = 'newest'
+/* Each lens has its own natural order: the timeline reads newest-first, the
+   review backlog leads with the weakest trust — the notes most likely to be
+   wrong. Switching lens also returns to the top of the new list. */
+watch(mode, (m) => {
+    sort.value = m === 'review' ? 'trust' : 'newest'
+    void nextTick(() => jump('top'))
 })
 
 // ---- the feed list ---------------------------------------------------------
@@ -190,6 +196,16 @@ function goBack(): void {
     scrollToNode(prev)
 }
 
+/**
+ * Fast traverse to the ends of the feed. Deliberately instant rather than
+ * smooth: across a few hundred cards a smooth scroll is a long ride, and the
+ * point of the jump is to be there.
+ */
+function jump(where: 'top' | 'bottom'): void {
+    const target = where === 'top' ? feedNodes.value[0] : feedNodes.value.at(-1)
+    if (target) scrollToNode(target.id, false)
+}
+
 // ---- depth effect + current card ------------------------------------------
 
 const feedEl = useTemplateRef<HTMLElement>('feedEl')
@@ -205,9 +221,22 @@ function restyle(): void {
     raf = 0
     const root = feedEl.value
     if (!root) return
-    const mid = root.scrollTop + root.clientHeight / 2
+    const cards = [...root.querySelectorAll<HTMLElement>('[data-node-id]')]
+    if (!cards.length) return
+    /*
+     * The center line, clamped to the first and last card's own centers.
+     * Without the clamp a short card at either end can never reach the
+     * middle of the screen (the feed's padding is smaller than half a
+     * viewport), so it stays dimmed and unfocusable while its taller
+     * neighbor — which does cover the line — wins every time.
+     */
+    const center = (el: HTMLElement) => el.offsetTop + el.offsetHeight / 2
+    const mid = Math.min(
+        Math.max(root.scrollTop + root.clientHeight / 2, center(cards[0]!)),
+        center(cards.at(-1)!),
+    )
     let best: { id: string; d: number } | null = null
-    for (const el of root.querySelectorAll<HTMLElement>('[data-node-id]')) {
+    for (const el of cards) {
         const half = el.offsetHeight / 2
         const d = Math.max(0, Math.abs(el.offsetTop + half - mid) - half)
         const t = Math.max(0, 1 - d / (root.clientHeight * 0.75))
@@ -250,6 +279,18 @@ function onFeedScroll(): void {
     queueRestyle()
     scheduleSettle()
 }
+
+/* The trail, the pulled-in traversal targets and the centered card are all
+   ids of the graph we are leaving — a Back button offering to return into
+   another project's node is the visible symptom. Start the new feed at the
+   top with an empty trail. */
+onProjectSwitch(() => {
+    trail.value = []
+    extraIds.value = new Set()
+    currentId.value = null
+    expandedId.value = null
+    void nextTick(() => jump('top'))
+})
 
 function onKey(e: KeyboardEvent): void {
     const t = e.target as HTMLElement | null
@@ -309,6 +350,26 @@ function fmtDate(secs: number): string {
     })
 }
 
+function fmtStamp(secs: number): string {
+    return new Date(secs * 1000).toLocaleString(undefined, {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+    })
+}
+
+/** The short date carries the whole provenance line on hover. */
+function dateTip(n: GraphNode): string {
+    const lines = [`Created ${fmtStamp(n.created_at)} · by ${n.source}`]
+    if (n.last_seen != null) lines.push(`Last retrieved ${fmtStamp(n.last_seen)}`)
+    if (n.valid_until != null) lines.push(`Archived ${fmtStamp(n.valid_until)}`)
+    return lines.join('\n')
+}
+
+/** Code refs of this node that no longer exist on disk (the drift scan). */
+function missingRefs(id: string): string[] {
+    return driftByNode.value.get(id) ?? []
+}
+
 const levelWord: Record<ReturnType<typeof trustLevel>, string> = {
     pinned: 'pinned',
     trusted: 'trusted',
@@ -356,6 +417,22 @@ const currentNode = computed(() =>
     <div class="feed-toolbar glass-panel">
         <SegmentedControl v-model="mode" :options="MODE_OPTIONS" aria-label="Feed lens" />
         <SegmentedControl v-model="sort" :options="sortOptions" aria-label="Feed order" />
+        <span class="jumps">
+            <button
+                class="jump"
+                type="button"
+                title="Jump to the top of the feed"
+                aria-label="Jump to the top of the feed"
+                @click="jump('top')"
+            >↑</button>
+            <button
+                class="jump"
+                type="button"
+                title="Jump to the end of the feed"
+                aria-label="Jump to the end of the feed"
+                @click="jump('bottom')"
+            >↓</button>
+        </span>
         <button
             v-if="trail.length"
             class="back"
@@ -371,7 +448,10 @@ const currentNode = computed(() =>
 
     <div ref="feedEl" class="feed" @scroll.passive="onFeedScroll">
         <div v-if="!feedNodes.length" class="feed-empty glass-panel">
-            <template v-if="mode === 'review'">
+            <!-- An empty graph gets ONE empty state — the canvas's overlay is
+                 graph-only, so the feed shows the same card here. -->
+            <EmptyGraph v-if="!nodeList.length" />
+            <template v-else-if="mode === 'review'">
                 <p class="empty-title">Nothing needs review</p>
                 <p>No provisional, stale, or drifted notes in sight — the backlog is clear.</p>
             </template>
@@ -405,7 +485,7 @@ const currentNode = computed(() =>
                     <span v-if="item.node.valid_until != null" class="chip status">archived</span>
                     <span v-if="driftByNode.has(item.node.id)" class="chip warn">drifted</span>
                     <span class="spacer" />
-                    <span class="date">{{ fmtDate(item.node.created_at) }}</span>
+                    <span class="date" :title="dateTip(item.node)">{{ fmtDate(item.node.created_at) }}</span>
                 </header>
 
                 <h3 class="card-title">
@@ -433,6 +513,18 @@ const currentNode = computed(() =>
                     <span v-if="item.node.tags.length" class="tags">
                         <span v-for="t in item.node.tags" :key="t" class="tag">#{{ t }}</span>
                     </span>
+                </div>
+
+                <div v-if="item.node.code_refs.length" class="refs">
+                    <span
+                        v-for="codeRef in item.node.code_refs"
+                        :key="codeRef"
+                        class="ref-chip"
+                        :class="{ missing: missingRefs(item.node.id).includes(codeRef) }"
+                        :title="missingRefs(item.node.id).includes(codeRef)
+                            ? `${codeRef} — this file no longer exists in the project`
+                            : codeRef"
+                    >{{ codeRef }}</span>
                 </div>
 
                 <div
@@ -586,6 +678,32 @@ const currentNode = computed(() =>
     background: var(--interactive-ghost-hover);
 }
 
+.jumps {
+    display: inline-flex;
+    gap: 0.4rem;
+}
+
+/* Fast traverse: same pill language as Back, sized to a single glyph. */
+.jump {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.6rem;
+    height: 2.6rem;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-full);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: var(--text-body-sm);
+    line-height: 1;
+    cursor: pointer;
+}
+
+.jump:hover {
+    color: var(--text-primary);
+    background: var(--interactive-ghost-hover);
+}
+
 .back-count {
     min-width: 1.7rem;
     padding: 0.05rem 0.4rem;
@@ -612,7 +730,7 @@ const currentNode = computed(() =>
     overflow: hidden auto;
 
     /* Room so the first/last card can center, with neighbors peeking. */
-    padding: 22vh 1.6rem 30vh;
+    padding: 30vh 1.6rem 30vh;
     scroll-padding-block: 22vh;
 
     /* Gentle centering — proximity, so free scrolling still feels free. */
@@ -748,6 +866,19 @@ const currentNode = computed(() =>
 }
 
 .chip.warn {
+    color: var(--node-caution);
+    background: color-mix(in srgb, var(--node-caution) 14%, transparent);
+}
+
+/* Verbatim the Review drawer's badge — square-ish corners included, so the
+   two surfaces say "stale" in exactly one shape. */
+.stale-badge {
+    padding: 0.1rem 0.6rem;
+    border: 1px solid color-mix(in srgb, var(--node-problem) 40%, transparent);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--node-problem) 14%, transparent);
+    font-size: var(--text-caption);
+    font-weight: 600;
     color: var(--node-problem);
 }
 
@@ -825,18 +956,10 @@ const currentNode = computed(() =>
     background: var(--trust-provisional);
 }
 
-.trust-dot.stale {
-    background: var(--node-problem, #ef4444);
-}
-
 .trust-word {
     font-family: var(--font-mono);
     font-size: var(--text-caption);
     color: var(--text-tertiary);
-}
-
-.trust-word.stale {
-    color: var(--node-problem);
 }
 
 .tags {
@@ -848,6 +971,33 @@ const currentNode = computed(() =>
 .tag {
     font-size: var(--text-caption);
     color: var(--text-tertiary);
+}
+
+/* Code refs, same chips as the node detail — a card should say what code it
+   is about, and which of those files have since moved away. */
+.refs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+
+.ref-chip {
+    overflow: hidden;
+    max-width: 100%;
+    padding: 0.2rem 0.7rem;
+    border-radius: var(--radius-sm);
+    background: var(--surface-sunken);
+    font-family: var(--font-mono);
+    font-size: var(--text-caption);
+    color: var(--text-tertiary);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ref-chip.missing {
+    color: var(--node-problem);
+    background: color-mix(in srgb, var(--node-problem) 12%, transparent);
+    text-decoration: line-through;
 }
 
 .edges {

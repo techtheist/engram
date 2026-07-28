@@ -13,7 +13,7 @@ import type { EdgeType, GraphEdge, TimelineEntry } from '@/types/graph'
 
 const store = useGraphStore()
 const config = useConfigStore()
-const { selected, nodes, edgeList, driftByNode } = storeToRefs(store)
+const { selected, detailOpen, nodes, edgeList, driftByNode } = storeToRefs(store)
 
 /** Code refs of this node that no longer exist in the project (drifted). */
 const missingRefs = computed(() =>
@@ -216,7 +216,7 @@ function close(): void {
 
 <template>
 <SidePanel
-    :open="selected != null"
+    :open="selected != null && detailOpen"
     side="right"
     panel-id="detail"
     :default-rem="40"
@@ -605,9 +605,11 @@ function close(): void {
     color: var(--text-tertiary);
 }
 
+/* One stale badge across the pane — same shape here, in Review, in the feed. */
 .badge.stale {
     color: var(--node-problem);
     background-color: color-mix(in srgb, var(--node-problem) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--node-problem) 40%, transparent);
 }
 
 .badge.drifted {

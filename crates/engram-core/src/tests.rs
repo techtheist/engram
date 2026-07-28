@@ -2303,6 +2303,109 @@ fn brief_line_excerpts_stay_compact() {
     );
 }
 
+#[test]
+fn a_replaces_edge_retires_the_node_it_replaces() {
+    let e = engine();
+    let old = e
+        .add_node(new_node(NodeType::Decision, "deploy via ftp", ""))
+        .unwrap();
+    let new = e
+        .add_node(new_node(NodeType::Decision, "deploy via ssh", ""))
+        .unwrap();
+    let mk = |verb: EdgeType, from: &str, to: &str| NewEdge {
+        edge_type: verb,
+        from_id: from.to_string(),
+        to_id: to.to_string(),
+        source: Source::Claude,
+        note: None,
+        confidence: None,
+        strength: None,
+        status: None,
+    };
+
+    // A plain `link` — no suspect verdict in sight — still retires the older.
+    e.add_edge(mk(EdgeType::Replaces, &new.id, &old.id))
+        .unwrap();
+    assert!(
+        e.get_node(&old.id).unwrap().unwrap().valid_until.is_some(),
+        "the replaced node leaves the canon"
+    );
+    assert!(
+        e.get_node(&new.id).unwrap().unwrap().valid_until.is_none(),
+        "the replacement is untouched"
+    );
+
+    // Retyping INTO the supersession verb retires just the same.
+    let a = e
+        .add_node(new_node(NodeType::Insight, "bundler is webpack", ""))
+        .unwrap();
+    let b = e
+        .add_node(new_node(NodeType::Insight, "bundler is vite", ""))
+        .unwrap();
+    let edge = e.add_edge(mk(EdgeType::BuildsOn, &b.id, &a.id)).unwrap();
+    assert!(e.get_node(&a.id).unwrap().unwrap().valid_until.is_none());
+    e.update_edge(
+        &edge.id,
+        EdgePatch {
+            edge_type: Some(EdgeType::Replaces),
+            ..EdgePatch::default()
+        },
+    )
+    .unwrap();
+    assert!(e.get_node(&a.id).unwrap().unwrap().valid_until.is_some());
+
+    // A pin is the user's "never fade": the automatic path steps aside.
+    let pinned = e
+        .add_node(new_node(NodeType::Principle, "never log secrets", ""))
+        .unwrap();
+    let later = e
+        .add_node(new_node(NodeType::Principle, "redact secrets in logs", ""))
+        .unwrap();
+    e.set_trust_override(&pinned.id, Some(1.0)).unwrap();
+    e.add_edge(mk(EdgeType::Replaces, &later.id, &pinned.id))
+        .unwrap();
+    assert!(
+        e.get_node(&pinned.id)
+            .unwrap()
+            .unwrap()
+            .valid_until
+            .is_none(),
+        "pinned knowledge is never auto-archived"
+    );
+}
+
+#[test]
+fn validation_retires_nodes_replaced_before_the_rule_existed() {
+    let e = engine();
+    let old = e
+        .add_node(new_node(NodeType::Decision, "bundle with rollup", ""))
+        .unwrap();
+    let new = e
+        .add_node(new_node(NodeType::Decision, "bundle with vite", ""))
+        .unwrap();
+    // Straight to the store, bypassing the engine hook: this is exactly the
+    // shape of a graph written before supersession retired its target.
+    e.store()
+        .add_edge(NewEdge {
+            edge_type: EdgeType::Replaces,
+            from_id: new.id.clone(),
+            to_id: old.id.clone(),
+            source: Source::Claude,
+            note: None,
+            confidence: None,
+            strength: None,
+            status: None,
+        })
+        .unwrap();
+    assert!(e.get_node(&old.id).unwrap().unwrap().valid_until.is_none());
+
+    let note = e.validate_graph().unwrap();
+    assert!(note.contains("1 superseded"), "got: {note}");
+    assert!(e.get_node(&old.id).unwrap().unwrap().valid_until.is_some());
+    // Idempotent: the second pass finds nothing left to retire.
+    assert!(e.validate_graph().unwrap().contains("0 superseded"));
+}
+
 // ---- timeline (PLAN §10) -------------------------------------------------------
 
 #[test]

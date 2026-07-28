@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import SidePanel from '@/components/common/SidePanel.vue'
 import { api } from '@/services/api'
+import { onProjectSwitch } from '@/composables/onProjectSwitch'
 import { useConfigStore } from '@/stores/config'
 import { useGraphStore } from '@/stores/graph'
 import type { GraphEdge, GraphNode } from '@/types/graph'
@@ -71,6 +72,13 @@ watch(open, async (isOpen) => {
     } catch {
         decayIds.value = new Set()
     }
+})
+
+// The decay preview and the scan report were computed on the other graph.
+onProjectSwitch(() => {
+    decayIds.value = new Set()
+    scanNote.value = null
+    busyId.value = null
 })
 
 function title(id: string): string {

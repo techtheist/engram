@@ -2,6 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import SidePanel from '@/components/common/SidePanel.vue'
 import TagEditor from '@/components/common/TagEditor.vue'
+import { onProjectSwitch } from '@/composables/onProjectSwitch'
 import { useConfigStore } from '@/stores/config'
 import { useGraphStore } from '@/stores/graph'
 import type { Durability, NodeType } from '@/types/graph'
@@ -45,6 +46,10 @@ function reset(): void {
     draft.tags = []
     error.value = null
 }
+
+// A half-written note belongs to the graph it was started in — and the next
+// project's ontology may not even have the type it was drafted under.
+onProjectSwitch(reset)
 
 async function save(): Promise<void> {
     busy.value = true

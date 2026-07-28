@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, useTemplateRef } from 'vue'
+import { onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue'
 import { onClickOutside } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import FeedView from '@/components/FeedView.vue'
 import GraphCanvas from '@/components/GraphCanvas.vue'
+import EmptyGraph from '@/components/common/EmptyGraph.vue'
 import EngramMark from '@/components/common/EngramMark.vue'
 import SegmentedControl from '@/components/common/SegmentedControl.vue'
 import AuditPanel from '@/components/panels/AuditPanel.vue'
@@ -44,6 +45,17 @@ const creating = ref(false)
 const menuOpen = ref(false)
 const actionsRoot = useTemplateRef<HTMLElement>('actionsRoot')
 onClickOutside(actionsRoot, () => (menuOpen.value = false))
+
+// The feed acts on the card at the center, not through a drawer: arriving
+// there with the detail pane still open covers the feed with the node you
+// just left. The selection survives (the feed centers on it) — Edit reopens
+// the drawer when the full form is actually wanted.
+watch(
+    () => layout.view,
+    (view) => {
+        if (view === 'feed') store.closeDetail()
+    },
+)
 
 function startCreate(): void {
     // Claiming the right side auto-dismisses the detail drawer (usePanels).
@@ -138,17 +150,13 @@ onBeforeUnmount(() => store.disconnect())
     </Transition>
 
     <Transition name="fade">
-        <div v-if="!loading && !error && nodeList.length === 0" class="overlay glass-panel empty-state">
-            <p class="empty-title">No memory yet</p>
-            <p>
-                This graph fills as your assistant works — decisions and their reasons,
-                cautions that bit you, problems and how they were solved.
-            </p>
-            <p>
-                Fast start: ask your assistant to
-                <em>“seed the Engram graph from this project's docs and history”</em>
-                — it captures the existing canon in one pass, for you to review here.
-            </p>
+        <!-- Graph-only: the feed carries its own empty state, and two of them
+             at once read as a broken screen. -->
+        <div
+            v-if="!loading && !error && nodeList.length === 0 && layout.view === 'graph'"
+            class="overlay glass-panel empty-state"
+        >
+            <EmptyGraph />
         </div>
     </Transition>
 </div>
@@ -389,24 +397,10 @@ onBeforeUnmount(() => store.disconnect())
 
 .empty-state {
     /* Informational, not modal: sit at canvas level so panels (review, search,
-       menus) open above it. */
+       menus) open above it. The card's own type and layout live in
+       EmptyGraph.vue — both screens show the same one. */
     z-index: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 0.8rem;
-    max-width: 44rem;
     text-align: left;
-}
-
-.empty-state .empty-title {
-    font-size: var(--text-h3);
-    font-weight: 600;
-    color: var(--text-primary);
-}
-
-.empty-state em {
-    color: var(--text-primary);
-    font-style: italic;
 }
 
 .overlay-detail {

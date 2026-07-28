@@ -4,6 +4,7 @@ import { storeToRefs } from 'pinia'
 import SidePanel from '@/components/common/SidePanel.vue'
 import { useConfigStore } from '@/stores/config'
 import { api } from '@/services/api'
+import { onProjectSwitch } from '@/composables/onProjectSwitch'
 import { useGraphStore } from '@/stores/graph'
 import type {
     AnsweredHint,
@@ -151,6 +152,18 @@ async function runClaim(): Promise<void> {
         running.value = null
     }
 }
+
+/** Every report on this panel names nodes of the graph we are leaving. */
+onProjectSwitch(() => {
+    nliReady.value = null
+    sweepNote.value = {}
+    answered.value = null
+    staleTriage.value = null
+    promotions.value = null
+    promoted.value = new Set()
+    claim.value = ''
+    report.value = null
+})
 
 // --- structural hygiene (no ML — instant, from the loaded graph) -------------
 

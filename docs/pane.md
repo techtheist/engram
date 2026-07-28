@@ -38,11 +38,16 @@ Two lenses over the same feed:
   [working version](./customization.md) moved on. History reads as a story:
   the problem, the decision that answered it, the caution it left behind.
 - **Review** — only what needs a human eye (provisional, stale, drifted),
-  with the judgment actions inline.
+  ordered weakest trust first, with the judgment actions inline.
 
 Every card shows its full markdown clipped to a fixed preview; the card you
 stop on opens to its whole body, however long — scroll inside it, then move
-on (`j`/`k` and the arrow keys navigate too). The bottom bar carries the
+on (`j`/`k` and the arrow keys navigate too, and **↑ / ↓** in the toolbar
+jump to the ends of the feed). Cards carry what the node is about: version,
+status and drift badges, its computed trust (or a **stale** badge, the same
+one the Review drawer uses), its tags, the code files it cites — struck
+through where the file no longer exists — and its date, which spells out
+creation and last retrieval on hover. The bottom bar carries the
 side drawer's actions for whichever card is centered — **Approve / Still
 true / Pin / Edit / Delete** — so a review pass never leaves the feed.
 
@@ -52,6 +57,16 @@ walks the trail home (session-scoped, forty hops deep). And the two screens
 share one notion of "current": select a node on the canvas and the feed
 opens centered on it; leave the feed and the canvas selects and centers the
 card you were reading.
+
+## Starting from empty
+
+An empty graph shows one card on either screen: what will fill it, how to
+fill it now (`/engram:digest`, or *"digest this project"* — see
+[Seeding an existing project](./memory-model.md)), and an **Ontology**
+picker. An empty graph is the one moment a
+[preset](./customization.md) can be applied with nothing to retype, so the
+choice lives where you meet it — pick one, press Save, and every later write
+speaks that vocabulary.
 
 ## Tags and filters
 
@@ -65,6 +80,11 @@ canvas shows only that concern. Combine tags with type, status
 (`open`/`resolved`/`obsolete`), trust (`pinned`/`provisional`/`trusted`/
 `stale`), and durability filters for views like *"open problems in the
 retrieval layer"* or *"every unreviewed decision from phase 2"*.
+
+Retired knowledge is filtered out by default: a node that has been
+superseded or decayed away is history, not canon — it stays one **Show
+archived** click away, and always reachable through its successor's History
+section.
 
 Tags are also how you and the assistant stay on the same page: the session
 brief lists the project's tag vocabulary, the assistant reuses it when

@@ -119,7 +119,8 @@ impl SessionTrace {
         }
     }
 
-    /// Run the full graph validation (decay + conflict scan + drift) in the
+    /// Run the full graph validation (decay + supersession + conflict scan +
+    /// drift) in the
     /// background so connects stay instant — the graph is prepared for the
     /// session, and cleaned up after it, without waiting for the six-hourly
     /// sweep. Rate-limited PER GRAPH (the engine keeps the clock — a connect

@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue'
 import { watchDebounced } from '@vueuse/core'
 import DOMPurify from 'dompurify'
 import { api } from '@/services/api'
+import { onProjectSwitch } from '@/composables/onProjectSwitch'
 import { useGraphStore } from '@/stores/graph'
 import { useConfigStore } from '@/stores/config'
 import { useLayoutStore } from '@/stores/layout'
@@ -63,6 +64,9 @@ function clear(): void {
     hits.value = []
     open.value = false
 }
+
+// Hits belong to the graph they were searched in.
+onProjectSwitch(clear)
 
 // Re-open the result list when focus returns and there are stale hits.
 watch(query, (q) => {

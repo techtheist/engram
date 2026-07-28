@@ -26,6 +26,9 @@ export interface GraphFilters {
     showArchived: boolean
 }
 
+/* Archived is off by default: superseded and decayed nodes are history, not
+   canon — the engine keeps them out of retrieval, so the pane keeps them out
+   of sight until asked. They stay reachable through a node's History section. */
 const NO_FILTERS: GraphFilters = {
     types: [],
     durabilities: [],
@@ -33,7 +36,7 @@ const NO_FILTERS: GraphFilters = {
     statuses: [],
     trust: [],
     tags: [],
-    showArchived: true,
+    showArchived: false,
 }
 
 export function trustLevel(n: GraphNode): 'pinned' | 'trusted' | 'provisional' | 'stale' {
@@ -61,6 +64,10 @@ export const useGraphStore = defineStore('graph', () => {
     const suspects = ref<SuspectView[]>([])
     const drift = ref<DriftEntry[]>([])
     const selectedId = ref<string | null>(null)
+    /* Selection and the detail drawer are two things: the feed keeps a
+       selection (it syncs both ways with the canvas) while the drawer stays
+       shut — Edit is what opens it there. */
+    const detailOpen = ref(false)
     const loading = ref(false)
     const error = ref<string | null>(null)
     const connected = ref(false)
@@ -106,7 +113,8 @@ export const useGraphStore = defineStore('graph', () => {
             f.statuses.length +
             f.trust.length +
             f.tags.length +
-            (f.showArchived ? 0 : 1)
+            // Showing archived is the deviation from the default now.
+            (f.showArchived ? 1 : 0)
         )
     })
 
@@ -226,7 +234,7 @@ export const useGraphStore = defineStore('graph', () => {
             if (e.from_id === id || e.to_id === id) nextEdges.delete(eid)
         }
         edges.value = nextEdges
-        if (selectedId.value === id) selectedId.value = null
+        if (selectedId.value === id) select(null)
     }
 
     function applyEvent(raw: string): void {
@@ -288,6 +296,24 @@ export const useGraphStore = defineStore('graph', () => {
 
     function select(id: string | null): void {
         selectedId.value = id
+        detailOpen.value = id != null
+    }
+
+    /** Dismiss the detail drawer but keep the selection (view switches). */
+    function closeDetail(): void {
+        detailOpen.value = false
+    }
+
+    /**
+     * Everything the pane shows about ONE graph: filters, selection, and the
+     * queues. A project switch calls this — carrying a filter set or a
+     * selected id into another graph presents the old project as the new one.
+     */
+    function resetView(): void {
+        clearFilters()
+        select(null)
+        suspects.value = []
+        drift.value = []
     }
 
     async function reconfirm(id: string): Promise<void> {
@@ -383,6 +409,9 @@ export const useGraphStore = defineStore('graph', () => {
         clearFilters,
         selectedId,
         selected,
+        detailOpen,
+        closeDetail,
+        resetView,
         loading,
         error,
         connected,

@@ -2,6 +2,7 @@
 import { ref, watch } from 'vue'
 import SidePanel from '@/components/common/SidePanel.vue'
 import { api } from '@/services/api'
+import { onProjectSwitch } from '@/composables/onProjectSwitch'
 import { useAuditLog } from '@/composables/useAuditLog'
 import type { AuditEntry } from '@/types/graph'
 
@@ -30,6 +31,14 @@ async function reload(): Promise<void> {
     expanded.value = new Set()
     await loadPage()
 }
+
+// The journal is per-graph; drop the old project's page rather than paging on.
+onProjectSwitch(() => {
+    entries.value = []
+    expanded.value = new Set()
+    total.value = 0
+    error.value = null
+})
 
 async function loadPage(): Promise<void> {
     loading.value = true

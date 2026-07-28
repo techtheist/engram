@@ -275,13 +275,14 @@ impl Engine {
             .store(crate::store::now(), std::sync::atomic::Ordering::Relaxed);
         let ttl = self.store.config().policy.decay_ttl_days;
         let archived = self.decay(ttl, false)?.len();
+        let retired = self.retire_superseded_sweep()?;
         let suspects = self.scan_conflicts()?;
         let drift = match self.repo_root().map(std::path::Path::to_path_buf) {
             Some(root) => self.scan_code_refs(&root)?.len(),
             None => 0,
         };
         let note = format!(
-            "{archived} decayed, {suspects} new suspect{}, {drift} drifted ref{}",
+            "{archived} decayed, {retired} superseded, {suspects} new suspect{}, {drift} drifted ref{}",
             if suspects == 1 { "" } else { "s" },
             if drift == 1 { "" } else { "s" },
         );
@@ -616,7 +617,74 @@ impl Engine {
         self.audit_edge("created", None, Some(&edge))?;
         self.notify(ChangeEvent::EdgeAdded(edge.clone()));
         self.reconcile_conflict_demotion(&edge)?;
+        self.retire_superseded(&edge)?;
         Ok(edge)
+    }
+
+    /// Supersession is retirement: wherever a live `replaces` edge lands — a
+    /// suspect verdict, an assistant `link`, a retype in the pane — the node
+    /// it replaces leaves the canon. It is archived, so retrieval, the brief
+    /// and the pane stop offering it, and it survives in the `replaces` chain
+    /// (`timeline`) where superseded knowledge belongs.
+    ///
+    /// Two deliberate asymmetries: pinned nodes are exempt (a pin is the
+    /// user's "never fade" — the pane's replaces verdict overrides it
+    /// explicitly, see [`Engine::resolve_suspect`]), and withdrawing the edge
+    /// never un-archives. `valid_until` is also set by decay and by the user,
+    /// so restoring it here would resurrect nodes nothing asked to see again.
+    fn retire_superseded(&self, edge: &Edge) -> Result<()> {
+        if edge.edge_type.as_str() != self.store.config().supersession_verb()
+            || matches!(
+                edge.status,
+                Some(EdgeStatus::Resolved | EdgeStatus::Dismissed)
+            )
+        {
+            return Ok(());
+        }
+        self.archive_superseded(&edge.to_id)?;
+        Ok(())
+    }
+
+    /// Archive one superseded node; `false` when there was nothing to do
+    /// (already archived, pinned, or gone).
+    fn archive_superseded(&self, id: &str) -> Result<bool> {
+        let Some(node) = self.store.get_node(id)? else {
+            return Ok(false);
+        };
+        if node.valid_until.is_some() || node.trust_override.is_some() {
+            return Ok(false);
+        }
+        self.update_node(
+            id,
+            NodePatch {
+                valid_until: Some(crate::store::now()),
+                ..NodePatch::default()
+            },
+        )?;
+        Ok(true)
+    }
+
+    /// Heal graphs written before supersession retired its target: archive
+    /// every still-current node sitting under a live `replaces` edge. Runs
+    /// with the session-boundary validation and is idempotent — after the
+    /// first pass it finds nothing.
+    fn retire_superseded_sweep(&self) -> Result<usize> {
+        let verb = self.store.config().supersession_verb().to_string();
+        let mut retired = 0;
+        for edge in self.store.all_edges()? {
+            if edge.edge_type.as_str() != verb
+                || matches!(
+                    edge.status,
+                    Some(EdgeStatus::Resolved | EdgeStatus::Dismissed)
+                )
+            {
+                continue;
+            }
+            if self.archive_superseded(&edge.to_id)? {
+                retired += 1;
+            }
+        }
+        Ok(retired)
     }
 
     /// Keep endpoint demotions in lockstep with the edge's conflict state:
@@ -685,6 +753,8 @@ impl Engine {
         // Retyping to conflicts-with is evidence arriving; resolving,
         // dismissing, or retyping away is evidence withdrawn.
         self.reconcile_conflict_demotion(&edge)?;
+        // Retyping INTO the supersession verb retires the target too.
+        self.retire_superseded(&edge)?;
         Ok(edge)
     }
 
@@ -2295,13 +2365,21 @@ impl Engine {
                     strength: None,
                     status: None,
                 })?;
-                self.update_node(
-                    &suspect.b_id,
-                    NodePatch {
-                        valid_until: Some(crate::store::now()),
-                        ..NodePatch::default()
-                    },
-                )?;
+                // add_edge already retired the older node — unless it is
+                // pinned, where the automatic path steps aside. A USER
+                // verdict overrides the pin (the assistant case errored
+                // above), so archive it here explicitly.
+                if let Some(older) = self.store.get_node(&suspect.b_id)?
+                    && older.valid_until.is_none()
+                {
+                    self.update_node(
+                        &suspect.b_id,
+                        NodePatch {
+                            valid_until: Some(crate::store::now()),
+                            ..NodePatch::default()
+                        },
+                    )?;
+                }
                 Some(edge)
             }
         };
