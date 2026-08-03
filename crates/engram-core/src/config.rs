@@ -207,6 +207,33 @@ pub struct PolicyConfig {
     /// `keyword_weight` 0 and *negative* at 0.5. See [`crate::policy::RERANK_VOTE_K`].
     #[serde(default = "default_rerank_vote_k")]
     pub rerank_vote_k: Option<f64>,
+    /// Let a mature graph calibrate its own conflict-suspect floor from its
+    /// judged history at session boundaries (see [`crate::Engine::auto_tune`]).
+    /// Gated on graph size and judgment volume; smaller graphs always run
+    /// the benchmark-calibrated defaults regardless of this flag.
+    #[serde(default = "default_auto_tune")]
+    pub auto_tune: bool,
+    /// Calibrated-delivery trim: post-rerank hits under this score are not
+    /// delivered — attention protection, measured free of recall cost. See
+    /// [`crate::policy::DELIVERY_FLOOR`].
+    #[serde(default = "default_delivery_floor")]
+    pub delivery_floor: f64,
+    /// Top-score under which the search verdict is "weak" — verify before
+    /// relying. See [`crate::policy::WEAK_EVIDENCE_TOP`].
+    #[serde(default = "default_weak_evidence_top")]
+    pub weak_evidence_top: f64,
+}
+
+fn default_delivery_floor() -> f64 {
+    crate::policy::DELIVERY_FLOOR
+}
+
+fn default_weak_evidence_top() -> f64 {
+    crate::policy::WEAK_EVIDENCE_TOP
+}
+
+fn default_auto_tune() -> bool {
+    true
 }
 
 fn default_keyword_weight() -> f64 {
@@ -256,6 +283,9 @@ impl Default for PolicyConfig {
             rerank_trust_weight: RERANK_TRUST_WEIGHT,
             claim_contradiction_min_confidence: CLAIM_CONTRADICTION_MIN_CONFIDENCE,
             rerank_vote_k: RERANK_VOTE_K,
+            auto_tune: true,
+            delivery_floor: DELIVERY_FLOOR,
+            weak_evidence_top: WEAK_EVIDENCE_TOP,
         }
     }
 }
@@ -1030,6 +1060,8 @@ impl GraphConfig {
                 "claim_contradiction_min_confidence",
                 p.claim_contradiction_min_confidence,
             ),
+            ("delivery_floor", p.delivery_floor),
+            ("weak_evidence_top", p.weak_evidence_top),
         ] {
             if !(0.0..=1.0).contains(&value) {
                 return fail(format!("policy.{name} {value} out of 0..=1"));

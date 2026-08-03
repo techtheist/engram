@@ -257,8 +257,11 @@ mod tests {
         let c = corpus(20, 40, 2);
         let arm = WholeFileArm::new(&c);
         let tasks = tasks(&c, &arm, 5);
+        // The dump now renders one entry per record (the focus metric needs
+        // the answer separable from its surroundings); joined back together it
+        // is the flat file, minus only the trailing separator.
         let flat = c.flat_file();
-        assert!(tasks.iter().all(|t| t.context == flat));
+        assert!(tasks.iter().all(|t| t.context == flat.trim_end()));
     }
 
     #[test]

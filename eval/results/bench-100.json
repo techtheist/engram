@@ -1,0 +1,253 @@
+{
+  "runtime": {
+    "embedder": "bge-small-en-v1.5",
+    "reranker": "jina-reranker-v1-turbo-en",
+    "embeddings_are_fake": false,
+    "nli": "not run",
+    "seed": 1,
+    "limit": 10,
+    "type_mix": [
+      [
+        "decision",
+        1
+      ],
+      [
+        "caution",
+        1
+      ],
+      [
+        "insight",
+        1
+      ],
+      [
+        "problem",
+        1
+      ],
+      [
+        "principle",
+        1
+      ]
+    ],
+    "profile": {
+      "title_chars": {
+        "min": 28,
+        "p25": 73,
+        "median": 89,
+        "p75": 122,
+        "max": 191
+      },
+      "body_chars": {
+        "min": 133,
+        "p25": 461,
+        "median": 748,
+        "p75": 1209,
+        "max": 2250
+      },
+      "edges_per_node": 1.06,
+      "isolated": 0.04,
+      "verb_mix": [
+        [
+          "about",
+          0.328
+        ],
+        [
+          "builds-on",
+          0.243
+        ],
+        [
+          "because",
+          0.226
+        ],
+        [
+          "answers",
+          0.155
+        ],
+        [
+          "replaces",
+          0.024
+        ],
+        [
+          "needs",
+          0.02
+        ],
+        [
+          "conflicts-with",
+          0.003
+        ]
+      ],
+      "code_refs": {
+        "min": 0,
+        "p25": 0,
+        "median": 1,
+        "p75": 2,
+        "max": 4
+      }
+    },
+    "phrasing": {
+      "lexical": 0.45,
+      "paraphrase": 0.45,
+      "oblique": 0.1
+    }
+  },
+  "graph": 100,
+  "edges": 106,
+  "questions": 300,
+  "rows": [
+    {
+      "label": "rag (pure vectors)",
+      "weighted_recall": 0.992,
+      "recall_at_1": 0.8166666666666667,
+      "recall_at_5": 0.9733333333333334,
+      "lexical": 1.0,
+      "paraphrase": 1.0,
+      "oblique": 0.92,
+      "tokens_mean": 2268.7633333333333,
+      "separation": 0.92,
+      "false_positive_rate": 1.0
+    },
+    {
+      "label": "engram (shipped)",
+      "weighted_recall": 0.989,
+      "recall_at_1": 0.7933333333333333,
+      "recall_at_5": 0.9633333333333334,
+      "lexical": 1.0,
+      "paraphrase": 1.0,
+      "oblique": 0.89,
+      "tokens_mean": 373.10333333333335,
+      "separation": 0.84,
+      "false_positive_rate": 0.96
+    },
+    {
+      "label": "A vector-only, no rerank (= rag)",
+      "weighted_recall": 0.992,
+      "recall_at_1": 0.8166666666666667,
+      "recall_at_5": 0.9733333333333334,
+      "lexical": 1.0,
+      "paraphrase": 1.0,
+      "oblique": 0.92,
+      "tokens_mean": 719.2433333333333,
+      "separation": 0.92,
+      "false_positive_rate": 1.0
+    },
+    {
+      "label": "B  vector-only, reranker DECIDES",
+      "weighted_recall": 0.98,
+      "recall_at_1": 0.7833333333333333,
+      "recall_at_5": 0.9333333333333333,
+      "lexical": 1.0,
+      "paraphrase": 1.0,
+      "oblique": 0.8,
+      "tokens_mean": 719.5366666666666,
+      "separation": 0.8266666666666667,
+      "false_positive_rate": 1.0
+    },
+    {
+      "label": "C  vector-only, reranker VOTES",
+      "weighted_recall": 0.992,
+      "recall_at_1": 0.82,
+      "recall_at_5": 0.9733333333333334,
+      "lexical": 1.0,
+      "paraphrase": 1.0,
+      "oblique": 0.92,
+      "tokens_mean": 718.4766666666667,
+      "separation": 0.8300000000000001,
+      "false_positive_rate": 1.0
+    },
+    {
+      "label": "kw 0.00 · reranker DECIDES",
+      "weighted_recall": 0.98,
+      "recall_at_1": 0.7833333333333333,
+      "recall_at_5": 0.9333333333333333,
+      "lexical": 1.0,
+      "paraphrase": 1.0,
+      "oblique": 0.8,
+      "tokens_mean": 716.77,
+      "separation": 0.8266666666666667,
+      "false_positive_rate": 1.0
+    },
+    {
+      "label": "kw 0.00 · reranker VOTES",
+      "weighted_recall": 0.992,
+      "recall_at_1": 0.82,
+      "recall_at_5": 0.9733333333333334,
+      "lexical": 1.0,
+      "paraphrase": 1.0,
+      "oblique": 0.92,
+      "tokens_mean": 715.88,
+      "separation": 0.8300000000000001,
+      "false_positive_rate": 1.0
+    },
+    {
+      "label": "kw 0.15 · reranker DECIDES",
+      "weighted_recall": 0.98,
+      "recall_at_1": 0.7833333333333333,
+      "recall_at_5": 0.9333333333333333,
+      "lexical": 1.0,
+      "paraphrase": 1.0,
+      "oblique": 0.8,
+      "tokens_mean": 719.91,
+      "separation": 0.8266666666666667,
+      "false_positive_rate": 1.0
+    },
+    {
+      "label": "kw 0.15 · reranker VOTES   <- ships today",
+      "weighted_recall": 0.991,
+      "recall_at_1": 0.8066666666666666,
+      "recall_at_5": 0.97,
+      "lexical": 1.0,
+      "paraphrase": 1.0,
+      "oblique": 0.91,
+      "tokens_mean": 719.5866666666667,
+      "separation": 0.8683333333333333,
+      "false_positive_rate": 1.0
+    },
+    {
+      "label": "kw 0.30 · reranker DECIDES",
+      "weighted_recall": 0.98,
+      "recall_at_1": 0.7833333333333333,
+      "recall_at_5": 0.9333333333333333,
+      "lexical": 1.0,
+      "paraphrase": 1.0,
+      "oblique": 0.8,
+      "tokens_mean": 720.0966666666667,
+      "separation": 0.8266666666666667,
+      "false_positive_rate": 1.0
+    },
+    {
+      "label": "kw 0.30 · reranker VOTES",
+      "weighted_recall": 0.988,
+      "recall_at_1": 0.79,
+      "recall_at_5": 0.96,
+      "lexical": 1.0,
+      "paraphrase": 1.0,
+      "oblique": 0.88,
+      "tokens_mean": 719.71,
+      "separation": 0.8316666666666667,
+      "false_positive_rate": 1.0
+    },
+    {
+      "label": "kw 0.50 · reranker DECIDES",
+      "weighted_recall": 0.98,
+      "recall_at_1": 0.7833333333333333,
+      "recall_at_5": 0.9333333333333333,
+      "lexical": 1.0,
+      "paraphrase": 1.0,
+      "oblique": 0.8,
+      "tokens_mean": 720.21,
+      "separation": 0.8266666666666667,
+      "false_positive_rate": 1.0
+    },
+    {
+      "label": "kw 0.50 · reranker VOTES",
+      "weighted_recall": 0.984,
+      "recall_at_1": 0.78,
+      "recall_at_5": 0.9466666666666667,
+      "lexical": 1.0,
+      "paraphrase": 1.0,
+      "oblique": 0.84,
+      "tokens_mean": 720.52,
+      "separation": 0.8033333333333333,
+      "false_positive_rate": 1.0
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+engram-eval — offline retrieval suite
+runtime: embedder=bge-small-en-v1.5  reranker=jina-reranker-v1-turbo-en  nli=mobilebert-uncased-mnli  seed=1  limit=10
+corpus:  bodies ~748 chars, 1.06 edges/node — profiled from the real graph
+asked:   decision=1 caution=1 principle=1 problem=1 insight=1 (an assumption, not a measurement)
+
+graph 300 facts (300 tested + 0 distractors), 318 edges / 900 questions / 75 controls
+  curated-3000 holds 37 of 300 facts at a 3000-token budget (12% of the graph)
+  curated-30000 holds 300 of 300 facts at a 30000-token budget (100% of the graph)
+  arm            standing tok/query  focus  noise    R@1    R@5    MRR    lex   para  obliq   twin     FP    sep  graph
+  chance                0      2519   0.11   1.00   0.00   0.02   0.01   0.02   0.03   0.02   0.01   1.00   0.50   0.00
+  grep                  0      2728   0.10   0.92   0.67   0.74   0.70   1.00   1.00   0.21   0.00   1.00   0.76   0.00
+  rag                   0      2496   0.10   0.89   0.77   0.92   0.83   1.00   0.97   0.79   0.00   1.00   0.85   0.00
+  engram-hybrid      3048       479   0.12   0.88   0.76   0.91   0.82   1.00   1.00   0.72   0.00   1.00   0.76   0.01
+  engram-full        3048       479   0.12   0.88   0.76   0.92   0.82   1.00   1.00   0.75   0.00   1.00   0.76   0.01
+  curated-3000       3000      3000   0.03   1.00   0.12   0.12   0.12   0.12   0.12   0.12   0.00   1.00   0.50   0.00
+  curated-30000     25230     25230   0.00   1.00   1.00   1.00   1.00   1.00   1.00   1.00   0.00   1.00   0.50   0.00
+  whole-file        75363     75363   0.00   1.00   1.00   1.00   1.00   1.00   1.00   1.00   0.00   1.00   0.50   0.00
+  weighted recall@5: chance 0.02  grep 0.92  rag 0.97  engram-hybrid 0.97  engram-full 0.97  curated-3000 0.12  curated-30000 1.00  whole-file 1.00  
+  best retrieving arm: engram-full at 0.975
+  engram and rag tie at 16% oblique questions (assumed 10%)
+  nli mobilebert-uncased-mnli — 300 pairs, accuracy 0.56, mean confidence 0.66 (budget cut 300 of 900)
+      entailment     precision 0.00  recall 0.00  support 100
+      neutral        precision 0.42  recall 0.70  support 100
+      contradiction  precision 0.73  recall 0.97  support 100
+
+reading it: `standing` is what the arm costs every session before a question
+is asked; `tok/query` is what it delivers per question. `focus` is the share
+of the delivered tokens that were the answer, when it arrived at all —
+attention is the budget, and everything delivered beyond the answer spends
+it. A dump can score recall 1.00 and focus 0.00x on the same run; that pair
+of numbers is the difference between present and readable. `noise` is the
+share of delivered records that were NOT the answer, counting a miss as
+all-noise and an empty return as zero — the one column where declining to
+answer scores better than guessing. `obliq` is recall on
+questions that never name their subject — the column meaning has to win.
+`FP` is the share of questions with no written answer that still got one;
+`sep` is how well any confidence threshold could have told those apart
+(0.5 = not at all, 1.0 = perfectly). `graph` is the share of questions
+whose answer was reachable ONLY through a neighbour — engram-full minus
+engram-hybrid is what the edges bought.
+
+engram-eval — the ladder: recall@5 by graph size
+    graph  asked    curated-3000   curated-30000            grep             rag   engram-hybrid
+      300    900            0.12            1.00            0.74            0.92            0.91
+  curated-3000 falls behind retrieval at 300 notes (0.12 vs 0.91, holding 37 of 300)
+  curated-30000 never falls behind retrieval on this ladder — extend the sizes
+
+wrote eval/results/ladder-300-trimmed.json

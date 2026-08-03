@@ -1,0 +1,41 @@
+  rag (pure vectors)                         weighted 0.992  lex 1.00  para 1.00  obliq 0.92  tok 2269
+  engram (shipped)                           weighted 0.989  lex 1.00  para 1.00  obliq 0.89  tok 373
+  A vector-only, no rerank (= rag)           weighted 0.992  lex 1.00  para 1.00  obliq 0.92  tok 719
+  B  vector-only, reranker DECIDES           weighted 0.980  lex 1.00  para 1.00  obliq 0.80  tok 720
+  C  vector-only, reranker VOTES             weighted 0.992  lex 1.00  para 1.00  obliq 0.92  tok 718
+  kw 0.00 · reranker DECIDES                 weighted 0.980  lex 1.00  para 1.00  obliq 0.80  tok 717
+  kw 0.00 · reranker VOTES                   weighted 0.992  lex 1.00  para 1.00  obliq 0.92  tok 716
+  kw 0.15 · reranker DECIDES                 weighted 0.980  lex 1.00  para 1.00  obliq 0.80  tok 720
+  kw 0.15 · reranker VOTES   <- ships today  weighted 0.991  lex 1.00  para 1.00  obliq 0.91  tok 720
+  kw 0.30 · reranker DECIDES                 weighted 0.980  lex 1.00  para 1.00  obliq 0.80  tok 720
+  kw 0.30 · reranker VOTES                   weighted 0.988  lex 1.00  para 1.00  obliq 0.88  tok 720
+  kw 0.50 · reranker DECIDES                 weighted 0.980  lex 1.00  para 1.00  obliq 0.80  tok 720
+  kw 0.50 · reranker VOTES                   weighted 0.984  lex 1.00  para 1.00  obliq 0.84  tok 721
+engram-eval — retrieval strategy bench
+runtime: embedder=bge-small-en-v1.5  reranker=jina-reranker-v1-turbo-en  seed=1  limit=10
+graph 100 facts, 106 edges / 300 questions
+
+  strategy                          weighted    R@1    R@5    lex   para  obliq tok/query    sep
+  rag (pure vectors)                   0.992   0.82   0.97   1.00   1.00   0.92      2269   0.92
+  engram (shipped)                     0.989   0.79   0.96   1.00   1.00   0.89       373   0.84
+  A vector-only, no rerank (= rag)     0.992   0.82   0.97   1.00   1.00   0.92       719   0.92
+  B  vector-only, reranker DECIDES     0.980   0.78   0.93   1.00   1.00   0.80       720   0.83
+  C  vector-only, reranker VOTES       0.992   0.82   0.97   1.00   1.00   0.92       718   0.83
+  kw 0.00 · reranker DECIDES           0.980   0.78   0.93   1.00   1.00   0.80       717   0.83
+  kw 0.00 · reranker VOTES             0.992   0.82   0.97   1.00   1.00   0.92       716   0.83
+  kw 0.15 · reranker DECIDES           0.980   0.78   0.93   1.00   1.00   0.80       720   0.83
+  kw 0.15 · reranker VOTES   <- ships today     0.991   0.81   0.97   1.00   1.00   0.91       720   0.87
+  kw 0.30 · reranker DECIDES           0.980   0.78   0.93   1.00   1.00   0.80       720   0.83
+  kw 0.30 · reranker VOTES             0.988   0.79   0.96   1.00   1.00   0.88       720   0.83
+  kw 0.50 · reranker DECIDES           0.980   0.78   0.93   1.00   1.00   0.80       720   0.83
+  kw 0.50 · reranker VOTES             0.984   0.78   0.95   1.00   1.00   0.84       721   0.80
+
+The first two rows are references, not candidates: what a conventional
+vector stack scores, and what Engram ships. Every `bench:` row below them
+reads the same store and the same embeddings, so a difference is a
+difference in ranking strategy and nothing else. Indented rows change one
+thing from the row above the group. `obliq` — recall on questions that
+never name their subject — is the column the shipped stack loses on and
+therefore the only one worth beating rag in.
+
+wrote eval/results/bench-100.json

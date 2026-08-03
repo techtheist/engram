@@ -361,7 +361,12 @@ impl Engram {
         description = "Hybrid semantic + keyword search over the memory graph. \
         Hits carry: type, title, snippet, score, trust (computed 0..1), stale \
         (true = decayed trust, verify before relying), status, and 1-hop \
-        neighbors (conflicts-with/replaces first). Being returned stamps \
+        neighbors (conflicts-with/replaces first). The reply's `confidence` \
+        is a verdict to respect: `strong` = the top hit cleared the \
+        calibrated line; `weak` = treat hits as leads to verify, not \
+        answers; `none` = the graph is silent — say so instead of inventing \
+        a memory. Weak-scoring tail hits are trimmed before delivery so \
+        attention stays on the answer. Being returned stamps \
         last_seen for observability only — retrieval never refreshes trust. \
         `project: \"all\"` searches every registered project plus the home \
         graph — foreign hits carry `project` provenance and rank under a \
@@ -384,13 +389,36 @@ impl Engram {
             return self.reply(&json!({ "hits": hits, "skipped": skipped }));
         }
         let engine = self.engine_for(&a.project)?;
-        let mut hits = self
-            .mcp(&engine)
-            .search(&a.query, &types, limit)
-            .map_err(map_err)?;
+        let (mut hits, confidence) = {
+            let guard = self.mcp(&engine);
+            let hits = guard.search(&a.query, &types, limit).map_err(map_err)?;
+            let confidence = guard.search_confidence(&hits);
+            (hits, confidence)
+        };
         hits.iter_mut().for_each(debracket);
         let hits = self.shape_hits(&detail, hits, Some(&engine));
-        self.reply(&hits)
+        let mut body = json!({ "hits": hits });
+        if let Some(v) = confidence {
+            body["confidence"] = json!(v);
+            let note = match v {
+                "none" => Some(
+                    "The graph is silent on this — nothing in memory answers it. \
+                     Do not infer a remembered answer; if the fact surfaces in \
+                     this session, capture it.",
+                ),
+                "weak" => Some(
+                    "Weak evidence: no hit cleared the calibrated confidence \
+                     line, so these may be adjacent topics rather than the thing \
+                     asked. Verify against the code or the user before relying \
+                     on any of them.",
+                ),
+                _ => None,
+            };
+            if let Some(n) = note {
+                body["note"] = json!(n);
+            }
+        }
+        self.reply(&body)
     }
 
     #[tool(

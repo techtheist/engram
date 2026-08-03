@@ -29,6 +29,7 @@ use crate::profile::Profile;
 /// what stays readable and roughly what this repo's own CLAUDE.md costs.
 pub const DEFAULT_CURATED_BUDGET: usize = 3000;
 
+#[derive(Clone)]
 pub struct Config {
     /// Tested facts per run — the ones questions are asked about.
     pub sizes: Vec<usize>,
@@ -57,10 +58,10 @@ pub struct Config {
     /// Embedding model by name, from `EMBED_CHOICES`. `None` = whatever
     /// `FastEmbedder::new` loads, which is what the product loads.
     pub embed_model: Option<String>,
-    /// Token budget for the hand-maintained-file baseline. Defaults to a
-    /// realistic `CLAUDE.md`; raise it to ask how big such a file would have
-    /// to get before it matches retrieval.
-    pub curated_budget: usize,
+    /// Token budgets for the hand-maintained-file baseline — one arm per
+    /// budget. Defaults to a realistic `CLAUDE.md`; add a second budget to
+    /// bracket the crossover in a single run (the ladder scores 3k and 30k).
+    pub curated_budgets: Vec<usize>,
 }
 
 impl Default for Config {
@@ -77,7 +78,7 @@ impl Default for Config {
             flat_priors: false,
             phrasing: PhrasingMix::default(),
             embed_model: None,
-            curated_budget: DEFAULT_CURATED_BUDGET,
+            curated_budgets: vec![DEFAULT_CURATED_BUDGET],
         }
     }
 }
@@ -997,11 +998,20 @@ pub struct SizeReport {
     pub edges: usize,
     pub questions: usize,
     pub unanswerable: usize,
-    /// Facts the curated file had room for — the ceiling on what it can answer.
-    pub curated_held: usize,
-    pub curated_budget: usize,
+    /// One entry per curated budget: how many facts the file had room for —
+    /// the ceiling on what that budget can answer.
+    pub curated: Vec<CuratedStat>,
     pub arms: Vec<ArmReport>,
     pub nli: NliReport,
+}
+
+/// What one curated-file budget could hold at one graph size.
+#[derive(Debug, Clone, Serialize)]
+pub struct CuratedStat {
+    /// The arm row this stat belongs to.
+    pub arm: String,
+    pub budget: usize,
+    pub held: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1112,13 +1122,208 @@ fn nli() -> (Box<dyn Nli>, String) {
                     .file_name()
                     .map(|f| f.to_string_lossy().into_owned())
             })
-            .unwrap_or_else(|| "nli-deberta-v3-small".to_string());
+            // The default must track the product: a hardcoded string here
+            // mislabeled every report for a release after the mobilebert swap.
+            .unwrap_or_else(|| engram_core::nli::NLI_MODEL_NAME.to_string());
         match engram_core::FastNli::new() {
             Ok(n) => return (Box::new(n), name),
             Err(err) => eprintln!("! real NLI unavailable ({err}); falling back to fake"),
         }
     }
     (Box::new(FakeNli), "fake".to_string())
+}
+
+// ------------------------------------------------------------ delivery floor
+
+/// One candidate delivery floor, scored over recorded retrievals.
+#[derive(Debug, Clone, Serialize)]
+pub struct FloorPoint {
+    pub floor: f64,
+    pub recall_at_5: f64,
+    pub oblique_recall_at_5: f64,
+    /// Share of answerable questions where the floor left nothing — the
+    /// recall paid for restraint.
+    pub declined_answerable: f64,
+    /// Share of control questions (no written answer) where nothing cleared
+    /// the floor — the abstention the product gains.
+    pub controls_declined: f64,
+    pub noise: f64,
+    pub focus: f64,
+    pub mean_returned: f64,
+    pub tokens_mean: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FloorSizeReport {
+    pub graph: usize,
+    pub questions: usize,
+    pub controls: usize,
+    pub points: Vec<FloorPoint>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FloorReport {
+    pub embedder: String,
+    pub reranker: String,
+    pub embeddings_are_fake: bool,
+    pub seed: u64,
+    pub limit: usize,
+    pub sizes: Vec<FloorSizeReport>,
+}
+
+/// Sweep a delivery floor over the engram arm: retrieve once per question,
+/// then score every candidate floor as arithmetic over the recorded hits.
+///
+/// The floor being sought serves both faces of calibrated delivery at once:
+/// on a question with no written answer it should leave nothing (an explicit
+/// "no memory" instead of confident noise), and on an answerable one it
+/// should trim the weak tail without dropping the answer. The candidate grid
+/// comes from the observed score distribution rather than a guessed scale —
+/// engram scores are relevance-and-trust products whose range is an
+/// implementation detail this sweep must not assume.
+pub fn floor_sweep(cfg: &Config) -> anyhow::Result<FloorReport> {
+    struct Rec {
+        gold_pos: Option<usize>,
+        phrasing: Phrasing,
+        scores: Vec<f64>,
+        entry_tokens: Vec<usize>,
+    }
+
+    let model = cfg.embed_model.as_deref();
+    let (_, embedder_name) = embedder(model);
+    let mut sizes = Vec::new();
+
+    for &size in &cfg.sizes {
+        let c = corpus_full(
+            size,
+            size * cfg.distractor_ratio,
+            cfg.seed,
+            &cfg.profile,
+            &cfg.type_mix,
+        );
+        let engram = EngramArm::build(
+            &c,
+            embedder(model).0,
+            if cfg.no_rerank { None } else { reranker().0 },
+        )?;
+
+        let mut recs = Vec::new();
+        for q in c.questions() {
+            let Some(gold) = q.gold.as_ref() else {
+                continue;
+            };
+            let r = engram.retrieve(&q.text, cfg.limit);
+            let Delivery::Ranked(keys) = &r.delivery else {
+                unreachable!("engram ranks")
+            };
+            recs.push(Rec {
+                gold_pos: keys.iter().position(|k| k == gold),
+                phrasing: q.phrasing,
+                entry_tokens: r.rendered.iter().map(|e| crate::arms::tokens(e)).collect(),
+                scores: r.scores,
+            });
+        }
+        let control_scores: Vec<Vec<f64>> = c
+            .unanswerable
+            .iter()
+            .map(|q| engram.retrieve(&q.text, cfg.limit).scores)
+            .collect();
+
+        let mut all: Vec<f64> = recs
+            .iter()
+            .flat_map(|r| r.scores.iter().copied())
+            .chain(control_scores.iter().flatten().copied())
+            .collect();
+        all.sort_by(f64::total_cmp);
+        let mut floors = vec![0.0];
+        const STEPS: usize = 20;
+        for i in 1..=STEPS {
+            if all.is_empty() {
+                break;
+            }
+            let q = all[(i * (all.len() - 1)) / STEPS];
+            if floors.last().is_none_or(|l| q - l > 1e-9) {
+                floors.push(q);
+            }
+        }
+
+        let mut points = Vec::new();
+        for &floor in &floors {
+            let (mut hit5, mut obl_hit, mut obl_n, mut declined) = (0usize, 0usize, 0usize, 0usize);
+            let (mut noise_sum, mut focus_sum) = (0.0f64, 0.0f64);
+            let (mut focus_n, mut returned_sum, mut tokens_sum) = (0usize, 0usize, 0usize);
+            for r in &recs {
+                let kept: Vec<usize> = (0..r.scores.len())
+                    .filter(|&i| r.scores[i] >= floor)
+                    .collect();
+                let kept_tokens: usize = kept.iter().filter_map(|&i| r.entry_tokens.get(i)).sum();
+                returned_sum += kept.len();
+                tokens_sum += kept_tokens;
+                if r.phrasing == Phrasing::Oblique {
+                    obl_n += 1;
+                }
+                if kept.is_empty() {
+                    declined += 1;
+                    continue;
+                }
+                let kept_rank = r.gold_pos.and_then(|g| kept.iter().position(|&i| i == g));
+                match kept_rank {
+                    Some(kr) => {
+                        if kr < 5 {
+                            hit5 += 1;
+                            if r.phrasing == Phrasing::Oblique {
+                                obl_hit += 1;
+                            }
+                        }
+                        noise_sum += (kept.len() - 1) as f64 / kept.len() as f64;
+                        if let Some(g) = r.gold_pos
+                            && let Some(t) = r.entry_tokens.get(g)
+                        {
+                            focus_sum += *t as f64 / kept_tokens.max(1) as f64;
+                            focus_n += 1;
+                        }
+                    }
+                    None => noise_sum += 1.0,
+                }
+            }
+            let n = recs.len().max(1);
+            points.push(FloorPoint {
+                floor,
+                recall_at_5: hit5 as f64 / n as f64,
+                oblique_recall_at_5: obl_hit as f64 / obl_n.max(1) as f64,
+                declined_answerable: declined as f64 / n as f64,
+                controls_declined: control_scores
+                    .iter()
+                    .filter(|s| s.iter().all(|v| *v < floor))
+                    .count() as f64
+                    / control_scores.len().max(1) as f64,
+                noise: noise_sum / n as f64,
+                focus: focus_sum / focus_n.max(1) as f64,
+                mean_returned: returned_sum as f64 / n as f64,
+                tokens_mean: tokens_sum as f64 / n as f64,
+            });
+        }
+
+        sizes.push(FloorSizeReport {
+            graph: c.facts.len(),
+            questions: recs.len(),
+            controls: control_scores.len(),
+            points,
+        });
+    }
+
+    Ok(FloorReport {
+        embeddings_are_fake: embedder_name.contains("(fake)"),
+        embedder: embedder_name,
+        reranker: if cfg.no_rerank {
+            "disabled (--no-rerank)".to_string()
+        } else {
+            reranker().1
+        },
+        seed: cfg.seed,
+        limit: cfg.limit,
+        sizes,
+    })
 }
 
 /// key -> the keys of facts named one syllable away from it.
@@ -1131,6 +1336,16 @@ fn twin_map(c: &Corpus) -> HashMap<String, Vec<String>> {
         }
     }
     m
+}
+
+/// A single curated arm keeps its historical name; several budgets in one run
+/// each carry their budget so the rows can be told apart.
+fn curated_arm_name(budget: usize, single: bool) -> String {
+    if single {
+        "curated-file".to_string()
+    } else {
+        format!("curated-{budget}")
+    }
 }
 
 fn report(name: &str, standing: usize, outcomes: &[Outcome], separation: Separation) -> ArmReport {
@@ -1184,6 +1399,19 @@ fn measure(
             .filter(|(k, _)| k == gold)
             .map(|(_, at)| *at)
             .min();
+        // Attention accounting: which delivered entry was the answer, and how
+        // much of the delivered text was everything else. Rank indexes the
+        // ranked arms' rendered entries; a dump's entries parallel its keys.
+        let delivered_at = match &r.delivery {
+            Delivery::Dump(keys) => keys.iter().position(|k| k == gold),
+            Delivery::Ranked(_) => rank.map(|rk| rk - 1),
+        };
+        let focus = delivered_at
+            .and_then(|i| r.rendered.get(i))
+            .map(|entry| crate::arms::tokens(entry) as f64 / r.tokens.max(1) as f64);
+        let returned = match &r.delivery {
+            Delivery::Dump(keys) | Delivery::Ranked(keys) => keys.len(),
+        };
         answerable_scores.push(r.top_score);
         outcomes.push(Outcome {
             phrasing: q.phrasing,
@@ -1192,6 +1420,8 @@ fn measure(
             tokens: r.tokens,
             top_score: r.top_score,
             twin_above,
+            focus,
+            returned,
         });
     }
 
@@ -1234,7 +1464,11 @@ pub fn run(cfg: &Config) -> anyhow::Result<Report> {
         let (emb, _) = embedder(model);
 
         let whole = WholeFileArm::new(&c);
-        let curated = CuratedFileArm::new(&c, cfg.curated_budget);
+        let curated: Vec<CuratedFileArm> = cfg
+            .curated_budgets
+            .iter()
+            .map(|b| CuratedFileArm::new(&c, *b))
+            .collect();
         let chance = ChanceArm::new(&c);
         let grep = GrepArm::new(&c);
         let engram = EngramArm::build(&c, emb, if cfg.no_rerank { None } else { reranker().0 })?;
@@ -1278,15 +1512,17 @@ pub fn run(cfg: &Config) -> anyhow::Result<Report> {
                 arms.push(full);
             }
         }
-        // The two always-in-context baselines, weakest first: the file a
-        // human actually maintains, then the dump nobody maintains.
-        let (curated_outcomes, curated_sep) = measure(&curated, &c, cfg.limit, &twins);
-        arms.push(report(
-            "curated-file",
-            curated.standing_cost(),
-            &curated_outcomes,
-            curated_sep,
-        ));
+        // The always-in-context baselines, weakest first: the file a human
+        // actually maintains (once per budget), then the dump nobody maintains.
+        for cur in &curated {
+            let (curated_outcomes, curated_sep) = measure(cur, &c, cfg.limit, &twins);
+            arms.push(report(
+                &curated_arm_name(cur.budget(), curated.len() == 1),
+                cur.standing_cost(),
+                &curated_outcomes,
+                curated_sep,
+            ));
+        }
         let (whole_outcomes, whole_sep) = measure(&whole, &c, cfg.limit, &twins);
         arms.push(report(
             "whole-file",
@@ -1302,8 +1538,14 @@ pub fn run(cfg: &Config) -> anyhow::Result<Report> {
             edges: engram.edges_written,
             questions: c.questions().count(),
             unanswerable: c.unanswerable.len(),
-            curated_held: curated.held(),
-            curated_budget: curated.budget(),
+            curated: curated
+                .iter()
+                .map(|cur| CuratedStat {
+                    arm: curated_arm_name(cur.budget(), curated.len() == 1),
+                    budget: cur.budget(),
+                    held: cur.held(),
+                })
+                .collect(),
             arms,
             nli: evaluate(nli_model.as_ref(), &nli_name, &c.pairs, cfg.nli_budget)?,
         });
@@ -1354,7 +1596,7 @@ mod tests {
             flat_priors: false,
             phrasing: PhrasingMix::default(),
             embed_model: None,
-            curated_budget: DEFAULT_CURATED_BUDGET,
+            curated_budgets: vec![DEFAULT_CURATED_BUDGET],
         })
         .unwrap()
     }
@@ -1396,6 +1638,33 @@ mod tests {
     }
 
     #[test]
+    fn focus_prices_attention_not_presence() {
+        // The whole file delivers every answer and buries every answer: its
+        // recall is 1.00 and its focus is one record over the entire graph. A
+        // ranked arm delivers a handful of entries, so whenever it finds the
+        // answer at all, the answer is a visible share of what arrived. If
+        // these two ever converge, the focus column has stopped measuring.
+        let r = smoke();
+        let whole = arm(&r, "whole-file");
+        assert!(
+            whole.overall.focus > 0.0 && whole.overall.focus < 0.05,
+            "one record in a 120-fact dump cannot be {:.3} of the text",
+            whole.overall.focus
+        );
+        let grep = arm(&r, "grep");
+        assert!(
+            grep.overall.focus > whole.overall.focus * 5.0,
+            "a ranked arm must concentrate attention: grep {:.3} vs whole {:.3}",
+            grep.overall.focus,
+            whole.overall.focus
+        );
+        // The curated file is a dump too — small, but still a dump: focus is
+        // its entry over the whole file, bounded by how many entries fit.
+        let curated = arm(&r, "curated-file");
+        assert!(curated.overall.focus > whole.overall.focus);
+    }
+
+    #[test]
     fn a_full_dump_can_never_decline_an_unknown_question() {
         let r = smoke();
         assert_eq!(arm(&r, "whole-file").separation.false_positive_rate, 1.0);
@@ -1433,17 +1702,18 @@ mod tests {
         // why it is a fair baseline and not a strawman.
         let r = smoke();
         let s = &r.sizes[0];
+        let held = s.curated[0].held;
         assert!(
-            s.curated_held < s.graph,
+            held < s.graph,
             "a budget that holds everything is not a curated file"
         );
         let arm = arm(&r, "curated-file");
-        let ceiling = s.curated_held as f64 / s.graph as f64;
+        let ceiling = held as f64 / s.graph as f64;
         assert!(
             arm.overall.recall_at_5 <= ceiling + 0.15,
             "recall {} exceeds what {} of {} facts could support",
             arm.overall.recall_at_5,
-            s.curated_held,
+            held,
             s.graph
         );
         let spread = arm
@@ -1471,11 +1741,9 @@ mod tests {
         // fits its budget, so missing most questions is the measurement rather
         // than a regression, and asserting otherwise would only be asserting
         // that the budget is large.
-        for arm in r.sizes[0]
-            .arms
-            .iter()
-            .filter(|a| !matches!(a.arm.as_str(), "chance" | "rag" | "curated-file"))
-        {
+        for arm in r.sizes[0].arms.iter().filter(|a| {
+            !matches!(a.arm.as_str(), "chance" | "rag") && !a.arm.starts_with("curated")
+        }) {
             let lexical = arm
                 .by_phrasing
                 .iter()

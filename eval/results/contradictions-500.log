@@ -1,0 +1,34 @@
+engram-eval — contradiction layer, end to end
+model: mobilebert-uncased-mnli
+
+  contradicting claims         100
+    caught                      97   97%
+    missed — never retrieved     0
+    missed — judged wrongly      3
+  agreeing claims              100   78% confirmed
+    missed — never retrieved     0
+    judged neutral              16
+    judged CONTRADICTION         6
+  unrelated claims             100   57% false alarms
+
+  confidence gate    catch   false alarms   agree-alarms
+            0.00      97%            57%             6%
+            0.50      96%            55%             6%
+            0.70      96%            45%             2%
+            0.80      96%            38%             0%   <- ships today
+            0.90      87%            24%             0%
+            0.95      76%            14%             0%
+            0.99      36%             4%             0%
+
+Reading it: `caught` is what the layer is for, but on its own it proves
+nothing — a layer that shouts contradiction at everything scores 100%.
+Read it against the false-alarm row, which is what such a layer costs.
+The two miss rows split the failures by cause, which is the part that
+decides anything: a claim whose target was never retrieved is not a
+judgment the model got wrong, it is one the model never saw. 100% of
+misses were the model's, so that is the ceiling on what swapping the
+NLI model could recover. The gate table asks the other question —
+whether the two populations separate by confidence at all, and so
+whether this is fixable without changing the model.
+
+wrote eval/results/contradictions-500.json

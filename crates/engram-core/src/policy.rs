@@ -76,6 +76,46 @@ pub const DUPLICATE_SIMILARITY: f64 = 0.90;
 /// every observed false positive, keeps the real one. Positive class is thin
 /// (n=1), so widen only after the judged-suspects corpus grows.
 pub const CONFLICT_SUSPECT_SIMILARITY: f64 = 0.88;
+/// Auto-tune — per-graph calibration of the conflict floor from judged
+/// history — engages only past this many current notes; smaller graphs keep
+/// the benchmark-calibrated defaults (user decision 2026-08-03). The 0.88
+/// default above was itself fitted by hand from 27 judgments on a ~300-note
+/// graph; auto-tune is that same operation, automated and per-graph.
+pub const AUTO_TUNE_MIN_NOTES: i64 = 200;
+/// ...and only with at least this many judged suspect pairs,
+pub const AUTO_TUNE_MIN_JUDGED: usize = 20;
+/// ...with at least this many on each side — a one-sided history can push a
+/// floor, but it cannot place one.
+pub const AUTO_TUNE_MIN_EACH: usize = 3;
+/// The fitted floor never drops below this: under it the sweep floods the
+/// queue with topical-cluster noise on every graph ever measured.
+pub const AUTO_TUNE_FLOOR_MIN: f64 = 0.85;
+/// Fitted moves smaller than this are ignored — config churn is not
+/// calibration.
+pub const AUTO_TUNE_MIN_DELTA: f64 = 0.005;
+/// Calibrated-delivery trim: post-rerank hits scoring under this are not
+/// delivered. 0.22 is the top of the measured free zone (delivery-floor
+/// sweep, 2026-08-03, question-everything corpus at 100/500/1500 notes):
+/// below it the trim removes only tail hits — recall@5 and oblique recall
+/// unchanged at every size — while the delivered set shrinks ~20% and focus
+/// (the answer's share of delivered tokens) rises ~40%. Applies only when a
+/// reranker produced calibrated scores; the fused hybrid score is a
+/// different scale and keeps its own `SEARCH_MIN_SCORE` cut.
+///
+/// Deliberately NOT an abstention mechanism: the same sweep showed hard
+/// abstention by absolute score is unaffordable — at 500 notes, declining
+/// 62% of never-written questions costs 38% of real answers, because oblique
+/// answers and unanswerable questions genuinely overlap in score space. The
+/// abstention face is a LABEL instead (see [`WEAK_EVIDENCE_TOP`]).
+pub const DELIVERY_FLOOR: f64 = 0.22;
+/// Top-score under which a delivery is labeled weak evidence. Chosen from
+/// the control arm's separation analysis (best threshold 0.84–0.87 across
+/// 500–1500 notes, balanced accuracy 0.76): a result whose best hit scores
+/// under this line is as likely to be topical adjacency as an answer, so the
+/// search verdict tells the assistant to verify before relying — a label
+/// costs no recall where a hard floor would spend the oblique column to buy
+/// abstention.
+pub const WEAK_EVIDENCE_TOP: f64 = 0.85;
 /// How long a node must sit below [`STALE_TRUST`] before the decay pass
 /// archives it (PLAN §6B: stale provisional episodic nodes decay out).
 pub const DECAY_TTL_DAYS: i64 = 14;

@@ -49,6 +49,19 @@ code refs, node vectors, claim vectors. Every hit carries its 1-hop neighbors �
 is hard to do by accident: the contradiction arrives attached to the search
 result that would have caused it.
 
+Since 0.8.0 the result set is also **calibrated**. Hits scoring under a
+benchmark-measured delivery floor are trimmed before they reach the assistant
+— the floor sits at the top of a measured "free zone", so recall is untouched
+while the weak tail stops spending the model's attention (the effect is
+strongest on young graphs, where the tail is weakest). And every search reply
+carries a **confidence verdict**: `strong` means the top hit cleared the
+calibrated line; `weak` tells the assistant these may be adjacent topics
+rather than the answer — verify before relying; `none` says the graph is
+silent, and to say so rather than invent a memory. Both numbers came out of
+the [evaluation harness](../eval/README.md)'s floor sweep, and both are
+per-graph policy (`delivery_floor`, `weak_evidence_top`) if yours needs
+different ones.
+
 ## Writes come back as verdicts
 
 Capture is batched and silent — no *"I've saved a note!"* chatter. But every

@@ -1,0 +1,34 @@
+engram-eval — delivery-floor sweep (engram arm)
+runtime: embedder=bge-small-en-v1.5  reranker=jina-reranker-v1-turbo-en  seed=1  limit=10
+
+graph 1500 facts / 4500 questions / 375 controls
+    floor    R@5  obliq  decl-ans decl-ctrl  noise  focus   kept tok/query
+    0.000   0.80   0.40      0.00      0.00   0.91   0.10   10.0       516
+    0.229   0.80   0.39      0.00      0.00   0.91   0.11    9.5       491
+    0.266   0.79   0.39      0.00      0.00   0.90   0.12    9.0       466
+    0.294   0.79   0.38      0.00      0.00   0.89   0.13    8.5       441
+    0.317   0.79   0.37      0.00      0.00   0.88   0.15    8.0       416
+    0.339   0.78   0.37      0.00      0.00   0.87   0.16    7.5       390
+    0.360   0.78   0.35      0.00      0.01   0.85   0.18    7.0       365
+    0.380   0.77   0.34      0.01      0.02   0.83   0.21    6.5       339
+    0.399   0.76   0.33      0.01      0.03   0.81   0.23    6.0       313
+    0.418   0.74   0.30      0.02      0.05   0.78   0.25    5.5       287
+    0.437   0.73   0.28      0.04      0.06   0.75   0.28    5.0       261
+    0.456   0.71   0.25      0.06      0.07   0.72   0.30    4.5       235
+    0.477   0.70   0.22      0.09      0.10   0.68   0.33    4.0       208
+    0.499   0.67   0.18      0.13      0.12   0.63   0.36    3.5       182
+    0.524   0.65   0.15      0.18      0.17   0.57   0.39    3.0       157
+    0.552   0.62   0.10      0.24      0.24   0.50   0.42    2.5       131
+    0.588   0.59   0.05      0.31      0.33   0.41   0.47    2.0       106
+    0.639   0.56   0.02      0.39      0.47   0.31   0.54    1.5        82
+    0.716   0.54   0.00      0.45      0.73   0.18   0.68    1.0        57
+    0.927   0.51   0.00      0.49      1.00   0.01   0.97    0.5        29
+    1.061   0.00   0.00      1.00      1.00   0.00   1.00    0.0         0
+
+Reading it: `decl-ctrl` is the point — the share of never-written questions
+the floor declines instead of answering with the nearest-looking thing.
+`decl-ans` is what that restraint costs on real questions, and R@5 is what
+survives after the trim. The shipped floor should sit where decl-ctrl is
+high, decl-ans is negligible, and R@5 has not moved.
+
+wrote eval/results/floor-1500.json

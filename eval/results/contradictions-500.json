@@ -1,0 +1,59 @@
+{
+  "model": "mobilebert-uncased-mnli",
+  "contradictions": 100,
+  "caught": 97,
+  "missed_by_retrieval": 0,
+  "missed_by_judgment": 3,
+  "entailments": 100,
+  "supported": 78,
+  "agree_missed_by_retrieval": 0,
+  "agree_judged_neutral": 16,
+  "agree_judged_contradiction": 6,
+  "neutrals": 100,
+  "false_alarms": 57,
+  "gates": [
+    {
+      "min_confidence": 0.0,
+      "catch_rate": 0.97,
+      "false_alarm_rate": 0.57,
+      "agree_alarm_rate": 0.06
+    },
+    {
+      "min_confidence": 0.5,
+      "catch_rate": 0.96,
+      "false_alarm_rate": 0.55,
+      "agree_alarm_rate": 0.06
+    },
+    {
+      "min_confidence": 0.7,
+      "catch_rate": 0.96,
+      "false_alarm_rate": 0.45,
+      "agree_alarm_rate": 0.02
+    },
+    {
+      "min_confidence": 0.8,
+      "catch_rate": 0.96,
+      "false_alarm_rate": 0.38,
+      "agree_alarm_rate": 0.0
+    },
+    {
+      "min_confidence": 0.9,
+      "catch_rate": 0.87,
+      "false_alarm_rate": 0.24,
+      "agree_alarm_rate": 0.0
+    },
+    {
+      "min_confidence": 0.95,
+      "catch_rate": 0.76,
+      "false_alarm_rate": 0.14,
+      "agree_alarm_rate": 0.0
+    },
+    {
+      "min_confidence": 0.99,
+      "catch_rate": 0.36,
+      "false_alarm_rate": 0.04,
+      "agree_alarm_rate": 0.0
+    }
+  ],
+  "shipped_gate": 0.8
+}

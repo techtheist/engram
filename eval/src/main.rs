@@ -26,10 +26,25 @@ OPTIONS:
     --seed N              corpus seed                [default: 1]
     --limit N             results an arm may return  [default: 10]
     --nli-budget N        pairs to judge per size    [default: 300]
-    --curated-budget N    token budget for the hand-maintained-file
-                          baseline                   [default: 3000]
+    --curated-budget N[,N]  token budget(s) for the hand-maintained-file
+                          baseline — one arm per budget [default: 3000]
+    --ladder              the gradation series: TOTAL graph sizes
+                          10,100,200,500,1000,1500 with EVERY fact questioned
+                          (no untested distractors, uniform type mix) and the
+                          curated file scored at 3,000 AND 30,000 tokens —
+                          answers \"where does a maintained file lose?\".
+                          Flags after --ladder still override its presets
+    --series              the whole battery in one command: --ladder plus the
+                          contradiction bench, combined JSON written to
+                          eval-series.json (or --json PATH). Expect a long
+                          real-embeddings run
     --phrasing-mix L,P,O  how often each phrasing is assumed to occur
                           [default: 45,45,10] — decides the headline number
+    --floor               sweep a delivery floor over the engram arm: per
+                          candidate floor, what abstention on unanswerable
+                          questions costs in recall, and what trimming the
+                          weak tail buys in focus/noise. The calibrated-
+                          delivery default comes from this table
     --sweep               grid-search the fusion balance against the semantic
                           floor, printed against what pure vectors score
     --bench               run candidate retrieval strategies that do NOT ship
@@ -72,9 +87,12 @@ fn cli() -> anyhow::Result<()> {
     let mut json_out: Option<String> = None;
     let mut tasks_out: Option<String> = None;
     let mut sample = false;
+    let mut floor_mode = false;
     let mut sweep_mode = false;
     let mut bench_mode = false;
     let mut contradiction_mode = false;
+    let mut ladder_mode = false;
+    let mut series_mode = false;
     let mut real_graph: Option<String> = None;
 
     let mut args = std::env::args().skip(1);
@@ -98,6 +116,16 @@ fn cli() -> anyhow::Result<()> {
             "--type-mix" => cfg.type_mix = parse_type_mix(&value()?)?,
             "--terse" => cfg.profile = engram_eval::profile::Profile::terse(),
             "--phrasing-mix" => cfg.phrasing = parse_phrasing(&value()?)?,
+            "--ladder" => {
+                ladder_mode = true;
+                apply_ladder(&mut cfg);
+            }
+            "--series" => {
+                ladder_mode = true;
+                series_mode = true;
+                apply_ladder(&mut cfg);
+            }
+            "--floor" => floor_mode = true,
             "--sweep" => sweep_mode = true,
             "--bench" => bench_mode = true,
             "--contradictions" => contradiction_mode = true,
@@ -109,7 +137,12 @@ fn cli() -> anyhow::Result<()> {
             "--seed" => cfg.seed = value()?.parse()?,
             "--limit" => cfg.limit = value()?.parse()?,
             "--nli-budget" => cfg.nli_budget = value()?.parse()?,
-            "--curated-budget" => cfg.curated_budget = value()?.parse()?,
+            "--curated-budget" => {
+                cfg.curated_budgets = value()?
+                    .split(',')
+                    .map(|s| s.trim().parse::<usize>())
+                    .collect::<Result<_, _>>()?;
+            }
             "--json" => json_out = Some(value()?),
             "--emit-tasks" => tasks_out = Some(value()?),
             other => anyhow::bail!("unknown option {other} (try --help)"),
@@ -122,6 +155,15 @@ fn cli() -> anyhow::Result<()> {
 
     if sample {
         print_sample(&cfg);
+        return Ok(());
+    }
+    if floor_mode {
+        let report = engram_eval::run::floor_sweep(&cfg)?;
+        print_floor(&report);
+        if let Some(path) = json_out {
+            std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
+            println!("\nwrote {path}");
+        }
         return Ok(());
     }
     if sweep_mode {
@@ -158,8 +200,26 @@ fn cli() -> anyhow::Result<()> {
 
     let report = run(&cfg)?;
     print_report(&report);
+    if ladder_mode {
+        print_ladder(&report);
+    }
 
-    if let Some(path) = json_out {
+    if series_mode {
+        // The contradiction bench picks its own size: the ladder's first rung
+        // (10 facts) is far too small an instrument for a catch rate.
+        let mut ccfg = cfg.clone();
+        ccfg.sizes = vec![500];
+        let contradictions = engram_eval::run::contradictions(&ccfg)?;
+        println!();
+        print_contradictions(&contradictions);
+        let path = json_out.unwrap_or_else(|| "eval-series.json".to_string());
+        let combined = serde_json::json!({
+            "ladder": report,
+            "contradictions": contradictions,
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&combined)?)?;
+        println!("\nwrote {path}");
+    } else if let Some(path) = json_out {
         std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
         println!("\nwrote {path}");
     }
@@ -168,6 +228,91 @@ fn cli() -> anyhow::Result<()> {
         println!("wrote {n} online tasks to {path}");
     }
     Ok(())
+}
+
+/// The gradation presets: sizes are TOTAL graph sizes and every fact is
+/// questioned — no untested distractors, no type-mix thinning. Assumed
+/// workload mixes belong in report-side weighting, not in which questions get
+/// asked; the phrasing weighting already works that way.
+fn apply_ladder(cfg: &mut Config) {
+    cfg.sizes = vec![10, 100, 200, 500, 1000, 1500];
+    cfg.distractor_ratio = 0;
+    cfg.type_mix = KINDS.iter().map(|k| (*k, 1)).collect();
+    cfg.curated_budgets = vec![3000, 30000];
+}
+
+/// The ladder's own summary: recall@5 by graph size, one column per arm worth
+/// following, and the crossover sentence the write-up needs — the first size
+/// at which each curated budget falls behind retrieval.
+fn print_ladder(r: &Report) {
+    let followed: Vec<String> = r
+        .sizes
+        .first()
+        .map(|s| {
+            s.curated
+                .iter()
+                .map(|c| c.arm.clone())
+                .chain(["grep", "rag", "engram-hybrid"].map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    if followed.is_empty() {
+        return;
+    }
+
+    println!("\nengram-eval — the ladder: recall@5 by graph size");
+    print!("  {:>7} {:>6}", "graph", "asked");
+    for name in &followed {
+        print!(" {name:>15}");
+    }
+    println!();
+    let recall = |s: &engram_eval::run::SizeReport, name: &str| -> Option<f64> {
+        s.arms
+            .iter()
+            .find(|a| a.arm == name)
+            .map(|a| a.overall.recall_at_5)
+    };
+    for s in &r.sizes {
+        print!("  {:>7} {:>6}", s.graph, s.questions);
+        for name in &followed {
+            match recall(s, name) {
+                Some(v) => print!(" {v:>15.2}"),
+                None => print!(" {:>15}", "-"),
+            }
+        }
+        println!();
+    }
+
+    for c in &r.sizes.first().expect("non-empty").curated {
+        let lost = r.sizes.iter().find(|s| {
+            let cur = recall(s, &c.arm);
+            let eng = recall(s, "engram-hybrid");
+            matches!((cur, eng), (Some(cur), Some(eng)) if cur < eng)
+        });
+        match lost {
+            Some(s) => {
+                let held = s
+                    .curated
+                    .iter()
+                    .find(|x| x.arm == c.arm)
+                    .map(|x| x.held)
+                    .unwrap_or_default();
+                println!(
+                    "  {} falls behind retrieval at {} notes ({:.2} vs {:.2}, holding {} of {})",
+                    c.arm,
+                    s.graph,
+                    recall(s, &c.arm).unwrap_or_default(),
+                    recall(s, "engram-hybrid").unwrap_or_default(),
+                    held,
+                    s.graph
+                );
+            }
+            None => println!(
+                "  {} never falls behind retrieval on this ladder — extend the sizes",
+                c.arm
+            ),
+        }
+    }
 }
 
 /// `45,45,10` — lexical, paraphrase, oblique. Normalised, so any scale works.
@@ -187,6 +332,48 @@ fn parse_phrasing(spec: &str) -> anyhow::Result<PhrasingMix> {
         paraphrase,
         oblique,
     })
+}
+
+fn print_floor(r: &engram_eval::run::FloorReport) {
+    println!("engram-eval — delivery-floor sweep (engram arm)");
+    println!(
+        "runtime: embedder={}  reranker={}  seed={}  limit={}",
+        r.embedder, r.reranker, r.seed, r.limit
+    );
+    if r.embeddings_are_fake {
+        println!("!! FAKE EMBEDDINGS — every number below is noise");
+    }
+    for s in &r.sizes {
+        println!(
+            "\ngraph {} facts / {} questions / {} controls",
+            s.graph, s.questions, s.controls
+        );
+        println!(
+            "  {:>7} {:>6} {:>6} {:>9} {:>9} {:>6} {:>6} {:>6} {:>9}",
+            "floor", "R@5", "obliq", "decl-ans", "decl-ctrl", "noise", "focus", "kept", "tok/query"
+        );
+        for p in &s.points {
+            println!(
+                "  {:>7.3} {:>6.2} {:>6.2} {:>9.2} {:>9.2} {:>6.2} {:>6.2} {:>6.1} {:>9.0}",
+                p.floor,
+                p.recall_at_5,
+                p.oblique_recall_at_5,
+                p.declined_answerable,
+                p.controls_declined,
+                p.noise,
+                p.focus,
+                p.mean_returned,
+                p.tokens_mean,
+            );
+        }
+    }
+    println!(
+        "\nReading it: `decl-ctrl` is the point — the share of never-written questions\n\
+         the floor declines instead of answering with the nearest-looking thing.\n\
+         `decl-ans` is what that restraint costs on real questions, and R@5 is what\n\
+         survives after the trim. The shipped floor should sit where decl-ctrl is\n\
+         high, decl-ans is negligible, and R@5 has not moved."
+    );
 }
 
 fn print_sweep(report: &engram_eval::run::SweepReport, cfg: &Config) {
@@ -588,18 +775,23 @@ fn print_report(r: &Report) {
             "\ngraph {} facts ({} tested + {} distractors), {} edges / {} questions / {} controls",
             s.graph, s.size, s.distractors, s.edges, s.questions, s.unanswerable
         );
+        for c in &s.curated {
+            println!(
+                "  {} holds {} of {} facts at a {}-token budget ({:.0}% of the graph)",
+                c.arm,
+                c.held,
+                s.graph,
+                c.budget,
+                100.0 * c.held as f64 / s.graph.max(1) as f64
+            );
+        }
         println!(
-            "  curated-file holds {} of {} facts at a {}-token budget ({:.0}% of the graph)",
-            s.curated_held,
-            s.graph,
-            s.curated_budget,
-            100.0 * s.curated_held as f64 / s.graph.max(1) as f64
-        );
-        println!(
-            "  {:<14} {:>8} {:>9} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}",
+            "  {:<14} {:>8} {:>9} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}",
             "arm",
             "standing",
             "tok/query",
+            "focus",
+            "noise",
             "R@1",
             "R@5",
             "MRR",
@@ -613,10 +805,12 @@ fn print_report(r: &Report) {
         );
         for arm in &s.arms {
             println!(
-                "  {:<14} {:>8} {:>9.0} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2}",
+                "  {:<14} {:>8} {:>9.0} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2}",
                 arm.arm,
                 arm.standing_tokens,
                 arm.overall.tokens_mean,
+                arm.overall.focus,
+                arm.overall.noise,
                 arm.overall.recall_at_1,
                 arm.overall.recall_at_5,
                 arm.overall.mrr,
@@ -646,9 +840,11 @@ fn print_report(r: &Report) {
                 (a.arm.as_str(), rt.phrasing.weighted_recall(&split))
             })
             .collect();
+        // Always-in-context arms are excluded: holding a fact is not
+        // retrieving it, and at small sizes they hold everything.
         let best = named
             .iter()
-            .filter(|(n, _)| *n != "whole-file")
+            .filter(|(n, _)| *n != "whole-file" && !n.starts_with("curated"))
             .max_by(|a, b| a.1.total_cmp(&b.1));
         if let Some((winner, wr)) = best {
             print!("  weighted recall@5: ");
@@ -695,7 +891,14 @@ fn print_report(r: &Report) {
 
     println!(
         "\nreading it: `standing` is what the arm costs every session before a question\n\
-         is asked; `tok/query` is what it delivers per question. `obliq` is recall on\n\
+         is asked; `tok/query` is what it delivers per question. `focus` is the share\n\
+         of the delivered tokens that were the answer, when it arrived at all —\n\
+         attention is the budget, and everything delivered beyond the answer spends\n\
+         it. A dump can score recall 1.00 and focus 0.00x on the same run; that pair\n\
+         of numbers is the difference between present and readable. `noise` is the\n\
+         share of delivered records that were NOT the answer, counting a miss as\n\
+         all-noise and an empty return as zero — the one column where declining to\n\
+         answer scores better than guessing. `obliq` is recall on\n\
          questions that never name their subject — the column meaning has to win.\n\
          `FP` is the share of questions with no written answer that still got one;\n\
          `sep` is how well any confidence threshold could have told those apart\n\

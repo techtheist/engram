@@ -18,6 +18,15 @@ pub struct Outcome {
     pub top_score: Option<f64>,
     /// A near-identically-named fact outranked the right one.
     pub twin_above: bool,
+    /// Share of the delivered tokens that belonged to the answering record,
+    /// when it was delivered at all. Attention is the budget: every token
+    /// beyond the answer is distraction, so over-delivery is a graded false
+    /// positive — recall says the answer was present, focus says what it was
+    /// buried under.
+    pub focus: Option<f64>,
+    /// How many records the arm delivered for this question — the base the
+    /// noise share is computed over.
+    pub returned: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -33,6 +42,17 @@ pub struct Score {
     /// Share of questions where the gold fact was reachable ONLY through a
     /// neighbour — the graph was the sole path to it.
     pub neighbor_only: f64,
+    /// Mean share of delivered tokens that were the answer, over the questions
+    /// where the answer was delivered. `whole-file` holds every answer and
+    /// still scores near zero here — presence is not the same as being
+    /// readable, and this is the column that says so.
+    pub focus: f64,
+    /// Mean share of delivered RECORDS that were not the answer, over every
+    /// question — a found answer among ten hits scores 0.9, a miss with ten
+    /// hits scores 1.0 (everything delivered was a false positive), and an
+    /// empty return scores 0.0, because saying nothing tells no lies. The one
+    /// column where declining to answer is rewarded rather than invisible.
+    pub noise: f64,
 }
 
 fn ratio(hits: usize, total: usize) -> f64 {
@@ -68,6 +88,21 @@ pub fn score(outcomes: &[Outcome]) -> Score {
             / n.max(1) as f64,
         tokens_mean: outcomes.iter().map(|o| o.tokens as f64).sum::<f64>() / n.max(1) as f64,
         twin_confusion: ratio(outcomes.iter().filter(|o| o.twin_above).count(), n),
+        focus: {
+            let delivered: Vec<f64> = outcomes.iter().filter_map(|o| o.focus).collect();
+            delivered.iter().sum::<f64>() / delivered.len().max(1) as f64
+        },
+        noise: outcomes
+            .iter()
+            .map(|o| {
+                if o.returned == 0 {
+                    0.0
+                } else {
+                    (o.returned - usize::from(o.rank.is_some())) as f64 / o.returned as f64
+                }
+            })
+            .sum::<f64>()
+            / n.max(1) as f64,
         neighbor_only: ratio(
             outcomes
                 .iter()
@@ -245,7 +280,32 @@ mod tests {
             tokens: 100,
             top_score: rank.map(|_| 0.9),
             twin_above: false,
+            focus: rank.map(|_| 0.25),
+            returned: 10,
         }
+    }
+
+    #[test]
+    fn noise_counts_misses_in_full_and_rewards_silence() {
+        // Found among ten: nine of the ten delivered records were noise. A
+        // miss with ten results delivered nothing but noise. An empty return
+        // told no lies — the only outcome noise scores at zero.
+        let s = score(&[outcome(Some(3)), outcome(None)]);
+        assert!((s.noise - 0.95).abs() < 1e-9, "(0.9 + 1.0) / 2");
+        let silent = Outcome {
+            returned: 0,
+            ..outcome(None)
+        };
+        assert_eq!(score(std::slice::from_ref(&silent)).noise, 0.0);
+    }
+
+    #[test]
+    fn focus_averages_only_over_delivered_answers() {
+        // A miss has no focus to report — averaging a zero into the column
+        // would double-punish the miss recall already counts.
+        let s = score(&[outcome(Some(1)), outcome(Some(2)), outcome(None)]);
+        assert!((s.focus - 0.25).abs() < 1e-9);
+        assert_eq!(score(&[outcome(None)]).focus, 0.0);
     }
 
     #[test]

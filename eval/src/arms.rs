@@ -73,6 +73,10 @@ pub struct Retrieval {
     /// Confidence of the best hit, when the arm has one. Used to ask whether
     /// any threshold separates answerable from unanswerable questions.
     pub top_score: Option<f64>,
+    /// Per-delivered-record confidence, parallel to the ranked keys — empty
+    /// for arms that do not score (dumps, chance, grep). This is what the
+    /// delivery-floor sweep trims against.
+    pub scores: Vec<f64>,
     /// Facts reachable in one hop from a returned hit, paired with the rank of
     /// the hit that carried them. This is the graph layer: a fact that never
     /// ranks can still reach the caller because something adjacent did.
@@ -91,6 +95,7 @@ impl Retrieval {
             rendered,
             tokens,
             top_score,
+            scores: Vec::new(),
             neighbors: Vec::new(),
         }
     }
@@ -109,18 +114,23 @@ pub trait Arm {
 // ---------------------------------------------------------------- whole file
 
 pub struct WholeFileArm {
-    file: String,
+    /// One entry per record, in file order — `rendered`'s contract, and what
+    /// lets the focus metric price the answer against everything around it.
+    entries: Vec<String>,
     keys: Vec<String>,
     cost: usize,
 }
 
 impl WholeFileArm {
     pub fn new(corpus: &Corpus) -> Self {
-        let file = corpus.flat_file();
         Self {
-            cost: tokens(&file),
+            cost: tokens(&corpus.flat_file()),
             keys: corpus.facts.iter().map(|f| f.key.clone()).collect(),
-            file,
+            entries: corpus
+                .facts
+                .iter()
+                .map(|f| format!("## {}\n{}", f.title, f.body))
+                .collect(),
         }
     }
 }
@@ -133,7 +143,7 @@ impl Arm for WholeFileArm {
     fn retrieve(&self, _query: &str, _limit: usize) -> Retrieval {
         Retrieval::ranked(
             Delivery::Dump(self.keys.clone()),
-            vec![self.file.clone()],
+            self.entries.clone(),
             self.cost,
             None,
         )
@@ -166,7 +176,8 @@ impl Arm for WholeFileArm {
 /// carries a small fraction of the graph, and every question about the rest is
 /// simply unanswerable from it. That limit is the measurement, not a handicap.
 pub struct CuratedFileArm {
-    file: String,
+    /// One trimmed entry per kept record, parallel to `keys`.
+    entries: Vec<String>,
     keys: Vec<String>,
     cost: usize,
     budget: usize,
@@ -218,7 +229,7 @@ impl CuratedFileArm {
         let mut order: Vec<&Fact> = corpus.facts.iter().collect();
         order.sort_by_key(|f| (rank(f), scramble(&f.key)));
 
-        let mut file = String::new();
+        let mut entries = Vec::new();
         let mut keys = Vec::new();
         let mut used = 0;
         for f in order {
@@ -232,12 +243,12 @@ impl CuratedFileArm {
                 continue;
             }
             used += cost;
-            file.push_str(&entry);
+            entries.push(entry.trim_end().to_string());
             keys.push(f.key.clone());
         }
         Self {
             cost: used,
-            file,
+            entries,
             keys,
             budget,
         }
@@ -261,7 +272,7 @@ impl Arm for CuratedFileArm {
     fn retrieve(&self, _query: &str, _limit: usize) -> Retrieval {
         Retrieval::ranked(
             Delivery::Dump(self.keys.clone()),
-            vec![self.file.clone()],
+            self.entries.clone(),
             self.cost,
             None,
         )
@@ -423,6 +434,7 @@ impl Arm for RagArm<'_> {
         let hits = self.store.search_vec(&qv, limit).unwrap_or_default();
         let mut keys = Vec::new();
         let mut rendered = Vec::new();
+        let mut scores = Vec::new();
         let mut cost = 0;
         let mut top = None;
         for (id, distance) in &hits {
@@ -439,8 +451,11 @@ impl Arm for RagArm<'_> {
                 rendered.push(format!("## {}\n{}", node.title, body));
             }
             keys.push(key.clone());
+            scores.push((1.0 - distance).clamp(0.0, 1.0));
         }
-        Retrieval::ranked(Delivery::Ranked(keys), rendered, cost, top)
+        let mut r = Retrieval::ranked(Delivery::Ranked(keys), rendered, cost, top);
+        r.scores = scores;
+        r
     }
 }
 
@@ -466,6 +481,14 @@ impl EngramArm {
         rerank: Option<Box<dyn engram_core::Reranker>>,
     ) -> anyhow::Result<Self> {
         let store = SqliteStore::open_in_memory()?;
+        // The in-memory store is born at the default vector width; a 768-dim
+        // embedder (bge-base) needs the column re-sized before the first
+        // write — the same `reset_vectors` the product's model swap uses.
+        {
+            use engram_core::Store as _;
+            let dim = embedder.embed_one("dimension probe")?.len();
+            store.reset_vectors(dim)?;
+        }
         let mut engine = Engine::new(store, embedder);
         if let Some(r) = rerank {
             engine.set_reranker(r);
@@ -603,6 +626,11 @@ impl Arm for EngramArm {
         }
         Retrieval {
             top_score: hits.first().map(|h| h.score),
+            scores: hits
+                .iter()
+                .filter(|h| self.by_id.contains_key(&h.id))
+                .map(|h| h.score)
+                .collect(),
             delivery: Delivery::Ranked(
                 hits.iter()
                     .filter_map(|h| self.by_id.get(&h.id).cloned())

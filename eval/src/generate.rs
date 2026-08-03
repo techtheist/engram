@@ -25,16 +25,25 @@ use engram_core::{NodeStatus, NodeType};
 use crate::profile::Profile;
 use crate::rng::Rng;
 
-/// 8 × 8 × 8 slot combinations per kind before oblique questions would stop
-/// being uniquely answerable.
-pub const MAX_PER_KIND: usize = 512;
+/// Every s1 pool (PARAMS, FAILURES, FORBIDDEN, SYMPTOMS, BEHAVIOURS) holds
+/// exactly this many entries, and every s2 pool (CONSTRAINTS, TRIGGERS,
+/// REASONS, CONDITIONS, CAUSES) likewise — the slot arithmetic in
+/// `Vocab::slots` indexes them interchangeably per kind.
+const S1_LEN: usize = 12;
+const S2_LEN: usize = 12;
+
+/// Unique (component, descriptor, qualifier) triples per kind. Slot space now
+/// exceeds the invented-name space, so the binding cap on corpus size is the
+/// 4096 names (minus one control subject per four tested facts), not this.
+pub const MAX_PER_KIND: usize = COMPONENTS.len() * S1_LEN * S2_LEN;
 
 const ONSET: [&str; 16] = [
     "kel", "van", "tor", "mel", "dru", "zan", "fir", "lor", "bre", "quen", "sil", "har", "nov",
     "yss", "garn", "ulm",
 ];
-// 16 × 16 × 16 = 4096 distinct invented names, which has to cover the largest
-// graph the slot enumeration allows (2560 facts) plus its control subjects.
+// 16 × 16 × 16 = 4096 distinct invented names. Slot space outgrew this when
+// the pools widened, so the name supply (facts plus one control subject per
+// four tested facts) is what actually caps corpus size, at ~3200 facts.
 const MID: [&str; 16] = [
     "a", "o", "i", "en", "ar", "ul", "ei", "yn", "ae", "ou", "ir", "el", "or", "um", "ai", "yr",
 ];
@@ -43,7 +52,12 @@ const CODA: [&str; 16] = [
     "tos", "fen", "wyn",
 ];
 
-const COMPONENTS: [&str; 8] = [
+/// Mostly software infrastructure, deliberately salted with laboratory and
+/// abstract-process categories so retrieval is never tuned to one genre's
+/// vocabulary. A component may be named by an oblique question — it is the
+/// category, not the fact — so its words must stay out of every paraphrase
+/// column.
+const COMPONENTS: [&str; 16] = [
     "ingest job",
     "lease broker",
     "shard router",
@@ -52,10 +66,18 @@ const COMPONENTS: [&str; 8] = [
     "edge cache",
     "sweep worker",
     "index writer",
+    "assay station",
+    "specimen locker",
+    "calibration bench",
+    "telemetry mast",
+    "provenance ledger",
+    "quorum relay",
+    "escrow chamber",
+    "entropy siphon",
 ];
 
 /// (parameter, unit, paraphrase)
-const PARAMS: [(&str, &str, &str); 8] = [
+const PARAMS: [(&str, &str, &str); S1_LEN] = [
     ("retry budget", "attempts", "how often it tries again"),
     ("lease window", "seconds", "how long a grant stays valid"),
     ("flush interval", "milliseconds", "how often it writes out"),
@@ -76,10 +98,30 @@ const PARAMS: [(&str, &str, &str); 8] = [
         "megabytes",
         "when it starts writing to disk",
     ),
+    (
+        "decay half-life",
+        "hours",
+        "how quickly stored strength fades",
+    ),
+    (
+        "sampling stride",
+        "readings",
+        "the spacing between successive measurements",
+    ),
+    (
+        "confidence floor",
+        "percent",
+        "the certainty below which nothing counts",
+    ),
+    (
+        "quarantine window",
+        "days",
+        "how long suspects stay isolated",
+    ),
 ];
 
 /// Every pair below is (wording the fact uses, word-disjoint paraphrase).
-const CONSTRAINTS: [(&str, &str); 8] = [
+const CONSTRAINTS: [(&str, &str); S2_LEN] = [
     (
         "the upstream limiter resets on a fixed window",
         "the throttle above it starts over each period",
@@ -112,9 +154,25 @@ const CONSTRAINTS: [(&str, &str); 8] = [
         "the manifest is rewritten wholesale",
         "the index file is replaced in full",
     ),
+    (
+        "the detector saturates past its rated exposure",
+        "the sensor maxes out beyond its design load",
+    ),
+    (
+        "the centrifuge must spin down before reloading",
+        "the rotor has to coast to rest ahead of a refill",
+    ),
+    (
+        "the ledger admits one writer per epoch",
+        "a single scribe holds the pen each term",
+    ),
+    (
+        "the observatory publishes on a fixed almanac",
+        "release dates follow a preset calendar",
+    ),
 ];
 
-const FAILURES: [(&str, &str); 8] = [
+const FAILURES: [(&str, &str); S1_LEN] = [
     ("drops writes", "loses acknowledged data"),
     ("double-counts rows", "reports inflated totals"),
     ("loses its cursor", "forgets how far it had read"),
@@ -123,9 +181,19 @@ const FAILURES: [(&str, &str); 8] = [
     ("re-emits duplicates", "sends the same payload twice"),
     ("truncates the tail", "discards the newest entries"),
     ("skips the fsync", "acknowledges before durability"),
+    (
+        "mislabels its vials",
+        "puts the wrong name on each container",
+    ),
+    (
+        "inverts its polarity",
+        "flips positive and negative readings",
+    ),
+    ("overruns its dwell", "lingers longer than scheduled"),
+    ("garbles its telemetry", "scrambles what it reports home"),
 ];
 
-const TRIGGERS: [(&str, &str); 8] = [
+const TRIGGERS: [(&str, &str); S2_LEN] = [
     (
         "the lease expires mid-flush",
         "a grant lapses while data is still moving",
@@ -149,9 +217,25 @@ const TRIGGERS: [(&str, &str); 8] = [
         "two drains overlap",
         "a second flush starts before the first ends",
     ),
+    (
+        "the coolant loop cavitates",
+        "bubbles form in the cooling circuit",
+    ),
+    (
+        "the reagent expires overnight",
+        "the chemical goes flat between shifts",
+    ),
+    (
+        "the almanac rolls over",
+        "the published calendar starts a new page",
+    ),
+    (
+        "a stray magnet passes the bay",
+        "unshielded metal drifts too close",
+    ),
 ];
 
-const FORBIDDEN: [(&str, &str); 8] = [
+const FORBIDDEN: [(&str, &str); S1_LEN] = [
     (
         "share a cursor between shards",
         "one read position serving two partitions",
@@ -181,9 +265,19 @@ const FORBIDDEN: [(&str, &str); 8] = [
         "reuse a spill file",
         "recycling scratch storage between runs",
     ),
+    (
+        "recalibrate against a live specimen",
+        "adjusting the instrument on an active sample",
+    ),
+    ("splice two lineages", "merging unrelated ancestry lines"),
+    ("skip the blank control", "omitting the empty reference run"),
+    (
+        "hand-tune the weights mid-flight",
+        "nudging parameters while the system is airborne",
+    ),
 ];
 
-const REASONS: [(&str, &str); 8] = [
+const REASONS: [(&str, &str); S2_LEN] = [
     (
         "the invariant it protects cannot be re-derived after the fact",
         "nothing downstream can reconstruct the guarantee later",
@@ -216,9 +310,25 @@ const REASONS: [(&str, &str); 8] = [
         "the repair costs more than the operation ever saved",
         "cleanup outweighs any gain",
     ),
+    (
+        "no replication can ever confirm a contaminated baseline",
+        "a tainted origin defeats every rerun",
+    ),
+    (
+        "the chain of custody breaks and cannot be respliced",
+        "provenance once severed stays severed",
+    ),
+    (
+        "consent covers the original purpose only",
+        "permission does not stretch to new uses",
+    ),
+    (
+        "the instrument's warranty voids on first opening",
+        "cracking the case forfeits all support",
+    ),
 ];
 
-const SYMPTOMS: [(&str, &str); 8] = [
+const SYMPTOMS: [(&str, &str); S1_LEN] = [
     ("stalls", "stops making progress"),
     ("leaks handles", "never returns its file descriptors"),
     ("reorders acks", "confirms out of sequence"),
@@ -230,9 +340,16 @@ const SYMPTOMS: [(&str, &str); 8] = [
     ("thrashes the cache", "evicts what it is about to need"),
     ("duplicates its fence", "issues the same barrier twice"),
     ("starves the drain", "never lets the flush finish"),
+    ("saturates its detector", "pegs the sensor at maximum"),
+    ("skews its baseline", "tilts every measurement it takes"),
+    ("orphans its batches", "abandons work it had accepted"),
+    (
+        "echoes its own commands",
+        "repeats instructions back to itself",
+    ),
 ];
 
-const CONDITIONS: [(&str, &str); 8] = [
+const CONDITIONS: [(&str, &str); S2_LEN] = [
     ("under shard rebalance", "while partitions are moving"),
     (
         "during a cold replay",
@@ -250,9 +367,25 @@ const CONDITIONS: [(&str, &str); 8] = [
         "under sustained backpressure",
         "while the pipeline stays saturated",
     ),
+    (
+        "during lens calibration",
+        "while the optics are being trued",
+    ),
+    (
+        "during the night batch",
+        "when the overnight schedule peaks",
+    ),
+    (
+        "past its recalibration due date",
+        "once the instrument check is overdue",
+    ),
+    (
+        "while the archive migrates",
+        "as records move to new shelves",
+    ),
 ];
 
-const BEHAVIOURS: [(&str, &str); 8] = [
+const BEHAVIOURS: [(&str, &str); S1_LEN] = [
     (
         "prefers the older replica",
         "picks the staler of two copies",
@@ -267,9 +400,25 @@ const BEHAVIOURS: [(&str, &str); 8] = [
         "retries before backing off",
         "repeats immediately on failure",
     ),
+    (
+        "rounds toward the anchor",
+        "biases results to the reference value",
+    ),
+    (
+        "hoards its calibration slots",
+        "keeps tuning grants for itself",
+    ),
+    (
+        "ages its stock first",
+        "serves the oldest inventory before fresh arrivals",
+    ),
+    (
+        "mirrors its rival's cadence",
+        "copies the rhythm of its counterpart",
+    ),
 ];
 
-const CAUSES: [(&str, &str); 8] = [
+const CAUSES: [(&str, &str); S2_LEN] = [
     (
         "the ranker keys on arrival order rather than freshness",
         "ordering is decided by when things showed up",
@@ -293,6 +442,22 @@ const CAUSES: [(&str, &str); 8] = [
     (
         "integer division truncates the interval",
         "the arithmetic rounds the period down",
+    ),
+    (
+        "the calibration constant was transcribed by hand",
+        "a manually copied figure hid a typo",
+    ),
+    (
+        "the sensor sums shadow and signal alike",
+        "stray light lands in the same bucket as data",
+    ),
+    (
+        "the quota counts retired entries",
+        "the allowance includes what was archived",
+    ),
+    (
+        "the seed never varies between runs",
+        "randomness was pinned once and forgotten",
     ),
     (
         "the warm path is gated on a flag nobody sets",
@@ -574,8 +739,8 @@ struct Vocab {
 impl Vocab {
     fn new(rng: &mut Rng) -> Self {
         let mut components: Vec<usize> = (0..COMPONENTS.len()).collect();
-        let mut a: Vec<usize> = (0..8).collect();
-        let mut b: Vec<usize> = (0..8).collect();
+        let mut a: Vec<usize> = (0..S1_LEN).collect();
+        let mut b: Vec<usize> = (0..S2_LEN).collect();
         let mut order: Vec<usize> = (0..MAX_PER_KIND).collect();
         rng.shuffle(&mut components);
         rng.shuffle(&mut a);
@@ -601,10 +766,11 @@ impl Vocab {
     /// each tested fact's slots identical however many distractors follow it.
     fn slots(&self, j: usize) -> (usize, usize, usize) {
         let j = self.order[j % MAX_PER_KIND];
+        let c = COMPONENTS.len();
         (
-            self.components[j % 8],
-            self.a[(j / 8) % 8],
-            self.b[(j / 64) % 8],
+            self.components[j % c],
+            self.a[(j / c) % S1_LEN],
+            self.b[(j / (c * S1_LEN)) % S2_LEN],
         )
     }
 }

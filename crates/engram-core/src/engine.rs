@@ -276,15 +276,22 @@ impl Engine {
         let ttl = self.store.config().policy.decay_ttl_days;
         let archived = self.decay(ttl, false)?.len();
         let retired = self.retire_superseded_sweep()?;
+        // Calibrate before scanning, so this session's conflict pass already
+        // runs under the floor the graph's own judgments support.
+        let tuned = self.auto_tune()?;
         let suspects = self.scan_conflicts()?;
         let drift = match self.repo_root().map(std::path::Path::to_path_buf) {
             Some(root) => self.scan_code_refs(&root)?.len(),
             None => 0,
         };
         let note = format!(
-            "{archived} decayed, {retired} superseded, {suspects} new suspect{}, {drift} drifted ref{}",
+            "{archived} decayed, {retired} superseded, {suspects} new suspect{}, {drift} drifted ref{}{}",
             if suspects == 1 { "" } else { "s" },
             if drift == 1 { "" } else { "s" },
+            match &tuned {
+                Some(t) => format!(", {t}"),
+                None => String::new(),
+            },
         );
         self.audit_activity("graph_validated", Some(note.clone()))?;
         Ok(note)
@@ -297,6 +304,84 @@ impl Engine {
             .last_validated
             .load(std::sync::atomic::Ordering::Relaxed);
         crate::store::now() - last >= min_interval_secs
+    }
+
+    /// Per-graph calibration from judged history — the automated form of the
+    /// manual 0.85→0.88 conflict-floor retune (2026-07-13). Every resolved
+    /// suspect is a labeled (similarity, verdict) pair: a dismissal is a
+    /// false positive the floor exists to prevent, a confirmation is what it
+    /// must never lose. Models nominate, people judge — and what people
+    /// judged is calibration data, so this fits FROM human verdicts only.
+    ///
+    /// Engages only on a mature graph: over [`policy::AUTO_TUNE_MIN_NOTES`]
+    /// current notes, at least [`policy::AUTO_TUNE_MIN_JUDGED`] judgments
+    /// with [`policy::AUTO_TUNE_MIN_EACH`] per side (a one-sided history can
+    /// push a floor, not place it); smaller graphs keep the
+    /// benchmark-calibrated defaults. The fit maximizes balanced accuracy
+    /// over midpoint candidates, prefers the higher threshold on ties (a
+    /// quieter queue), clamps into
+    /// [[`policy::AUTO_TUNE_FLOOR_MIN`], `duplicate_similarity`), and applies
+    /// only a move of at least [`policy::AUTO_TUNE_MIN_DELTA`] — journaled as
+    /// an `auto_tuned` activity row. `policy.auto_tune = false` opts a graph
+    /// out entirely.
+    pub fn auto_tune(&self) -> Result<Option<String>> {
+        use crate::policy::{
+            AUTO_TUNE_FLOOR_MIN, AUTO_TUNE_MIN_DELTA, AUTO_TUNE_MIN_EACH, AUTO_TUNE_MIN_JUDGED,
+            AUTO_TUNE_MIN_NOTES,
+        };
+        let cfg = self.graph_config();
+        if !cfg.policy.auto_tune || self.store.stats()?.nodes <= AUTO_TUNE_MIN_NOTES {
+            return Ok(None);
+        }
+        let judged: Vec<(f64, bool)> = self
+            .store
+            .all_suspects()?
+            .into_iter()
+            .filter_map(|s| match s.status {
+                SuspectStatus::Confirmed => Some((s.similarity, true)),
+                SuspectStatus::Dismissed => Some((s.similarity, false)),
+                SuspectStatus::Suspected => None,
+            })
+            .collect();
+        let confirmed = judged.iter().filter(|(_, c)| *c).count();
+        let dismissed = judged.len() - confirmed;
+        if judged.len() < AUTO_TUNE_MIN_JUDGED
+            || confirmed < AUTO_TUNE_MIN_EACH
+            || dismissed < AUTO_TUNE_MIN_EACH
+        {
+            return Ok(None);
+        }
+
+        let mut sims: Vec<f64> = judged.iter().map(|(s, _)| *s).collect();
+        sims.sort_by(f64::total_cmp);
+        sims.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+        let old = cfg.policy.conflict_suspect_similarity;
+        let mut best = (old, f64::NEG_INFINITY);
+        for w in sims.windows(2) {
+            let t = (w[0] + w[1]) / 2.0;
+            let kept = judged.iter().filter(|(s, c)| *c && *s >= t).count() as f64;
+            let silenced = judged.iter().filter(|(s, c)| !*c && *s < t).count() as f64;
+            let balanced = (kept / confirmed as f64 + silenced / dismissed as f64) / 2.0;
+            if balanced > best.1 + 1e-9 || (balanced > best.1 - 1e-9 && t > best.0) {
+                best = (t, balanced);
+            }
+        }
+        let fitted = best
+            .0
+            .clamp(AUTO_TUNE_FLOOR_MIN, cfg.policy.duplicate_similarity - 0.001);
+        if (fitted - old).abs() < AUTO_TUNE_MIN_DELTA {
+            return Ok(None);
+        }
+
+        let mut next = cfg;
+        next.policy.conflict_suspect_similarity = fitted;
+        self.set_graph_config(&next)?;
+        let note = format!(
+            "conflict floor {old:.3} -> {fitted:.3} from {} judged pairs ({confirmed} confirmed / {dismissed} dismissed)",
+            judged.len()
+        );
+        self.audit_activity("auto_tuned", Some(note.clone()))?;
+        Ok(Some(note))
     }
 
     /// Nodes whose `code_refs` cover a repo-relative file path — the
@@ -1092,9 +1177,19 @@ impl Engine {
         };
         let mut hits = self.store.search_hybrid(query, Some(&qv), types, fetch)?;
         if let Some(reranker) = &self.reranker
-            && hits.len() > 1
+            && !hits.is_empty()
         {
+            // Even a single hit goes through: the delivery floor and the
+            // search verdict both read the cross-encoder's calibrated scale,
+            // so an unreranked one-hit result would be judged on the wrong
+            // ruler.
             self.rerank(reranker.as_ref(), query, &mut hits);
+            // Calibrated delivery, trim face: hits under the floor are tail
+            // by score even when the vote ranked them mid-list — measured
+            // free of recall cost (policy::DELIVERY_FLOOR), and every token
+            // they would have carried is attention the answer keeps.
+            let floor = self.store.config().policy.delivery_floor;
+            hits.retain(|h| h.score >= floor);
         }
         hits.truncate(limit);
         for hit in &mut hits {
@@ -1106,6 +1201,30 @@ impl Engine {
         let ids: Vec<String> = hits.iter().map(|h| h.id.clone()).collect();
         self.store.touch(&ids)?;
         Ok(hits)
+    }
+
+    /// Calibrated delivery, verdict face: how the assistant should hold a
+    /// search result. `"none"` — the graph is silent, say so instead of
+    /// inventing. `"weak"` — delivered, but nothing cleared the calibrated
+    /// confidence line (`policy::WEAK_EVIDENCE_TOP`): as likely topical
+    /// adjacency as an answer, verify before relying. `"strong"` — the top
+    /// hit cleared the line. Returns `None` for a non-empty result when no
+    /// reranker is loaded: the fused hybrid score is a different scale, and
+    /// a verdict from an uncalibrated ruler would be noise wearing a badge.
+    /// A label rather than a harder floor by measurement: hard abstention
+    /// costs oblique recall (see `policy::DELIVERY_FLOOR`), a label costs
+    /// nothing and keeps the assistant aligned.
+    pub fn search_confidence(&self, hits: &[SearchHit]) -> Option<&'static str> {
+        if hits.is_empty() {
+            return Some("none");
+        }
+        self.reranker.as_ref()?;
+        let top = hits.iter().map(|h| h.score).fold(f64::MIN, f64::max);
+        Some(if top < self.store.config().policy.weak_evidence_top {
+            "weak"
+        } else {
+            "strong"
+        })
     }
 
     /// Re-score candidates with the cross-encoder: relevance comes from the

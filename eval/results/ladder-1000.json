@@ -1,0 +1,721 @@
+{
+  "runtime": {
+    "embedder": "bge-small-en-v1.5",
+    "reranker": "jina-reranker-v1-turbo-en",
+    "embeddings_are_fake": false,
+    "nli": "mobilebert-uncased-mnli",
+    "seed": 1,
+    "limit": 10,
+    "type_mix": [
+      [
+        "decision",
+        1
+      ],
+      [
+        "caution",
+        1
+      ],
+      [
+        "principle",
+        1
+      ],
+      [
+        "problem",
+        1
+      ],
+      [
+        "insight",
+        1
+      ]
+    ],
+    "profile": {
+      "title_chars": {
+        "min": 28,
+        "p25": 73,
+        "median": 89,
+        "p75": 122,
+        "max": 191
+      },
+      "body_chars": {
+        "min": 133,
+        "p25": 461,
+        "median": 748,
+        "p75": 1209,
+        "max": 2250
+      },
+      "edges_per_node": 1.06,
+      "isolated": 0.04,
+      "verb_mix": [
+        [
+          "about",
+          0.328
+        ],
+        [
+          "builds-on",
+          0.243
+        ],
+        [
+          "because",
+          0.226
+        ],
+        [
+          "answers",
+          0.155
+        ],
+        [
+          "replaces",
+          0.024
+        ],
+        [
+          "needs",
+          0.02
+        ],
+        [
+          "conflicts-with",
+          0.003
+        ]
+      ],
+      "code_refs": {
+        "min": 0,
+        "p25": 0,
+        "median": 1,
+        "p75": 2,
+        "max": 4
+      }
+    },
+    "phrasing": {
+      "lexical": 0.45,
+      "paraphrase": 0.45,
+      "oblique": 0.1
+    }
+  },
+  "sizes": [
+    {
+      "size": 1000,
+      "distractors": 0,
+      "graph": 1000,
+      "edges": 1060,
+      "questions": 3000,
+      "unanswerable": 250,
+      "curated": [
+        {
+          "arm": "curated-3000",
+          "budget": 3000,
+          "held": 36
+        },
+        {
+          "arm": "curated-30000",
+          "budget": 30000,
+          "held": 368
+        }
+      ],
+      "arms": [
+        {
+          "arm": "chance",
+          "standing_tokens": 0,
+          "overall": {
+            "queries": 3000,
+            "recall_at_1": 0.0006666666666666666,
+            "recall_at_3": 0.004333333333333333,
+            "recall_at_5": 0.005666666666666667,
+            "recall_at_10": 0.010333333333333333,
+            "mrr": 0.0030022486772486763,
+            "tokens_mean": 2523.516,
+            "twin_confusion": 0.0033333333333333335,
+            "neighbor_only": 0.0,
+            "focus": 0.10517719842774506
+          },
+          "by_phrasing": [
+            {
+              "phrasing": "lexical",
+              "score": {
+                "queries": 1000,
+                "recall_at_1": 0.001,
+                "recall_at_3": 0.004,
+                "recall_at_5": 0.006,
+                "recall_at_10": 0.008,
+                "mrr": 0.0026722222222222225,
+                "tokens_mean": 2534.163,
+                "twin_confusion": 0.004,
+                "neighbor_only": 0.0,
+                "focus": 0.1028061952681002
+              }
+            },
+            {
+              "phrasing": "paraphrase",
+              "score": {
+                "queries": 1000,
+                "recall_at_1": 0.001,
+                "recall_at_3": 0.004,
+                "recall_at_5": 0.006,
+                "recall_at_10": 0.011,
+                "mrr": 0.0033861111111111114,
+                "tokens_mean": 2510.571,
+                "twin_confusion": 0.001,
+                "neighbor_only": 0.0,
+                "focus": 0.10958600457229452
+              }
+            },
+            {
+              "phrasing": "oblique",
+              "score": {
+                "queries": 1000,
+                "recall_at_1": 0.0,
+                "recall_at_3": 0.005,
+                "recall_at_5": 0.005,
+                "recall_at_10": 0.012,
+                "mrr": 0.0029484126984126984,
+                "tokens_mean": 2525.814,
+                "twin_confusion": 0.005,
+                "neighbor_only": 0.0,
+                "focus": 0.10271646156833793
+              }
+            }
+          ],
+          "separation": {
+            "false_positive_rate": 1.0,
+            "answerable_mean_score": 0.5,
+            "unanswerable_mean_score": 0.5,
+            "best_threshold": 0.5,
+            "balanced_accuracy": 0.5
+          }
+        },
+        {
+          "arm": "grep",
+          "standing_tokens": 0,
+          "overall": {
+            "queries": 3000,
+            "recall_at_1": 0.662,
+            "recall_at_3": 0.6743333333333333,
+            "recall_at_5": 0.684,
+            "recall_at_10": 0.7066666666666667,
+            "mrr": 0.6724691798941796,
+            "tokens_mean": 2747.6406666666667,
+            "twin_confusion": 0.0006666666666666666,
+            "neighbor_only": 0.0,
+            "focus": 0.09740569136238146
+          },
+          "by_phrasing": [
+            {
+              "phrasing": "lexical",
+              "score": {
+                "queries": 1000,
+                "recall_at_1": 1.0,
+                "recall_at_3": 1.0,
+                "recall_at_5": 1.0,
+                "recall_at_10": 1.0,
+                "mrr": 1.0,
+                "tokens_mean": 2570.872,
+                "twin_confusion": 0.0,
+                "neighbor_only": 0.0,
+                "focus": 0.09798183060201406
+              }
+            },
+            {
+              "phrasing": "paraphrase",
+              "score": {
+                "queries": 1000,
+                "recall_at_1": 0.976,
+                "recall_at_3": 0.995,
+                "recall_at_5": 0.995,
+                "recall_at_10": 0.995,
+                "mrr": 0.9851666666666666,
+                "tokens_mean": 2618.756,
+                "twin_confusion": 0.0,
+                "neighbor_only": 0.0,
+                "focus": 0.09639801507819883
+              }
+            },
+            {
+              "phrasing": "oblique",
+              "score": {
+                "queries": 1000,
+                "recall_at_1": 0.01,
+                "recall_at_3": 0.028,
+                "recall_at_5": 0.057,
+                "recall_at_10": 0.125,
+                "mrr": 0.032240873015873014,
+                "tokens_mean": 3053.294,
+                "twin_confusion": 0.002,
+                "neighbor_only": 0.0,
+                "focus": 0.10081768066741124
+              }
+            }
+          ],
+          "separation": {
+            "false_positive_rate": 1.0,
+            "answerable_mean_score": 0.7268374218374168,
+            "unanswerable_mean_score": 0.6015999999999998,
+            "best_threshold": 0.8333333333333334,
+            "balanced_accuracy": 0.7533333333333334
+          }
+        },
+        {
+          "arm": "rag",
+          "standing_tokens": 0,
+          "overall": {
+            "queries": 3000,
+            "recall_at_1": 0.6783333333333333,
+            "recall_at_3": 0.7853333333333333,
+            "recall_at_5": 0.8276666666666667,
+            "recall_at_10": 0.8866666666666667,
+            "mrr": 0.7428855820105819,
+            "tokens_mean": 2645.2813333333334,
+            "twin_confusion": 0.0,
+            "neighbor_only": 0.0,
+            "focus": 0.09923316704613319
+          },
+          "by_phrasing": [
+            {
+              "phrasing": "lexical",
+              "score": {
+                "queries": 1000,
+                "recall_at_1": 0.945,
+                "recall_at_3": 0.994,
+                "recall_at_5": 0.999,
+                "recall_at_10": 0.999,
+                "mrr": 0.968216666666667,
+                "tokens_mean": 2585.231,
+                "twin_confusion": 0.0,
+                "neighbor_only": 0.0,
+                "focus": 0.10011622285719914
+              }
+            },
+            {
+              "phrasing": "paraphrase",
+              "score": {
+                "queries": 1000,
+                "recall_at_1": 0.845,
+                "recall_at_3": 0.925,
+                "recall_at_5": 0.949,
+                "recall_at_10": 0.972,
+                "mrr": 0.8907638888888894,
+                "tokens_mean": 2586.311,
+                "twin_confusion": 0.0,
+                "neighbor_only": 0.0,
+                "focus": 0.10141428858442549
+              }
+            },
+            {
+              "phrasing": "oblique",
+              "score": {
+                "queries": 1000,
+                "recall_at_1": 0.245,
+                "recall_at_3": 0.437,
+                "recall_at_5": 0.535,
+                "recall_at_10": 0.689,
+                "mrr": 0.36967619047619016,
+                "tokens_mean": 2764.302,
+                "twin_confusion": 0.0,
+                "neighbor_only": 0.0,
+                "focus": 0.09487580436039342
+              }
+            }
+          ],
+          "separation": {
+            "false_positive_rate": 1.0,
+            "answerable_mean_score": 0.8396194354171554,
+            "unanswerable_mean_score": 0.7527380301952362,
+            "best_threshold": 0.7924375832080841,
+            "balanced_accuracy": 0.8071666666666667
+          }
+        },
+        {
+          "arm": "engram-hybrid",
+          "standing_tokens": 3043,
+          "overall": {
+            "queries": 3000,
+            "recall_at_1": 0.7036666666666667,
+            "recall_at_3": 0.7783333333333333,
+            "recall_at_5": 0.824,
+            "recall_at_10": 0.8813333333333333,
+            "mrr": 0.7534685185185178,
+            "tokens_mean": 527.2933333333333,
+            "twin_confusion": 0.0,
+            "neighbor_only": 0.019666666666666666,
+            "focus": 0.10052431448545822
+          },
+          "by_phrasing": [
+            {
+              "phrasing": "lexical",
+              "score": {
+                "queries": 1000,
+                "recall_at_1": 0.994,
+                "recall_at_3": 1.0,
+                "recall_at_5": 1.0,
+                "recall_at_10": 1.0,
+                "mrr": 0.997,
+                "tokens_mean": 530.58,
+                "twin_confusion": 0.0,
+                "neighbor_only": 0.0,
+                "focus": 0.1003842739735294
+              }
+            },
+            {
+              "phrasing": "paraphrase",
+              "score": {
+                "queries": 1000,
+                "recall_at_1": 0.963,
+                "recall_at_3": 0.996,
+                "recall_at_5": 0.999,
+                "recall_at_10": 1.0,
+                "mrr": 0.9787261904761906,
+                "tokens_mean": 526.649,
+                "twin_confusion": 0.0,
+                "neighbor_only": 0.0,
+                "focus": 0.10153639393091418
+              }
+            },
+            {
+              "phrasing": "oblique",
+              "score": {
+                "queries": 1000,
+                "recall_at_1": 0.154,
+                "recall_at_3": 0.339,
+                "recall_at_5": 0.473,
+                "recall_at_10": 0.644,
+                "mrr": 0.2846793650793647,
+                "tokens_mean": 524.651,
+                "twin_confusion": 0.0,
+                "neighbor_only": 0.059,
+                "focus": 0.09917021676259005
+              }
+            }
+          ],
+          "separation": {
+            "false_positive_rate": 1.0,
+            "answerable_mean_score": 0.7849081686135005,
+            "unanswerable_mean_score": 0.5847881203382745,
+            "best_threshold": 0.8292917802216344,
+            "balanced_accuracy": 0.7576666666666667
+          }
+        },
+        {
+          "arm": "engram-full",
+          "standing_tokens": 3043,
+          "overall": {
+            "queries": 3000,
+            "recall_at_1": 0.7056666666666667,
+            "recall_at_3": 0.7843333333333333,
+            "recall_at_5": 0.834,
+            "recall_at_10": 0.901,
+            "mrr": 0.759396031746031,
+            "tokens_mean": 527.2933333333333,
+            "twin_confusion": 0.0,
+            "neighbor_only": 0.019666666666666666,
+            "focus": 0.10052431448545822
+          },
+          "by_phrasing": [
+            {
+              "phrasing": "lexical",
+              "score": {
+                "queries": 1000,
+                "recall_at_1": 0.994,
+                "recall_at_3": 1.0,
+                "recall_at_5": 1.0,
+                "recall_at_10": 1.0,
+                "mrr": 0.997,
+                "tokens_mean": 530.58,
+                "twin_confusion": 0.0,
+                "neighbor_only": 0.0,
+                "focus": 0.1003842739735294
+              }
+            },
+            {
+              "phrasing": "paraphrase",
+              "score": {
+                "queries": 1000,
+                "recall_at_1": 0.963,
+                "recall_at_3": 0.996,
+                "recall_at_5": 0.999,
+                "recall_at_10": 1.0,
+                "mrr": 0.9787261904761906,
+                "tokens_mean": 526.649,
+                "twin_confusion": 0.0,
+                "neighbor_only": 0.0,
+                "focus": 0.10153639393091418
+              }
+            },
+            {
+              "phrasing": "oblique",
+              "score": {
+                "queries": 1000,
+                "recall_at_1": 0.16,
+                "recall_at_3": 0.357,
+                "recall_at_5": 0.503,
+                "recall_at_10": 0.703,
+                "mrr": 0.30246190476190427,
+                "tokens_mean": 524.651,
+                "twin_confusion": 0.0,
+                "neighbor_only": 0.0,
+                "focus": 0.09917021676259005
+              }
+            }
+          ],
+          "separation": {
+            "false_positive_rate": 1.0,
+            "answerable_mean_score": 0.7849081686135005,
+            "unanswerable_mean_score": 0.5847881203382745,
+            "best_threshold": 0.8292917802216344,
+            "balanced_accuracy": 0.7576666666666667
+          }
+        },
+        {
+          "arm": "curated-3000",
+          "standing_tokens": 2932,
+          "overall": {
+            "queries": 3000,
+            "recall_at_1": 0.036,
+            "recall_at_3": 0.036,
+            "recall_at_5": 0.036,
+            "recall_at_10": 0.036,
+            "mrr": 0.036,
+            "tokens_mean": 2932.0,
+            "twin_confusion": 0.0,
+            "neighbor_only": 0.0,
+            "focus": 0.027559875701076233
+          },
+          "by_phrasing": [
+            {
+              "phrasing": "lexical",
+              "score": {
+                "queries": 1000,
+                "recall_at_1": 0.036,
+                "recall_at_3": 0.036,
+                "recall_at_5": 0.036,
+                "recall_at_10": 0.036,
+                "mrr": 0.036,
+                "tokens_mean": 2932.0,
+                "twin_confusion": 0.0,
+                "neighbor_only": 0.0,
+                "focus": 0.027559875701076243
+              }
+            },
+            {
+              "phrasing": "paraphrase",
+              "score": {
+                "queries": 1000,
+                "recall_at_1": 0.036,
+                "recall_at_3": 0.036,
+                "recall_at_5": 0.036,
+                "recall_at_10": 0.036,
+                "mrr": 0.036,
+                "tokens_mean": 2932.0,
+                "twin_confusion": 0.0,
+                "neighbor_only": 0.0,
+                "focus": 0.027559875701076243
+              }
+            },
+            {
+              "phrasing": "oblique",
+              "score": {
+                "queries": 1000,
+                "recall_at_1": 0.036,
+                "recall_at_3": 0.036,
+                "recall_at_5": 0.036,
+                "recall_at_10": 0.036,
+                "mrr": 0.036,
+                "tokens_mean": 2932.0,
+                "twin_confusion": 0.0,
+                "neighbor_only": 0.0,
+                "focus": 0.027559875701076243
+              }
+            }
+          ],
+          "separation": {
+            "false_positive_rate": 1.0,
+            "answerable_mean_score": 0.0,
+            "unanswerable_mean_score": 1.0,
+            "best_threshold": 0.0,
+            "balanced_accuracy": 0.5
+          }
+        },
+        {
+          "arm": "curated-30000",
+          "standing_tokens": 29960,
+          "overall": {
+            "queries": 3000,
+            "recall_at_1": 0.368,
+            "recall_at_3": 0.368,
+            "recall_at_5": 0.368,
+            "recall_at_10": 0.368,
+            "mrr": 0.368,
+            "tokens_mean": 29960.0,
+            "twin_confusion": 0.0,
+            "neighbor_only": 0.0,
+            "focus": 0.00269807206710396
+          },
+          "by_phrasing": [
+            {
+              "phrasing": "lexical",
+              "score": {
+                "queries": 1000,
+                "recall_at_1": 0.368,
+                "recall_at_3": 0.368,
+                "recall_at_5": 0.368,
+                "recall_at_10": 0.368,
+                "mrr": 0.368,
+                "tokens_mean": 29960.0,
+                "twin_confusion": 0.0,
+                "neighbor_only": 0.0,
+                "focus": 0.0026980720671039614
+              }
+            },
+            {
+              "phrasing": "paraphrase",
+              "score": {
+                "queries": 1000,
+                "recall_at_1": 0.368,
+                "recall_at_3": 0.368,
+                "recall_at_5": 0.368,
+                "recall_at_10": 0.368,
+                "mrr": 0.368,
+                "tokens_mean": 29960.0,
+                "twin_confusion": 0.0,
+                "neighbor_only": 0.0,
+                "focus": 0.0026980720671039614
+              }
+            },
+            {
+              "phrasing": "oblique",
+              "score": {
+                "queries": 1000,
+                "recall_at_1": 0.368,
+                "recall_at_3": 0.368,
+                "recall_at_5": 0.368,
+                "recall_at_10": 0.368,
+                "mrr": 0.368,
+                "tokens_mean": 29960.0,
+                "twin_confusion": 0.0,
+                "neighbor_only": 0.0,
+                "focus": 0.0026980720671039614
+              }
+            }
+          ],
+          "separation": {
+            "false_positive_rate": 1.0,
+            "answerable_mean_score": 0.0,
+            "unanswerable_mean_score": 1.0,
+            "best_threshold": 0.0,
+            "balanced_accuracy": 0.5
+          }
+        },
+        {
+          "arm": "whole-file",
+          "standing_tokens": 251869,
+          "overall": {
+            "queries": 3000,
+            "recall_at_1": 1.0,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0,
+            "recall_at_10": 1.0,
+            "mrr": 1.0,
+            "tokens_mean": 251869.0,
+            "twin_confusion": 0.0,
+            "neighbor_only": 0.0,
+            "focus": 0.0009995632650306296
+          },
+          "by_phrasing": [
+            {
+              "phrasing": "lexical",
+              "score": {
+                "queries": 1000,
+                "recall_at_1": 1.0,
+                "recall_at_3": 1.0,
+                "recall_at_5": 1.0,
+                "recall_at_10": 1.0,
+                "mrr": 1.0,
+                "tokens_mean": 251869.0,
+                "twin_confusion": 0.0,
+                "neighbor_only": 0.0,
+                "focus": 0.0009995632650306328
+              }
+            },
+            {
+              "phrasing": "paraphrase",
+              "score": {
+                "queries": 1000,
+                "recall_at_1": 1.0,
+                "recall_at_3": 1.0,
+                "recall_at_5": 1.0,
+                "recall_at_10": 1.0,
+                "mrr": 1.0,
+                "tokens_mean": 251869.0,
+                "twin_confusion": 0.0,
+                "neighbor_only": 0.0,
+                "focus": 0.0009995632650306328
+              }
+            },
+            {
+              "phrasing": "oblique",
+              "score": {
+                "queries": 1000,
+                "recall_at_1": 1.0,
+                "recall_at_3": 1.0,
+                "recall_at_5": 1.0,
+                "recall_at_10": 1.0,
+                "mrr": 1.0,
+                "tokens_mean": 251869.0,
+                "twin_confusion": 0.0,
+                "neighbor_only": 0.0,
+                "focus": 0.0009995632650306328
+              }
+            }
+          ],
+          "separation": {
+            "false_positive_rate": 1.0,
+            "answerable_mean_score": 0.0,
+            "unanswerable_mean_score": 1.0,
+            "best_threshold": 0.0,
+            "balanced_accuracy": 0.5
+          }
+        }
+      ],
+      "nli": {
+        "model": "mobilebert-uncased-mnli",
+        "pairs_examined": 300,
+        "pairs_total": 3000,
+        "truncated": true,
+        "accuracy": 0.56,
+        "per_label": [
+          {
+            "label": "entailment",
+            "support": 100,
+            "precision": 0.0,
+            "recall": 0.0
+          },
+          {
+            "label": "neutral",
+            "support": 100,
+            "precision": 0.4226190476190476,
+            "recall": 0.71
+          },
+          {
+            "label": "contradiction",
+            "support": 100,
+            "precision": 0.7404580152671756,
+            "recall": 0.97
+          }
+        ],
+        "confusion": [
+          [
+            0,
+            94,
+            6
+          ],
+          [
+            1,
+            71,
+            28
+          ],
+          [
+            0,
+            3,
+            97
+          ]
+        ],
+        "mean_confidence": 0.660401422092691
+      }
+    }
+  ]
+}

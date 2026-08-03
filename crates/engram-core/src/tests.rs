@@ -339,6 +339,12 @@ fn a_voting_reranker_cannot_bury_what_retrieval_ranked_first() {
         e.graph_config().policy.rerank_vote_k.is_some(),
         "voting is the shipped default"
     );
+    // This test is about ORDERING; FavorLast's scripted sigmoid(-8) scores
+    // would be tail-trimmed by calibrated delivery before the orderings can
+    // be compared, so the trim is switched off for the diagnostic.
+    let mut cfg = e.graph_config();
+    cfg.policy.delivery_floor = 0.0;
+    e.set_graph_config(&cfg).unwrap();
 
     let mut ids = Vec::new();
     for tag in ["alpha", "beta", "gamma", "delta"] {
@@ -5399,4 +5405,227 @@ fn keyword_weight_moves_the_fusion_balance() {
     // Out-of-range values are refused rather than silently clamped.
     cfg.policy.keyword_weight = 1.5;
     assert!(e.set_graph_config(&cfg).is_err());
+}
+
+// ------------------------------------------------------------------ auto-tune
+
+/// A graph big enough to clear the note gate, with enough real nodes to hang
+/// one suspect row per pair (the store enforces one suspect per pair).
+/// Titles get distinct vocabularies so the fake embedder's dupe pre-check
+/// never collapses them.
+fn auto_tune_fixture(nodes: usize) -> (Engine, Vec<String>) {
+    let e = engine();
+    let mut ids = Vec::new();
+    for i in 0..nodes {
+        let n = e
+            .add_node(new_node(
+                NodeType::Insight,
+                &format!("subject-{i} behaves differently under load {}", i * 7 + 3),
+                &format!("distinct body {i}"),
+            ))
+            .unwrap();
+        ids.push(n.id);
+    }
+    (e, ids)
+}
+
+/// Judge the `k`-th fresh pair from `ids` at the given similarity.
+fn judge(e: &Engine, ids: &[String], k: usize, sim: f64, status: SuspectStatus) {
+    let s = e
+        .store()
+        .add_suspect(&ids[2 * k], &ids[2 * k + 1], sim, None)
+        .unwrap();
+    e.store().set_suspect_status(&s.id, status).unwrap();
+}
+
+#[test]
+fn auto_tune_fits_the_floor_from_judged_history_and_settles() {
+    let (e, ids) = auto_tune_fixture(crate::policy::AUTO_TUNE_MIN_NOTES as usize + 5);
+    // The dogfood story, synthesized: dismissals cluster low, confirmations
+    // sit clearly above, with a clean gap between 0.895 and 0.92.
+    for i in 0..20 {
+        judge(
+            &e,
+            &ids,
+            i,
+            0.85 + (i as f64) * 0.0023,
+            SuspectStatus::Dismissed,
+        );
+    }
+    for i in 0..8 {
+        judge(
+            &e,
+            &ids,
+            20 + i,
+            0.92 + (i as f64) * 0.005,
+            SuspectStatus::Confirmed,
+        );
+    }
+    let note = e
+        .auto_tune()
+        .unwrap()
+        .expect("gates cleared, floor must move");
+    let fitted = e.graph_config().policy.conflict_suspect_similarity;
+    assert!(
+        (0.895..=0.92).contains(&fitted),
+        "the fitted floor belongs in the gap between the classes: {fitted}"
+    );
+    assert!(
+        note.contains("judged pairs"),
+        "the note explains itself: {note}"
+    );
+    // Re-fitting the same history lands on the same floor -- no config churn.
+    assert!(e.auto_tune().unwrap().is_none(), "second fit must settle");
+}
+
+#[test]
+fn auto_tune_is_silent_below_its_gates_and_when_opted_out() {
+    // Judgment-rich but note-poor: the size gate holds.
+    let (e, ids) = auto_tune_fixture(64);
+    for i in 0..30 {
+        judge(
+            &e,
+            &ids,
+            i,
+            0.86 + (i as f64) * 0.003,
+            if i % 3 == 0 {
+                SuspectStatus::Confirmed
+            } else {
+                SuspectStatus::Dismissed
+            },
+        );
+    }
+    assert!(e.auto_tune().unwrap().is_none(), "200-note gate must hold");
+
+    // Big graph, judgments one-sided: a floor can be pushed, not placed.
+    let (e, ids) = auto_tune_fixture(crate::policy::AUTO_TUNE_MIN_NOTES as usize + 70);
+    for i in 0..25 {
+        judge(
+            &e,
+            &ids,
+            i,
+            0.85 + (i as f64) * 0.003,
+            SuspectStatus::Dismissed,
+        );
+    }
+    assert!(
+        e.auto_tune().unwrap().is_none(),
+        "one-sided history must not fit"
+    );
+
+    // Fully qualified but opted out.
+    for i in 0..8 {
+        judge(
+            &e,
+            &ids,
+            25 + i,
+            0.93 + (i as f64) * 0.004,
+            SuspectStatus::Confirmed,
+        );
+    }
+    let mut cfg = e.graph_config();
+    cfg.policy.auto_tune = false;
+    e.set_graph_config(&cfg).unwrap();
+    assert!(
+        e.auto_tune().unwrap().is_none(),
+        "auto_tune=false is a hard opt-out"
+    );
+}
+
+// ---------------------------------------------------- calibrated delivery
+
+/// A cross-encoder with a script instead of a model: logit i goes to doc i
+/// in retrieval order.
+struct ScriptedReranker(Vec<f32>);
+impl crate::Reranker for ScriptedReranker {
+    fn rank(&self, _query: &str, documents: &[String]) -> Result<Vec<f32>> {
+        Ok((0..documents.len())
+            .map(|i| self.0.get(i).copied().unwrap_or(-10.0))
+            .collect())
+    }
+}
+
+fn engine_with_reranker(logits: Vec<f32>) -> Engine {
+    let mut e = Engine::new(store(), Box::new(FakeEmbedder::default()));
+    e.set_reranker(Box::new(ScriptedReranker(logits)));
+    e
+}
+
+#[test]
+fn calibrated_delivery_trims_the_tail_and_issues_verdicts() {
+    // Confident first doc, hopeless second: sigmoid(-8) ~ 0.0003 sits far
+    // under the delivery floor and must not be delivered, however the vote
+    // ordered it. The survivor clears the weak-evidence line -> strong.
+    let e = engine_with_reranker(vec![4.0, -8.0]);
+    e.add_node(new_node(
+        NodeType::Insight,
+        "alpha component retry budget is seven attempts",
+        "the retry budget",
+    ))
+    .unwrap();
+    e.add_node(new_node(
+        NodeType::Insight,
+        "alpha component retry budget backup copy of the same claim",
+        "the retry budget again",
+    ))
+    .unwrap();
+    let hits = e
+        .search("alpha component retry budget is seven attempts", &[], 10)
+        .unwrap();
+    assert_eq!(hits.len(), 1, "the tail hit must be trimmed, not delivered");
+    assert_eq!(e.search_confidence(&hits), Some("strong"));
+
+    // Nothing clears the line: everything hovers at sigmoid(0) ~ 0.5 —
+    // kept (above the trim floor), but the verdict says verify first.
+    let e = engine_with_reranker(vec![0.0, 0.0]);
+    e.add_node(new_node(
+        NodeType::Insight,
+        "beta component lease window is nine seconds",
+        "the lease window",
+    ))
+    .unwrap();
+    e.add_node(new_node(
+        NodeType::Insight,
+        "beta component lease window recorded twice for the test",
+        "the lease window again",
+    ))
+    .unwrap();
+    let hits = e
+        .search("beta component lease window is nine seconds", &[], 10)
+        .unwrap();
+    assert_eq!(
+        hits.len(),
+        2,
+        "mid-confidence hits are delivered, only labeled"
+    );
+    assert_eq!(e.search_confidence(&hits), Some("weak"));
+
+    // An empty graph is silent on any scale.
+    let e = engine_with_reranker(vec![]);
+    let hits = e.search("anything at all", &[], 10).unwrap();
+    assert_eq!(e.search_confidence(&hits), Some("none"));
+}
+
+#[test]
+fn without_a_reranker_scores_are_uncalibrated_and_carry_no_verdict() {
+    let e = engine();
+    e.add_node(new_node(
+        NodeType::Insight,
+        "gamma component spill threshold is three megabytes",
+        "the spill threshold",
+    ))
+    .unwrap();
+    let hits = e
+        .search(
+            "gamma component spill threshold is three megabytes",
+            &[],
+            10,
+        )
+        .unwrap();
+    assert!(!hits.is_empty(), "hybrid search still delivers");
+    assert_eq!(
+        e.search_confidence(&hits),
+        None,
+        "a verdict from an uncalibrated scale would be noise wearing a badge"
+    );
 }

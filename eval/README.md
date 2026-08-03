@@ -5,6 +5,8 @@ An offline harness for the only question that matters about a memory layer:
 
 ```sh
 cargo test -p engram-eval                                      # fast, no models, what CI runs
+cargo run -p engram-eval --features fastembed -- --series      # everything below, one command
+cargo run -p engram-eval --features fastembed -- --ladder      # the gradation ladder only
 cargo run -p engram-eval --features fastembed -- --sizes 500   # the headline table
 cargo run -p engram-eval --features fastembed -- --bench       # the strategy grid
 cargo run -p engram-eval -- --sizes 50 --sample                # read what it generates
@@ -17,44 +19,94 @@ watching an agent use the tool.
 
 ## Result
 
-At 1500 notes shaped like real ones — median 748-character bodies, 1590 edges —
-asked 858 questions with known answers:
+At 1500 notes shaped like real ones — median 748-character bodies, ~1,590
+edges — asked **4,500 questions** with known answers (every stored fact is
+questioned since the ladder rework) plus 375 about subjects never written,
+on the shipped stack including calibrated delivery:
 
-| arm | standing | tok/query | R@1 | R@5 | lexical | paraphrase | oblique | recall per 1k tokens |
-|---|---|---|---|---|---|---|---|---|
-| chance | 0 | 2494 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
-| grep | 0 | 2739 | 0.65 | 0.67 | 1.00 | 0.99 | 0.03 | 0.25 |
-| rag (pure vectors) | 0 | 2571 | 0.59 | 0.72 | 0.99 | 0.93 | 0.24 | 0.28 |
-| **engram** | 2996 | **538** | **0.66** | 0.71 | **1.00** | **0.99** | 0.15 | **1.33** |
-| **engram + graph** | 2996 | **538** | **0.66** | 0.72 | **1.00** | **0.99** | 0.16 | **1.34** |
-| curated-file | 2991 | 2991 | 0.02 | 0.02 | 0.02 | 0.02 | 0.02 | 0.01 |
-| whole-file | 375890 | 375890 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 0.003 |
+| arm | standing | tok/query | focus | noise | R@1 | R@5 | lex | para | oblique | FP |
+|---|---|---|---|---|---|---|---|---|---|---|
+| chance | 0 | 2511 | 0.10 | 1.00 | 0.00 | 0.00 | 0.01 | 0.00 | 0.00 | 1.00 |
+| grep | 0 | 2741 | 0.10 | 0.93 | 0.66 | 0.68 | 1.00 | 0.99 | 0.04 | 1.00 |
+| rag (pure vectors) | 0 | 2673 | 0.10 | 0.91 | 0.66 | 0.80 | 1.00 | 0.94 | 0.47 | 1.00 |
+| **engram** | 3062 | **528** | 0.10 | 0.91 | **0.69** | 0.80 | 1.00 | **1.00** | 0.39 | 1.00 |
+| **engram + graph** | 3062 | **528** | 0.10 | 0.91 | 0.69 | **0.81** | 1.00 | 1.00 | 0.42 | 1.00 |
+| curated-file 3k | 2928 | 2928 | 0.03 | 1.00 | 0.02 | 0.02 | 0.02 | 0.02 | 0.02 | 1.00 |
+| curated-file 30k | 29966 | 29966 | 0.00 | 1.00 | 0.25 | 0.25 | 0.25 | 0.25 | 0.25 | 1.00 |
+| whole-file | 377260 | 377260 | 0.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
 
 Weighted for how often each phrasing actually occurs, the ranking is
-**engram 0.913, grep 0.90, rag 0.89**.
+**engram 0.94, rag 0.92, grep 0.90** — engram now beats pure vectors on the
+headline, not just ties it.
 
-Three things follow.
+Three of these columns exist because recall alone can be gamed, and they are
+the honest part of the table. **focus** — of the tokens delivered, what share
+was the answer; everything else is spent attention. **noise** — of the records
+delivered, what share was *not* the answer, counting a miss as all-noise and
+an empty return as zero, so declining honestly beats guessing. **FP** — asked
+about something never written, how often the arm answered anyway.
+
+Four things follow.
 
 **Engram delivers the most recall per token, by about 5×.** It returns a title
-and a matched snippet; the flat-file arms return whole records. That ratio is
-the design argument, and it is the only column where the gap is an order of
-magnitude rather than a few points.
+and a matched snippet; the flat-file arms return whole records. 528 tokens per
+query against rag's 2,673 at the same recall@5 — the one gap on the table that
+is an order of magnitude.
 
-**It is also the cheapest way to run a session, from the second question
-onward.** Engram pays 2996 tokens once for its session brief and 538 per query;
-`rag` pays 2571 every query and nothing up front. The lines cross at 1.5
-questions.
+**The perfect-recall rows are the cautionary ones.** `whole-file` and the 30k
+curated file score 1.00 on recall with the answer at under 1% of the delivered
+text and noise at 1.00 — the measured form of *present is not readable*. Recall
+and focus have to be read as a pair, and no other memory benchmark publishes
+the second number.
 
-**Reading the whole file is no longer expensive — it is impossible.** 375,890
-tokens, against a 2,996-token brief. An earlier figure of 45,227 was measured
-over 150-character stub bodies; at realistic note length the file baseline
-exceeds every current context window, and it stops working abruptly rather than
-gradually.
+**Nothing on this table declines at 1500 notes — but the product now can.**
+Every arm answers never-written questions here (FP 1.00): the score populations
+overlap too much for a hard floor, which the `--floor` sweep priced exactly. So
+the shipped stack trims weak tail hits (at 100 notes: −22% tokens, focus +54%,
+FP 0.96, recall identical — the effect is strongest where graphs are small) and
+labels every search reply `strong` / `weak` / `none`, so the assistant is told
+when the graph is silent instead of being handed the nearest-looking thing.
+
+**Reading the whole file is not expensive — it is impossible.** 377,260 tokens
+against a 3,062-token brief; the strategy works, works, then does not exist.
+And a session is cheapest on engram from the second question onward: the brief
+plus 528/query crosses rag's 2,673/query at ~1.4 questions.
 
 On questions that name what they are looking for — which is most of them —
-Engram is at **1.00 lexical and 0.99 paraphrase**, against `rag`'s 0.99 and 0.93.
-It also has the best **R@1** of any retrieving arm, meaning the right answer is
-more often the *first* thing returned, not merely somewhere in the list.
+Engram is at **1.00 lexical and 1.00 paraphrase**, against rag's 1.00 and 0.94,
+with the best **R@1** of any retrieving arm: the right answer is more often the
+*first* thing returned, not merely somewhere in the list.
+
+### The other end of the ladder
+
+The attention story is scale-dependent, so here is the same table at **100
+notes** — the young-project size where a memory layer earns or loses its
+keep. At scale, everything that survives to the top ten already scores above
+the delivery floor, so the trim goes quiet (focus 0.12 at 300 notes, 0.11 at
+500, 0.10 at 1500); on a young graph the tail is genuinely weak and the floor
+works hardest:
+
+| arm | standing | tok/query | focus | noise | R@1 | R@5 | lex | para | oblique | FP |
+|---|---|---|---|---|---|---|---|---|---|---|
+| chance | 0 | 2536 | 0.10 | 0.99 | 0.01 | 0.06 | 0.08 | 0.05 | 0.05 | 1.00 |
+| grep | 0 | 2652 | 0.10 | 0.91 | 0.67 | 0.82 | 1.00 | 1.00 | 0.47 | 1.00 |
+| rag (pure vectors) | 0 | 2269 | 0.12 | 0.88 | 0.82 | 0.97 | 1.00 | 1.00 | 0.92 | 1.00 |
+| **engram** | 3041 | **373** | **0.20** | **0.80** | 0.79 | 0.96 | 1.00 | 1.00 | 0.89 | **0.96** |
+| **engram + graph** | 3041 | **373** | **0.20** | **0.80** | 0.79 | 0.97 | 1.00 | 1.00 | 0.91 | **0.96** |
+| curated-file 3k | 2929 | 2929 | 0.03 | 0.99 | 0.36 | 0.36 | 0.36 | 0.36 | 0.36 | 1.00 |
+| curated-file 30k | 8403 | 8403 | 0.01 | 0.99 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+| whole-file | 25179 | 25179 | 0.01 | 0.99 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+
+Three numbers on this table exist nowhere else in the field. **Focus 0.20 at
+373 tokens/query** — a sixth of rag's bill with two-thirds more of it being
+the answer, roughly 6× the focus per token. **FP 0.96** — the only
+false-positive rate below 1.00 this harness has ever measured on any arm:
+4% of never-written questions get an honest empty result and a `none`
+verdict instead of confident noise (the rest get a `weak` label the model is
+told to verify). And the 30k curated file's recall-1.00 column sits next to
+its own price: 8,403 standing tokens every session with the answer at 1% of
+the text — at exactly the size where a diligent file still *can* hold
+everything, holding everything is already the expensive way to remember.
 
 ---
 
@@ -71,32 +123,58 @@ first, an unbiased tie-break within a type, each entry trimmed, filled to a
 token budget. A human pruning a file has no idea what will be asked next, and
 letting the arm peek would be inventing a baseline nobody has.
 
-What it cannot do is hold everything, and that is the whole measurement:
+What it cannot do is hold everything, and that is the whole measurement —
+recall@5 by **total graph size**, every fact questioned, measured rather than
+extrapolated (the ladder, 2026-08-03):
 
-| budget | facts held | recall@5 | lexical / paraphrase / oblique |
-|---|---|---|---|
-| 3,000 (a realistic `CLAUDE.md`) | 37 / 1500 (2.5%) | 0.017 | 0.02 / 0.02 / 0.02 |
-| 30,000 (an unusually diligent one) | 371 / 1500 (24.7%) | 0.192 | 0.19 / 0.19 / 0.19 |
+| graph | curated 3k (held) | curated 30k (held) | grep | rag | **engram** |
+|---|---|---|---|---|---|
+| 10 | 1.00 (all) | 1.00 (all) | 0.97 | 1.00 | 1.00 |
+| 100 | 0.36 (36) | 1.00 (all) | 0.82 | 0.97 | 0.96 |
+| 200 | 0.18 (36) | 1.00 (all) | 0.77 | 0.95 | 0.93 |
+| 500 | 0.07 (37) | 0.72 (358) | 0.70 | 0.88 | 0.86 |
+| 1000 | 0.04 (36) | 0.37 (368) | 0.68 | 0.83 | 0.82 |
+| 1500 | 0.02 (36) | 0.25 (368) | 0.68 | 0.80 | 0.80 |
 
-Two things fall out, and the second matters more than the first.
+Three things fall out, and the crossovers are now numbers instead of a line's
+extrapolation.
 
-**Recall tracks the budget, linearly.** Extrapolating the line, a
-hand-maintained file would need roughly **110,000 tokens** to match what Engram
-retrieves — carried in context on every question, against Engram's 538. The file
-is not bad at finding things; it simply cannot hold a project's memory and stay
-a file.
+**A 3,000-token file is whole only below ~40 notes** — that is where its
+budget caps out — and it is overtaken by retrieval at 100, where it holds 36
+facts and answers 0.36 against retrieval's 0.96.
 
-**Its recall is flat across phrasings**, at every budget. A static file does not
-care whether a question quotes a note, paraphrases it, or describes it without
-naming it — if the text is present, it is present. That flatness is what makes
-this a fair baseline rather than a strawman, and it is also the honest limit of
-the comparison: the curated file loses on *capacity*, never on retrieval
-quality, because it does no retrieval.
+**A 30,000-token file genuinely wins while everything fits.** Up to ~200 notes
+it holds the entire graph and beats every retrieving arm on recall — the honest
+point in the file's favour — then falls off the capacity cliff: overtaken at
+500, down to 0.25 by 1500. What that win costs is attention: 30,000 standing
+tokens in context every session, with the answer at ~0.5% of the delivered
+text, against Engram's ~370 tokens per query with the answer at ~20%.
 
-The practical reading: below a few hundred notes, a maintained markdown file is
-a perfectly reasonable memory and this project is not needed. The curve crosses
-somewhere in the low thousands of tokens' worth of knowledge, and everything
+**At every size, curated recall equals its held fraction to the rounding
+digit.** A static file does not care how the question is phrased — if the text
+is present, it is present. It loses on *capacity*, never on retrieval quality,
+because it does no retrieval.
+
+The practical reading survives, with numbers on it: below ~40 notes a
+maintained markdown file is a perfectly reasonable memory and this project is
+not needed; an unusually diligent one stays reasonable to ~200–300; everything
 Engram claims is about what happens after that.
+
+### The ladder
+
+`--ladder` measures exactly where that crossing happens instead of
+extrapolating it: total graph sizes 10 → 1500 under one seed, with the curated
+file scored at **3,000 and 30,000 tokens at every size**, and a closing table
+naming the first size at which each budget falls behind retrieval.
+
+It also changes what gets asked. The sized runs above question a tested third
+of the graph and thin those questions to an assumed type mix; the ladder
+questions **every fact it stores** — no untested distractors, no thinning.
+Noise per question is the same either way (every fact has its own invented
+subject, so the other N−1 notes are the crowd), but the sample is three times
+larger and nothing depends on which third was picked. Assumed workload mixes
+stay where they belong, in the report-side weighting. `--series` runs the
+ladder plus the contradiction bench and writes one combined JSON.
 
 ## The big-context question
 
@@ -105,11 +183,11 @@ so retrieval is a temporary problem — just put the notes in the prompt. Three
 measured things make that argument weaker than it sounds, and one makes it
 stronger, so all four are here.
 
-**It stops working, and it stops abruptly.** A 1500-note graph is 375,890
+**It stops working, and it stops abruptly.** A 1500-note graph is 377,260
 tokens. That is not a large bill; it is past the window. There is no partial
 version of this failure — the strategy works, works, works, then does not work
 at all, and the note that would have answered the question is not missing from
-the ranking, it is missing from the request. Engram's brief is 2,996 tokens for
+the ranking, it is missing from the request. Engram's brief is 3,062 tokens for
 the same graph, and it grows with what is *relevant*, not with what exists.
 
 **Growth is on the wrong side of the ratio.** A project's memory grows without
@@ -181,12 +259,39 @@ Bodies are padded with filler naming only the fact's own subject. A filler
 sentence containing another fact's answer would manufacture a false positive and
 corrupt every recall number, so a test asserts that never happens.
 
+Since the ladder work the vocabulary spans three registers — software
+infrastructure still dominates, salted with laboratory and abstract-process
+categories (assay stations, provenance ledgers, escrow chambers) so no result
+is tuned to one genre's wording. Tables above that predate the widening were
+measured on the software-only vocabulary; the ladder re-measures everything
+under the current corpus.
+
 `replaces` and `conflicts-with` are generated **not at all**, despite being 2.7%
 of real edges: both mutate node state at write time — archival and trust
 demotion — which would silently remove gold facts from search.
 
 `--terse` restores the old shape, so the difference can be quantified rather
 than asserted.
+
+### Attention is the budget
+
+Two columns price what recall cannot see. **focus** — the share of delivered
+tokens that belonged to the answering record, when it was delivered at all. A
+dump can hold every answer and still score ~0.004 here; present is not the
+same as readable. **noise** — the share of delivered records that were *not*
+the answer, counting a miss with ten results as 1.00 (everything delivered was
+a false positive) and an empty return as 0.00, because saying nothing tells no
+lies. Noise is the one column where declining to answer scores better than
+guessing, which is what makes calibrated delivery measurable at all.
+
+`--floor` sweeps a delivery floor over the engram arm and produced the
+product's calibrated-delivery defaults: a trim floor at the top of the
+measured free zone (tail hits removed at zero recall cost), and the finding
+that **hard abstention by absolute score is unaffordable** — at 500 notes,
+declining 62% of never-written questions costs 38% of real answers, because
+oblique answers and unanswerable questions genuinely overlap in score space.
+Abstention therefore ships as a *verdict label* (strong / weak / none) on the
+search reply, not as a harder floor.
 
 ### Three ways to ask
 
@@ -277,14 +382,20 @@ window around the hit, and without one the result falls back to a flat
 and loses match highlighting, to buy 0.067. Token efficiency is the product's
 actual edge; this would have spent it.
 
-### Where pure vectors still lead
+### Where pure vectors still lead — and where the ceiling is
 
-On oblique questions specifically, `rag` is ahead — 0.24 against 0.16 at 1500
-notes. The retune roughly doubled Engram's number and closed most of the gap,
-but not all of it. The honest framing is the crossover: **the two arms tie when
-26% of questions never name their subject.** Below that, Engram wins overall;
-above it, pure vectors do. The default assumption is 10%, and it is an
-assumption.
+On oblique questions specifically, `rag` stays slightly ahead — 0.47 against
+0.40–0.42 at 1500 notes on the current corpus. The gap is real but small, and
+a 2026-08-03 grid put a ceiling over the whole question: at 100 notes, **no
+configuration of any arm exceeds 0.97 recall@5 / 0.92 oblique — pure vectors
+included**. A 12-point fusion sweep, a 13-row strategy bench, and a bge-base
+run all converge on the same residual misses, so the last few points are the
+embedding models' semantic limit, not a tuning failure. Two other things the
+grid settled: letting the reranker *decide* scores 0.80 oblique in every
+single configuration (the vote design, re-confirmed a third time), and with
+bge-base as the embedder the shipped stack reaches **full rag parity — 0.97 /
+0.92 — at 346 tokens per query against rag's 2,308.** Tied with pure vectors
+at a seventh of the tokens is the honest sentence.
 
 ---
 
@@ -312,11 +423,14 @@ clear loss.
 
 ## What this does not show
 
-- **Nothing declines a question it cannot answer.** The false-positive rate is
-  1.00 for every arm including `chance` — asked about a subject that was never
-  written, all of them return something. A threshold would mostly work
-  (separation 0.75–0.78) and none is applied. This is the most important open
-  problem the harness has found, and it is not fixed.
+- **Nothing declines outright, still.** The false-positive rate is 1.00 for
+  every arm — asked about a subject that was never written, all of them return
+  something. The `--floor` sweep showed why a hard fix is not free: the score
+  populations overlap (separation 0.75–0.78), and buying abstention with an
+  absolute floor spends oblique recall. What shipped instead is calibrated
+  delivery: a measured tail-trim plus a strong/weak/none verdict on the search
+  reply, so the assistant is told when the graph is silent or unsure — the
+  honest form of declining that costs no recall.
 - **The logic layer is not scored here.** Whether the memory notices that two
   things it holds disagree is a separate question from whether it can find them
   and needs its own metric — see `CONTRADICTIONS.md`, which has since replaced

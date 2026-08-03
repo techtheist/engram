@@ -8,7 +8,7 @@
 [![VS Marketplace](https://vsmarketplacebadges.dev/version/techtheist.engram-alpha.svg?label=VS%20Marketplace)](https://marketplace.visualstudio.com/items?itemName=techtheist.engram-alpha)
 [![Open VSX](https://img.shields.io/open-vsx/v/techtheist/engram-alpha?label=Open%20VSX)](https://open-vsx.org/extension/techtheist/engram-alpha)
 
-> Inspectable long-term project memory for AI coding assistants. Local-first, user-owned, graph-first.
+> The most powerful and feature-rich inspectable long-term graph memory for software development with AI agents — built on reproducible research.
 
 ![The Engram pane: the live memory graph with the review queue open on the left and the theme & layout menu on the right](.screenshots/engram-alpha-standalone.png)
 
@@ -57,6 +57,44 @@ prevented it.
 Every screenshot on this page is Engram's own graph — the project is built by
 dogfooding it.
 
+## Measured, not promised
+
+The claims on this page have an instrument behind them. Engram ships its own
+offline evaluation harness — an invented-subject corpus nothing can answer
+from pretraining, substring grading with no LLM judge, seeded and
+reproducible — and since 0.8.0 the product's retrieval defaults are outputs
+of benchmark runs, with the runs published next to the code:
+
+- **~5× the recall per token of a conventional vector stack.** At 1,500
+  realistic notes, Engram answers from ~530 delivered tokens per query what
+  pure-vector RAG needs ~2,700 for — at equal recall, and ahead of it on the
+  phrasing-weighted headline (0.94 vs 0.92).
+- **Where a maintained memory file loses, measured — not asserted.** A
+  3,000-token CLAUDE.md is whole below ~40 notes and overtaken by retrieval
+  at 100; an unusually diligent 30,000-token one genuinely wins recall up to
+  ~200 notes, then falls off its capacity cliff by 500. The file never loses
+  on quality — only on capacity, and now there's a table saying exactly
+  where.
+- **Attention metrics the field doesn't publish.** Every result table pairs
+  recall with `focus` (what share of the delivered tokens was the answer)
+  and `noise` (how much of the delivery was false positives). A full-context
+  dump scores recall 1.00 and focus 0.004 on the same run — *present* and
+  *readable* are different claims, and only one of them is usually measured.
+- **Honesty is calibrated, not vibes.** The floor that trims weak results
+  and the `strong` / `weak` / `none` confidence verdict on every search
+  reply were chosen by sweeping them against measured recall,
+  false-positive, and attention columns — including the negative result:
+  hard abstention was measured, priced, and rejected because it costs real
+  answers.
+- **Rejected mechanisms stay on the record.** The harness documents what was
+  tried and didn't survive measurement — graph spreading activation, a
+  deciding cross-encoder, deeper reranking — because a benchmark that only
+  reports wins is an advertisement.
+
+Method, tables, and the honest caveats: [`eval/`](./eval/README.md). Next on
+the bench: the online half (live models answering from each arm's delivered
+context) and competitor memory systems run as arms on the same corpus.
+
 ## Install
 
 From your project's root:
@@ -93,6 +131,12 @@ per-assistant wiring, and updating: [Getting started](./docs/getting-started.md)
   your canon with receipts, sweeps the graph for hidden conflicts and
   duplicates, and queues look-alike pairs for judgment. Models nominate;
   you (or your assistant) judge. → [Conflicts & Checkup](./docs/conflicts-and-checkup.md)
+- **Retrieval that knows its own confidence** — weak tail hits are trimmed
+  by a benchmark-calibrated floor, and every search reply carries a
+  `strong` / `weak` / `none` verdict so your assistant verifies uncertain
+  memory and admits silence instead of inventing it. Past 200 notes, the
+  graph re-calibrates its conflict threshold from your own judgment
+  history. → [Measured, not promised](#measured-not-promised)
 - **Trust that stays honest** — computed live from deliberate acts only:
   time doesn't validate, retrieval doesn't validate, and stable knowledge
   falls only to judged evidence. Pins are yours alone.
@@ -113,11 +157,12 @@ per-assistant wiring, and updating: [Getting started](./docs/getting-started.md)
   machine registry, and a home graph for knowledge that was never
   project-scoped. Cross-project reads with local-canon priority; promotion
   by your approval. → [Multi-project memory](./docs/multi-project.md)
-- **Storage that outgrows SQLite** — graphs live on SQLite or on
+- **Storage that outgrew SQLite** — graphs live on
   [TepinDB](https://github.com/tepindb/tepindb)'s single self-describing
-  `.tepin` file, migratable in one command with the audit journal intact —
-  and inspectable with `npx tepindb` even while Engram is running.
-  → [Storage & TepinDB](./docs/storage.md)
+  `.tepin` file by default; a graph still on SQLite migrates itself on first
+  open, audit journal intact, with the `.db` left behind as your backup —
+  and the file is inspectable with `npx tepindb` even while Engram is
+  running. → [Storage & TepinDB](./docs/storage.md)
 - **Local models you choose** — embeddings, reranker, and NLI run offline
   and are swappable from the pane (presets or any compatible ONNX export by
   URL); an embedding swap re-embeds your graphs in one guarded pass.
@@ -142,7 +187,8 @@ storage, local models, and troubleshooting (`engram-alpha doctor` diagnoses
 the whole chain; `engram-alpha stop` halts everything cleanly).
 
 Security posture: [`SECURITY.md`](./SECURITY.md). Full spec and roadmap:
-[`PLAN.md`](./PLAN.md). **Status:** early development, heavily dogfooded.
+[`PLAN.md`](./PLAN.md). **Status:** early development, heavily dogfooded,
+benchmark-driven — retrieval changes cite a measured run or they don't ship.
 
 ## Stack
 
