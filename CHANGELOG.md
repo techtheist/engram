@@ -3,6 +3,84 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
+## v0.8.0 — measured, not promised
+
+From this release on, retrieval behavior is an output of the benchmark, not
+an opinion. The eval harness grew a gradation ladder, attention metrics, and
+a delivery-floor sweep — and the product's new defaults cite those runs.
+
+### Calibrated delivery
+
+- **Weak tail hits are trimmed before delivery.** Post-rerank hits under
+  `policy.delivery_floor` (default **0.22** — the top of the measured free
+  zone at 100/500/1500 notes) are not returned. Recall is unchanged at every
+  measured size; delivered tokens drop up to 67% on young graphs (−22% at
+  100 notes, quiet by 1500, where everything reaching the top ten already
+  clears the floor).
+- **Every search reply carries a confidence verdict.** `strong` — the top
+  hit cleared `policy.weak_evidence_top` (default **0.85**, from the
+  control-arm separation analysis); `weak` — treat hits as leads to verify,
+  not answers; `none` — the graph is silent, and the assistant is told to
+  say so instead of inventing a memory. A label rather than a hard decline,
+  because the floor sweep priced hard abstention out: declining 62–73% of
+  never-written questions costs 38–45% of real answers. The capture skills
+  teach the verdict in all three variants.
+- Verdicts and the trim apply only under a loaded reranker — no judgment is
+  issued from an uncalibrated score scale.
+
+### Auto-tune: a mature graph calibrates itself
+
+Past **200 notes** and **20 judged suspect pairs** (at least 3 per side), the
+session-boundary validation refits `conflict_suspect_similarity` from the
+graph's own judgment history — every dismissal is a labeled false positive,
+every confirmation a labeled true one. Balanced-accuracy fit, clamped to
+[0.85, `duplicate_similarity`), applied only when it moves the floor
+meaningfully, journaled as an `auto_tuned` row. `policy.auto_tune: false`
+opts a graph out; smaller graphs keep the benchmark-calibrated defaults.
+This automates, per graph, the hand retune that produced the shipped 0.88.
+
+### The measuring stick grew (eval/)
+
+- **The ladder**: `--ladder` runs total graph sizes 10→1500 with **every
+  stored fact questioned** (no untested distractors, no type-mix thinning)
+  and the curated-file baseline at 3k *and* 30k tokens per size — the
+  where-does-a-maintained-file-lose question now has measured crossovers
+  (3k: overtaken at 100 notes; 30k: wins to ~200, overtaken at 500).
+  `--series` runs the whole battery in one command.
+- **Attention metrics**: `focus` (share of delivered tokens that were the
+  answer) and `noise` (share of delivered records that were not — a miss
+  counts in full, honest silence counts zero) sit beside recall in every
+  table. A full-context dump scores recall 1.00 and focus 0.004 on the same
+  run.
+- **`--floor`**: the delivery-floor sweep that produced the new defaults.
+- **Corpus v2**: 16 components across three registers (software, laboratory,
+  abstract) and 12-wide slot pools — no result is tuned to one genre's
+  vocabulary. Measured side effect worth knowing: half the published oblique
+  decay was component crowding, not the retriever.
+- **The tuning quest, closed honestly**: no configuration of any arm exceeds
+  0.97 R@5 / 0.92 oblique at 100 notes — pure vectors included; the ceiling
+  is the embedding model's. With bge-base the shipped stack reaches full
+  rag parity at a seventh of rag's tokens.
+
+### Fixes the instrument caught
+
+- **Id collisions under bulk writes**: ~1,600 same-second mints had ~2%
+  birthday odds on the 5-char random tail; the tail now advances from a
+  per-process random seed — same-process collisions impossible, id shape
+  unchanged.
+- The eval report labeled its NLI leg with the retired model's name after
+  the 0.7.2 mobilebert swap (numbers were right, the label lied); it now
+  reads the runtime's identity.
+- 768-dim embedders (bge-base) were never actually runnable in the eval —
+  the in-memory store now re-dims to the embedder before the first write.
+
+### Storage
+
+TepinDB remains the default: new graphs are born `.tepin` (since 0.6.2) and
+any `graph.db` still on SQLite migrates itself on first open with real
+embeddings (since 0.7.0), leaving the SQLite file behind as the backup. 0.8.0
+makes that the stated contract rather than a transition note.
+
 ## v0.7.3 — retired means retired
 
 ### Superseded knowledge leaves the canon
