@@ -320,6 +320,17 @@ const policyWords = computed(() => {
     ]
 })
 
+const deliveryWords = computed(() => {
+    const p = draft.value?.policy
+    if (!p) return []
+    return [
+        `Search hits scoring under ${pct(p.delivery_floor)} are trimmed before delivery — the benchmark put the edge of the recall-free zone there, so the weak tail stops spending your assistant's attention. When even the best hit stays under ${pct(p.weak_evidence_top)}, the reply is labeled weak evidence (verify before relying), and an empty result says "no memory on this" instead of guessing. Both apply only while a reranker is loaded: the calibrated scale is the reranker's.`,
+        p.auto_tune
+            ? `Auto-tune is on: past 200 notes and 20 judged look-alike pairs, this graph refits its suspect threshold from your own verdicts at session boundaries. Every adjustment lands in the audit journal.`
+            : `Auto-tune is off: the suspect threshold stays exactly where you set it.`,
+    ]
+})
+
 </script>
 
 <template>
@@ -604,6 +615,22 @@ const policyWords = computed(() => {
                 <label>NLI gate ≥ <StepperInput v-model="draft.policy.nli_sweep_min_confidence" :step="0.05" :max="1" aria-label="NLI gate" /></label>
             </div>
             <p v-for="(line, i) in policyWords" :key="i" class="hint words">{{ line }}</p>
+        </section>
+
+        <section class="block">
+            <h3 class="block-title">Calibrated delivery</h3>
+            <div class="grid">
+                <label>delivery floor <StepperInput v-model="draft.policy.delivery_floor" :step="0.01" :max="1" aria-label="delivery floor" /></label>
+                <label>weak below <StepperInput v-model="draft.policy.weak_evidence_top" :step="0.01" :max="1" aria-label="weak evidence line" /></label>
+            </div>
+            <div class="checks">
+                <ToggleChip
+                    v-model="draft.policy.auto_tune"
+                    label="auto-tune"
+                    title="Past 200 notes and 20 judged look-alike pairs, the graph refits its own conflict threshold from your judgment history at session boundaries — journaled, and off means never"
+                />
+            </div>
+            <p v-for="(line, i) in deliveryWords" :key="i" class="hint words">{{ line }}</p>
         </section>
 
         <section class="block">

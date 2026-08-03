@@ -431,6 +431,12 @@ export interface PolicyConfig {
     conflict_suspect_similarity: number
     warn_similarity: number
     nli_sweep_min_confidence: number
+    /** Post-rerank hits under this score are trimmed before delivery. */
+    delivery_floor: number
+    /** Top-score under which the search verdict is "weak". */
+    weak_evidence_top: number
+    /** Let a mature graph refit its conflict threshold from judged history. */
+    auto_tune: boolean
 }
 
 export interface BriefConfig {
