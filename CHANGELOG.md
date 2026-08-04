@@ -5,6 +5,21 @@ body of its GitHub Release (draft-release.yml lifts it automatically).
 
 ## v0.8.2 — the knee and the phantom probes
 
+### NLI model swap — contradictions stop firing at strangers
+
+- **The default NLI model is now `deberta-v3-small-tasksource-nli`**
+  (multi-task DeBERTa-v3-small, our quantized ONNX export, 172 MB),
+  replacing `mobilebert-uncased-mnli`. MNLI-only models presuppose that two
+  sentences co-refer, so unrelated notes in the same register scored as
+  confident contradictions ("Engram Alpha is written in Rust" vs "TepinDB is
+  published on crates.io": c=0.99, straight past the gate). Measured on the
+  `eval/CONTRADICTIONS.md` harness, three seeds at the reference shape:
+  false alarms at the shipped 0.80 gate drop 38% → 18–29% with catch at
+  94–96% (100% ungated), agree-alarms 6–13% → 0–1% ungated, and on this
+  repo's real graph the unbiased queue noise goes 28% → **0%**. MobileBERT
+  and the 0.7.2 DeBERTa stay selectable in the pane; explicit selections
+  keep resolving.
+
 The 0.8.1 research cycle asked two questions at 100–2000 notes — can focus
 survive scale, and can a false-positive rate of 1.00 be brought down without
 cutting a single result — and this release ships the three answers the

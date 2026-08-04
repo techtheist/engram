@@ -3,25 +3,112 @@
 The retrieval half of this harness is written up in `README.md`; this is the
 other half.
 
-**This work changed the product.** As of 0.7.2 the NLI model is
-`mobilebert-uncased-mnli` (27 MB), replacing `nli-deberta-v3-small` (172 MB),
-and `check_claim` gained a confidence gate at **0.80** — both on the numbers
-below. End to end that took false alarms from 80–86% to 38%, and it was then
-checked against this repo's own graph, where the same gate takes them to 19%
-and the new model is the only candidate of four that flags the one genuine
-contradiction the project has ever recorded.
+**This work changed the product, twice.**
+
+- **0.7.2** — model `mobilebert-uncased-mnli` (27 MB) replaced
+  `nli-deberta-v3-small` (172 MB), and `check_claim` gained a confidence
+  gate at **0.80**. That work is the historical half at the bottom of this
+  file; its method and warnings still govern.
+- **0.8.2 — current** — model `deberta-v3-small-tasksource-nli` (172 MB)
+  replaced MobileBERT, on the section right below. The gate stays at 0.80.
 
 ```sh
-cargo run -p engram-eval --features fastembed -- --contradictions
+cargo run -p engram-eval --features fastembed -- --contradictions --sizes 500
 
 # swap the model and re-run; the report names whatever loaded
-ENGRAM_NLI_DIR=~/.cache/engram-nli-eval/mobilebert-mnli \
-  cargo run -p engram-eval --features fastembed -- --contradictions
+ENGRAM_NLI_DIR=~/.cache/engram/mobilebert-uncased-mnli \
+  cargo run -p engram-eval --features fastembed -- --contradictions --sizes 500
 
 # and against a real graph's judged history (point it at a COPY —
 # a running daemon owns the original)
 cargo run -p engram-eval --features fastembed -- --real-graph /tmp/graph-copy.tepin
 ```
+
+## 0.8.2 — the tasksource swap (current)
+
+The complaint that triggered this round was live and specific: `check_claim`
+called nearly everything a contradiction, including a claim and a note that
+merely share a register ("Engram Alpha is written in Rust" vs "TepinDB is
+published on crates.io" — MobileBERT: contradiction **0.99**, straight over
+the gate). The literature names the failure: MNLI training presupposes the
+premise and hypothesis co-refer, so on KB-style pairs that refer to different
+things, MNLI-only models emit false contradictions at enormous rates (RefNLI,
+NAACL 2025 Findings, arXiv 2502.05793 — >80% false contradiction, the same
+80–83% this file measured on `nli-deberta-v3-small` in 0.7.2).
+
+The candidate is `sileod/deberta-v3-small-tasksource-nli` — the same
+DeBERTa-v3-small backbone as the model 0.7.2 retired, but multi-task-trained
+on 600+ tasks (paraphrase and fact-checking among them) instead of MNLI
+alone. No ONNX export exists upstream; ours is an optimum export, dynamically
+int8-quantized, benched as the exact file that ships. Same harness, same
+corpus shape as the reference receipt (`--sizes 500`), seeds 1–3:
+
+| gate | mobilebert (seed 1) | tasksource s1 | s2 | s3 |
+|---|---|---|---|---|
+| 0.00 | 97 / 57 | 100 / 85 | 100 / 90 | 100 / 86 |
+| 0.70 | 96 / 45 | 100 / 44 | 97 / 33 | 97 / 40 |
+| **0.80 — ships** | 96 / 38 | **96 / 29** | **94 / 18** | **94 / 29** |
+| 0.90 | 87 / 24 | 87 / 23 | 86 / 12 | 85 / 21 |
+
+(catch % / false alarms %.) Ungated it is *louder* than MobileBERT — and far
+better separated: the curve falls off a cliff the gate can actually use.
+Agree-alarms — an agreeing restatement called a contradiction, the layer's
+worst output — are 0–1% ungated (MobileBERT: 6–13%) and 0% at every gate from
+0.50 up. Catch is 100% ungated on all three seeds.
+
+On this repo's real graph (344 nodes, 55 judged pairs, 3 recorded conflicts),
+same three-way split as the 0.7.2 section below:
+
+| gate | unbiased noise | queued noise | conflicts flagged |
+|---|---|---|---|
+| mobilebert @0.80 | 28% | 18% | 2/3 |
+| **tasksource @0.80** | **0%** | **0%** | 1/3 |
+
+The conflicts column needs reading, not averaging — the 0.7.2 caution about
+quiet models still applies, so each of the three was inspected. The one
+tasksource flags is the only sentence-level contradiction of the three
+("never frobnicate the widget" vs "always frobnicate the widget", a push-test
+pair). The two it declines are project-level tensions — "adoption correlates
+with ambient hooks capture" vs "capture is cooperative first", and two eval
+findings disagreeing about what closed the oblique gap — verdicts that need
+project context no sentence pair carries. MobileBERT flags those two through
+the same lexical trigger-happiness that produces its 18–28% queue noise:
+right verdict, wrong reason, and the reason is the thing users pay for on
+every unrelated pair. Unlike the 0.7.2 trap — where the quiet model was quiet
+everywhere, including on the positives — this one fires on every generated
+contradiction (100%, three seeds) and on the genuine sentence-level conflict;
+what it declines is precisely the judgment the ontology reserves for humans.
+
+And on the pair that started it: "Engram Alpha is written in Rust" vs
+"TepinDB is published on crates.io" — neutral 0.62, contradiction 0.14.
+"…written in Rust" vs "…uses Rust" — entailment 0.93, both directions.
+
+Distribution: the export lives at
+`huggingface.co/techtheist/deberta-v3-small-tasksource-nli-onnx`
+(upstream is Apache-2.0; the repo mirrors Xenova's layout so
+`onnx/model_quantized.onnx` + `tokenizer.json` + `config.json` is the whole
+contract). MobileBERT and the 0.7.2-retired DeBERTa stay in
+`cortex::presets`, so an explicit selection keeps resolving.
+
+**Field read after the swap (2026-08-04, live graph).** The layer reads as
+more *supportive* than before: agreements get confirmed, and a contradiction
+verdict now means the pair is genuinely close — while a mushy real-prose
+conflict can slip by. That is the intended trade, chosen with eyes open: the
+positive class is rare and every false alarm spends a human judgment, so this
+layer buys precision with recall on prose no sentence model can honestly
+judge anyway. The suspect queue's similarity floor and the graph's own edges
+still hold the other end of the net.
+
+---
+
+# The 0.7.2 write-up — historical
+
+**Everything below is the MobileBERT-era measurement, superseded by the
+section above.** It is kept whole because its method — and its warnings about
+catch rates, quiet models, and one-positive corpora — is what the 0.8.2
+section was read against. Model labels like "ships" below mean *shipped in
+0.7.2 through 0.8.1*; the **0.80 gate rows are still current** — the gate
+outlived both models that calibrated it.
 
 ## Why this needs its own metric
 
@@ -80,9 +167,9 @@ export. So the candidate set is small:
 | `nli-deberta-v3-small` — *shipped until 0.7.2* | **172 MB** | 44M | 3-way |
 | `nli-deberta-v3-xsmall` | 96 MB | 22M | 3-way |
 | `distilbert-base-uncased-mnli` | 65 MB | 66M | 3-way |
-| `mobilebert-uncased-mnli` — **ships from 0.7.2** | 27 MB | 25M | 3-way |
+| `mobilebert-uncased-mnli` — **default 0.7.2–0.8.1** | 27 MB | 25M | 3-way |
 
-## Results
+## Results — how MobileBERT was picked
 
 Same corpus, same embedder and reranker — only the NLI model swapped. Ungated:
 
@@ -91,7 +178,7 @@ Same corpus, same embedder and reranker — only the NLI model swapped. Ungated:
 | `nli-deberta-v3-small` *(replaced)* | 97–99% | **80–86%** | 81–82% |
 | `nli-deberta-v3-xsmall` | 96–99% | 68–80% | 80–82% |
 | `distilbert-mnli` | 93–95% | 46–56% | 79–83% |
-| **`mobilebert-mnli`** *(now default)* | **95–97%** | **57–62%** | 76–80% |
+| **`mobilebert-mnli`** *(default 0.7.2–0.8.1)* | **95–97%** | **57–62%** | 76–80% |
 
 Five seeds each, except `deberta-v3-xsmall` at four. The first pass used two,
 which was enough to rank them and — as the threshold section below shows — not
@@ -319,7 +406,7 @@ claim**: the gate works fine on a better-calibrated model. The correction
 matters, because it moves the fix from "wait for a better model" to "switch the
 model and calibrate a threshold."
 
-## Where this leaves the layer
+## Where this left the layer at 0.7.2 (see the 0.8.2 section for today)
 
 The three numbers worth carrying away, all on the file that ships, at the gate
 that ships:
@@ -342,7 +429,11 @@ That is the honest shape of this layer: a small cross-encoder that is wrong abou
 a fifth to a third of what it flags, wrapped in enough structure that the user
 sees a fraction of it. Both halves are load-bearing. Neither is enough alone.
 
-### What is still open
+### What was still open at 0.7.2
+
+Of the four points below, the one-register caveat and the never-measured
+false-`supports` still stand at 0.8.2; the catch-rate and queue-gate points
+were re-examined in the 0.8.2 section above.
 
 - **The catch rate rests entirely on generated prose.** In 297 nodes this project
   has recorded exactly one contradiction, so the real-graph corpus can validate

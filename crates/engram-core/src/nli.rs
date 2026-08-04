@@ -9,17 +9,20 @@
 //! — and never moves a trust field. Judgment stays with the user or the
 //! assistant.
 //!
-//! Runtime model (since 0.7.2): `Xenova/mobilebert-uncased-mnli`, quantized
-//! ONNX, **27 MB** on disk, 512-token pairs.
+//! Runtime model (since 0.8.2): `sileod/deberta-v3-small-tasksource-nli`
+//! (multi-task, 600+ tasks), our own quantized ONNX export, **172 MB** on
+//! disk, 512-token pairs.
 //!
-//! It replaced `nli-deberta-v3-small` (172 MB) on measurement, not taste. The
-//! benchmark in `eval/CONTRADICTIONS.md` scores the layer end to end — what it
-//! catches against what it costs — and the old model was catching 98-99% of
-//! contradictions while calling 80-83% of UNRELATED claims contradictions too.
-//! A catch rate means nothing without that second number: a layer that shouts
-//! "contradiction" at everything scores 100%. Across five seeds MobileBERT
-//! catches 95-96% and false-alarms at 55-65%, from a model seven times
-//! smaller. The predecessor stays selectable in `cortex::presets`.
+//! It replaced `mobilebert-uncased-mnli` on measurement, not taste — the same
+//! way MobileBERT replaced `nli-deberta-v3-small` in 0.7.2. The benchmark in
+//! `eval/CONTRADICTIONS.md` scores the layer end to end — what it catches
+//! against what it costs — and MNLI-only models presuppose co-reference: they
+//! call unrelated same-register notes confident contradictions ("Engram uses
+//! Rust" vs "TepinDB is on crates.io" scored c=0.99). The tasksource model
+//! judges those neutral, halves false alarms at the shipped gate on generated
+//! prose, and zeroes the unbiased queue noise on this repo's real graph while
+//! catching every generated contradiction. Predecessors stay selectable in
+//! `cortex::presets`.
 //!
 //! Swap the model with `ENGRAM_NLI_DIR` pointing at a directory holding
 //! `model.onnx`, `tokenizer.json` and a `config.json` whose `id2label` covers
@@ -310,14 +313,14 @@ mod fast {
 #[cfg(feature = "fastembed")]
 pub use fast::FastNli;
 
-/// The three files FastNli loads. `model.onnx` is Xenova's
+/// The three files FastNli loads. `model.onnx` is the repo's
 /// `model_quantized.onnx` saved under the plain name.
 pub const NLI_MODEL_FILES: [&str; 3] = ["model.onnx", "tokenizer.json", "config.json"];
 /// Where the CLI downloads the model to and FastNli loads it from
 /// (overridable via `ENGRAM_NLI_DIR`).
-pub const NLI_MODEL_NAME: &str = "mobilebert-uncased-mnli";
+pub const NLI_MODEL_NAME: &str = "deberta-v3-small-tasksource-nli";
 
-/// `ENGRAM_NLI_DIR`, else `~/.cache/engram/mobilebert-uncased-mnli`. Pure path
+/// `ENGRAM_NLI_DIR`, else `~/.cache/engram/<NLI_MODEL_NAME>`. Pure path
 /// logic, outside the `fastembed` gate so the HTTP crate builds alone.
 pub fn nli_model_dir() -> Option<std::path::PathBuf> {
     if let Ok(dir) = std::env::var("ENGRAM_NLI_DIR") {

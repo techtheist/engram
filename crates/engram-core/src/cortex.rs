@@ -186,12 +186,22 @@ pub fn presets(role: Role) -> Vec<ModelSpec> {
                 pooling: None,
             },
         ],
-        // First entry is the default (see `effective`). MobileBERT replaced
-        // deberta-v3-small in 0.7.2 on the contradiction benchmark: a third
-        // fewer false alarms at comparable catch, and a seventh of the size.
-        // The predecessor stays listed so an existing explicit selection keeps
-        // resolving and so the choice can be reversed from the pane.
+        // First entry is the default (see `effective`). The tasksource
+        // DeBERTa replaced MobileBERT in 0.8.2 on the contradiction
+        // benchmark: false alarms 38%→18–29% at the shipped gate on
+        // generated prose, 28%→0% unbiased queue noise on this repo's real
+        // graph, and it stops calling unrelated same-register notes
+        // contradictions (the failure users actually hit). Predecessors
+        // stay listed so an existing explicit selection keeps resolving
+        // and so the choice can be reversed from the pane.
         Role::Nli => vec![
+            ModelSpec {
+                name: "deberta-v3-small-tasksource-nli".into(),
+                base_url: hf("techtheist/deberta-v3-small-tasksource-nli-onnx"),
+                model_file: default_model_file(),
+                dim: None,
+                pooling: None,
+            },
             ModelSpec {
                 name: "mobilebert-uncased-mnli".into(),
                 base_url: hf("Xenova/mobilebert-uncased-mnli"),

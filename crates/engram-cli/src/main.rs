@@ -1008,13 +1008,14 @@ fn ensure_nli_model() {
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
-    const BASE: &str = "https://huggingface.co/Xenova/mobilebert-uncased-mnli/resolve/main";
+    const BASE: &str =
+        "https://huggingface.co/techtheist/deberta-v3-small-tasksource-nli-onnx/resolve/main";
     let sources = [
         ("model.onnx", format!("{BASE}/onnx/model_quantized.onnx")),
         ("tokenizer.json", format!("{BASE}/tokenizer.json")),
         ("config.json", format!("{BASE}/config.json")),
     ];
-    tracing::info!("downloading the NLI model (one-time, ~27 MB)…");
+    tracing::info!("downloading the NLI model (one-time, ~172 MB)…");
     for (name, url) in sources {
         let target = dir.join(name);
         if target.is_file() {

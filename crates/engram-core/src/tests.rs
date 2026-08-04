@@ -3737,7 +3737,10 @@ fn cortex_config_defaults_and_presets() {
         cfg.effective(Role::Reranker).name,
         "jina-reranker-v1-turbo-en"
     );
-    assert_eq!(cfg.effective(Role::Nli).name, "mobilebert-uncased-mnli");
+    assert_eq!(
+        cfg.effective(Role::Nli).name,
+        "deberta-v3-small-tasksource-nli"
+    );
     // NLI needs three files, the fastembed-loaded roles five.
     assert_eq!(spec_files(Role::Nli, &presets(Role::Nli)[0]).len(), 3);
     assert_eq!(

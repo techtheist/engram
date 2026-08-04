@@ -12,7 +12,7 @@ Three model layers, each optional beyond the first, each replaceable:
 |---|---|---|
 | **Embeddings** | `bge-small-en-v1.5` (384-dim) | Semantic recall: the vector half of hybrid search, and the similarity behind duplicate/conflict detection |
 | **Reranker** | `jina-reranker-v1-turbo-en` | Precision: a cross-encoder re-scores the top candidates against your query |
-| **NLI** | `mobilebert-uncased-mnli` | Logic: entailment/contradiction verdicts for [Checkup](./conflicts-and-checkup.md), claim checks, and suspect triage |
+| **NLI** | `deberta-v3-small-tasksource-nli` | Logic: entailment/contradiction verdicts for [Checkup](./conflicts-and-checkup.md), claim checks, and suspect triage |
 
 Models download once, over HTTPS, into `~/.cache/engram/<model-name>/`, and
 load from disk on every later start. The reranker and NLI layers are
@@ -49,7 +49,7 @@ unvalidated until re-tuned.
 ## Offline behavior
 
 First run needs the network once per model (the embedding model is ~30 MB,
-the NLI model 27 MB). After that, everything is local. If a first run
+the NLI model ~172 MB). After that, everything is local. If a first run
 happens offline, the affected layer degrades gracefully and provisions
 itself on the next online start — `engram-alpha doctor` reports which models
 are cached.
