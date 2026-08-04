@@ -41,10 +41,18 @@ OPTIONS:
     --phrasing-mix L,P,O  how often each phrasing is assumed to occur
                           [default: 45,45,10] — decides the headline number
     --tricks              research bench: candidate delivery strategies
-                          (fixed/relative floors, knee cut, split-conformal
-                          abstention calibrated on synthetic never-written
-                          probes) scored from one recorded pass per size.
-                          Research only — nothing in it ships
+                          (fixed/relative floors, knee cut, knee+buffer,
+                          split-conformal abstention calibrated on synthetic
+                          never-written probes) scored from one recorded pass
+                          per size. Research only — nothing in it ships
+    --qpp                 research bench: per-query QPP signals (score-curve
+                          shape features + pool-bottom z) scored as
+                          answerable-vs-control AUC next to the shipped
+                          phantom weak line. The probe-register-gap attack:
+                          a per-query null carries the query's own register
+    --rerank-full         rerank on title + FULL note body instead of the
+                          keyword-window snippet (research candidate; works
+                          under any mode's engram arm)
     --posttune            measure the SHIPPED post-tune stack end to end at
                           each size: knee trim on, weak line calibrated by
                           auto-tune's phantom-probe dial, FP scored under the
@@ -100,6 +108,7 @@ fn cli() -> anyhow::Result<()> {
     let mut sample = false;
     let mut floor_mode = false;
     let mut tricks_mode = false;
+    let mut qpp_mode = false;
     let mut posttune_mode = false;
     let mut sweep_mode = false;
     let mut bench_mode = false;
@@ -140,7 +149,9 @@ fn cli() -> anyhow::Result<()> {
             }
             "--floor" => floor_mode = true,
             "--tricks" => tricks_mode = true,
+            "--qpp" => qpp_mode = true,
             "--posttune" => posttune_mode = true,
+            "--rerank-full" => cfg.rerank_full = true,
             "--sweep" => sweep_mode = true,
             "--bench" => bench_mode = true,
             "--contradictions" => contradiction_mode = true,
@@ -191,6 +202,15 @@ fn cli() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if qpp_mode {
+        let report = engram_eval::run::qpp(&cfg)?;
+        print_qpp(&report);
+        if let Some(path) = json_out {
+            std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
+            println!("\nwrote {path}");
+        }
+        return Ok(());
+    }
     if posttune_mode {
         let report = engram_eval::run::posttune(&cfg)?;
         print_posttune(&report);
@@ -481,6 +501,77 @@ fn print_tricks(r: &engram_eval::run::TricksReport) {
          thresholds never see the probes they are judged on. decl-ans is what each\n\
          strategy's restraint costs on real questions; a strategy only earns its FP\n\
          number if R@5 and obliq survive next to it."
+    );
+}
+
+fn print_qpp(r: &engram_eval::run::QppReport) {
+    println!("engram-eval — per-query QPP bench (research only, nothing here ships)");
+    println!(
+        "runtime: embedder={}  reranker={}  seed={}  limit={}",
+        r.embedder, r.reranker, r.seed, r.limit
+    );
+    if r.embeddings_are_fake {
+        println!("!! FAKE EMBEDDINGS — every number below is noise");
+    }
+    for s in &r.sizes {
+        println!(
+            "\ngraph {} facts / {} answerable / {} controls",
+            s.graph, s.answerable, s.controls
+        );
+        println!(
+            "  shipped reference — phantom weak line {:.3}: FP (controls unwarned) {:.2}, answerable warned {:.2}",
+            s.weak_line, s.weak_line_controls_unwarned, s.weak_line_answerable_warned
+        );
+        println!("  {:<15} {:>6}   (0.5 = blind; <0.5 = signal points the other way)", "feature", "AUC");
+        for f in &s.features {
+            println!("  {:<15} {:>6.3}", f.feature, f.auc);
+        }
+        println!(
+            "  pool-bottom z gate: {:>5} {:>18} {:>11}",
+            "z", "ctrl-unwarned(FP)", "ans-warned"
+        );
+        for p in &s.z_sweep {
+            println!(
+                "  {:>25.1} {:>18.2} {:>11.2}",
+                p.z, p.controls_unwarned, p.answerable_warned
+            );
+        }
+        println!(
+            "  random-background z: {:>4} {:>18} {:>11}",
+            "z", "ctrl-unwarned(FP)", "ans-warned"
+        );
+        for p in &s.z_rand_sweep {
+            println!(
+                "  {:>25.1} {:>18.2} {:>11.2}",
+                p.z, p.controls_unwarned, p.answerable_warned
+            );
+        }
+        println!(
+            "  gumbel null-max gate: {:>3} {:>18} {:>11}",
+            "p", "ctrl-unwarned(FP)", "ans-warned"
+        );
+        for p in &s.gumbel_sweep {
+            println!(
+                "  {:>25.2} {:>18.2} {:>11.2}",
+                p.p, p.controls_unwarned, p.answerable_warned
+            );
+        }
+        println!(
+            "  local-crowd z (shoulder): {:>18} {:>11}",
+            "ctrl-unwarned(FP)", "ans-warned"
+        );
+        for p in &s.z_shoulder_sweep {
+            println!(
+                "  {:>25.1} {:>18.2} {:>11.2}",
+                p.z, p.controls_unwarned, p.answerable_warned
+            );
+        }
+    }
+    println!(
+        "\nReading it: every feature is per-query arithmetic over the delivered score\n\
+         curve — no per-graph calibration anywhere. A feature only matters if its AUC\n\
+         beats the weak-line reference row at the SAME answerable-warned cost; the z\n\
+         gate row to compare is the one whose ans-warned matches the reference's."
     );
 }
 

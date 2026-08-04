@@ -1,0 +1,63 @@
+  1500: weak line 0.476, 2571 answerable / 375 control curves
+engram-eval — per-query QPP bench (research only, nothing here ships)
+runtime: embedder=bge-small-en-v1.5  reranker=jina-reranker-v1-turbo-en  seed=1  limit=10
+
+graph 1500 facts / 2571 answerable / 375 controls
+  shipped reference — phantom weak line 0.476: FP (controls unwarned) 0.87, answerable warned 0.14
+  feature            AUC   (0.5 = blind; <0.5 = signal points the other way)
+  top1             0.667
+  gap12            0.677
+  gap_median       0.653
+  std              0.640
+  entropy_t1       0.358
+  entropy_t01      0.353
+  nqc              0.647
+  wig              0.616
+  smv              0.644
+  preknee_count    0.326
+  knee_flat        0.335
+  z_bottom         0.641
+  z_rand           0.606
+  gumbel_nlogp     0.615
+  coherence        0.614
+  z_shoulder       0.627
+  pool-bottom z gate:     z  ctrl-unwarned(FP)  ans-warned
+                        0.0               1.00        0.00
+                        0.5               1.00        0.00
+                        1.0               1.00        0.00
+                        1.5               1.00        0.00
+                        2.0               1.00        0.00
+                        2.5               1.00        0.00
+                        3.0               0.99        0.00
+                        4.0               0.96        0.02
+  random-background z:    z  ctrl-unwarned(FP)  ans-warned
+                        0.0               1.00        0.00
+                        1.0               1.00        0.00
+                        2.0               1.00        0.00
+                        3.0               0.99        0.01
+                        4.0               0.96        0.02
+                        5.0               0.90        0.06
+                        6.0               0.81        0.10
+                        8.0               0.63        0.25
+  gumbel null-max gate:   p  ctrl-unwarned(FP)  ans-warned
+                       0.50               1.00        0.00
+                       0.25               1.00        0.00
+                       0.10               1.00        0.00
+                       0.05               0.98        0.01
+                       0.01               0.83        0.08
+  local-crowd z (shoulder):  ctrl-unwarned(FP)  ans-warned
+                        0.0               1.00        0.00
+                        1.0               1.00        0.01
+                        2.0               0.96        0.01
+                        3.0               0.88        0.07
+                        4.0               0.82        0.16
+                        5.0               0.75        0.24
+                        6.0               0.67        0.30
+                        8.0               0.54        0.38
+
+Reading it: every feature is per-query arithmetic over the delivered score
+curve — no per-graph calibration anywhere. A feature only matters if its AUC
+beats the weak-line reference row at the SAME answerable-warned cost; the z
+gate row to compare is the one whose ans-warned matches the reference's.
+
+wrote eval/results/qpp-1500.json

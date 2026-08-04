@@ -93,6 +93,13 @@ pub const AUTO_TUNE_FLOOR_MIN: f64 = 0.85;
 /// Fitted moves smaller than this are ignored — config churn is not
 /// calibration.
 pub const AUTO_TUNE_MIN_DELTA: f64 = 0.005;
+/// Every auto-tune move travels only this fraction of the distance from the
+/// dial's current value to the fresh fit. One noisy fit can no longer teleport
+/// a dial (dogfood, 2026-08: the weak line lurched 0.85 → 0.35-class jumps as
+/// the probe register improved); repeated consistent fits still converge
+/// geometrically in a few session boundaries, and the damped target is
+/// hard-clamped into the dial's band, so even a glitched fit stays bounded.
+pub const AUTO_TUNE_DAMPING: f64 = 0.5;
 /// Calibrated-delivery trim: post-rerank hits scoring under this are not
 /// delivered. 0.22 is the top of the measured free zone (delivery-floor
 /// sweep, 2026-08-03, question-everything corpus at 100/500/1500 notes):

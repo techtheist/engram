@@ -10,6 +10,36 @@ survive scale, and can a false-positive rate of 1.00 be brought down without
 cutting a single result — and this release ships the three answers the
 tricks bench measured (`eval/README.md` has the full tables).
 
+### Transplant probes — the register gap closed at scale
+
+- **The weak line now calibrates in the graph's own voice, and honest FP
+  lands at 0.02 at 1500 notes (0.00 at 100), from 0.84/0.32.** The
+  weak-line fit mints two probe families and takes the max of their
+  quantiles: the existing question templates over borrowed vocabulary, and
+  **transplants** — real sentences from real notes with their two most
+  distinctive words swapped for coinages (Inverse Cloze Task inverted,
+  ACL 2019). Transplants score exactly like the loudest real noise
+  register, so the line finally clears the crowd ceiling that templated
+  probes under-read. Price, stated plainly: the "likely not in memory"
+  hedge now leads ~45% of lowest-confidence answerable replies (answers
+  still delivered, recall/focus unchanged); `policy.weak_line_quantile`
+  is the per-graph softness knob.
+- **Auto-tune is damped and glitch-bounded.** Every dial now travels half
+  the distance from its current value to the fresh fit per pass
+  (`policy::AUTO_TUNE_DAMPING = 0.5`) and the *damped* target is
+  hard-clamped into the dial's band — one noisy fit can no longer teleport
+  a threshold, a corrupt value recovers on the next pass, and consistent
+  fits still converge in a few session boundaries. The journal shows both:
+  `weak line 0.850 -> 0.663 (fit 0.476, damped)`.
+- **The negative results are receipts too** (`eval/results/`,
+  `--qpp` mode is new): every per-query unanswerability signal measured
+  blind at 1500 — score-shape features, pool-bottom z, random-background
+  z/Gumbel, embedding coherence, local-crowd shoulder (AUC 0.60–0.68) —
+  the crowd fakes the curve's shape, not just its scale. The knee buffer
+  and full-note reranker input also died measured deaths. The eval README
+  gained the **evolution table**: every generation, what changed, what it
+  bought, refuted branches included.
+
 ### Knee-mode delivery trim
 
 - **Delivery now cuts at the score cliff, not just a fixed depth.** After

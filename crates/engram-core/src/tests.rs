@@ -5467,17 +5467,30 @@ fn auto_tune_fits_the_floor_from_judged_history_and_settles() {
         .auto_tune()
         .unwrap()
         .expect("gates cleared, floor must move");
-    let fitted = e.graph_config().policy.conflict_suspect_similarity;
-    assert!(
-        (0.895..=0.92).contains(&fitted),
-        "the fitted floor belongs in the gap between the classes: {fitted}"
-    );
     assert!(
         note.contains("judged pairs"),
         "the note explains itself: {note}"
     );
-    // Re-fitting the same history lands on the same floor -- no config churn.
-    assert!(e.auto_tune().unwrap().is_none(), "second fit must settle");
+    // Damped moves: the first pass travels only half the distance to the
+    // fit, so it must land BELOW the gap the fit sits in...
+    let first = e.graph_config().policy.conflict_suspect_similarity;
+    assert!(
+        first < 0.895,
+        "the first damped step must not teleport into the gap: {first}"
+    );
+    // ...and repeated passes on the same history converge into it, then
+    // settle -- no config churn.
+    let mut passes = 1;
+    while e.auto_tune().unwrap().is_some() {
+        passes += 1;
+        assert!(passes < 12, "damped fits must converge");
+    }
+    let fitted = e.graph_config().policy.conflict_suspect_similarity;
+    assert!(
+        (0.89..=0.92).contains(&fitted),
+        "the converged floor belongs at the gap between the classes: {fitted}"
+    );
+    assert!(e.auto_tune().unwrap().is_none(), "converged means settled");
 }
 
 #[test]
@@ -5705,19 +5718,35 @@ fn auto_tune_calibrates_the_weak_line_from_phantom_probes_and_settles() {
         .unwrap()
         .expect("past the note gate the weak line must be fitted");
     assert!(note.contains("weak line"), "journal names the dial: {note}");
-    let fitted = e.graph_config().policy.weak_evidence_top;
+    let first = e.graph_config().policy.weak_evidence_top;
     let lower = e.graph_config().policy.delivery_floor + crate::policy::WEAK_LINE_ABOVE_FLOOR;
     assert!(
-        (lower..=crate::policy::WEAK_LINE_MAX).contains(&fitted),
-        "fitted line {fitted} escaped the clamp band [{lower}, {}]",
+        (lower..=crate::policy::WEAK_LINE_MAX).contains(&first),
+        "damped line {first} escaped the clamp band [{lower}, {}]",
         crate::policy::WEAK_LINE_MAX
     );
     assert!(
-        (fitted - crate::policy::WEAK_EVIDENCE_TOP).abs() >= crate::policy::AUTO_TUNE_MIN_DELTA,
+        (first - crate::policy::WEAK_EVIDENCE_TOP).abs() >= crate::policy::AUTO_TUNE_MIN_DELTA,
         "the journaled move must be a real move"
     );
-    // Deterministic probes on an unchanged graph: the second pass settles.
-    assert!(e.auto_tune().unwrap().is_none(), "second fit must settle");
+    // Deterministic probes on an unchanged graph: damped passes converge
+    // monotonically and settle.
+    let mut passes = 1;
+    while e.auto_tune().unwrap().is_some() {
+        passes += 1;
+        assert!(passes < 12, "damped fits must converge");
+    }
+    let converged = e.graph_config().policy.weak_evidence_top;
+    assert!(
+        (lower..=crate::policy::WEAK_LINE_MAX).contains(&converged),
+        "converged line {converged} escaped the clamp band"
+    );
+    assert!(
+        (converged - crate::policy::WEAK_EVIDENCE_TOP).abs()
+            >= (first - crate::policy::WEAK_EVIDENCE_TOP).abs(),
+        "convergence continues in the first step's direction: first {first}, converged {converged}"
+    );
+    assert!(e.auto_tune().unwrap().is_none(), "converged means settled");
 }
 
 #[test]

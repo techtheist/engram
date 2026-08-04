@@ -237,6 +237,14 @@ pub struct PolicyConfig {
     /// See [`crate::policy::WEAK_LINE_PROBES`].
     #[serde(default = "default_weak_line_probes")]
     pub weak_line_probes: usize,
+    /// Rerank on `title + full body` instead of `title + keyword-window
+    /// snippet`. Notes fit whole in the cross-encoder's window, so the
+    /// snippet is a large-corpus compromise; on oblique queries the evidence
+    /// sentence often shares no keyword with the query and never enters the
+    /// window at all. Off until the eval bench proves it (2026-08 cycle,
+    /// tier 1).
+    #[serde(default)]
+    pub rerank_full_note: bool,
 }
 
 fn default_delivery_floor() -> f64 {
@@ -316,6 +324,7 @@ impl Default for PolicyConfig {
             knee_cliff: Some(KNEE_MIN_CLIFF),
             weak_line_quantile: WEAK_LINE_QUANTILE,
             weak_line_probes: WEAK_LINE_PROBES,
+            rerank_full_note: false,
         }
     }
 }

@@ -62,6 +62,11 @@ pub struct Config {
     /// budget. Defaults to a realistic `CLAUDE.md`; add a second budget to
     /// bracket the crossover in a single run (the ladder scores 3k and 30k).
     pub curated_budgets: Vec<usize>,
+    /// Rerank on `title + full body` instead of the keyword-window snippet
+    /// (`policy.rerank_full_note`). A candidate, not the default: notes fit
+    /// the cross-encoder window whole, and the snippet starves it on oblique
+    /// queries whose evidence sentence shares no keyword with the query.
+    pub rerank_full: bool,
 }
 
 impl Default for Config {
@@ -79,6 +84,7 @@ impl Default for Config {
             phrasing: PhrasingMix::default(),
             embed_model: None,
             curated_budgets: vec![DEFAULT_CURATED_BUDGET],
+            rerank_full: false,
         }
     }
 }
@@ -1206,6 +1212,15 @@ pub fn floor_sweep(cfg: &Config) -> anyhow::Result<FloorReport> {
             embedder(model).0,
             if cfg.no_rerank { None } else { reranker().0 },
         )?;
+        // The engine ships its own delivery trims since 0.8.2. This recorder
+        // needs RAW curves — the rows below apply their own floors, so a
+        // trimmed recording would double-cut and flatter whatever the engine
+        // already does.
+        engram.tune(|p| {
+            p.delivery_floor = 0.0;
+            p.knee_cliff = None;
+            p.rerank_full_note = cfg.rerank_full;
+        })?;
 
         let mut recs = Vec::new();
         for q in c.questions() {
@@ -1396,10 +1411,23 @@ pub fn posttune(cfg: &Config) -> anyhow::Result<PostTuneReport> {
             embedder(model).0,
             if cfg.no_rerank { None } else { reranker().0 },
         )?;
-        let tuned = engram.engine().auto_tune()?;
+        if cfg.rerank_full {
+            engram.tune(|p| p.rerank_full_note = true)?;
+        }
+        // Auto-tune is damped (half the distance per pass), and a real
+        // deployment runs it at every session boundary — so the measured
+        // stack is the converged line, not the first half-step. Sixteen
+        // passes bounds the loop far above any real convergence.
+        let mut tuned = None;
+        for _ in 0..16 {
+            match engram.engine().auto_tune()? {
+                Some(note) => tuned = Some(note),
+                None => break,
+            }
+        }
         let weak_line = engram.engine().graph_config().policy.weak_evidence_top;
         eprintln!(
-            "  {size}: {} (weak line {weak_line:.3})",
+            "  {size}: {} (weak line {weak_line:.3}, converged)",
             tuned.as_deref().unwrap_or("auto-tune left the defaults")
         );
 
@@ -1582,6 +1610,10 @@ pub fn tricks(cfg: &Config) -> anyhow::Result<TricksReport> {
     /// answer's curve usually still has a cliff after its head while a
     /// no-answer curve is flat — so abstain only when the score is low AND
     /// the curve is shapeless.
+    /// `buffer` rescues up to B hits the KNEE cut (never ones under the
+    /// absolute/relative floors) — Adaptive-k's fix (arXiv 2506.08479) for
+    /// exactly our measured failure: the knee sometimes amputates a
+    /// neighbor-credit carrier sitting just past the cliff.
     struct Strategy {
         name: &'static str,
         abs_floor: f64,
@@ -1589,29 +1621,36 @@ pub fn tricks(cfg: &Config) -> anyhow::Result<TricksReport> {
         knee: bool,
         abstain_q: Option<f64>,
         flat_only: bool,
+        buffer: usize,
     }
-    const S: fn(&'static str, f64, f64, bool, Option<f64>, bool) -> Strategy =
-        |name, abs_floor, rel, knee, abstain_q, flat_only| Strategy {
+    const S: fn(&'static str, f64, f64, bool, Option<f64>, bool, usize) -> Strategy =
+        |name, abs_floor, rel, knee, abstain_q, flat_only, buffer| Strategy {
             name,
             abs_floor,
             rel,
             knee,
             abstain_q,
             flat_only,
+            buffer,
         };
     let strategies: Vec<Strategy> = vec![
-        S("shipped delivery", 0.22, 0.0, false, None, false),
-        S("relative .5*top", 0.22, 0.5, false, None, false),
-        S("relative .6*top", 0.22, 0.6, false, None, false),
-        S("relative .75*top", 0.22, 0.75, false, None, false),
-        S("knee cut", 0.22, 0.0, true, None, false),
-        S("rel .6 + q50", 0.22, 0.6, false, Some(0.50), false),
-        S("rel .6 + q75", 0.22, 0.6, false, Some(0.75), false),
-        S("knee + q75", 0.22, 0.0, true, Some(0.75), false),
-        S("knee + q90", 0.22, 0.0, true, Some(0.90), false),
-        S("knee + q90 flat-only", 0.22, 0.0, true, Some(0.90), true),
-        S("rel .6 + q90 flat-only", 0.22, 0.6, false, Some(0.90), true),
-        S("rel .6 + q95 flat-only", 0.22, 0.6, false, Some(0.95), true),
+        S("shipped delivery", 0.22, 0.0, false, None, false, 0),
+        S("relative .5*top", 0.22, 0.5, false, None, false, 0),
+        S("relative .6*top", 0.22, 0.6, false, None, false, 0),
+        S("relative .75*top", 0.22, 0.75, false, None, false, 0),
+        S("knee cut", 0.22, 0.0, true, None, false, 0),
+        S("knee + buf1", 0.22, 0.0, true, None, false, 1),
+        S("knee + buf2", 0.22, 0.0, true, None, false, 2),
+        S("knee + buf3", 0.22, 0.0, true, None, false, 3),
+        S("knee + buf5", 0.22, 0.0, true, None, false, 5),
+        S("rel .6 + q50", 0.22, 0.6, false, Some(0.50), false, 0),
+        S("rel .6 + q75", 0.22, 0.6, false, Some(0.75), false, 0),
+        S("knee + q75", 0.22, 0.0, true, Some(0.75), false, 0),
+        S("knee + q90", 0.22, 0.0, true, Some(0.90), false, 0),
+        S("knee + q90 flat-only", 0.22, 0.0, true, Some(0.90), true, 0),
+        S("knee + q90 flat-only + buf2", 0.22, 0.0, true, Some(0.90), true, 2),
+        S("rel .6 + q90 flat-only", 0.22, 0.6, false, Some(0.90), true, 0),
+        S("rel .6 + q95 flat-only", 0.22, 0.6, false, Some(0.95), true, 0),
     ];
 
     let model = cfg.embed_model.as_deref();
@@ -1631,6 +1670,15 @@ pub fn tricks(cfg: &Config) -> anyhow::Result<TricksReport> {
             embedder(model).0,
             if cfg.no_rerank { None } else { reranker().0 },
         )?;
+        // The engine ships its own delivery trims since 0.8.2. This recorder
+        // needs RAW curves — the rows below apply their own floors, so a
+        // trimmed recording would double-cut and flatter whatever the engine
+        // already does.
+        engram.tune(|p| {
+            p.delivery_floor = 0.0;
+            p.knee_cliff = None;
+            p.rerank_full_note = cfg.rerank_full;
+        })?;
 
         let mut recs = Vec::new();
         for q in c.questions() {
@@ -1667,19 +1715,32 @@ pub fn tricks(cfg: &Config) -> anyhow::Result<TricksReport> {
 
         // Per-strategy: sorted curve → knee; floor = max of the three rules;
         // abstain when the conformal gate says "not there" (optionally only
-        // on flat curves — the mixed signal).
-        let curve_floor = |s: &Strategy, scores: &[f64]| -> (f64, Option<f64>) {
+        // on flat curves — the mixed signal). The buffer rescues up to B
+        // hits in delivered order that the KNEE cut but the base floors
+        // would have kept — a knee-cut carrier gets back in, a hit the
+        // measured-free absolute floor rejected stays out.
+        let kept_indices = |s: &Strategy, scores: &[f64]| -> Vec<usize> {
             let mut sorted = scores.to_vec();
             sorted.sort_by(|a, b| b.total_cmp(a));
-            let knee = knee_threshold(&sorted);
             let top = sorted.first().copied().unwrap_or(0.0);
-            let mut floor = s.abs_floor.max(s.rel * top);
+            let base = s.abs_floor.max(s.rel * top);
+            let mut floor = base;
             if s.knee
-                && let Some(k) = knee
+                && let Some(k) = knee_threshold(&sorted)
             {
                 floor = floor.max(k);
             }
-            (floor, knee)
+            let mut kept = Vec::new();
+            let mut buffered = 0usize;
+            for (i, &v) in scores.iter().enumerate() {
+                if v >= floor {
+                    kept.push(i);
+                } else if v >= base && buffered < s.buffer {
+                    kept.push(i);
+                    buffered += 1;
+                }
+            }
+            kept
         };
         let declines = |s: &Strategy, abstain_at: Option<f64>, scores: &[f64]| -> bool {
             if scores.is_empty() {
@@ -1712,10 +1773,7 @@ pub fn tricks(cfg: &Config) -> anyhow::Result<TricksReport> {
                     declined += 1;
                     continue;
                 }
-                let (floor, _) = curve_floor(s, &r.scores);
-                let kept: Vec<usize> = (0..r.scores.len())
-                    .filter(|&i| r.scores[i] >= floor)
-                    .collect();
+                let kept = kept_indices(s, &r.scores);
                 if kept.is_empty() {
                     declined += 1;
                     continue;
@@ -1761,8 +1819,7 @@ pub fn tricks(cfg: &Config) -> anyhow::Result<TricksReport> {
                         if declines(s, abstain_at, scores) {
                             return false;
                         }
-                        let (floor, _) = curve_floor(s, scores);
-                        scores.iter().any(|v| *v >= floor)
+                        !kept_indices(s, scores).is_empty()
                     })
                     .count() as f64
                     / eval_curves.len().max(1) as f64,
@@ -1809,6 +1866,468 @@ pub fn tricks(cfg: &Config) -> anyhow::Result<TricksReport> {
         } else {
             reranker().1
         },
+        seed: cfg.seed,
+        limit: cfg.limit,
+        sizes,
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct QppFeatureAuc {
+    pub feature: &'static str,
+    /// P(answerable feature > control feature), rank AUC. 0.5 = blind;
+    /// below 0.5 = the signal points the other way (controls score higher —
+    /// e.g. entropy, where a real answer's curve is PEAKED, not flat).
+    pub auc: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct QppZPoint {
+    pub z: f64,
+    /// Share of controls whose pool-bottom z clears the threshold —
+    /// the false-positive rate this gate would leave unwarned.
+    pub controls_unwarned: f64,
+    /// Share of answerable questions the gate would warn on.
+    pub answerable_warned: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct QppGumbelPoint {
+    /// Significance level: unwarned when P(null max > top score) <= p.
+    pub p: f64,
+    pub controls_unwarned: f64,
+    pub answerable_warned: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct QppSizeReport {
+    pub graph: usize,
+    pub answerable: usize,
+    pub controls: usize,
+    /// The shipped reference: the phantom-probe weak line auto-tune fits on
+    /// this same store, and what it does to these same curves.
+    pub weak_line: f64,
+    pub weak_line_controls_unwarned: f64,
+    pub weak_line_answerable_warned: f64,
+    pub features: Vec<QppFeatureAuc>,
+    /// Pool-bottom z (free, but the pool bottom is a top-k survivor —
+    /// pre-filtered, crowd-inflated). Kept as the baseline the random
+    /// background has to beat.
+    pub z_sweep: Vec<QppZPoint>,
+    /// Random-background z: the query reranked against a seeded sample of
+    /// notes retrieval never filtered — the query's own null, in its own
+    /// register.
+    pub z_rand_sweep: Vec<QppZPoint>,
+    /// Gumbel p-value of the top score under the fitted null-max
+    /// distribution (Karlin–Altschul / BLAST E-value shape).
+    pub gumbel_sweep: Vec<QppGumbelPoint>,
+    /// Local-crowd z: top score against the shoulder (ranks 15..30) of a
+    /// 30-deep retrieve — the null that carries the query's own crowding.
+    pub z_shoulder_sweep: Vec<QppZPoint>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct QppReport {
+    pub embeddings_are_fake: bool,
+    pub embedder: String,
+    pub reranker: String,
+    pub seed: u64,
+    pub limit: usize,
+    pub sizes: Vec<QppSizeReport>,
+}
+
+const QPP_FEATURES: [&str; 16] = [
+    "top1",
+    "gap12",
+    "gap_median",
+    "std",
+    "entropy_t1",
+    "entropy_t01",
+    "nqc",
+    "wig",
+    "smv",
+    "preknee_count",
+    "knee_flat",
+    "z_bottom",
+    "z_rand",
+    "gumbel_nlogp",
+    "coherence",
+    "z_shoulder",
+];
+
+/// Post-retrieval QPP features over one DESC-sorted delivered score curve.
+/// Every signal is per-query arithmetic — the register lesson says absolute
+/// score scales don't transfer between graphs, so each feature is either
+/// relative to the curve's own background (bottom half of the delivered
+/// pool) or a pure shape statistic. `None` when the curve is empty.
+fn qpp_features(scores: &[f64]) -> Option<[f64; 12]> {
+    if scores.is_empty() {
+        return None;
+    }
+    let mut s = scores.to_vec();
+    s.sort_by(|a, b| b.total_cmp(a));
+    let k = s.len();
+    let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
+    let std = |v: &[f64]| {
+        let m = mean(v);
+        (v.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / v.len() as f64).sqrt()
+    };
+    let entropy = |v: &[f64], t: f64| {
+        if v.len() < 2 {
+            return 0.0;
+        }
+        let m = v.iter().fold(f64::MIN, |a, &b| a.max(b));
+        let exps: Vec<f64> = v.iter().map(|x| ((x - m) / t).exp()).collect();
+        let z: f64 = exps.iter().sum();
+        let h: f64 = exps
+            .iter()
+            .map(|e| {
+                let p = e / z;
+                if p > 0.0 { -p * p.ln() } else { 0.0 }
+            })
+            .sum();
+        h / (v.len() as f64).ln()
+    };
+
+    let top1 = s[0];
+    let gap12 = if k > 1 { s[0] - s[1] } else { s[0] };
+    let gap_median = s[0] - s[k / 2];
+    // Background = the bottom half of the delivered pool: what "nothing in
+    // particular" scores for THIS query in THIS register, for free.
+    let bottom = &s[k / 2..];
+    let (mu_bg, sd_bg) = (mean(bottom), std(bottom).max(1e-6));
+    let head = &s[..k.min(5)];
+    let (mu_head, sd_head) = (mean(head), std(head));
+    let nqc = sd_head / mu_bg.max(1e-6);
+    let wig = mu_head - mu_bg;
+    let smv = head
+        .iter()
+        .map(|&x| x * (x.max(1e-9) / mu_head.max(1e-9)).ln().abs())
+        .sum::<f64>()
+        / head.len() as f64
+        / mu_bg.max(1e-6);
+    let knee = knee_threshold(&s);
+    let preknee_count = match knee {
+        Some(t) => s.iter().filter(|&&v| v >= t).count() as f64,
+        None => k as f64,
+    };
+    let knee_flat = if knee.is_none() { 1.0 } else { 0.0 };
+    let z_bottom = (s[0] - mu_bg) / sd_bg;
+
+    Some([
+        top1,
+        gap12,
+        gap_median,
+        std(&s),
+        entropy(&s, 1.0),
+        entropy(&s, 0.1),
+        nqc,
+        wig,
+        smv,
+        preknee_count,
+        knee_flat,
+        z_bottom,
+    ])
+}
+
+/// Rank AUC: P(a > b) + 0.5·P(a == b) over all cross pairs.
+fn rank_auc(a: &[f64], b: &[f64]) -> f64 {
+    if a.is_empty() || b.is_empty() {
+        return 0.5;
+    }
+    let mut wins = 0.0f64;
+    for &x in a {
+        for &y in b {
+            if x > y {
+                wins += 1.0;
+            } else if x == y {
+                wins += 0.5;
+            }
+        }
+    }
+    wins / (a.len() as f64 * b.len() as f64)
+}
+
+/// The QPP bench (2026-08 cycle, tier 1): can a per-QUERY signal computed
+/// from the score curve itself separate answerable from never-written where
+/// the per-GRAPH phantom line cannot? The register lesson predicts yes: an
+/// in-register unanswerable query inflates every absolute score, but the
+/// curve's SHAPE stays flat, and a background-relative z cancels the
+/// register term by construction. Research only — nothing here ships.
+pub fn qpp(cfg: &Config) -> anyhow::Result<QppReport> {
+    anyhow::ensure!(
+        !cfg.no_rerank,
+        "--qpp reads the cross-encoder's calibrated scale; it means nothing with --no-rerank"
+    );
+    let model = cfg.embed_model.as_deref();
+    let (_, embedder_name) = embedder(model);
+    let mut sizes = Vec::new();
+
+    for &size in &cfg.sizes {
+        let c = corpus_full(
+            size,
+            size * cfg.distractor_ratio,
+            cfg.seed,
+            &cfg.profile,
+            &cfg.type_mix,
+        );
+        let engram = EngramArm::build(&c, embedder(model).0, reranker().0)?;
+        // The shipped reference first, on the shipped config: what the
+        // phantom-probe dial converges to for this store (moves are damped,
+        // so one pass is only half the journey).
+        for _ in 0..16 {
+            if engram.engine().auto_tune()?.is_none() {
+                break;
+            }
+        }
+        let weak_line = engram.engine().graph_config().policy.weak_evidence_top;
+        // Then raw curves — the features read the whole delivered pool, so
+        // the engine's own trims must not pre-shape it. Trust's rank tilt is
+        // zeroed too: the background null scores plain sigmoid(logit), and
+        // the top score has to be measured on the same ruler.
+        engram.tune(|p| {
+            p.delivery_floor = 0.0;
+            p.knee_cliff = None;
+            p.rerank_trust_weight = 0.0;
+            p.rerank_full_note = cfg.rerank_full;
+        })?;
+
+        // The per-query null: a seeded sample of notes retrieval never saw
+        // as candidates, reranked against every query. The pool bottom is a
+        // top-k survivor — pre-filtered and crowd-inflated — while this
+        // sample answers "what does an arbitrary note in this graph's
+        // register score for THIS query".
+        let (bg_rerank, _) = reranker();
+        let bg_rerank = bg_rerank.expect("--qpp requires the reranker");
+        let mut order: Vec<usize> = (0..c.facts.len()).collect();
+        crate::rng::Rng::new(cfg.seed ^ (size as u64) << 17).shuffle(&mut order);
+        let bg_docs: Vec<String> = order
+            .into_iter()
+            .take(32)
+            .map(|i| format!("{}\n{}", c.facts[i].title, c.facts[i].body))
+            .collect();
+        let coh_embed = embedder(model).0;
+
+        struct QCurve {
+            scores: Vec<f64>,
+            z_rand: f64,
+            gumbel_p: f64,
+            coherence: f64,
+            /// z of the top score against the SHOULDER of a 30-deep retrieve
+            /// (ranks 15..30): the one null that carries the query's own
+            /// local crowding — a random sample never contains the topical
+            /// near-miss cluster that actually inflates control scores.
+            z_shoulder: f64,
+        }
+        let sigmoid = |l: f32| 1.0 / (1.0 + (-l as f64).exp());
+        let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
+        let std = |v: &[f64]| {
+            let m = mean(v);
+            (v.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / v.len().max(1) as f64).sqrt()
+        };
+        let cosine = |a: &[f32], b: &[f32]| {
+            let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+            let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+            (dot / (na * nb).max(1e-9)) as f64
+        };
+        let curve = |text: &str| -> QCurve {
+            // A 30-deep retrieve: the head (top cfg.limit) feeds the curve
+            // features, the shoulder feeds the local-crowd null.
+            let deep = engram.retrieve(text, cfg.limit.max(30));
+            let mut full = deep.scores.clone();
+            full.sort_by(|a, b| b.total_cmp(a));
+            let r_scores: Vec<f64> = full.iter().take(cfg.limit).copied().collect();
+            let top1 = full.first().copied().unwrap_or(0.0);
+            let z_shoulder = if full.len() >= 20 {
+                let sh = &full[15..full.len().min(30)];
+                let (m, s) = (mean(sh), std(sh).max(1e-6));
+                (top1 - m) / s
+            } else {
+                0.0
+            };
+            let r = deep;
+            let bg: Vec<f64> = bg_rerank
+                .rank(text, &bg_docs)
+                .map(|ls| ls.into_iter().map(sigmoid).collect())
+                .unwrap_or_default();
+            let (z_rand, gumbel_p) = if bg.len() >= 8 {
+                let z = (top1 - mean(&bg)) / std(&bg).max(1e-6);
+                // Null maxima: the max of each 4-note block, Gumbel fitted
+                // by method of moments (β = σ√6/π, μ = m − 0.5772β), then
+                // P(null max > top1) — the BLAST E-value shape.
+                let maxima: Vec<f64> = bg
+                    .chunks(4)
+                    .filter(|ch| ch.len() == 4)
+                    .map(|ch| ch.iter().fold(f64::MIN, |a, &b| a.max(b)))
+                    .collect();
+                let beta = (std(&maxima) * 6.0f64.sqrt() / std::f64::consts::PI).max(1e-6);
+                let mu = mean(&maxima) - 0.5772 * beta;
+                let p = 1.0 - (-(-(top1 - mu) / beta).exp()).exp();
+                (z, p.clamp(0.0, 1.0))
+            } else {
+                (0.0, 1.0)
+            };
+            // Coherence: mean pairwise cosine of the top hits' embeddings.
+            // A real answer's head huddles around the answer; a
+            // never-written question's head is topical scatter — or so the
+            // hypothesis goes; the AUC row is the verdict.
+            let head: Vec<Vec<f32>> = r
+                .rendered
+                .iter()
+                .take(5)
+                .filter_map(|t| coh_embed.embed_one(t).ok())
+                .collect();
+            let mut coh = 0.0;
+            if head.len() >= 2 {
+                let mut n = 0usize;
+                for i in 0..head.len() {
+                    for j in i + 1..head.len() {
+                        coh += cosine(&head[i], &head[j]);
+                        n += 1;
+                    }
+                }
+                coh /= n as f64;
+            }
+            QCurve {
+                scores: r_scores,
+                z_rand,
+                gumbel_p,
+                coherence: coh,
+                z_shoulder,
+            }
+        };
+
+        let answerable: Vec<QCurve> = c
+            .questions()
+            .filter(|q| q.gold.is_some())
+            .map(|q| curve(&q.text))
+            .collect();
+        let controls: Vec<QCurve> = c.unanswerable.iter().map(|q| curve(&q.text)).collect();
+        eprintln!(
+            "  {size}: weak line {weak_line:.3}, {} answerable / {} control curves",
+            answerable.len(),
+            controls.len()
+        );
+
+        let feats = |q: &QCurve| -> Option<Vec<f64>> {
+            let base = qpp_features(&q.scores)?;
+            let mut v = base.to_vec();
+            v.push(q.z_rand);
+            v.push(-(q.gumbel_p.max(1e-12)).ln());
+            v.push(q.coherence);
+            v.push(q.z_shoulder);
+            Some(v)
+        };
+        let a_feats: Vec<Vec<f64>> = answerable.iter().filter_map(feats).collect();
+        let c_feats: Vec<Vec<f64>> = controls.iter().filter_map(feats).collect();
+        let features = (0..QPP_FEATURES.len())
+            .map(|j| {
+                let a: Vec<f64> = a_feats.iter().map(|f| f[j]).collect();
+                let b: Vec<f64> = c_feats.iter().map(|f| f[j]).collect();
+                QppFeatureAuc {
+                    feature: QPP_FEATURES[j],
+                    auc: rank_auc(&a, &b),
+                }
+            })
+            .collect();
+
+        // Gates, all priced like the weak line: unwarned controls (FP) vs
+        // warned answerable, an empty curve counting as warned.
+        let z_of = |q: &QCurve| qpp_features(&q.scores).map(|f| f[11]);
+        let z_sweep = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0]
+            .iter()
+            .map(|&t| QppZPoint {
+                z: t,
+                controls_unwarned: controls
+                    .iter()
+                    .filter(|q| z_of(q).is_some_and(|z| z >= t))
+                    .count() as f64
+                    / controls.len().max(1) as f64,
+                answerable_warned: answerable
+                    .iter()
+                    .filter(|q| !z_of(q).is_some_and(|z| z >= t))
+                    .count() as f64
+                    / answerable.len().max(1) as f64,
+            })
+            .collect();
+        let z_rand_sweep = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0]
+            .iter()
+            .map(|&t| QppZPoint {
+                z: t,
+                controls_unwarned: controls
+                    .iter()
+                    .filter(|q| !q.scores.is_empty() && q.z_rand >= t)
+                    .count() as f64
+                    / controls.len().max(1) as f64,
+                answerable_warned: answerable
+                    .iter()
+                    .filter(|q| q.scores.is_empty() || q.z_rand < t)
+                    .count() as f64
+                    / answerable.len().max(1) as f64,
+            })
+            .collect();
+        let z_shoulder_sweep = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0]
+            .iter()
+            .map(|&t| QppZPoint {
+                z: t,
+                controls_unwarned: controls
+                    .iter()
+                    .filter(|q| !q.scores.is_empty() && q.z_shoulder >= t)
+                    .count() as f64
+                    / controls.len().max(1) as f64,
+                answerable_warned: answerable
+                    .iter()
+                    .filter(|q| q.scores.is_empty() || q.z_shoulder < t)
+                    .count() as f64
+                    / answerable.len().max(1) as f64,
+            })
+            .collect();
+        let gumbel_sweep = [0.5, 0.25, 0.1, 0.05, 0.01]
+            .iter()
+            .map(|&p| QppGumbelPoint {
+                p,
+                controls_unwarned: controls
+                    .iter()
+                    .filter(|q| !q.scores.is_empty() && q.gumbel_p <= p)
+                    .count() as f64
+                    / controls.len().max(1) as f64,
+                answerable_warned: answerable
+                    .iter()
+                    .filter(|q| q.scores.is_empty() || q.gumbel_p > p)
+                    .count() as f64
+                    / answerable.len().max(1) as f64,
+            })
+            .collect();
+
+        let top_of = |q: &QCurve| q.scores.iter().fold(0.0f64, |a, &b| a.max(b));
+        sizes.push(QppSizeReport {
+            graph: c.facts.len(),
+            answerable: answerable.len(),
+            controls: controls.len(),
+            weak_line,
+            weak_line_controls_unwarned: controls
+                .iter()
+                .filter(|q| !q.scores.is_empty() && top_of(q) >= weak_line)
+                .count() as f64
+                / controls.len().max(1) as f64,
+            weak_line_answerable_warned: answerable
+                .iter()
+                .filter(|q| q.scores.is_empty() || top_of(q) < weak_line)
+                .count() as f64
+                / answerable.len().max(1) as f64,
+            features,
+            z_sweep,
+            z_rand_sweep,
+            gumbel_sweep,
+            z_shoulder_sweep,
+        });
+    }
+
+    Ok(QppReport {
+        embeddings_are_fake: embedder_name.contains("(fake)"),
+        embedder: embedder_name,
+        reranker: reranker().1,
         seed: cfg.seed,
         limit: cfg.limit,
         sizes,
@@ -1964,6 +2483,9 @@ pub fn run(cfg: &Config) -> anyhow::Result<Report> {
         if cfg.flat_priors {
             engram.flatten_type_priors()?;
         }
+        if cfg.rerank_full {
+            engram.tune(|p| p.rerank_full_note = true)?;
+        }
         let rag = RagArm::new(&engram, embedder(model).0);
 
         // The ladder, weakest first. `engram-hybrid` and `engram-full` are two
@@ -2086,6 +2608,7 @@ mod tests {
             phrasing: PhrasingMix::default(),
             embed_model: None,
             curated_budgets: vec![DEFAULT_CURATED_BUDGET],
+            rerank_full: false,
         })
         .unwrap()
     }

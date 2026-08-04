@@ -1,0 +1,22 @@
+  100: weak line 0.881 -> 0.887 (fit 0.892, damped) from 24 phantom probes at q90, two families (weak line 0.887, converged)
+  1500: auto-tune left the defaults (weak line 0.850, converged)
+engram-eval — the shipped post-tune stack, measured end to end
+runtime: embedder=bge-small-en-v1.5  reranker=jina-reranker-v1-turbo-en  seed=1  limit=10
+
+graph 100 facts (106 edges) / 171 questions / 25 controls
+  auto-tune: weak line 0.881 -> 0.887 (fit 0.892, damped) from 24 phantom probes at q90, two families (weak line 0.887)
+  recall (with graph credit): R@1 0.77  R@5 0.94 (hybrid alone 0.94)  lex 1.00  para 1.00  obliq 0.82  weighted 0.982
+  attention: focus 0.64  noise 0.35  tok/query 192  standing 3041
+  recommendation regime: honest FP (controls unwarned) 0.00  controls empty/none 0.04  answerable warned 0.45
+
+graph 1500 facts (1590 edges) / 2571 questions / 375 controls
+  auto-tune: left the defaults untouched (weak line 0.850)
+  recall (with graph credit): R@1 0.69  R@5 0.80 (hybrid alone 0.78)  lex 1.00  para 0.98  obliq 0.40  weighted 0.934
+  attention: focus 0.44  noise 0.61  tok/query 315  standing 3062
+  recommendation regime: honest FP (controls unwarned) 0.02  controls empty/none 0.00  answerable warned 0.45
+
+Reading it: candidates are never cut — below the auto-tuned weak line the reply
+leads with "likely not in memory", so a warned answer to a never-written question
+counts as honest and only an unwarned one is a false positive.
+
+wrote eval/results/posttune-transplant.json

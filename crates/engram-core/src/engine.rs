@@ -361,8 +361,9 @@ impl Engine {
 
     /// Auto-tune dial one: fit the conflict-suspect floor from judged
     /// history by maximizing balanced accuracy over midpoint candidates,
-    /// preferring the higher threshold on ties (a quieter queue), clamped
-    /// into [[`policy::AUTO_TUNE_FLOOR_MIN`], `duplicate_similarity`).
+    /// preferring the higher threshold on ties (a quieter queue). The move
+    /// is damped ([`policy::AUTO_TUNE_DAMPING`]) and the damped target is
+    /// clamped into [[`policy::AUTO_TUNE_FLOOR_MIN`], `duplicate_similarity`).
     /// Mutates `cfg` and returns the journal fragment; the caller persists.
     fn fit_conflict_floor(&self, cfg: &mut crate::config::GraphConfig) -> Result<Option<String>> {
         use crate::policy::{
@@ -401,16 +402,25 @@ impl Engine {
                 best = (t, balanced);
             }
         }
-        let fitted = best
-            .0
-            .clamp(AUTO_TUNE_FLOOR_MIN, cfg.policy.duplicate_similarity - 0.001);
-        if (fitted - old).abs() < AUTO_TUNE_MIN_DELTA {
+        let fitted = best.0;
+        // Damped, then hard-clamped: the dial travels half the distance to
+        // the fit per pass (policy::AUTO_TUNE_DAMPING), and the clamp reads
+        // the DAMPED value — a glitched fit, or a corrupt stored dial, lands
+        // back inside the band on the very next pass.
+        let (lo, hi) = (AUTO_TUNE_FLOOR_MIN, cfg.policy.duplicate_similarity - 0.001);
+        let anchor = if old.is_finite() { old.clamp(lo, hi) } else { hi };
+        let target = if fitted.is_finite() {
+            (anchor + (fitted - anchor) * crate::policy::AUTO_TUNE_DAMPING).clamp(lo, hi)
+        } else {
+            anchor
+        };
+        if (target - old).abs() < AUTO_TUNE_MIN_DELTA {
             return Ok(None);
         }
 
-        cfg.policy.conflict_suspect_similarity = fitted;
+        cfg.policy.conflict_suspect_similarity = target;
         Ok(Some(format!(
-            "conflict floor {old:.3} -> {fitted:.3} from {} judged pairs ({confirmed} confirmed / {dismissed} dismissed)",
+            "conflict floor {old:.3} -> {target:.3} (fit {fitted:.3}, damped) from {} judged pairs ({confirmed} confirmed / {dismissed} dismissed)",
             judged.len()
         )))
     }
@@ -420,9 +430,10 @@ impl Engine {
     /// `policy.weak_line_probes` phantom probes reach on this graph — the
     /// split-conformal question "how high can a score climb here when the
     /// answer does not exist". Probes never stamp `last_seen` (calibration
-    /// is not retrieval) and the fit clamps into
-    /// [[`policy::WEAK_LINE_MIN`], [`policy::WEAK_LINE_MAX`]]. Mutates `cfg`
-    /// and returns the journal fragment; the caller persists.
+    /// is not retrieval). The move is damped ([`policy::AUTO_TUNE_DAMPING`])
+    /// and the damped target clamps into the floor-relative band up to
+    /// [`policy::WEAK_LINE_MAX`]. Mutates `cfg` and returns the journal
+    /// fragment; the caller persists.
     fn fit_weak_line(&self, cfg: &mut crate::config::GraphConfig) -> Result<Option<String>> {
         use crate::policy::{AUTO_TUNE_MIN_DELTA, WEAK_LINE_ABOVE_FLOOR, WEAK_LINE_MAX};
         let Some(reranker) = &self.reranker else {
@@ -438,36 +449,67 @@ impl Engine {
         notes.retain(|n| n.valid_until.is_none());
         notes.sort_by(|a, b| a.id.cmp(&b.id));
         let vocab: Vec<String> = notes.iter().filter_map(|n| probe_terms(&n.title)).collect();
-        let mut tops = Vec::with_capacity(cfg.policy.weak_line_probes);
-        for i in 0..cfg.policy.weak_line_probes {
-            let terms = (!vocab.is_empty()).then(|| vocab[i % vocab.len()].as_str());
-            let probe = phantom_probe(i, terms);
-            let qv = self.embedder.embed_one(&probe)?;
-            let mut hits = self.store.search_hybrid(&probe, Some(&qv), &[], 12)?;
+        // Two probe families, each answering "how high can a score climb
+        // here when the answer does not exist" from a different angle:
+        // question-shaped templates over borrowed vocabulary, and ICT
+        // transplants — real sentences with their subjects coined out. The
+        // fit is the max of the per-family quantiles: the line must clear
+        // whichever register this graph's noise speaks loudest in.
+        let total = cfg.policy.weak_line_probes;
+        let mut top_of = |probe: &str| -> Result<f64> {
+            let qv = self.embedder.embed_one(probe)?;
+            let mut hits = self.store.search_hybrid(probe, Some(&qv), &[], 12)?;
             if hits.is_empty() {
-                tops.push(0.0);
-                continue;
+                return Ok(0.0);
             }
-            self.rerank(reranker.as_ref(), &probe, &mut hits);
-            tops.push(hits.iter().map(|h| h.score).fold(f64::MIN, f64::max));
+            self.rerank(reranker.as_ref(), probe, &mut hits);
+            Ok(hits.iter().map(|h| h.score).fold(f64::MIN, f64::max))
+        };
+        let mut template_tops = Vec::with_capacity(total.div_ceil(2));
+        let mut transplant_tops = Vec::with_capacity(total / 2);
+        for i in 0..total {
+            if i % 2 == 0 {
+                let terms = (!vocab.is_empty()).then(|| vocab[(i / 2) % vocab.len()].as_str());
+                template_tops.push(top_of(&phantom_probe(i / 2, terms))?);
+            } else {
+                let n = &notes[(i / 2) * 17 % notes.len()];
+                transplant_tops.push(top_of(&transplant_probe(
+                    i / 2,
+                    &n.title,
+                    n.body.as_deref(),
+                ))?);
+            }
         }
-        tops.sort_by(f64::total_cmp);
+        template_tops.sort_by(f64::total_cmp);
+        transplant_tops.sort_by(f64::total_cmp);
         let q = cfg.policy.weak_line_quantile;
-        // The lower clamp is floor-relative, never absolute: a line at or
-        // under the delivery floor could never fire, but the score scale
-        // itself is per-graph evidence (see policy::WEAK_LINE_ABOVE_FLOOR).
-        let fitted = quantile(&tops, q).clamp(
-            (cfg.policy.delivery_floor + WEAK_LINE_ABOVE_FLOOR).min(WEAK_LINE_MAX),
-            WEAK_LINE_MAX,
-        );
+        let fitted = quantile(&template_tops, q).max(quantile(&transplant_tops, q));
         let old = cfg.policy.weak_evidence_top;
-        if (fitted - old).abs() < AUTO_TUNE_MIN_DELTA {
+        // Damped, then hard-clamped. The lower clamp is floor-relative,
+        // never absolute: a line at or under the delivery floor could never
+        // fire, but the score scale itself is per-graph evidence (see
+        // policy::WEAK_LINE_ABOVE_FLOOR). The clamp reads the DAMPED value
+        // (policy::AUTO_TUNE_DAMPING), so one noisy probe register cannot
+        // teleport the line and a glitched fit stays inside the band.
+        let lo = (cfg.policy.delivery_floor + WEAK_LINE_ABOVE_FLOOR).clamp(0.0, WEAK_LINE_MAX);
+        let anchor = if old.is_finite() {
+            old.clamp(lo, WEAK_LINE_MAX)
+        } else {
+            WEAK_LINE_MAX
+        };
+        let target = if fitted.is_finite() {
+            (anchor + (fitted - anchor) * crate::policy::AUTO_TUNE_DAMPING)
+                .clamp(lo, WEAK_LINE_MAX)
+        } else {
+            anchor
+        };
+        if (target - old).abs() < AUTO_TUNE_MIN_DELTA {
             return Ok(None);
         }
-        cfg.policy.weak_evidence_top = fitted;
+        cfg.policy.weak_evidence_top = target;
         Ok(Some(format!(
-            "weak line {old:.3} -> {fitted:.3} from {} phantom probes at q{:.0}",
-            tops.len(),
+            "weak line {old:.3} -> {target:.3} (fit {fitted:.3}, damped) from {} phantom probes at q{:.0}, two families",
+            template_tops.len() + transplant_tops.len(),
             q * 100.0
         )))
     }
@@ -1347,9 +1389,22 @@ impl Engine {
     /// to the pane, where a number that no longer means "how good is this
     /// match" would quietly mislead both.
     fn rerank(&self, reranker: &dyn Reranker, query: &str, hits: &mut [SearchHit]) {
+        // `rerank_full_note` scores `title + whole body` instead of `title +
+        // keyword-window snippet`: notes fit the cross-encoder's window whole,
+        // and on an oblique query the evidence sentence often shares no
+        // keyword with the query — it never enters the window at all. The
+        // snippet stays the delivered text either way; this changes only what
+        // the judge reads.
+        let full_note = self.config().policy.rerank_full_note;
         let docs: Vec<String> = hits
             .iter()
             .map(|h| {
+                if full_note
+                    && let Ok(Some(node)) = self.store.get_node(&h.id)
+                    && let Some(body) = node.body.as_deref().filter(|b| !b.is_empty())
+                {
+                    return format!("{}\n{}", h.title, body);
+                }
                 let snippet = h.snippet.replace(
                     [crate::store::SNIPPET_OPEN, crate::store::SNIPPET_CLOSE],
                     "",
@@ -2954,15 +3009,21 @@ fn probe_terms(title: &str) -> Option<String> {
     (!words.is_empty()).then(|| words.join(" "))
 }
 
-/// Mint the i-th phantom probe for the weak-line fit: a memory-shaped
-/// question about a coined subject that cannot exist in any graph, phrased
-/// over vocabulary borrowed from the graph itself when it has any. The
-/// coinage is deterministic — the same graph calibrates against the same
-/// probes, so the fitted line settles instead of wandering.
-fn phantom_probe(i: usize, terms: Option<&str>) -> String {
+/// The i-th deterministic coinage: pronounceable, unmistakably not a word
+/// this graph contains. Deterministic — the same graph calibrates against
+/// the same probes, so the fitted line settles instead of wandering.
+fn coined(i: usize) -> String {
     const ONSET: [&str; 8] = ["vor", "zel", "quam", "dro", "fex", "gril", "plom", "stru"];
     const MID: [&str; 8] = ["ni", "ba", "ro", "ka", "lu", "tri", "gos", "pem"];
     const CODA: [&str; 8] = ["dax", "vek", "morn", "lisk", "tor", "bran", "funt", "gel"];
+    format!("{}{}{}", ONSET[i % 8], MID[(i / 8) % 8], CODA[(i / 64) % 8])
+}
+
+/// Mint the i-th template phantom probe for the weak-line fit: a
+/// memory-shaped question about a coined subject that cannot exist in any
+/// graph, phrased over vocabulary borrowed from the graph itself when it
+/// has any.
+fn phantom_probe(i: usize, terms: Option<&str>) -> String {
     const FALLBACK: [&str; 6] = [
         "subsystem",
         "migration",
@@ -2979,7 +3040,46 @@ fn phantom_probe(i: usize, terms: Option<&str>) -> String {
         "What is the policy for the {}?",
         "What did the {} replace and why?",
     ];
-    let name = format!("{}{}{}", ONSET[i % 8], MID[(i / 8) % 8], CODA[(i / 64) % 8]);
-    let topic = format!("{name} {}", terms.unwrap_or(FALLBACK[i % FALLBACK.len()]));
+    let topic = format!(
+        "{} {}",
+        coined(i),
+        terms.unwrap_or(FALLBACK[i % FALLBACK.len()])
+    );
     TEMPLATES[i % TEMPLATES.len()].replace("{}", &topic)
+}
+
+/// Mint the i-th transplant probe: a REAL sentence from a real note with
+/// its two most distinctive words swapped for coinages (ICT inverted — ACL
+/// 2019 P19-1612, repurposed for calibration). Template probes are
+/// lexically in register but not syntactically; a transplant is both — it
+/// reads exactly like the oblique prose queries that score highest on
+/// never-written subjects, which is the ceiling the line has to reach
+/// (measured gap at 1500 notes: template q90 0.476 vs real-control q90
+/// 0.768). The swap keeps it unanswerable; everything else is the graph's
+/// own voice.
+fn transplant_probe(i: usize, title: &str, body: Option<&str>) -> String {
+    // The longest sentence in the body carries the most register; a short
+    // or empty body falls back to the title.
+    let sentence = body
+        .unwrap_or("")
+        .split(['.', '!', '?', '\n'])
+        .map(str::trim)
+        .filter(|s| s.len() >= 40)
+        .max_by_key(|s| s.len().min(220))
+        .unwrap_or(title);
+    let sentence: String = sentence.chars().take(220).collect();
+
+    // Swap the two longest content words — the subject-bearing tokens in
+    // almost any technical sentence — for coinages.
+    let mut words: Vec<&str> = sentence
+        .split(|c: char| !c.is_alphanumeric() && !"-_".contains(c))
+        .filter(|w| w.len() >= 6)
+        .collect();
+    words.sort_by_key(|w| std::cmp::Reverse(w.len()));
+    words.dedup();
+    let mut out = sentence.clone();
+    for (n, w) in words.into_iter().take(2).enumerate() {
+        out = out.replacen(w, &coined(i + 37 * (n + 1)), 1);
+    }
+    out
 }

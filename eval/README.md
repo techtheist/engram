@@ -29,7 +29,8 @@ adding one mechanism:
 |---|---|---|---|---|---|
 | engram 0.8.0, as shipped | 512 | 0.10 | 0.91 | 0.80 | 1.00 |
 | + knee trim *(shipped in 0.8.2)* | 317 | **0.44** | **0.63** | 0.79 | 1.00 |
-| + calibrated "likely not in memory" note *(shipped in 0.8.2)* | 317 | **0.44** | **0.63** | 0.79 | **0.12** |
+| + calibrated "likely not in memory" note *(shipped in 0.8.2)* | 317 | **0.44** | **0.63** | 0.79 | 0.12 |
+| + transplant probes: the line calibrates in the graph's own voice *(0.8.2)* | 317 | **0.44** | **0.63** | 0.79 | **0.02** |
 
 Every column, in plain words:
 
@@ -44,18 +45,22 @@ Every column, in plain words:
 - **R@5** — how often the right note is among the first five returned.
   The improvements above cost at most 0.01 of it.
 - **FP** — asked about something that was **never saved**, how often the
-  system still answers as if it knew. The last row cuts it from *always
-  fooled* (1.00) to 0.12: below a confidence line the graph calibrates on
-  itself, the reply is prefixed *"this likely isn't in memory — nearest
-  candidates below"*. Candidates are never removed; a warned answer to an
-  unanswerable question counts as honest. The price: the same warning
-  appears on 46% of real questions in the lowest-confidence range (their
-  answers still delivered). At q95 the FP drops to 0.05. **0.12 is this
-  label's ceiling** — it assumes the calibration probes speak the graph's
-  exact register. The self-calibration 0.8.2 actually ships (probes minted
-  from the graph's own vocabulary, no labels needed) reaches 0.32 at 100
-  notes and 0.84 at 1500 end to end — see the baseline table below; closing
-  that gap at scale is the next cycle's named problem.
+  system still answers as if it knew. Below a confidence line the graph
+  calibrates on itself, the reply is prefixed *"this likely isn't in memory
+  — nearest candidates below"*. Candidates are never removed; a warned
+  answer to an unanswerable question counts as honest. The first
+  self-calibration (question templates over the graph's own vocabulary)
+  reached 0.32 at 100 notes but 0.84 at 1500 — templated probes are
+  lexically in register, not syntactically, and the corpus crowd outruns
+  them. The last row fixes that with a second probe family: **transplants**
+  — real sentences from real notes with their subject words swapped for
+  coinages ([ICT](https://aclanthology.org/P19-1612/) inverted). They score
+  exactly like the graph's loudest noise register, the line takes the max
+  of the two families, and end-to-end FP lands at **0.02 at 1500 and 0.00
+  at 100** — no labels, no LLM, self-calibrated. The price: the warning
+  appears on ~45% of real questions in the lowest-confidence range (their
+  answers still delivered); `weak_line_quantile` is the per-graph softness
+  knob if that reads too cautious.
 
 The knee trim cuts where the ranked score curve falls off a cliff instead of
 at a fixed depth ([Tail-Aware Adaptive-k](https://arxiv.org/abs/2606.11907),
@@ -78,7 +83,7 @@ never-written question counts as honest.
 | grep | 0 | 2741 | 0.10 | 0.93 | 0.66 | 0.68 | 1.00 | 0.99 | 0.04 | 1.00 |
 | rag (pure vectors) | 0 | 2673 | 0.10 | 0.91 | 0.66 | 0.80 | 1.00 | 0.94 | 0.47 | 1.00 |
 | **engram (pre-tune)** | 3062 | **528** | 0.10 | 0.91 | **0.69** | **0.81** | 1.00 | **1.00** | 0.42 | 1.00 |
-| **engram (post-tune, 0.8.2)** | 3062 | **315** | **0.44** | **0.61** | 0.69 | 0.80 | 1.00 | 0.98 | 0.40 | **0.84** |
+| **engram (post-tune, 0.8.2)** | 3062 | **315** | **0.44** | **0.61** | 0.69 | 0.80 | 1.00 | 0.98 | 0.40 | **0.02** |
 | curated-file 3k | 2928 | 2928 | 0.03 | 1.00 | 0.02 | 0.02 | 0.02 | 0.02 | 0.02 | 1.00 |
 | curated-file 30k | 29966 | 29966 | 0.00 | 1.00 | 0.25 | 0.25 | 0.25 | 0.25 | 0.25 | 1.00 |
 | whole-file | 377260 | 377260 | 0.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
@@ -110,12 +115,13 @@ the second number.
 **Only one arm on this table ever declines to be fooled.** Every baseline
 answers every never-written question (FP 1.00): the score populations overlap
 too much for a hard floor, which the `--floor` sweep priced exactly. The
-post-tune stack instead calibrates a per-graph confidence line on phantom
-probes minted from its own vocabulary and leads low-confidence replies with
-*"likely not in memory"* — candidates intact. Measured end to end that takes
-FP to **0.32 at 100 notes and 0.84 at 1500**; the research table's 0.12 is
-the same label under in-register calibration, and closing that probe-register
-gap at scale is the named next problem, not a footnote.
+post-tune stack instead calibrates a per-graph confidence line on two families
+of phantom probes — question templates over its own vocabulary, and transplant
+sentences lifted from its own notes with the subjects coined out — and leads
+low-confidence replies with *"likely not in memory"*, candidates intact.
+Measured end to end that takes FP to **0.02 at 1500 notes and 0.00 at 100**,
+at the price of the same hedge on ~45% of real questions (answers still
+delivered; `weak_line_quantile` softens it per graph).
 
 **Reading the whole file is not expensive — it is impossible.** 377,260 tokens
 against a 3,062-token brief; the strategy works, works, then does not exist.
@@ -142,14 +148,14 @@ works hardest:
 | grep | 0 | 2652 | 0.10 | 0.91 | 0.67 | 0.82 | 1.00 | 1.00 | 0.47 | 1.00 |
 | rag (pure vectors) | 0 | 2269 | 0.12 | 0.88 | 0.82 | 0.97 | 1.00 | 1.00 | 0.92 | 1.00 |
 | **engram (pre-tune)** | 3041 | **373** | 0.20 | 0.80 | **0.79** | 0.97 | 1.00 | 1.00 | 0.91 | 0.96 |
-| **engram (post-tune, 0.8.2)** | 3041 | **192** | **0.64** | **0.35** | 0.77 | 0.94 | 1.00 | 1.00 | 0.82 | **0.32** |
+| **engram (post-tune, 0.8.2)** | 3041 | **192** | **0.64** | **0.35** | 0.77 | 0.94 | 1.00 | 1.00 | 0.82 | **0.00** |
 | curated-file 3k | 2929 | 2929 | 0.03 | 0.99 | 0.36 | 0.36 | 0.36 | 0.36 | 0.36 | 1.00 |
 | curated-file 30k | 8403 | 8403 | 0.01 | 0.99 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
 | whole-file | 25179 | 25179 | 0.01 | 0.99 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
 
 The post-tune row is where the young-graph story peaks: **focus 0.64 at 192
 tokens/query** — a twelfth of rag's bill with nearly two-thirds of it being
-the answer — and **FP 0.32**, against a field where every other arm answers
+the answer — and **FP 0.00**, against a field where every other arm answers
 every never-written question. The knee costs 0.03 recall@5 and 0.09 oblique
 here (a trimmed hit also takes its graph neighbors with it, which the
 research bench could not see); what it buys is that an assistant reading the
@@ -269,6 +275,33 @@ results will be published here when they exist.** Until then, the claims on this
 page are about what was retrieved and what it cost, never about answer quality.
 
 ---
+
+## Evolution
+
+Every generation of the stack, what it changed, and what that bought — as
+measured when it happened. Early rows predate the attention metrics, so they
+carry the numbers their own era could produce; from 0.8.0 on, the effect
+column is the modern protocol at 1500 notes unless stated.
+
+| generation | what changed | measured effect |
+|---|---|---|
+| ≤ 0.7.1 | hybrid RAG, conflict scan, reranker precision layer, NLI logic layer — built on intuition | unmeasured — predates the instrument |
+| 0.7.2 — the instrument | offline harness born: invented-subject corpus, three phrasings, controls, no model in the grading loop | the first honest split: name the thing → recall 1.00; describe it without naming → 0.11 (1000 notes) |
+| 0.7.2 — the retune | keyword weight 0.5 → 0.15, reranker VOTES instead of deciding | +0.135 oblique recall at unchanged token cost |
+| 0.8.0 — measured not promised | attention metrics (focus/noise/FP), gradation ladder, fixed delivery floor | the baseline the next rows move: 528 tok/query, focus 0.10, noise 0.91, R@5 0.81, FP 1.00 |
+| 0.8.2 — the knee | trim at the score curve's cliff instead of a fixed depth ([TAA-k](https://arxiv.org/abs/2606.11907), simplified) | 315 tok/query, focus 0.44, noise 0.61, R@5 0.80 — attention tripled for 0.01 recall |
+| 0.8.2 — the phantom line | "likely not in memory" verdict over a self-calibrated confidence line; probes borrow the graph's vocabulary | FP 1.00 → 0.84 at 1500 (0.32 at 100); the probe-register gap gets named |
+| 0.8.2 — the transplants | second probe family: real note sentences with subjects coined out (ICT inverted), max-per-family quantile, damped auto-tune | FP **0.02** at 1500, **0.00** at 100; hedge on ~45% of answerable, recall untouched |
+| next | oblique first-stage gap, listwise reranking, offline consolidation — Sources filed in the eval workbench graph | benched before shipped, as always |
+
+The graveyard is part of the evolution. Refuted along the way, each with a
+receipt: spreading activation along edges (wrecks ranking), supervised
+truncation (loses to arithmetic behind a reranker), score-shape QPP gates and
+every per-query null — pool-bottom z, random-background z, Gumbel null-max,
+embedding coherence, local-crowd shoulder — (all blind at 1500: the crowd
+fakes the shape, not just the scale), the knee buffer (rescues nothing at
+scale, burns focus), and full-note reranker input (a null result — the
+snippet was never the bottleneck).
 
 ## Method
 
