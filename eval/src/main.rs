@@ -522,7 +522,10 @@ fn print_qpp(r: &engram_eval::run::QppReport) {
             "  shipped reference — phantom weak line {:.3}: FP (controls unwarned) {:.2}, answerable warned {:.2}",
             s.weak_line, s.weak_line_controls_unwarned, s.weak_line_answerable_warned
         );
-        println!("  {:<15} {:>6}   (0.5 = blind; <0.5 = signal points the other way)", "feature", "AUC");
+        println!(
+            "  {:<15} {:>6}   (0.5 = blind; <0.5 = signal points the other way)",
+            "feature", "AUC"
+        );
         for f in &s.features {
             println!("  {:<15} {:>6.3}", f.feature, f.auc);
         }

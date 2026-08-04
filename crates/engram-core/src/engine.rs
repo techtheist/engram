@@ -408,7 +408,11 @@ impl Engine {
         // the DAMPED value — a glitched fit, or a corrupt stored dial, lands
         // back inside the band on the very next pass.
         let (lo, hi) = (AUTO_TUNE_FLOOR_MIN, cfg.policy.duplicate_similarity - 0.001);
-        let anchor = if old.is_finite() { old.clamp(lo, hi) } else { hi };
+        let anchor = if old.is_finite() {
+            old.clamp(lo, hi)
+        } else {
+            hi
+        };
         let target = if fitted.is_finite() {
             (anchor + (fitted - anchor) * crate::policy::AUTO_TUNE_DAMPING).clamp(lo, hi)
         } else {
@@ -456,7 +460,7 @@ impl Engine {
         // fit is the max of the per-family quantiles: the line must clear
         // whichever register this graph's noise speaks loudest in.
         let total = cfg.policy.weak_line_probes;
-        let mut top_of = |probe: &str| -> Result<f64> {
+        let top_of = |probe: &str| -> Result<f64> {
             let qv = self.embedder.embed_one(probe)?;
             let mut hits = self.store.search_hybrid(probe, Some(&qv), &[], 12)?;
             if hits.is_empty() {
@@ -498,8 +502,7 @@ impl Engine {
             WEAK_LINE_MAX
         };
         let target = if fitted.is_finite() {
-            (anchor + (fitted - anchor) * crate::policy::AUTO_TUNE_DAMPING)
-                .clamp(lo, WEAK_LINE_MAX)
+            (anchor + (fitted - anchor) * crate::policy::AUTO_TUNE_DAMPING).clamp(lo, WEAK_LINE_MAX)
         } else {
             anchor
         };

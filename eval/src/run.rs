@@ -1648,9 +1648,33 @@ pub fn tricks(cfg: &Config) -> anyhow::Result<TricksReport> {
         S("knee + q75", 0.22, 0.0, true, Some(0.75), false, 0),
         S("knee + q90", 0.22, 0.0, true, Some(0.90), false, 0),
         S("knee + q90 flat-only", 0.22, 0.0, true, Some(0.90), true, 0),
-        S("knee + q90 flat-only + buf2", 0.22, 0.0, true, Some(0.90), true, 2),
-        S("rel .6 + q90 flat-only", 0.22, 0.6, false, Some(0.90), true, 0),
-        S("rel .6 + q95 flat-only", 0.22, 0.6, false, Some(0.95), true, 0),
+        S(
+            "knee + q90 flat-only + buf2",
+            0.22,
+            0.0,
+            true,
+            Some(0.90),
+            true,
+            2,
+        ),
+        S(
+            "rel .6 + q90 flat-only",
+            0.22,
+            0.6,
+            false,
+            Some(0.90),
+            true,
+            0,
+        ),
+        S(
+            "rel .6 + q95 flat-only",
+            0.22,
+            0.6,
+            false,
+            Some(0.95),
+            true,
+            0,
+        ),
     ];
 
     let model = cfg.embed_model.as_deref();
