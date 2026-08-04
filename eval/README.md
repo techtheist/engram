@@ -28,9 +28,9 @@ adding one mechanism:
 | configuration | tok/query | focus | noise | R@5 | FP |
 |---|---|---|---|---|---|
 | engram 0.8.0, as shipped | 512 | 0.10 | 0.91 | 0.80 | 1.00 |
-| + knee trim *(shipped in 0.8.2)* | 317 | **0.44** | **0.63** | 0.79 | 1.00 |
-| + calibrated "likely not in memory" note *(shipped in 0.8.2)* | 317 | **0.44** | **0.63** | 0.79 | 0.12 |
-| + transplant probes: the line calibrates in the graph's own voice *(0.8.2)* | 317 | **0.44** | **0.63** | 0.79 | **0.02** |
+| + knee trim *(shipped in 0.8.1)* | 317 | **0.44** | **0.63** | 0.79 | 1.00 |
+| + calibrated "likely not in memory" note *(shipped in 0.8.1)* | 317 | **0.44** | **0.63** | 0.79 | 0.12 |
+| + transplant probes: the line calibrates in the graph's own voice *(0.8.1)* | 317 | **0.44** | **0.63** | 0.79 | **0.02** |
 
 Every column, in plain words:
 
@@ -71,7 +71,7 @@ Details and the refuted alternatives: [the research cycle](#the-delivery-strateg
 ### Against every baseline
 
 The same corpus, every arm. Engram appears twice: **pre-tune** is the 0.8.0
-delivery (fixed floor only), **post-tune** is what 0.8.2 ships — knee trim
+delivery (fixed floor only), **post-tune** is what 0.8.1 ships — knee trim
 plus the self-calibrated recommendation line — measured end to end by
 `--posttune`, graph credit included in both. Post-tune FP follows the
 recommendation regime: candidates are never cut, a warned answer to a
@@ -83,7 +83,7 @@ never-written question counts as honest.
 | grep | 0 | 2741 | 0.10 | 0.93 | 0.66 | 0.68 | 1.00 | 0.99 | 0.04 | 1.00 |
 | rag (pure vectors) | 0 | 2673 | 0.10 | 0.91 | 0.66 | 0.80 | 1.00 | 0.94 | 0.47 | 1.00 |
 | **engram (pre-tune)** | 3062 | **528** | 0.10 | 0.91 | **0.69** | **0.81** | 1.00 | **1.00** | 0.42 | 1.00 |
-| **engram (post-tune, 0.8.2)** | 3062 | **315** | **0.44** | **0.61** | 0.69 | 0.80 | 1.00 | 0.98 | 0.40 | **0.02** |
+| **engram (post-tune, 0.8.1)** | 3062 | **315** | **0.44** | **0.61** | 0.69 | 0.80 | 1.00 | 0.98 | 0.40 | **0.02** |
 | curated-file 3k | 2928 | 2928 | 0.03 | 1.00 | 0.02 | 0.02 | 0.02 | 0.02 | 0.02 | 1.00 |
 | curated-file 30k | 29966 | 29966 | 0.00 | 1.00 | 0.25 | 0.25 | 0.25 | 0.25 | 0.25 | 1.00 |
 | whole-file | 377260 | 377260 | 0.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
@@ -148,7 +148,7 @@ works hardest:
 | grep | 0 | 2652 | 0.10 | 0.91 | 0.67 | 0.82 | 1.00 | 1.00 | 0.47 | 1.00 |
 | rag (pure vectors) | 0 | 2269 | 0.12 | 0.88 | 0.82 | 0.97 | 1.00 | 1.00 | 0.92 | 1.00 |
 | **engram (pre-tune)** | 3041 | **373** | 0.20 | 0.80 | **0.79** | 0.97 | 1.00 | 1.00 | 0.91 | 0.96 |
-| **engram (post-tune, 0.8.2)** | 3041 | **192** | **0.64** | **0.35** | 0.77 | 0.94 | 1.00 | 1.00 | 0.82 | **0.00** |
+| **engram (post-tune, 0.8.1)** | 3041 | **192** | **0.64** | **0.35** | 0.77 | 0.94 | 1.00 | 1.00 | 0.82 | **0.00** |
 | curated-file 3k | 2929 | 2929 | 0.03 | 0.99 | 0.36 | 0.36 | 0.36 | 0.36 | 0.36 | 1.00 |
 | curated-file 30k | 8403 | 8403 | 0.01 | 0.99 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
 | whole-file | 25179 | 25179 | 0.01 | 0.99 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
@@ -289,9 +289,9 @@ column is the modern protocol at 1500 notes unless stated.
 | 0.7.2 — the instrument | offline harness born: invented-subject corpus, three phrasings, controls, no model in the grading loop | the first honest split: name the thing → recall 1.00; describe it without naming → 0.11 (1000 notes) |
 | 0.7.2 — the retune | keyword weight 0.5 → 0.15, reranker VOTES instead of deciding | +0.135 oblique recall at unchanged token cost |
 | 0.8.0 — measured not promised | attention metrics (focus/noise/FP), gradation ladder, fixed delivery floor | the baseline the next rows move: 528 tok/query, focus 0.10, noise 0.91, R@5 0.81, FP 1.00 |
-| 0.8.2 — the knee | trim at the score curve's cliff instead of a fixed depth ([TAA-k](https://arxiv.org/abs/2606.11907), simplified) | 315 tok/query, focus 0.44, noise 0.61, R@5 0.80 — attention tripled for 0.01 recall |
-| 0.8.2 — the phantom line | "likely not in memory" verdict over a self-calibrated confidence line; probes borrow the graph's vocabulary | FP 1.00 → 0.84 at 1500 (0.32 at 100); the probe-register gap gets named |
-| 0.8.2 — the transplants | second probe family: real note sentences with subjects coined out (ICT inverted), max-per-family quantile, damped auto-tune | FP **0.02** at 1500, **0.00** at 100; hedge on ~45% of answerable, recall untouched |
+| 0.8.1 — the knee | trim at the score curve's cliff instead of a fixed depth ([TAA-k](https://arxiv.org/abs/2606.11907), simplified) | 315 tok/query, focus 0.44, noise 0.61, R@5 0.80 — attention tripled for 0.01 recall |
+| 0.8.1 — the phantom line | "likely not in memory" verdict over a self-calibrated confidence line; probes borrow the graph's vocabulary | FP 1.00 → 0.84 at 1500 (0.32 at 100); the probe-register gap gets named |
+| 0.8.1 — the transplants | second probe family: real note sentences with subjects coined out (ICT inverted), max-per-family quantile, damped auto-tune | FP **0.02** at 1500, **0.00** at 100; hedge on ~45% of answerable, recall untouched |
 | next | oblique first-stage gap, listwise reranking, offline consolidation — Sources filed in the eval workbench graph | benched before shipped, as always |
 
 The graveyard is part of the evolution. Refuted along the way, each with a

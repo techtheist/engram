@@ -3,7 +3,7 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
-## v0.8.2 — the knee and the phantom probes
+## v0.8.1 — the knee and the phantom probes
 
 ### NLI model swap — contradictions stop firing at strangers
 
@@ -20,7 +20,7 @@ body of its GitHub Release (draft-release.yml lifts it automatically).
   and the 0.7.2 DeBERTa stay selectable in the pane; explicit selections
   keep resolving.
 
-The 0.8.1 research cycle asked two questions at 100–2000 notes — can focus
+This release's research cycle asked two questions at 100–2000 notes — can focus
 survive scale, and can a false-positive rate of 1.00 be brought down without
 cutting a single result — and this release ships the three answers the
 tricks bench measured (`eval/README.md` has the full tables).
@@ -94,7 +94,7 @@ tricks bench measured (`eval/README.md` has the full tables).
 
 - Graph settings → Calibrated delivery grew the knee-trim toggle with its
   cliff stepper and the weak-line quantile, with the plain-word explanations
-  rendered from the live values (carried from the 0.8.1 cycle: the
+  rendered from the live values (carried from earlier in this cycle: the
   calibrated-delivery settings block itself).
 
 ### Measured end to end, and the field lesson

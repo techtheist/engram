@@ -9,7 +9,7 @@
 //! — and never moves a trust field. Judgment stays with the user or the
 //! assistant.
 //!
-//! Runtime model (since 0.8.2): `sileod/deberta-v3-small-tasksource-nli`
+//! Runtime model (since 0.8.1): `sileod/deberta-v3-small-tasksource-nli`
 //! (multi-task, 600+ tasks), our own quantized ONNX export, **172 MB** on
 //! disk, 512-token pairs.
 //!

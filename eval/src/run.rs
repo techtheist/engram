@@ -1212,7 +1212,7 @@ pub fn floor_sweep(cfg: &Config) -> anyhow::Result<FloorReport> {
             embedder(model).0,
             if cfg.no_rerank { None } else { reranker().0 },
         )?;
-        // The engine ships its own delivery trims since 0.8.2. This recorder
+        // The engine ships its own delivery trims since 0.8.1. This recorder
         // needs RAW curves — the rows below apply their own floors, so a
         // trimmed recording would double-cut and flatter whatever the engine
         // already does.
@@ -1382,7 +1382,7 @@ pub struct PostTuneReport {
     pub sizes: Vec<PostTuneSizeReport>,
 }
 
-/// Measure the shipped 0.8.2 delivery stack — knee trim on, the weak line
+/// Measure the shipped 0.8.1 delivery stack — knee trim on, the weak line
 /// calibrated by `Engine::auto_tune`'s phantom-probe dial exactly as a
 /// session boundary would — as one engram-only pass per size.
 ///
@@ -1694,7 +1694,7 @@ pub fn tricks(cfg: &Config) -> anyhow::Result<TricksReport> {
             embedder(model).0,
             if cfg.no_rerank { None } else { reranker().0 },
         )?;
-        // The engine ships its own delivery trims since 0.8.2. This recorder
+        // The engine ships its own delivery trims since 0.8.1. This recorder
         // needs RAW curves — the rows below apply their own floors, so a
         // trimmed recording would double-cut and flatter whatever the engine
         // already does.

@@ -187,7 +187,7 @@ pub fn presets(role: Role) -> Vec<ModelSpec> {
             },
         ],
         // First entry is the default (see `effective`). The tasksource
-        // DeBERTa replaced MobileBERT in 0.8.2 on the contradiction
+        // DeBERTa replaced MobileBERT in 0.8.1 on the contradiction
         // benchmark: false alarms 38%→18–29% at the shipped gate on
         // generated prose, 28%→0% unbiased queue noise on this repo's real
         // graph, and it stops calling unrelated same-register notes

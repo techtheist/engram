@@ -9,7 +9,7 @@ other half.
   `nli-deberta-v3-small` (172 MB), and `check_claim` gained a confidence
   gate at **0.80**. That work is the historical half at the bottom of this
   file; its method and warnings still govern.
-- **0.8.2 — current** — model `deberta-v3-small-tasksource-nli` (172 MB)
+- **0.8.1 — current** — model `deberta-v3-small-tasksource-nli` (172 MB)
   replaced MobileBERT, on the section right below. The gate stays at 0.80.
 
 ```sh
@@ -24,7 +24,7 @@ ENGRAM_NLI_DIR=~/.cache/engram/mobilebert-uncased-mnli \
 cargo run -p engram-eval --features fastembed -- --real-graph /tmp/graph-copy.tepin
 ```
 
-## 0.8.2 — the tasksource swap (current)
+## 0.8.1 — the tasksource swap (current)
 
 The complaint that triggered this round was live and specific: `check_claim`
 called nearly everything a contradiction, including a claim and a note that
@@ -105,9 +105,9 @@ still hold the other end of the net.
 
 **Everything below is the MobileBERT-era measurement, superseded by the
 section above.** It is kept whole because its method — and its warnings about
-catch rates, quiet models, and one-positive corpora — is what the 0.8.2
+catch rates, quiet models, and one-positive corpora — is what the 0.8.1
 section was read against. Model labels like "ships" below mean *shipped in
-0.7.2 through 0.8.1*; the **0.80 gate rows are still current** — the gate
+0.7.2 through 0.8.0*; the **0.80 gate rows are still current** — the gate
 outlived both models that calibrated it.
 
 ## Why this needs its own metric
@@ -167,7 +167,7 @@ export. So the candidate set is small:
 | `nli-deberta-v3-small` — *shipped until 0.7.2* | **172 MB** | 44M | 3-way |
 | `nli-deberta-v3-xsmall` | 96 MB | 22M | 3-way |
 | `distilbert-base-uncased-mnli` | 65 MB | 66M | 3-way |
-| `mobilebert-uncased-mnli` — **default 0.7.2–0.8.1** | 27 MB | 25M | 3-way |
+| `mobilebert-uncased-mnli` — **default 0.7.2–0.8.0** | 27 MB | 25M | 3-way |
 
 ## Results — how MobileBERT was picked
 
@@ -178,7 +178,7 @@ Same corpus, same embedder and reranker — only the NLI model swapped. Ungated:
 | `nli-deberta-v3-small` *(replaced)* | 97–99% | **80–86%** | 81–82% |
 | `nli-deberta-v3-xsmall` | 96–99% | 68–80% | 80–82% |
 | `distilbert-mnli` | 93–95% | 46–56% | 79–83% |
-| **`mobilebert-mnli`** *(default 0.7.2–0.8.1)* | **95–97%** | **57–62%** | 76–80% |
+| **`mobilebert-mnli`** *(default 0.7.2–0.8.0)* | **95–97%** | **57–62%** | 76–80% |
 
 Five seeds each, except `deberta-v3-xsmall` at four. The first pass used two,
 which was enough to rank them and — as the threshold section below shows — not
@@ -406,7 +406,7 @@ claim**: the gate works fine on a better-calibrated model. The correction
 matters, because it moves the fix from "wait for a better model" to "switch the
 model and calibrate a threshold."
 
-## Where this left the layer at 0.7.2 (see the 0.8.2 section for today)
+## Where this left the layer at 0.7.2 (see the 0.8.1 section for today)
 
 The three numbers worth carrying away, all on the file that ships, at the gate
 that ships:
@@ -432,8 +432,8 @@ sees a fraction of it. Both halves are load-bearing. Neither is enough alone.
 ### What was still open at 0.7.2
 
 Of the four points below, the one-register caveat and the never-measured
-false-`supports` still stand at 0.8.2; the catch-rate and queue-gate points
-were re-examined in the 0.8.2 section above.
+false-`supports` still stand at 0.8.1; the catch-rate and queue-gate points
+were re-examined in the 0.8.1 section above.
 
 - **The catch rate rests entirely on generated prose.** In 297 nodes this project
   has recorded exactly one contradiction, so the real-graph corpus can validate
