@@ -21,37 +21,85 @@ watching an agent use the tool.
 
 At 1500 notes shaped like real ones — median 748-character bodies, ~1,590
 edges — asked **4,500 questions** with known answers (every stored fact is
-questioned since the ladder rework) plus 375 about subjects never written,
-on the shipped stack including calibrated delivery:
+questioned) plus 375 about subjects never written. First, what the research
+cycle measured on top of the shipped stack — one run, same corpus, each row
+adding one mechanism:
+
+| configuration | tok/query | focus | noise | R@5 | FP |
+|---|---|---|---|---|---|
+| engram 0.8.0, as shipped | 512 | 0.10 | 0.91 | 0.80 | 1.00 |
+| + knee trim *(shipped in 0.8.2)* | 317 | **0.44** | **0.63** | 0.79 | 1.00 |
+| + calibrated "likely not in memory" note *(shipped in 0.8.2)* | 317 | **0.44** | **0.63** | 0.79 | **0.12** |
+
+Every column, in plain words:
+
+- **tok/query** — how much text the assistant has to read per question.
+  Smaller is cheaper and less distracting. (Pure-vector RAG needs ~2,700 for
+  the same recall — see the next table.)
+- **focus** — what share of that text is the actual answer. 0.10 means the
+  answer arrives buried under nine parts of other material; 0.44 means
+  nearly half of what arrives is the thing asked for.
+- **noise** — what share of the delivered *results* were not the answer.
+  A miss counts in full, so this can never be gamed by guessing more.
+- **R@5** — how often the right note is among the first five returned.
+  The improvements above cost at most 0.01 of it.
+- **FP** — asked about something that was **never saved**, how often the
+  system still answers as if it knew. The last row cuts it from *always
+  fooled* (1.00) to 0.12: below a confidence line the graph calibrates on
+  itself, the reply is prefixed *"this likely isn't in memory — nearest
+  candidates below"*. Candidates are never removed; a warned answer to an
+  unanswerable question counts as honest. The price: the same warning
+  appears on 46% of real questions in the lowest-confidence range (their
+  answers still delivered). At q95 the FP drops to 0.05. **0.12 is this
+  label's ceiling** — it assumes the calibration probes speak the graph's
+  exact register. The self-calibration 0.8.2 actually ships (probes minted
+  from the graph's own vocabulary, no labels needed) reaches 0.32 at 100
+  notes and 0.84 at 1500 end to end — see the baseline table below; closing
+  that gap at scale is the next cycle's named problem.
+
+The knee trim cuts where the ranked score curve falls off a cliff instead of
+at a fixed depth ([Tail-Aware Adaptive-k](https://arxiv.org/abs/2606.11907),
+simplified); the confidence line comes from probes about invented subjects
+the graph provably doesn't contain — it calibrates itself, no labels needed.
+Details and the refuted alternatives: [the research cycle](#the-delivery-strategy-research-cycle-081).
+
+### Against every baseline
+
+The same corpus, every arm. Engram appears twice: **pre-tune** is the 0.8.0
+delivery (fixed floor only), **post-tune** is what 0.8.2 ships — knee trim
+plus the self-calibrated recommendation line — measured end to end by
+`--posttune`, graph credit included in both. Post-tune FP follows the
+recommendation regime: candidates are never cut, a warned answer to a
+never-written question counts as honest.
 
 | arm | standing | tok/query | focus | noise | R@1 | R@5 | lex | para | oblique | FP |
 |---|---|---|---|---|---|---|---|---|---|---|
 | chance | 0 | 2511 | 0.10 | 1.00 | 0.00 | 0.00 | 0.01 | 0.00 | 0.00 | 1.00 |
 | grep | 0 | 2741 | 0.10 | 0.93 | 0.66 | 0.68 | 1.00 | 0.99 | 0.04 | 1.00 |
 | rag (pure vectors) | 0 | 2673 | 0.10 | 0.91 | 0.66 | 0.80 | 1.00 | 0.94 | 0.47 | 1.00 |
-| **engram** | 3062 | **528** | 0.10 | 0.91 | **0.69** | 0.80 | 1.00 | **1.00** | 0.39 | 1.00 |
-| **engram + graph** | 3062 | **528** | 0.10 | 0.91 | 0.69 | **0.81** | 1.00 | 1.00 | 0.42 | 1.00 |
+| **engram (pre-tune)** | 3062 | **528** | 0.10 | 0.91 | **0.69** | **0.81** | 1.00 | **1.00** | 0.42 | 1.00 |
+| **engram (post-tune, 0.8.2)** | 3062 | **315** | **0.44** | **0.61** | 0.69 | 0.80 | 1.00 | 0.98 | 0.40 | **0.84** |
 | curated-file 3k | 2928 | 2928 | 0.03 | 1.00 | 0.02 | 0.02 | 0.02 | 0.02 | 0.02 | 1.00 |
 | curated-file 30k | 29966 | 29966 | 0.00 | 1.00 | 0.25 | 0.25 | 0.25 | 0.25 | 0.25 | 1.00 |
 | whole-file | 377260 | 377260 | 0.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
 
-Weighted for how often each phrasing actually occurs, the ranking is
-**engram 0.94, rag 0.92, grep 0.90** — engram now beats pure vectors on the
-headline, not just ties it.
+(Extra columns here: **standing** — tokens paid every session before any
+question, e.g. an always-in-context file; **R@1** — the right note ranked
+first; **lex / para / oblique** — recall when the question quotes the note,
+rewords it, or describes it without naming it. `tok/query` differs slightly
+from the first table because the arms bill delivery without markdown
+framing.)
 
-Three of these columns exist because recall alone can be gamed, and they are
-the honest part of the table. **focus** — of the tokens delivered, what share
-was the answer; everything else is spent attention. **noise** — of the records
-delivered, what share was *not* the answer, counting a miss as all-noise and
-an empty return as zero, so declining honestly beats guessing. **FP** — asked
-about something never written, how often the arm answered anyway.
+Weighted for how often each phrasing actually occurs, the ranking is
+**engram 0.94 (0.93 post-tune), rag 0.92, grep 0.90** — engram beats pure
+vectors on the headline, and the tuning spends at most 0.01 of it.
 
 Four things follow.
 
-**Engram delivers the most recall per token, by about 5×.** It returns a title
-and a matched snippet; the flat-file arms return whole records. 528 tokens per
-query against rag's 2,673 at the same recall@5 — the one gap on the table that
-is an order of magnitude.
+**Engram delivers the most recall per token, by about 8×.** It returns a title
+and a matched snippet; the flat-file arms return whole records. 315 tokens per
+query post-tune (528 pre-tune) against rag's 2,673 at the same recall@5 — the
+one gap on the table that is an order of magnitude.
 
 **The perfect-recall rows are the cautionary ones.** `whole-file` and the 30k
 curated file score 1.00 on recall with the answer at under 1% of the delivered
@@ -59,18 +107,20 @@ text and noise at 1.00 — the measured form of *present is not readable*. Recal
 and focus have to be read as a pair, and no other memory benchmark publishes
 the second number.
 
-**Nothing on this table declines at 1500 notes — but the product now can.**
-Every arm answers never-written questions here (FP 1.00): the score populations
-overlap too much for a hard floor, which the `--floor` sweep priced exactly. So
-the shipped stack trims weak tail hits (at 100 notes: −22% tokens, focus +54%,
-FP 0.96, recall identical — the effect is strongest where graphs are small) and
-labels every search reply `strong` / `weak` / `none`, so the assistant is told
-when the graph is silent instead of being handed the nearest-looking thing.
+**Only one arm on this table ever declines to be fooled.** Every baseline
+answers every never-written question (FP 1.00): the score populations overlap
+too much for a hard floor, which the `--floor` sweep priced exactly. The
+post-tune stack instead calibrates a per-graph confidence line on phantom
+probes minted from its own vocabulary and leads low-confidence replies with
+*"likely not in memory"* — candidates intact. Measured end to end that takes
+FP to **0.32 at 100 notes and 0.84 at 1500**; the research table's 0.12 is
+the same label under in-register calibration, and closing that probe-register
+gap at scale is the named next problem, not a footnote.
 
 **Reading the whole file is not expensive — it is impossible.** 377,260 tokens
 against a 3,062-token brief; the strategy works, works, then does not exist.
 And a session is cheapest on engram from the second question onward: the brief
-plus 528/query crosses rag's 2,673/query at ~1.4 questions.
+plus 315/query crosses rag's 2,673/query at ~1.3 questions.
 
 On questions that name what they are looking for — which is most of them —
 Engram is at **1.00 lexical and 1.00 paraphrase**, against rag's 1.00 and 0.94,
@@ -91,22 +141,23 @@ works hardest:
 | chance | 0 | 2536 | 0.10 | 0.99 | 0.01 | 0.06 | 0.08 | 0.05 | 0.05 | 1.00 |
 | grep | 0 | 2652 | 0.10 | 0.91 | 0.67 | 0.82 | 1.00 | 1.00 | 0.47 | 1.00 |
 | rag (pure vectors) | 0 | 2269 | 0.12 | 0.88 | 0.82 | 0.97 | 1.00 | 1.00 | 0.92 | 1.00 |
-| **engram** | 3041 | **373** | **0.20** | **0.80** | 0.79 | 0.96 | 1.00 | 1.00 | 0.89 | **0.96** |
-| **engram + graph** | 3041 | **373** | **0.20** | **0.80** | 0.79 | 0.97 | 1.00 | 1.00 | 0.91 | **0.96** |
+| **engram (pre-tune)** | 3041 | **373** | 0.20 | 0.80 | **0.79** | 0.97 | 1.00 | 1.00 | 0.91 | 0.96 |
+| **engram (post-tune, 0.8.2)** | 3041 | **192** | **0.64** | **0.35** | 0.77 | 0.94 | 1.00 | 1.00 | 0.82 | **0.32** |
 | curated-file 3k | 2929 | 2929 | 0.03 | 0.99 | 0.36 | 0.36 | 0.36 | 0.36 | 0.36 | 1.00 |
 | curated-file 30k | 8403 | 8403 | 0.01 | 0.99 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
 | whole-file | 25179 | 25179 | 0.01 | 0.99 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
 
-Three numbers on this table exist nowhere else in the field. **Focus 0.20 at
-373 tokens/query** — a sixth of rag's bill with two-thirds more of it being
-the answer, roughly 6× the focus per token. **FP 0.96** — the only
-false-positive rate below 1.00 this harness has ever measured on any arm:
-4% of never-written questions get an honest empty result and a `none`
-verdict instead of confident noise (the rest get a `weak` label the model is
-told to verify). And the 30k curated file's recall-1.00 column sits next to
-its own price: 8,403 standing tokens every session with the answer at 1% of
-the text — at exactly the size where a diligent file still *can* hold
-everything, holding everything is already the expensive way to remember.
+The post-tune row is where the young-graph story peaks: **focus 0.64 at 192
+tokens/query** — a twelfth of rag's bill with nearly two-thirds of it being
+the answer — and **FP 0.32**, against a field where every other arm answers
+every never-written question. The knee costs 0.03 recall@5 and 0.09 oblique
+here (a trimmed hit also takes its graph neighbors with it, which the
+research bench could not see); what it buys is that an assistant reading the
+reply sees the answer, not a pile. And the 30k curated file's recall-1.00
+column sits next to its own price: 8,403 standing tokens every session with
+the answer at 1% of the text — at exactly the size where a diligent file
+still *can* hold everything, holding everything is already the expensive way
+to remember.
 
 ---
 
@@ -398,6 +449,57 @@ bge-base as the embedder the shipped stack reaches **full rag parity — 0.97 /
 at a seventh of the tokens is the honest sentence.
 
 ---
+
+## The delivery-strategy research cycle (0.8.1)
+
+A literature-first pass over the two problems the 0.8.0 tables left open:
+focus stuck at ~0.10 past 500 notes, and false positives at 1.00 everywhere.
+Method: candidate strategies from the papers, implemented as score-set
+arithmetic in `--tricks`, scored from one recorded retrieval pass per size
+(100 / 300 / 1000 / 2000 — the last measured once as a trend anchor; the
+working maximum is 1500 from here on).
+
+### What the literature contributed
+
+The adopted mechanism is **Tail-Aware Adaptive-k**
+([arXiv:2606.11907](https://arxiv.org/abs/2606.11907)): ranked score curves
+are steep-flat-steep — a relevance head, a transition, a noise tail — so cut
+at the knee instead of at a fixed depth. Training-free, which is what makes
+it admissible in a daemon that never runs an LLM; our simplified knee
+(largest relative drop, min-cliff 0.25) is its first stage without the EVT
+validation pass. The calibrated weak line below applies split-conformal
+thinking with one twist of our own: the harness invents subjects that
+provably aren't in the corpus, so a graph can mint its own calibration set
+with zero human labels.
+
+### What measurement decided
+
+**The knee trim is the fixed floor's successor.** Recall matches shipped
+delivery at every size (R@5 0.96/0.90/0.82/0.77, oblique within 0.01) while
+focus runs **0.66 / 0.57 / 0.49 / 0.40** against shipped's 0.20/0.13/0.11/0.10
+— a 3–4.5× multiplier that *holds where the fixed floor went quiet*, at
+35–50% fewer delivered tokens. The mechanism explains the scaling: the cliff
+after the relevance head sharpens as the crowd grows, which is exactly why an
+absolute floor fades and a shape-relative one doesn't. `relative 0.5·top` is
+the no-regret runner-up.
+
+**The pessimistic signal wins as a label and keeps losing as a gate.** The
+per-graph q90 threshold over self-minted probes flags **84–95% of held-out
+never-written questions across all sizes** while its value climbs 0.56→0.81
+with corpus size — meaning the fixed `weak_evidence_top` 0.85 was only ever
+right for ~2000-note graphs and over-flags small ones. Hard conformal gates
+destroy oblique recall past 300 notes (0.00–0.04); the shape-mixed gate
+(abstain only on low *and* flat) underperforms both parents everywhere,
+because never-written probes retrieve genuinely similar notes about shared
+components — control curves have cliffs too. The regime that survives is
+**recommendation-only**: candidates are never cut; below the calibrated line
+the reply leads with *"this likely isn't in memory"*, a warned control counts
+as a correct outcome, and the only remaining false positive is a control
+answered confidently.
+
+Nothing in this section ships by default yet — it is the measured basis for
+the next product decision: knee-mode delivery, and the weak line as the
+second dial under the one auto-tune switch.
 
 ## Mechanisms that were tried and rejected
 

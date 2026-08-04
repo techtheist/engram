@@ -1,0 +1,98 @@
+{
+  "embedder": "bge-small-en-v1.5",
+  "reranker": "jina-reranker-v1-turbo-en",
+  "embeddings_are_fake": false,
+  "seed": 1,
+  "limit": 10,
+  "sizes": [
+    {
+      "graph": 1500,
+      "edges": 1590,
+      "questions": 2571,
+      "controls": 375,
+      "weak_line": 0.47618853259637545,
+      "auto_tune_note": "weak line 0.850 -> 0.476 from 24 phantom probes at q90",
+      "standing_tokens": 3062,
+      "overall": {
+        "queries": 2571,
+        "recall_at_1": 0.6892259821081291,
+        "recall_at_3": 0.7471800855698172,
+        "recall_at_5": 0.7849085958770906,
+        "recall_at_10": 0.8378063010501751,
+        "mrr": 0.7291758502960364,
+        "tokens_mean": 315.0828471411902,
+        "twin_confusion": 0.0,
+        "neighbor_only": 0.020225593154414623,
+        "focus": 0.44492904116186455,
+        "noise": 0.6126712476770892
+      },
+      "assisted": {
+        "queries": 2571,
+        "recall_at_1": 0.6903928432516531,
+        "recall_at_3": 0.7541812524309607,
+        "recall_at_5": 0.7965772073123298,
+        "recall_at_10": 0.8580318942045897,
+        "mrr": 0.7347445253221208,
+        "tokens_mean": 315.0828471411902,
+        "twin_confusion": 0.0,
+        "neighbor_only": 0.020225593154414623,
+        "focus": 0.44492904116186455,
+        "noise": 0.6106076321362278
+      },
+      "by_phrasing": [
+        {
+          "phrasing": "lexical",
+          "score": {
+            "queries": 857,
+            "recall_at_1": 0.9929988331388565,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0,
+            "recall_at_10": 1.0,
+            "mrr": 0.9964994165694282,
+            "tokens_mean": 140.00816802800466,
+            "twin_confusion": 0.0,
+            "neighbor_only": 0.0,
+            "focus": 0.6531661542283577,
+            "noise": 0.3188272119427311
+          }
+        },
+        {
+          "phrasing": "paraphrase",
+          "score": {
+            "queries": 857,
+            "recall_at_1": 0.9486581096849475,
+            "recall_at_3": 0.9824970828471412,
+            "recall_at_5": 0.9848308051341891,
+            "recall_at_10": 0.9871645274212368,
+            "mrr": 0.9648872034227928,
+            "tokens_mean": 294.19253208868145,
+            "twin_confusion": 0.0,
+            "neighbor_only": 0.0,
+            "focus": 0.41449361588853073,
+            "noise": 0.576559982219257
+          }
+        },
+        {
+          "phrasing": "oblique",
+          "score": {
+            "queries": 857,
+            "recall_at_1": 0.1295215869311552,
+            "recall_at_3": 0.28004667444574094,
+            "recall_at_5": 0.4049008168028005,
+            "recall_at_10": 0.5869311551925321,
+            "mrr": 0.24284695597414369,
+            "tokens_mean": 511.0478413068845,
+            "twin_confusion": 0.0,
+            "neighbor_only": 0.0,
+            "focus": 0.10700587403349607,
+            "noise": 0.9364357022466641
+          }
+        }
+      ],
+      "weighted_recall": 0.9336639439906651,
+      "controls_unwarned": 0.8373333333333334,
+      "controls_empty": 0.0,
+      "answerable_warned": 0.14741345779852197
+    }
+  ]
+}

@@ -186,9 +186,10 @@ wiring, the memory model, trust, the pane, conflicts, multi-project memory,
 storage, local models, and troubleshooting (`engram-alpha doctor` diagnoses
 the whole chain; `engram-alpha stop` halts everything cleanly).
 
-Security posture: [`SECURITY.md`](./SECURITY.md). Full spec and roadmap:
-[`PLAN.md`](./PLAN.md). **Status:** early development, heavily dogfooded,
-benchmark-driven — retrieval changes cite a measured run or they don't ship.
+Security posture: [`SECURITY.md`](./SECURITY.md). The roadmap lives in the
+project's own memory graph — dogfooding is the spec. **Status:** early
+development, heavily dogfooded, benchmark-driven — retrieval changes cite a
+measured run or they don't ship.
 
 ## Stack
 

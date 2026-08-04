@@ -3,6 +3,77 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
+## v0.8.2 — the knee and the phantom probes
+
+The 0.8.1 research cycle asked two questions at 100–2000 notes — can focus
+survive scale, and can a false-positive rate of 1.00 be brought down without
+cutting a single result — and this release ships the three answers the
+tricks bench measured (`eval/README.md` has the full tables).
+
+### Knee-mode delivery trim
+
+- **Delivery now cuts at the score cliff, not just a fixed depth.** After
+  the fixed floor, the delivered list is trimmed at the largest relative
+  drop in its score curve when that drop is at least `policy.knee_cliff`
+  (default **0.25**; `null` opts out) — a simplified Tail-Aware Adaptive-k
+  (arXiv:2606.11907). Measured recall-free at every size from 100 to 2000
+  notes (recall@5 and oblique recall within 0.01) while focus rises 3–4.5×
+  and delivered tokens fall 35–50% — and unlike the fixed floor, the cliff
+  sharpens as the graph grows, so the gain holds at scale.
+
+### The calibrated "likely not in memory" verdict
+
+- **A `weak` search verdict now says what it means: this likely isn't in
+  memory.** The reply leads with that recommendation while the nearest
+  candidates are still delivered, never cut — a label, not a barrier. On the
+  bench this turns the honest false-positive rate on never-written questions
+  from **1.00 into 0.08–0.12** at every measured size, at the price of a
+  verify-first note on the lowest-confidence quarter-to-half of real
+  questions.
+- The skills (all three variants + plugin copy) and the search tool teach
+  the new verdict wording.
+
+### Auto-tune's second dial: the weak line
+
+- **The weak-evidence line is now calibrated per graph.** The measured
+  correct line runs 0.56 → 0.81 from 100 to 2000 notes, so the fixed 0.85
+  default was only ever right for big graphs. At session boundaries (past 50
+  notes, reranker loaded) auto-tune mints deterministic phantom probes —
+  questions about coined subjects that cannot exist in any graph — and fits
+  `policy.weak_evidence_top` to the `policy.weak_line_quantile` (default
+  **q90**) of what they still score, split-conformal style. One
+  `policy.auto_tune` button governs both dials; every move lands in one
+  journaled `auto_tuned` row.
+
+### Pane
+
+- Graph settings → Calibrated delivery grew the knee-trim toggle with its
+  cliff stepper and the weak-line quantile, with the plain-word explanations
+  rendered from the live values (carried from the 0.8.1 cycle: the
+  calibrated-delivery settings block itself).
+
+### Measured end to end, and the field lesson
+
+- **New `--posttune` eval mode** measures the shipped stack — knee on, weak
+  line auto-calibrated, FP under the recommendation regime — as one
+  engram-only pass per size; the eval README's baseline tables now carry
+  **engram (pre-tune)** and **engram (post-tune)** rows at 100 and 1500
+  notes. Post-tune at 1500: 315 tok/query (−40%), focus 0.10→0.44, recall
+  −0.01. At 100: 192 tok/query, focus 0.20→0.64, honest FP 0.96→0.32.
+- **Phantom probes speak the graph's own language.** The first live fit
+  showed cross-encoder score scales are register-dependent (a real graph's
+  noise ceiling sat at ~0.20 where the eval corpus's sat at 0.77), so the
+  weak-line probes now borrow vocabulary from the graph's own note titles —
+  the coined subject keeps them unanswerable, the borrowed words keep them
+  in register — and the fitted line clamps floor-relative
+  (`delivery_floor` + 0.03), never to an absolute. Known open edge: at 1500
+  notes the shipped calibration still under-reads the crowd ceiling
+  (end-to-end FP 0.84 vs the 0.12 in-register ceiling) — named as the next
+  cycle's problem in the eval README.
+- PLAN.md retired: merged into a slim CLAUDE.md keyword index — the memory
+  graph is the plan of record (PLAN §-references in code comments point at
+  git history).
+
 ## v0.8.0 — measured, not promised
 
 From this release on, retrieval behavior is an output of the benchmark, not

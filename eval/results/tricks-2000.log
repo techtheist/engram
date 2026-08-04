@@ -1,0 +1,25 @@
+engram-eval — delivery-strategy research bench (nothing here ships)
+runtime: embedder=bge-small-en-v1.5  reranker=jina-reranker-v1-turbo-en  seed=1  limit=10
+
+graph 2000 facts / 6000 questions / controls 250 calibrate + 250 evaluate  (conformal t: q90 0.811, q95 0.893)
+  q90 as the per-graph weak line: 53% of answerable label strong, 91% of held-out controls flagged
+  strategy                  R@5  obliq  focus  noise   kept tok/query  decl-ans     FP
+  shipped delivery         0.77   0.33   0.10   0.92   10.0       521      0.00   1.00
+  relative .5*top          0.77   0.32   0.22   0.82    6.9       361      0.00   1.00
+  relative .6*top          0.77   0.31   0.32   0.74    5.8       301      0.00   1.00
+  relative .75*top         0.75   0.28   0.58   0.56    3.9       202      0.00   1.00
+  knee cut                 0.77   0.32   0.40   0.67    6.5       340      0.00   1.00
+  rel .6 + q50             0.56   0.03   0.40   0.35    2.1       116      0.42   0.52
+  rel .6 + q75             0.54   0.01   0.40   0.32    1.9       103      0.46   0.26
+  knee + q75               0.54   0.01   0.52   0.26    2.3       125      0.46   0.26
+  knee + q90               0.53   0.00   0.52   0.25    2.3       122      0.47   0.09
+  knee + q90 flat-only     0.58   0.04   0.52   0.31    2.7       144      0.39   0.48
+  rel .6 + q90 flat-only   0.59   0.04   0.39   0.38    2.3       125      0.39   0.48
+  rel .6 + q95 flat-only   0.58   0.03   0.39   0.38    2.3       125      0.39   0.45
+
+Reading it: FP is scored on the held-out control half only — the conformal
+thresholds never see the probes they are judged on. decl-ans is what each
+strategy's restraint costs on real questions; a strategy only earns its FP
+number if R@5 and obliq survive next to it.
+
+wrote eval/results/tricks-2000.json

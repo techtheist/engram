@@ -40,6 +40,17 @@ OPTIONS:
                           real-embeddings run
     --phrasing-mix L,P,O  how often each phrasing is assumed to occur
                           [default: 45,45,10] — decides the headline number
+    --tricks              research bench: candidate delivery strategies
+                          (fixed/relative floors, knee cut, split-conformal
+                          abstention calibrated on synthetic never-written
+                          probes) scored from one recorded pass per size.
+                          Research only — nothing in it ships
+    --posttune            measure the SHIPPED post-tune stack end to end at
+                          each size: knee trim on, weak line calibrated by
+                          auto-tune's phantom-probe dial, FP scored under the
+                          recommendation regime (a warned answer to a
+                          never-written question counts as honest). The arms
+                          table's \"engram (post-tune)\" row comes from this
     --floor               sweep a delivery floor over the engram arm: per
                           candidate floor, what abstention on unanswerable
                           questions costs in recall, and what trimming the
@@ -88,6 +99,8 @@ fn cli() -> anyhow::Result<()> {
     let mut tasks_out: Option<String> = None;
     let mut sample = false;
     let mut floor_mode = false;
+    let mut tricks_mode = false;
+    let mut posttune_mode = false;
     let mut sweep_mode = false;
     let mut bench_mode = false;
     let mut contradiction_mode = false;
@@ -126,6 +139,8 @@ fn cli() -> anyhow::Result<()> {
                 apply_ladder(&mut cfg);
             }
             "--floor" => floor_mode = true,
+            "--tricks" => tricks_mode = true,
+            "--posttune" => posttune_mode = true,
             "--sweep" => sweep_mode = true,
             "--bench" => bench_mode = true,
             "--contradictions" => contradiction_mode = true,
@@ -160,6 +175,25 @@ fn cli() -> anyhow::Result<()> {
     if floor_mode {
         let report = engram_eval::run::floor_sweep(&cfg)?;
         print_floor(&report);
+        if let Some(path) = json_out {
+            std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
+            println!("\nwrote {path}");
+        }
+        return Ok(());
+    }
+    if tricks_mode {
+        let report = engram_eval::run::tricks(&cfg)?;
+        print_tricks(&report);
+        if let Some(path) = json_out {
+            std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
+            println!("\nwrote {path}");
+        }
+        return Ok(());
+    }
+
+    if posttune_mode {
+        let report = engram_eval::run::posttune(&cfg)?;
+        print_posttune(&report);
         if let Some(path) = json_out {
             std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
             println!("\nwrote {path}");
@@ -332,6 +366,122 @@ fn parse_phrasing(spec: &str) -> anyhow::Result<PhrasingMix> {
         paraphrase,
         oblique,
     })
+}
+
+fn print_posttune(r: &engram_eval::run::PostTuneReport) {
+    println!("engram-eval — the shipped post-tune stack, measured end to end");
+    println!(
+        "runtime: embedder={}  reranker={}  seed={}  limit={}",
+        r.embedder, r.reranker, r.seed, r.limit
+    );
+    if r.embeddings_are_fake {
+        println!("!! FAKE EMBEDDINGS — these numbers describe plumbing, not meaning");
+    }
+    for s in &r.sizes {
+        println!(
+            "\ngraph {} facts ({} edges) / {} questions / {} controls",
+            s.graph, s.edges, s.questions, s.controls
+        );
+        println!(
+            "  auto-tune: {} (weak line {:.3})",
+            s.auto_tune_note
+                .as_deref()
+                .unwrap_or("left the defaults untouched"),
+            s.weak_line
+        );
+        let at = |p: Phrasing| {
+            s.by_phrasing
+                .iter()
+                .find(|ps| ps.phrasing == p)
+                .map(|ps| ps.score.recall_at_5)
+                .unwrap_or_default()
+        };
+        println!(
+            "  recall (with graph credit): R@1 {:.2}  R@5 {:.2} (hybrid alone {:.2})  lex {:.2}  para {:.2}  obliq {:.2}  weighted {:.3}",
+            s.assisted.recall_at_1,
+            s.assisted.recall_at_5,
+            s.overall.recall_at_5,
+            at(Phrasing::Lexical),
+            at(Phrasing::Paraphrase),
+            at(Phrasing::Oblique),
+            s.weighted_recall,
+        );
+        println!(
+            "  attention: focus {:.2}  noise {:.2}  tok/query {:.0}  standing {}",
+            s.overall.focus, s.overall.noise, s.overall.tokens_mean, s.standing_tokens
+        );
+        println!(
+            "  recommendation regime: honest FP (controls unwarned) {:.2}  controls empty/none {:.2}  answerable warned {:.2}",
+            s.controls_unwarned, s.controls_empty, s.answerable_warned
+        );
+    }
+    println!(
+        "\nReading it: candidates are never cut — below the auto-tuned weak line the reply\n\
+         leads with \"likely not in memory\", so a warned answer to a never-written question\n\
+         counts as honest and only an unwarned one is a false positive."
+    );
+}
+
+fn print_tricks(r: &engram_eval::run::TricksReport) {
+    println!("engram-eval — delivery-strategy research bench (nothing here ships)");
+    println!(
+        "runtime: embedder={}  reranker={}  seed={}  limit={}",
+        r.embedder, r.reranker, r.seed, r.limit
+    );
+    if r.embeddings_are_fake {
+        println!("!! FAKE EMBEDDINGS — every number below is noise");
+    }
+    for s in &r.sizes {
+        println!(
+            "\ngraph {} facts / {} questions / controls {} calibrate + {} evaluate  (conformal t: q90 {:.3}, q95 {:.3})",
+            s.graph,
+            s.questions,
+            s.controls_calibration,
+            s.controls_eval,
+            s.conformal_q90,
+            s.conformal_q95
+        );
+        println!(
+            "  q90 as the per-graph weak line: {:.0}% of answerable label strong, {:.0}% of held-out controls flagged",
+            100.0 * s.label_answerable_strong,
+            100.0 * s.label_controls_flagged
+        );
+        if !s.label_grid.is_empty() {
+            println!(
+                "  recommendation regime (never cuts): q  threshold  ctrl-unwarned(FP)  ans-warned"
+            );
+            for p in &s.label_grid {
+                println!(
+                    "  {:>36.2} {:>10.3} {:>18.2} {:>11.2}",
+                    p.quantile, p.threshold, p.controls_unwarned, p.answerable_warned
+                );
+            }
+        }
+        println!(
+            "  {:<22} {:>6} {:>6} {:>6} {:>6} {:>6} {:>9} {:>9} {:>6}",
+            "strategy", "R@5", "obliq", "focus", "noise", "kept", "tok/query", "decl-ans", "FP"
+        );
+        for row in &s.rows {
+            println!(
+                "  {:<22} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.1} {:>9.0} {:>9.2} {:>6.2}",
+                row.strategy,
+                row.recall_at_5,
+                row.oblique_recall_at_5,
+                row.focus,
+                row.noise,
+                row.mean_returned,
+                row.tokens_mean,
+                row.declined_answerable,
+                row.false_positive_rate,
+            );
+        }
+    }
+    println!(
+        "\nReading it: FP is scored on the held-out control half only — the conformal\n\
+         thresholds never see the probes they are judged on. decl-ans is what each\n\
+         strategy's restraint costs on real questions; a strategy only earns its FP\n\
+         number if R@5 and obliq survive next to it."
+    );
 }
 
 fn print_floor(r: &engram_eval::run::FloorReport) {

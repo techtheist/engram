@@ -324,11 +324,27 @@ const deliveryWords = computed(() => {
     const p = draft.value?.policy
     if (!p) return []
     return [
-        `Search hits scoring under ${pct(p.delivery_floor)} are trimmed before delivery — the benchmark put the edge of the recall-free zone there, so the weak tail stops spending your assistant's attention. When even the best hit stays under ${pct(p.weak_evidence_top)}, the reply is labeled weak evidence (verify before relying), and an empty result says "no memory on this" instead of guessing. Both apply only while a reranker is loaded: the calibrated scale is the reranker's.`,
+        `Search hits scoring under ${pct(p.delivery_floor)} are trimmed before delivery — the benchmark put the edge of the recall-free zone there, so the weak tail stops spending your assistant's attention. When even the best hit stays under ${pct(p.weak_evidence_top)}, the reply says "likely not in memory" — the candidates still arrive, never cut, just labeled — and an empty result says "no memory on this" instead of guessing. All of it applies only while a reranker is loaded: the calibrated scale is the reranker's.`,
+        p.knee_cliff != null
+            ? `Knee trim is on: when the delivered scores fall by ${pct(p.knee_cliff)} or more in one step, everything past that cliff is tail and stays home. Measured recall-free from 100 to 2000 notes while the answer's share of delivered tokens roughly quadruples on big graphs.`
+            : `Knee trim is off: only the fixed floor trims the tail.`,
         p.auto_tune
-            ? `Auto-tune is on: past 200 notes and 20 judged look-alike pairs, this graph refits its suspect threshold from your own verdicts at session boundaries. Every adjustment lands in the audit journal.`
-            : `Auto-tune is off: the suspect threshold stays exactly where you set it.`,
+            ? `Auto-tune is on: past 200 notes and 20 judged look-alike pairs this graph refits its suspect threshold from your own verdicts, and past 50 notes it recalibrates the weak-evidence line from ${p.weak_line_probes} phantom probes (questions about invented subjects that cannot be in memory) at q${Math.round(p.weak_line_quantile * 100)} of what they still score. Both run at session boundaries; every adjustment lands in the audit journal.`
+            : `Auto-tune is off: the suspect threshold and the weak-evidence line stay exactly where you set them.`,
     ]
+})
+
+const kneeOn = computed({
+    get: () => draft.value?.policy.knee_cliff != null,
+    set: (v: boolean) => {
+        if (draft.value) draft.value.policy.knee_cliff = v ? 0.25 : null
+    },
+})
+const kneeCliff = computed({
+    get: () => draft.value?.policy.knee_cliff ?? 0.25,
+    set: (v: number) => {
+        if (draft.value) draft.value.policy.knee_cliff = v
+    },
 })
 
 </script>
@@ -622,12 +638,19 @@ const deliveryWords = computed(() => {
             <div class="grid">
                 <label>delivery floor <StepperInput v-model="draft.policy.delivery_floor" :step="0.01" :max="1" aria-label="delivery floor" /></label>
                 <label>weak below <StepperInput v-model="draft.policy.weak_evidence_top" :step="0.01" :max="1" aria-label="weak evidence line" /></label>
+                <label v-if="kneeOn">knee cliff ≥ <StepperInput v-model="kneeCliff" :step="0.05" :max="1" aria-label="knee cliff" /></label>
+                <label>weak-line q <StepperInput v-model="draft.policy.weak_line_quantile" :step="0.05" :max="1" aria-label="weak-line quantile" /></label>
             </div>
             <div class="checks">
                 <ToggleChip
+                    v-model="kneeOn"
+                    label="knee trim"
+                    title="Cut delivery at the largest relative drop in the score curve — the cliff between the relevance head and the noise tail. Measured recall-free at every graph size"
+                />
+                <ToggleChip
                     v-model="draft.policy.auto_tune"
                     label="auto-tune"
-                    title="Past 200 notes and 20 judged look-alike pairs, the graph refits its own conflict threshold from your judgment history at session boundaries — journaled, and off means never"
+                    title="At session boundaries the graph refits its conflict threshold from your judgment history and its weak-evidence line from phantom probes — journaled, and off means never"
                 />
             </div>
             <p v-for="(line, i) in deliveryWords" :key="i" class="hint words">{{ line }}</p>

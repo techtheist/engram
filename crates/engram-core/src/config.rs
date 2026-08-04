@@ -219,9 +219,24 @@ pub struct PolicyConfig {
     #[serde(default = "default_delivery_floor")]
     pub delivery_floor: f64,
     /// Top-score under which the search verdict is "weak" — verify before
-    /// relying. See [`crate::policy::WEAK_EVIDENCE_TOP`].
+    /// relying. See [`crate::policy::WEAK_EVIDENCE_TOP`]. Auto-tune's
+    /// weak-line dial recalibrates this per graph from phantom probes.
     #[serde(default = "default_weak_evidence_top")]
     pub weak_evidence_top: f64,
+    /// Calibrated-delivery knee trim: cut the delivered list at the largest
+    /// relative drop in its score curve when the drop is at least this
+    /// fraction of the running score. `None` disables the knee — the fixed
+    /// `delivery_floor` alone then trims. See [`crate::policy::KNEE_MIN_CLIFF`].
+    #[serde(default = "default_knee_cliff")]
+    pub knee_cliff: Option<f64>,
+    /// Quantile of phantom-probe top scores that auto-tune's weak-line dial
+    /// fits `weak_evidence_top` to. See [`crate::policy::WEAK_LINE_QUANTILE`].
+    #[serde(default = "default_weak_line_quantile")]
+    pub weak_line_quantile: f64,
+    /// How many phantom probes the weak-line fit mints per calibration pass.
+    /// See [`crate::policy::WEAK_LINE_PROBES`].
+    #[serde(default = "default_weak_line_probes")]
+    pub weak_line_probes: usize,
 }
 
 fn default_delivery_floor() -> f64 {
@@ -230,6 +245,18 @@ fn default_delivery_floor() -> f64 {
 
 fn default_weak_evidence_top() -> f64 {
     crate::policy::WEAK_EVIDENCE_TOP
+}
+
+fn default_knee_cliff() -> Option<f64> {
+    Some(crate::policy::KNEE_MIN_CLIFF)
+}
+
+fn default_weak_line_quantile() -> f64 {
+    crate::policy::WEAK_LINE_QUANTILE
+}
+
+fn default_weak_line_probes() -> usize {
+    crate::policy::WEAK_LINE_PROBES
 }
 
 fn default_auto_tune() -> bool {
@@ -286,6 +313,9 @@ impl Default for PolicyConfig {
             auto_tune: true,
             delivery_floor: DELIVERY_FLOOR,
             weak_evidence_top: WEAK_EVIDENCE_TOP,
+            knee_cliff: Some(KNEE_MIN_CLIFF),
+            weak_line_quantile: WEAK_LINE_QUANTILE,
+            weak_line_probes: WEAK_LINE_PROBES,
         }
     }
 }
@@ -1062,10 +1092,22 @@ impl GraphConfig {
             ),
             ("delivery_floor", p.delivery_floor),
             ("weak_evidence_top", p.weak_evidence_top),
+            ("weak_line_quantile", p.weak_line_quantile),
         ] {
             if !(0.0..=1.0).contains(&value) {
                 return fail(format!("policy.{name} {value} out of 0..=1"));
             }
+        }
+        if let Some(c) = p.knee_cliff
+            && !(0.0..=1.0).contains(&c)
+        {
+            return fail(format!("policy.knee_cliff {c} out of 0..=1"));
+        }
+        if !(4..=256).contains(&p.weak_line_probes) {
+            return fail(format!(
+                "policy.weak_line_probes {} out of 4..=256",
+                p.weak_line_probes
+            ));
         }
         // A rank-fusion constant, not a 0..1 weight: it is added to a 1-based
         // rank, so anything non-positive divides by zero at rank 0 or inverts

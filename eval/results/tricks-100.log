@@ -1,0 +1,20 @@
+engram-eval — delivery-strategy research bench (nothing here ships)
+runtime: embedder=bge-small-en-v1.5  reranker=jina-reranker-v1-turbo-en  seed=1  limit=10
+
+graph 100 facts / 300 questions / controls 13 calibrate + 12 evaluate  (conformal t: q90 0.563, q95 0.567)
+  strategy                  R@5  obliq  focus  noise   kept tok/query  decl-ans     FP
+  top-10 as ranked         0.96   0.89   0.20   0.80    7.1       362      0.00   0.92
+  shipped floor .22        0.96   0.89   0.20   0.80    7.1       362      0.00   0.92
+  relative .6*top          0.95   0.86   0.63   0.39    3.5       182      0.00   0.92
+  relative .75*top         0.90   0.71   0.76   0.32    2.6       132      0.00   0.92
+  knee cut                 0.95   0.85   0.66   0.36    3.7       191      0.00   0.92
+  floor .22 + knee         0.95   0.85   0.66   0.36    3.7       191      0.00   0.92
+  conformal q90 + floor    0.69   0.23   0.23   0.54    4.5       234      0.30   0.08
+  conformal q95 + floor    0.69   0.23   0.23   0.54    4.5       234      0.30   0.08
+
+Reading it: FP is scored on the held-out control half only — the conformal
+thresholds never see the probes they are judged on. decl-ans is what each
+strategy's restraint costs on real questions; a strategy only earns its FP
+number if R@5 and obliq survive next to it.
+
+wrote eval/results/tricks-100.json

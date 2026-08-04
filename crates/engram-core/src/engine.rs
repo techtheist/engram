@@ -306,33 +306,68 @@ impl Engine {
         crate::store::now() - last >= min_interval_secs
     }
 
-    /// Per-graph calibration from judged history — the automated form of the
-    /// manual 0.85→0.88 conflict-floor retune (2026-07-13). Every resolved
-    /// suspect is a labeled (similarity, verdict) pair: a dismissal is a
-    /// false positive the floor exists to prevent, a confirmation is what it
-    /// must never lose. Models nominate, people judge — and what people
-    /// judged is calibration data, so this fits FROM human verdicts only.
-    ///
-    /// Engages only on a mature graph: over [`policy::AUTO_TUNE_MIN_NOTES`]
-    /// current notes, at least [`policy::AUTO_TUNE_MIN_JUDGED`] judgments
-    /// with [`policy::AUTO_TUNE_MIN_EACH`] per side (a one-sided history can
-    /// push a floor, not place it); smaller graphs keep the
-    /// benchmark-calibrated defaults. The fit maximizes balanced accuracy
-    /// over midpoint candidates, prefers the higher threshold on ties (a
-    /// quieter queue), clamps into
-    /// [[`policy::AUTO_TUNE_FLOOR_MIN`], `duplicate_similarity`), and applies
-    /// only a move of at least [`policy::AUTO_TUNE_MIN_DELTA`] — journaled as
-    /// an `auto_tuned` activity row. `policy.auto_tune = false` opts a graph
+    /// Per-graph calibration — one button, several dials (user decision
+    /// 2026-08-03: `policy.auto_tune` stays the single switch as calibration
+    /// grows parameters). Each dial fits one policy value from evidence this
+    /// graph itself produced, applies only a move of at least
+    /// [`policy::AUTO_TUNE_MIN_DELTA`], and every move lands in one
+    /// `auto_tuned` activity row. `policy.auto_tune = false` opts a graph
     /// out entirely.
+    ///
+    /// Dial one, the conflict floor — the automated form of the manual
+    /// 0.85→0.88 retune (2026-07-13). Every resolved suspect is a labeled
+    /// (similarity, verdict) pair: a dismissal is a false positive the floor
+    /// exists to prevent, a confirmation is what it must never lose. Models
+    /// nominate, people judge — and what people judged is calibration data,
+    /// so this fits FROM human verdicts only. Engages over
+    /// [`policy::AUTO_TUNE_MIN_NOTES`] current notes with at least
+    /// [`policy::AUTO_TUNE_MIN_JUDGED`] judgments,
+    /// [`policy::AUTO_TUNE_MIN_EACH`] per side.
+    ///
+    /// Dial two, the weak line — fits `weak_evidence_top` as a quantile of
+    /// the top scores phantom probes (questions about invented subjects
+    /// guaranteed absent from any graph) still reach here. The fixed 0.85
+    /// default is only right near 2000 notes; the measured calibrated line
+    /// runs 0.56→0.81 from 100 to 2000 (tricks bench, 2026-08-03). Engages
+    /// over [`policy::WEAK_LINE_MIN_NOTES`] notes, reranker-gated: the line
+    /// is read against the cross-encoder's calibrated scale, so there is
+    /// nothing to fit without one.
     pub fn auto_tune(&self) -> Result<Option<String>> {
-        use crate::policy::{
-            AUTO_TUNE_FLOOR_MIN, AUTO_TUNE_MIN_DELTA, AUTO_TUNE_MIN_EACH, AUTO_TUNE_MIN_JUDGED,
-            AUTO_TUNE_MIN_NOTES,
-        };
-        let cfg = self.graph_config();
-        if !cfg.policy.auto_tune || self.store.stats()?.nodes <= AUTO_TUNE_MIN_NOTES {
+        use crate::policy::{AUTO_TUNE_MIN_NOTES, WEAK_LINE_MIN_NOTES};
+        let mut cfg = self.graph_config();
+        if !cfg.policy.auto_tune {
             return Ok(None);
         }
+        let notes = self.store.stats()?.nodes;
+        let mut moves = Vec::new();
+        if notes > AUTO_TUNE_MIN_NOTES
+            && let Some(m) = self.fit_conflict_floor(&mut cfg)?
+        {
+            moves.push(m);
+        }
+        if notes > WEAK_LINE_MIN_NOTES
+            && let Some(m) = self.fit_weak_line(&mut cfg)?
+        {
+            moves.push(m);
+        }
+        if moves.is_empty() {
+            return Ok(None);
+        }
+        self.set_graph_config(&cfg)?;
+        let note = moves.join("; ");
+        self.audit_activity("auto_tuned", Some(note.clone()))?;
+        Ok(Some(note))
+    }
+
+    /// Auto-tune dial one: fit the conflict-suspect floor from judged
+    /// history by maximizing balanced accuracy over midpoint candidates,
+    /// preferring the higher threshold on ties (a quieter queue), clamped
+    /// into [[`policy::AUTO_TUNE_FLOOR_MIN`], `duplicate_similarity`).
+    /// Mutates `cfg` and returns the journal fragment; the caller persists.
+    fn fit_conflict_floor(&self, cfg: &mut crate::config::GraphConfig) -> Result<Option<String>> {
+        use crate::policy::{
+            AUTO_TUNE_FLOOR_MIN, AUTO_TUNE_MIN_DELTA, AUTO_TUNE_MIN_EACH, AUTO_TUNE_MIN_JUDGED,
+        };
         let judged: Vec<(f64, bool)> = self
             .store
             .all_suspects()?
@@ -373,15 +408,68 @@ impl Engine {
             return Ok(None);
         }
 
-        let mut next = cfg;
-        next.policy.conflict_suspect_similarity = fitted;
-        self.set_graph_config(&next)?;
-        let note = format!(
+        cfg.policy.conflict_suspect_similarity = fitted;
+        Ok(Some(format!(
             "conflict floor {old:.3} -> {fitted:.3} from {} judged pairs ({confirmed} confirmed / {dismissed} dismissed)",
             judged.len()
+        )))
+    }
+
+    /// Auto-tune dial two: fit the weak-evidence line as
+    /// `policy.weak_line_quantile` of the top scores that
+    /// `policy.weak_line_probes` phantom probes reach on this graph — the
+    /// split-conformal question "how high can a score climb here when the
+    /// answer does not exist". Probes never stamp `last_seen` (calibration
+    /// is not retrieval) and the fit clamps into
+    /// [[`policy::WEAK_LINE_MIN`], [`policy::WEAK_LINE_MAX`]]. Mutates `cfg`
+    /// and returns the journal fragment; the caller persists.
+    fn fit_weak_line(&self, cfg: &mut crate::config::GraphConfig) -> Result<Option<String>> {
+        use crate::policy::{AUTO_TUNE_MIN_DELTA, WEAK_LINE_ABOVE_FLOOR, WEAK_LINE_MAX};
+        let Some(reranker) = &self.reranker else {
+            return Ok(None);
+        };
+        // Probes borrow vocabulary from the graph's own titles: a probe that
+        // asks in generic wording under-reads how high THIS graph's scores
+        // can climb for a subject that does not exist (first live fit,
+        // 2026-08-04: in-register questions reached 0.32 against a 0.25 line
+        // fitted from generic probes). The coined subject keeps the question
+        // unanswerable; the borrowed words keep it in register.
+        let mut notes = self.store.all_nodes()?;
+        notes.retain(|n| n.valid_until.is_none());
+        notes.sort_by(|a, b| a.id.cmp(&b.id));
+        let vocab: Vec<String> = notes.iter().filter_map(|n| probe_terms(&n.title)).collect();
+        let mut tops = Vec::with_capacity(cfg.policy.weak_line_probes);
+        for i in 0..cfg.policy.weak_line_probes {
+            let terms = (!vocab.is_empty()).then(|| vocab[i % vocab.len()].as_str());
+            let probe = phantom_probe(i, terms);
+            let qv = self.embedder.embed_one(&probe)?;
+            let mut hits = self.store.search_hybrid(&probe, Some(&qv), &[], 12)?;
+            if hits.is_empty() {
+                tops.push(0.0);
+                continue;
+            }
+            self.rerank(reranker.as_ref(), &probe, &mut hits);
+            tops.push(hits.iter().map(|h| h.score).fold(f64::MIN, f64::max));
+        }
+        tops.sort_by(f64::total_cmp);
+        let q = cfg.policy.weak_line_quantile;
+        // The lower clamp is floor-relative, never absolute: a line at or
+        // under the delivery floor could never fire, but the score scale
+        // itself is per-graph evidence (see policy::WEAK_LINE_ABOVE_FLOOR).
+        let fitted = quantile(&tops, q).clamp(
+            (cfg.policy.delivery_floor + WEAK_LINE_ABOVE_FLOOR).min(WEAK_LINE_MAX),
+            WEAK_LINE_MAX,
         );
-        self.audit_activity("auto_tuned", Some(note.clone()))?;
-        Ok(Some(note))
+        let old = cfg.policy.weak_evidence_top;
+        if (fitted - old).abs() < AUTO_TUNE_MIN_DELTA {
+            return Ok(None);
+        }
+        cfg.policy.weak_evidence_top = fitted;
+        Ok(Some(format!(
+            "weak line {old:.3} -> {fitted:.3} from {} phantom probes at q{:.0}",
+            tops.len(),
+            q * 100.0
+        )))
     }
 
     /// Nodes whose `code_refs` cover a repo-relative file path — the
@@ -1192,6 +1280,21 @@ impl Engine {
             hits.retain(|h| h.score >= floor);
         }
         hits.truncate(limit);
+        // Calibrated delivery, knee face: cut at the largest relative drop
+        // in the delivered score curve — the cliff between the relevance
+        // head and the noise tail (policy::KNEE_MIN_CLIFF). Measured free of
+        // recall cost at every size, and unlike the fixed floor the cliff
+        // sharpens as the graph grows. Reranker-gated like the floor: the
+        // fused hybrid score is a different scale.
+        if self.reranker.is_some()
+            && let Some(cliff) = self.store.config().policy.knee_cliff
+        {
+            let mut curve: Vec<f64> = hits.iter().map(|h| h.score).collect();
+            curve.sort_by(|a, b| b.total_cmp(a));
+            if let Some(k) = knee_floor(&curve, cliff) {
+                hits.retain(|h| h.score >= k);
+            }
+        }
         for hit in &mut hits {
             hit.neighbors = self.store.neighbors(&hit.id, NEIGHBOR_CAP)?;
         }
@@ -2806,4 +2909,77 @@ fn excerpt_words(text: &str, max: usize) -> String {
         _ => cut.as_str(),
     };
     format!("{}…", trimmed.trim_end())
+}
+
+/// The knee of a DESC-sorted score curve: the largest relative drop, when it
+/// is at least `min_cliff` of the running score (Tail-Aware Adaptive-k,
+/// arXiv:2606.11907, simplified to the knee without the EVT validation
+/// pass — see [`crate::policy::KNEE_MIN_CLIFF`]). Returns the minimum score
+/// to KEEP, or `None` when the curve has no cliff worth acting on.
+fn knee_floor(sorted_desc: &[f64], min_cliff: f64) -> Option<f64> {
+    if sorted_desc.len() <= 1 {
+        return None;
+    }
+    let (mut best_at, mut best_drop) = (0usize, 0.0f64);
+    for i in 1..sorted_desc.len() {
+        let prev = sorted_desc[i - 1].max(1e-9);
+        let drop = (sorted_desc[i - 1] - sorted_desc[i]) / prev;
+        if drop > best_drop {
+            best_drop = drop;
+            best_at = i;
+        }
+    }
+    (best_drop >= min_cliff).then(|| sorted_desc[best_at - 1])
+}
+
+/// Higher quantile of an ASC-sorted sample (the split-conformal convention:
+/// round up, never interpolate — the threshold must be a score that was
+/// actually reached).
+fn quantile(sorted_asc: &[f64], q: f64) -> f64 {
+    if sorted_asc.is_empty() {
+        return 0.0;
+    }
+    let idx = ((sorted_asc.len() - 1) as f64 * q).ceil() as usize;
+    sorted_asc[idx.min(sorted_asc.len() - 1)]
+}
+
+/// Up to two long content words from a note title — the register the
+/// weak-line probes borrow so they ask the way this graph is written.
+fn probe_terms(title: &str) -> Option<String> {
+    let words: Vec<&str> = title
+        .split(|c: char| !c.is_alphanumeric() && !"-_.".contains(c))
+        .filter(|w| w.len() >= 5)
+        .take(2)
+        .collect();
+    (!words.is_empty()).then(|| words.join(" "))
+}
+
+/// Mint the i-th phantom probe for the weak-line fit: a memory-shaped
+/// question about a coined subject that cannot exist in any graph, phrased
+/// over vocabulary borrowed from the graph itself when it has any. The
+/// coinage is deterministic — the same graph calibrates against the same
+/// probes, so the fitted line settles instead of wandering.
+fn phantom_probe(i: usize, terms: Option<&str>) -> String {
+    const ONSET: [&str; 8] = ["vor", "zel", "quam", "dro", "fex", "gril", "plom", "stru"];
+    const MID: [&str; 8] = ["ni", "ba", "ro", "ka", "lu", "tri", "gos", "pem"];
+    const CODA: [&str; 8] = ["dax", "vek", "morn", "lisk", "tor", "bran", "funt", "gel"];
+    const FALLBACK: [&str; 6] = [
+        "subsystem",
+        "migration",
+        "deployment",
+        "cache layer",
+        "retry worker",
+        "pipeline",
+    ];
+    const TEMPLATES: [&str; 6] = [
+        "What did we decide about the {}?",
+        "Why does the {} keep failing?",
+        "What broke the last time the {} was deployed?",
+        "Which constraint governs the {}?",
+        "What is the policy for the {}?",
+        "What did the {} replace and why?",
+    ];
+    let name = format!("{}{}{}", ONSET[i % 8], MID[(i / 8) % 8], CODA[(i / 64) % 8]);
+    let topic = format!("{name} {}", terms.unwrap_or(FALLBACK[i % FALLBACK.len()]));
+    TEMPLATES[i % TEMPLATES.len()].replace("{}", &topic)
 }

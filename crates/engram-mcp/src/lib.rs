@@ -363,9 +363,11 @@ impl Engram {
         (true = decayed trust, verify before relying), status, and 1-hop \
         neighbors (conflicts-with/replaces first). The reply's `confidence` \
         is a verdict to respect: `strong` = the top hit cleared the \
-        calibrated line; `weak` = treat hits as leads to verify, not \
-        answers; `none` = the graph is silent — say so instead of inventing \
-        a memory. Weak-scoring tail hits are trimmed before delivery so \
+        calibrated line; `weak` = likely not in memory — the hits are the \
+        nearest candidates (never cut), verify before relying on one; \
+        `none` = the graph is silent — say so instead of inventing a \
+        memory. The line is calibrated per graph by auto-tune. Weak-scoring \
+        tail hits are trimmed before delivery so \
         attention stays on the answer. Being returned stamps \
         last_seen for observability only — retrieval never refreshes trust. \
         `project: \"all\"` searches every registered project plus the home \
@@ -407,9 +409,10 @@ impl Engram {
                      this session, capture it.",
                 ),
                 "weak" => Some(
-                    "Weak evidence: no hit cleared the calibrated confidence \
-                     line, so these may be adjacent topics rather than the thing \
-                     asked. Verify against the code or the user before relying \
+                    "This likely isn't in memory: no hit cleared this graph's \
+                     calibrated confidence line, so what follows are the nearest \
+                     candidates, not a found answer — delivered anyway, never \
+                     cut. Verify against the code or the user before relying \
                      on any of them.",
                 ),
                 _ => None,

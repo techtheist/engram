@@ -116,6 +116,50 @@ pub const DELIVERY_FLOOR: f64 = 0.22;
 /// costs no recall where a hard floor would spend the oblique column to buy
 /// abstention.
 pub const WEAK_EVIDENCE_TOP: f64 = 0.85;
+/// Calibrated delivery, knee face: after the fixed floor, cut the delivered
+/// list at the largest relative drop in its score curve — the knee between
+/// the relevance head and the noise tail (Tail-Aware Adaptive-k,
+/// arXiv:2606.11907, simplified to the knee without the EVT pass). Only a
+/// drop of at least this fraction of the running score counts as a cliff: a
+/// flat curve has no knee, and cutting at its noise-level maximum drop would
+/// amputate the head one query in three. Measured on the question-everything
+/// corpus at 100–2000 notes (tricks bench, 2026-08-03): recall@5 and oblique
+/// recall within 0.01 of shipped delivery at every size, focus 0.20→0.66 /
+/// 0.10→0.44 / 0.10→0.40 at 100/1500/2000 notes, delivered tokens −35–50% —
+/// and unlike the fixed floor, the cliff sharpens with crowd size, so the
+/// gain holds where the floor went quiet.
+pub const KNEE_MIN_CLIFF: f64 = 0.25;
+/// Auto-tune, weak-line dial: the calibrated "likely not in memory" line is
+/// fitted per graph as this quantile of the top scores that phantom probes —
+/// questions about invented subjects guaranteed absent from any graph —
+/// still manage to reach. Split-conformal shape (the FinAbstain family): the
+/// threshold answers "how high can a score climb on THIS graph when the
+/// answer does not exist". q90 flags 84–95% of held-out never-written
+/// questions at every measured size while the warned share of answerable
+/// questions barely moves between q70 and q95.
+pub const WEAK_LINE_QUANTILE: f64 = 0.90;
+/// How many phantom probes the weak-line fit mints per calibration pass.
+pub const WEAK_LINE_PROBES: usize = 24;
+/// The weak-line dial engages past this many current notes — under it the
+/// phantom-probe score distribution is too thin to place a quantile on.
+/// Deliberately lower than [`AUTO_TUNE_MIN_NOTES`]: the measured calibrated
+/// line runs 0.56 → 0.81 from 100 to 2000 notes, so it is precisely the
+/// small graphs that the fixed 0.85 default over-flags.
+pub const WEAK_LINE_MIN_NOTES: i64 = 50;
+/// The fitted weak line clamps to at least `delivery_floor` plus this
+/// margin: every delivered hit already clears the floor, so a line at or
+/// below it could never fire and the label would be dead. The margin is not
+/// a quality bar — first live fit (dogfood graph, 2026-08-04) showed the
+/// score SCALE is register-dependent (phantom noise peaked at ~0.20 here vs
+/// 0.77 on the eval corpus: dense prose notes vs short subject-facts), so
+/// an absolute lower bound would overrule exactly the per-graph evidence
+/// this dial exists to read. When the noise ceiling sits under the floor,
+/// never-written questions come back empty and the `none` verdict carries
+/// the abstention instead.
+pub const WEAK_LINE_ABOVE_FLOOR: f64 = 0.03;
+/// Fitted weak lines never exceed this — above it the label fires on
+/// everything.
+pub const WEAK_LINE_MAX: f64 = 0.95;
 /// How long a node must sit below [`STALE_TRUST`] before the decay pass
 /// archives it (PLAN §6B: stale provisional episodic nodes decay out).
 pub const DECAY_TTL_DAYS: i64 = 14;

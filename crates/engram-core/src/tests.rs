@@ -340,10 +340,12 @@ fn a_voting_reranker_cannot_bury_what_retrieval_ranked_first() {
         "voting is the shipped default"
     );
     // This test is about ORDERING; FavorLast's scripted sigmoid(-8) scores
-    // would be tail-trimmed by calibrated delivery before the orderings can
-    // be compared, so the trim is switched off for the diagnostic.
+    // would be tail-trimmed by calibrated delivery (floor and knee alike)
+    // before the orderings can be compared, so both trims are switched off
+    // for the diagnostic.
     let mut cfg = e.graph_config();
     cfg.policy.delivery_floor = 0.0;
+    cfg.policy.knee_cliff = None;
     e.set_graph_config(&cfg).unwrap();
 
     let mut ids = Vec::new();
@@ -5627,5 +5629,111 @@ fn without_a_reranker_scores_are_uncalibrated_and_carry_no_verdict() {
         e.search_confidence(&hits),
         None,
         "a verdict from an uncalibrated scale would be noise wearing a badge"
+    );
+}
+
+#[test]
+fn knee_trim_cuts_the_cliff_tail_but_spares_flat_curves() {
+    // Two confident docs, one mid-scoring straggler above the fixed floor:
+    // the ~36% relative drop is a cliff, so the straggler is tail and must
+    // stay home even though the 0.22 floor would have delivered it.
+    let e = engine_with_reranker(vec![4.0, 3.8, 0.5]);
+    for (t, b) in [
+        ("delta component flush interval is four seconds", "flush"),
+        (
+            "delta component flush interval restated for the test",
+            "again",
+        ),
+        (
+            "delta component flush interval noted a third time",
+            "thrice",
+        ),
+    ] {
+        e.add_node(new_node(NodeType::Insight, t, b)).unwrap();
+    }
+    let hits = e
+        .search("delta component flush interval is four seconds", &[], 10)
+        .unwrap();
+    assert_eq!(hits.len(), 2, "the hit past the score cliff is tail");
+
+    // A flat curve has no knee: nothing beyond the fixed floor is trimmed.
+    let e = engine_with_reranker(vec![0.5, 0.4, 0.3]);
+    for (t, b) in [
+        ("epsilon component drain window is six seconds", "drain"),
+        (
+            "epsilon component drain window restated for the test",
+            "again",
+        ),
+        (
+            "epsilon component drain window noted a third time",
+            "thrice",
+        ),
+    ] {
+        e.add_node(new_node(NodeType::Insight, t, b)).unwrap();
+    }
+    let hits = e
+        .search("epsilon component drain window is six seconds", &[], 10)
+        .unwrap();
+    assert_eq!(hits.len(), 3, "a flat curve must not be amputated");
+}
+
+#[test]
+fn knee_trim_is_an_opt_out_via_config() {
+    let e = engine_with_reranker(vec![4.0, 3.8, 0.5]);
+    let mut cfg = e.graph_config();
+    cfg.policy.knee_cliff = None;
+    e.set_graph_config(&cfg).unwrap();
+    for (t, b) in [
+        ("zeta component grace period is two seconds", "grace"),
+        ("zeta component grace period restated for the test", "again"),
+        ("zeta component grace period noted a third time", "thrice"),
+    ] {
+        e.add_node(new_node(NodeType::Insight, t, b)).unwrap();
+    }
+    let hits = e
+        .search("zeta component grace period is two seconds", &[], 10)
+        .unwrap();
+    assert_eq!(hits.len(), 3, "knee_cliff = null disables the knee trim");
+}
+
+#[test]
+fn auto_tune_calibrates_the_weak_line_from_phantom_probes_and_settles() {
+    let (mut e, _) = auto_tune_fixture(crate::policy::WEAK_LINE_MIN_NOTES as usize + 10);
+    e.set_reranker(Box::new(ScriptedReranker(vec![2.0; 12])));
+    let note = e
+        .auto_tune()
+        .unwrap()
+        .expect("past the note gate the weak line must be fitted");
+    assert!(note.contains("weak line"), "journal names the dial: {note}");
+    let fitted = e.graph_config().policy.weak_evidence_top;
+    let lower = e.graph_config().policy.delivery_floor + crate::policy::WEAK_LINE_ABOVE_FLOOR;
+    assert!(
+        (lower..=crate::policy::WEAK_LINE_MAX).contains(&fitted),
+        "fitted line {fitted} escaped the clamp band [{lower}, {}]",
+        crate::policy::WEAK_LINE_MAX
+    );
+    assert!(
+        (fitted - crate::policy::WEAK_EVIDENCE_TOP).abs() >= crate::policy::AUTO_TUNE_MIN_DELTA,
+        "the journaled move must be a real move"
+    );
+    // Deterministic probes on an unchanged graph: the second pass settles.
+    assert!(e.auto_tune().unwrap().is_none(), "second fit must settle");
+}
+
+#[test]
+fn weak_line_dial_is_silent_without_a_reranker_or_below_the_note_gate() {
+    // Reranker present but the graph is too small to place a quantile on.
+    let (mut e, _) = auto_tune_fixture(10);
+    e.set_reranker(Box::new(ScriptedReranker(vec![2.0; 12])));
+    assert!(
+        e.auto_tune().unwrap().is_none(),
+        "50-note gate must hold for the weak line"
+    );
+    // Big enough, but no reranker: the line reads the cross-encoder's scale,
+    // so there is nothing to fit.
+    let (e, _) = auto_tune_fixture(crate::policy::WEAK_LINE_MIN_NOTES as usize + 10);
+    assert!(
+        e.auto_tune().unwrap().is_none(),
+        "no reranker means no weak-line fit"
     );
 }

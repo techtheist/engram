@@ -19,5 +19,5 @@ if Engram isn't installed yet.
 | [Troubleshooting](./troubleshooting.md) | `doctor`, `stop`, daemons and ports, locked stores, common fixes |
 
 Security posture — threat model, measures in place, known gaps — lives in
-[`SECURITY.md`](../SECURITY.md) at the repository root. The full technical
-spec and roadmap is [`PLAN.md`](../PLAN.md).
+[`SECURITY.md`](../SECURITY.md) at the repository root. The roadmap lives in
+the project's own memory graph — dogfooding is the spec.

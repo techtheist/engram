@@ -433,6 +433,9 @@ export interface PolicyConfig {
     nli_sweep_min_confidence: number
     /** Post-rerank hits under this score are trimmed before delivery. */
     delivery_floor: number
+    knee_cliff: number | null
+    weak_line_quantile: number
+    weak_line_probes: number
     /** Top-score under which the search verdict is "weak". */
     weak_evidence_top: number
     /** Let a mature graph refit its conflict threshold from judged history. */

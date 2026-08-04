@@ -1326,6 +1326,495 @@ pub fn floor_sweep(cfg: &Config) -> anyhow::Result<FloorReport> {
     })
 }
 
+// -------------------------------------------------------------- post-tune
+
+/// The shipped post-tune stack, measured end to end at one size.
+#[derive(Debug, Clone, Serialize)]
+pub struct PostTuneSizeReport {
+    pub graph: usize,
+    pub edges: usize,
+    pub questions: usize,
+    pub controls: usize,
+    /// What auto-tune's weak-line dial fitted on this graph's own phantom
+    /// probes — the calibration the product actually runs, not the bench's
+    /// idealized split-conformal one.
+    pub weak_line: f64,
+    pub auto_tune_note: Option<String>,
+    pub standing_tokens: usize,
+    /// Hits scored alone (hybrid) …
+    pub overall: Score,
+    /// …and with the 1-hop graph credit, matching the arms table's
+    /// `engram-full` row.
+    pub assisted: Score,
+    pub by_phrasing: Vec<PhrasingScore>,
+    pub weighted_recall: f64,
+    /// Controls answered with a top score at/above the weak line — answered
+    /// WITHOUT the "likely not in memory" recommendation: the honest FP.
+    pub controls_unwarned: f64,
+    /// Controls that came back empty (the `none` verdict).
+    pub controls_empty: f64,
+    /// Answerable questions whose delivery carried the recommendation.
+    pub answerable_warned: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PostTuneReport {
+    pub embedder: String,
+    pub reranker: String,
+    pub embeddings_are_fake: bool,
+    pub seed: u64,
+    pub limit: usize,
+    pub sizes: Vec<PostTuneSizeReport>,
+}
+
+/// Measure the shipped 0.8.2 delivery stack — knee trim on, the weak line
+/// calibrated by `Engine::auto_tune`'s phantom-probe dial exactly as a
+/// session boundary would — as one engram-only pass per size.
+///
+/// This is the arms table's post-tune row. The pre-tune rows do not need
+/// re-measuring: the same engine with `knee_cliff = null` and the fixed weak
+/// line IS the 0.8.0 stack the existing tables recorded. FP here follows the
+/// recommendation regime the product ships: candidates are never cut, so a
+/// control answered under the warning counts as honest and only an
+/// unwarned answer is a false positive.
+pub fn posttune(cfg: &Config) -> anyhow::Result<PostTuneReport> {
+    let model = cfg.embed_model.as_deref();
+    let (_, embedder_name) = embedder(model);
+    let mut sizes = Vec::new();
+
+    for &size in &cfg.sizes {
+        let c = corpus_full(
+            size,
+            size * cfg.distractor_ratio,
+            cfg.seed,
+            &cfg.profile,
+            &cfg.type_mix,
+        );
+        let twins = twin_map(&c);
+        let engram = EngramArm::build(
+            &c,
+            embedder(model).0,
+            if cfg.no_rerank { None } else { reranker().0 },
+        )?;
+        let tuned = engram.engine().auto_tune()?;
+        let weak_line = engram.engine().graph_config().policy.weak_evidence_top;
+        eprintln!(
+            "  {size}: {} (weak line {weak_line:.3})",
+            tuned.as_deref().unwrap_or("auto-tune left the defaults")
+        );
+
+        let (outcomes, _) = measure(&engram, &c, cfg.limit, &twins);
+        let mut unwarned = 0usize;
+        let mut empty = 0usize;
+        for q in &c.unanswerable {
+            let r = engram.retrieve(&q.text, cfg.limit);
+            let answered = match &r.delivery {
+                Delivery::Ranked(keys) => !keys.is_empty(),
+                Delivery::Dump(_) => true,
+            };
+            if !answered {
+                empty += 1;
+            } else if r.top_score.unwrap_or(0.0) >= weak_line {
+                unwarned += 1;
+            }
+        }
+        let warned = outcomes
+            .iter()
+            .filter(|o| o.returned > 0 && o.top_score.unwrap_or(0.0) < weak_line)
+            .count();
+
+        let overall = score(&outcomes);
+        let assisted_outcomes = crate::metrics::assisted(&outcomes);
+        let mut assisted = score(&assisted_outcomes);
+        // Assisted ranks are pre-filled, so neighbour-only would read as
+        // zero; carry the real figure like the arms table does.
+        assisted.neighbor_only = overall.neighbor_only;
+        let split = by_phrasing(&assisted_outcomes);
+
+        sizes.push(PostTuneSizeReport {
+            graph: c.facts.len(),
+            edges: engram.edges_written,
+            questions: outcomes.len(),
+            controls: c.unanswerable.len(),
+            weak_line,
+            auto_tune_note: tuned,
+            standing_tokens: engram.standing_cost(),
+            overall,
+            assisted,
+            weighted_recall: cfg.phrasing.weighted_recall(&split),
+            by_phrasing: split
+                .into_iter()
+                .map(|(phrasing, score)| PhrasingScore { phrasing, score })
+                .collect(),
+            controls_unwarned: unwarned as f64 / c.unanswerable.len().max(1) as f64,
+            controls_empty: empty as f64 / c.unanswerable.len().max(1) as f64,
+            answerable_warned: warned as f64 / outcomes.len().max(1) as f64,
+        });
+    }
+
+    Ok(PostTuneReport {
+        embeddings_are_fake: embedder_name.contains("(fake)"),
+        embedder: embedder_name,
+        reranker: if cfg.no_rerank {
+            "disabled (--no-rerank)".to_string()
+        } else {
+            reranker().1
+        },
+        seed: cfg.seed,
+        limit: cfg.limit,
+        sizes,
+    })
+}
+
+// ------------------------------------------------------------- trick bench
+
+/// One candidate delivery strategy, scored over recorded retrievals.
+#[derive(Debug, Clone, Serialize)]
+pub struct TrickRow {
+    pub strategy: String,
+    pub recall_at_5: f64,
+    pub oblique_recall_at_5: f64,
+    pub focus: f64,
+    pub noise: f64,
+    pub mean_returned: f64,
+    pub tokens_mean: f64,
+    /// Share of answerable questions the strategy left empty.
+    pub declined_answerable: f64,
+    /// Share of HELD-OUT control questions still answered — the abstention
+    /// score, measured on probes the calibration never saw.
+    pub false_positive_rate: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TrickSizeReport {
+    pub graph: usize,
+    pub questions: usize,
+    pub controls_calibration: usize,
+    pub controls_eval: usize,
+    /// The conformal thresholds fitted on the calibration half.
+    pub conformal_q90: f64,
+    pub conformal_q95: f64,
+    /// The q90 threshold read as a per-graph WEAK line instead of a gate:
+    /// share of answerable questions whose top clears it (labeled strong)…
+    pub label_answerable_strong: f64,
+    /// …and share of held-out controls that would be flagged weak/none.
+    /// Together they say whether calibrating `weak_evidence_top` from
+    /// phantom probes beats the fixed 0.85.
+    pub label_controls_flagged: f64,
+    /// The recommendation regime (user ruling 2026-08-03: the pessimistic
+    /// signal never cuts — it prepends "likely not in memory" and the
+    /// candidates stay). Scored per calibration quantile: a warned control is
+    /// a CORRECT outcome, an unwarned one is the remaining false positive,
+    /// and a warned answerable question is the false-alarm cost — recall is
+    /// untouched by construction.
+    pub label_grid: Vec<LabelPoint>,
+    pub rows: Vec<TrickRow>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LabelPoint {
+    pub quantile: f64,
+    pub threshold: f64,
+    /// Held-out controls answered WITHOUT the recommendation — the honest FP.
+    pub controls_unwarned: f64,
+    /// Answerable questions carrying the false warning (answer still delivered).
+    pub answerable_warned: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TricksReport {
+    pub embedder: String,
+    pub reranker: String,
+    pub embeddings_are_fake: bool,
+    pub seed: u64,
+    pub limit: usize,
+    pub sizes: Vec<TrickSizeReport>,
+}
+
+/// The literature's training-free cut: find the largest relative drop in the
+/// DESC-sorted score curve (the knee between the relevance head and the noise
+/// tail — Tail-Aware Adaptive-k, arXiv 2606.11907, simplified to the knee
+/// without the EVT validation pass). Returns the minimum score to KEEP, or
+/// None when the curve has no cliff worth acting on.
+fn knee_threshold(sorted_desc: &[f64]) -> Option<f64> {
+    if sorted_desc.len() <= 1 {
+        return None;
+    }
+    let (mut best_at, mut best_drop) = (0usize, 0.0f64);
+    for i in 1..sorted_desc.len() {
+        let prev = sorted_desc[i - 1].max(1e-9);
+        let drop = (sorted_desc[i - 1] - sorted_desc[i]) / prev;
+        if drop > best_drop {
+            best_drop = drop;
+            best_at = i;
+        }
+    }
+    // A flat curve has no knee; cutting at its noise-level maximum drop would
+    // amputate the head one query in three. A quarter of the running score is
+    // a real cliff.
+    (best_drop >= 0.25).then(|| sorted_desc[best_at - 1])
+}
+
+fn quantile(sorted_asc: &[f64], q: f64) -> f64 {
+    if sorted_asc.is_empty() {
+        return 0.0;
+    }
+    let idx = ((sorted_asc.len() - 1) as f64 * q).ceil() as usize;
+    sorted_asc[idx.min(sorted_asc.len() - 1)]
+}
+
+/// The research bench for the 0.8.1 cycle: candidate delivery strategies —
+/// fixed floors, relative-to-top trims, the knee cut, and split-conformal
+/// abstention calibrated on synthetic never-written probes — all scored from
+/// ONE recorded retrieval pass per size. Nothing here ships; the table
+/// decides what is worth proposing.
+pub fn tricks(cfg: &Config) -> anyhow::Result<TricksReport> {
+    struct Rec {
+        gold_pos: Option<usize>,
+        phrasing: Phrasing,
+        scores: Vec<f64>,
+        entry_tokens: Vec<usize>,
+    }
+    /// One strategy = a trim rule composed of up to three floors (absolute,
+    /// relative-to-top, knee) plus an optional conformal abstention gate.
+    /// `flat_only` is the MIXED signal (user direction 2026-08-03): a
+    /// pessimistic calibrated score says "probably not there", but a real
+    /// answer's curve usually still has a cliff after its head while a
+    /// no-answer curve is flat — so abstain only when the score is low AND
+    /// the curve is shapeless.
+    struct Strategy {
+        name: &'static str,
+        abs_floor: f64,
+        rel: f64,
+        knee: bool,
+        abstain_q: Option<f64>,
+        flat_only: bool,
+    }
+    const S: fn(&'static str, f64, f64, bool, Option<f64>, bool) -> Strategy =
+        |name, abs_floor, rel, knee, abstain_q, flat_only| Strategy {
+            name,
+            abs_floor,
+            rel,
+            knee,
+            abstain_q,
+            flat_only,
+        };
+    let strategies: Vec<Strategy> = vec![
+        S("shipped delivery", 0.22, 0.0, false, None, false),
+        S("relative .5*top", 0.22, 0.5, false, None, false),
+        S("relative .6*top", 0.22, 0.6, false, None, false),
+        S("relative .75*top", 0.22, 0.75, false, None, false),
+        S("knee cut", 0.22, 0.0, true, None, false),
+        S("rel .6 + q50", 0.22, 0.6, false, Some(0.50), false),
+        S("rel .6 + q75", 0.22, 0.6, false, Some(0.75), false),
+        S("knee + q75", 0.22, 0.0, true, Some(0.75), false),
+        S("knee + q90", 0.22, 0.0, true, Some(0.90), false),
+        S("knee + q90 flat-only", 0.22, 0.0, true, Some(0.90), true),
+        S("rel .6 + q90 flat-only", 0.22, 0.6, false, Some(0.90), true),
+        S("rel .6 + q95 flat-only", 0.22, 0.6, false, Some(0.95), true),
+    ];
+
+    let model = cfg.embed_model.as_deref();
+    let (_, embedder_name) = embedder(model);
+    let mut sizes = Vec::new();
+
+    for &size in &cfg.sizes {
+        let c = corpus_full(
+            size,
+            size * cfg.distractor_ratio,
+            cfg.seed,
+            &cfg.profile,
+            &cfg.type_mix,
+        );
+        let engram = EngramArm::build(
+            &c,
+            embedder(model).0,
+            if cfg.no_rerank { None } else { reranker().0 },
+        )?;
+
+        let mut recs = Vec::new();
+        for q in c.questions() {
+            let Some(gold) = q.gold.as_ref() else {
+                continue;
+            };
+            let r = engram.retrieve(&q.text, cfg.limit);
+            let Delivery::Ranked(keys) = &r.delivery else {
+                unreachable!("engram ranks")
+            };
+            recs.push(Rec {
+                gold_pos: keys.iter().position(|k| k == gold),
+                phrasing: q.phrasing,
+                entry_tokens: r.rendered.iter().map(|e| crate::arms::tokens(e)).collect(),
+                scores: r.scores,
+            });
+        }
+        let control_scores: Vec<Vec<f64>> = c
+            .unanswerable
+            .iter()
+            .map(|q| engram.retrieve(&q.text, cfg.limit).scores)
+            .collect();
+        // Deterministic split: even indices calibrate, odd indices evaluate.
+        // The threshold is never scored on the probes that set it.
+        let (cal, eval): (Vec<_>, Vec<_>) = control_scores
+            .iter()
+            .enumerate()
+            .partition(|(i, _)| i % 2 == 0);
+        let top_of = |s: &[f64]| s.iter().fold(0.0f64, |a, b| a.max(*b));
+        let mut cal_tops: Vec<f64> = cal.into_iter().map(|(_, s)| top_of(s)).collect();
+        cal_tops.sort_by(f64::total_cmp);
+        let eval_curves: Vec<&Vec<f64>> = eval.into_iter().map(|(_, s)| s).collect();
+        let (q90, q95) = (quantile(&cal_tops, 0.90), quantile(&cal_tops, 0.95));
+
+        // Per-strategy: sorted curve → knee; floor = max of the three rules;
+        // abstain when the conformal gate says "not there" (optionally only
+        // on flat curves — the mixed signal).
+        let curve_floor = |s: &Strategy, scores: &[f64]| -> (f64, Option<f64>) {
+            let mut sorted = scores.to_vec();
+            sorted.sort_by(|a, b| b.total_cmp(a));
+            let knee = knee_threshold(&sorted);
+            let top = sorted.first().copied().unwrap_or(0.0);
+            let mut floor = s.abs_floor.max(s.rel * top);
+            if s.knee
+                && let Some(k) = knee
+            {
+                floor = floor.max(k);
+            }
+            (floor, knee)
+        };
+        let declines = |s: &Strategy, abstain_at: Option<f64>, scores: &[f64]| -> bool {
+            if scores.is_empty() {
+                return true;
+            }
+            let Some(t) = abstain_at else { return false };
+            let top = scores.iter().fold(0.0f64, |a, b| a.max(*b));
+            if top >= t {
+                return false;
+            }
+            if !s.flat_only {
+                return true;
+            }
+            let mut sorted = scores.to_vec();
+            sorted.sort_by(|a, b| b.total_cmp(a));
+            knee_threshold(&sorted).is_none()
+        };
+
+        let mut rows = Vec::new();
+        for s in &strategies {
+            let abstain_at = s.abstain_q.map(|q| quantile(&cal_tops, q));
+            let (mut hit5, mut obl_hit, mut obl_n, mut declined) = (0usize, 0usize, 0usize, 0usize);
+            let (mut noise_sum, mut focus_sum) = (0.0f64, 0.0f64);
+            let (mut focus_n, mut returned_sum, mut tokens_sum) = (0usize, 0usize, 0usize);
+            for r in &recs {
+                if r.phrasing == Phrasing::Oblique {
+                    obl_n += 1;
+                }
+                if declines(s, abstain_at, &r.scores) {
+                    declined += 1;
+                    continue;
+                }
+                let (floor, _) = curve_floor(s, &r.scores);
+                let kept: Vec<usize> = (0..r.scores.len())
+                    .filter(|&i| r.scores[i] >= floor)
+                    .collect();
+                if kept.is_empty() {
+                    declined += 1;
+                    continue;
+                }
+                let kept_tokens: usize = kept.iter().filter_map(|&i| r.entry_tokens.get(i)).sum();
+                returned_sum += kept.len();
+                tokens_sum += kept_tokens;
+                let kept_rank = r.gold_pos.and_then(|g| kept.iter().position(|&i| i == g));
+                match kept_rank {
+                    Some(kr) => {
+                        if kr < 5 {
+                            hit5 += 1;
+                            if r.phrasing == Phrasing::Oblique {
+                                obl_hit += 1;
+                            }
+                        }
+                        noise_sum += (kept.len() - 1) as f64 / kept.len() as f64;
+                        if let Some(g) = r.gold_pos
+                            && let Some(t) = r.entry_tokens.get(g)
+                        {
+                            focus_sum += *t as f64 / kept_tokens.max(1) as f64;
+                            focus_n += 1;
+                        }
+                    }
+                    None => noise_sum += 1.0,
+                }
+            }
+            let n = recs.len().max(1);
+            rows.push(TrickRow {
+                strategy: s.name.to_string(),
+                recall_at_5: hit5 as f64 / n as f64,
+                oblique_recall_at_5: obl_hit as f64 / obl_n.max(1) as f64,
+                focus: focus_sum / focus_n.max(1) as f64,
+                noise: noise_sum / n as f64,
+                mean_returned: returned_sum as f64 / n as f64,
+                tokens_mean: tokens_sum as f64 / n as f64,
+                declined_answerable: declined as f64 / n as f64,
+                // Answered = the strategy's full pipeline leaves at least one
+                // hit on this held-out control curve.
+                false_positive_rate: eval_curves
+                    .iter()
+                    .filter(|scores| {
+                        if declines(s, abstain_at, scores) {
+                            return false;
+                        }
+                        let (floor, _) = curve_floor(s, scores);
+                        scores.iter().any(|v| *v >= floor)
+                    })
+                    .count() as f64
+                    / eval_curves.len().max(1) as f64,
+            });
+        }
+
+        sizes.push(TrickSizeReport {
+            graph: c.facts.len(),
+            questions: recs.len(),
+            controls_calibration: cal_tops.len(),
+            controls_eval: eval_curves.len(),
+            conformal_q90: q90,
+            conformal_q95: q95,
+            label_answerable_strong: recs.iter().filter(|r| top_of(&r.scores) >= q90).count()
+                as f64
+                / recs.len().max(1) as f64,
+            label_controls_flagged: eval_curves.iter().filter(|s| top_of(s) < q90).count() as f64
+                / eval_curves.len().max(1) as f64,
+            label_grid: [0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
+                .iter()
+                .map(|&q| {
+                    let t = quantile(&cal_tops, q);
+                    LabelPoint {
+                        quantile: q,
+                        threshold: t,
+                        controls_unwarned: eval_curves.iter().filter(|s| top_of(s) >= t).count()
+                            as f64
+                            / eval_curves.len().max(1) as f64,
+                        answerable_warned: recs.iter().filter(|r| top_of(&r.scores) < t).count()
+                            as f64
+                            / recs.len().max(1) as f64,
+                    }
+                })
+                .collect(),
+            rows,
+        });
+    }
+
+    Ok(TricksReport {
+        embeddings_are_fake: embedder_name.contains("(fake)"),
+        embedder: embedder_name,
+        reranker: if cfg.no_rerank {
+            "disabled (--no-rerank)".to_string()
+        } else {
+            reranker().1
+        },
+        seed: cfg.seed,
+        limit: cfg.limit,
+        sizes,
+    })
+}
+
 /// key -> the keys of facts named one syllable away from it.
 fn twin_map(c: &Corpus) -> HashMap<String, Vec<String>> {
     let mut m: HashMap<String, Vec<String>> = HashMap::new();
