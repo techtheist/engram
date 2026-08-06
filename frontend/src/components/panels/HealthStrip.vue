@@ -164,11 +164,24 @@ const trustTone = computed(() =>
     background: var(--node-problem);
 }
 
-/* The column fold has no room for row dividers. */
-@media (width <= 426px) {
-    .stat + .stat {
-        padding-left: 0;
-        border-left: none;
+/* Thin panes (IDE side panels). One stat per row is six rows of chrome
+   covering the cards it is meant to describe, so here it wraps instead —
+   bounded left by the zoom controls and right by the minimap, which is the
+   whole reason it folded to a column in the first place. The trust meter
+   goes: it is the one stat that needs width to say anything, and its number
+   is in the tooltip. Last in the sheet so it outranks the 608px fold, which
+   a media query's zero specificity would otherwise let win. */
+@media (width <= 700px) {
+    .health {
+        right: 13.0rem;
+        flex-flow: row wrap;
+        align-items: center;
+        gap: 0.3rem 0.9rem;
+        padding: 0.5rem 0.9rem;
+    }
+
+    .meter-stat {
+        display: none;
     }
 }
 </style>

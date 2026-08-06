@@ -1054,14 +1054,6 @@ const currentNode = computed(() =>
     transform: translateX(-50%);
 }
 
-@media (width <= 640px) {
-    .action-bar {
-        flex-wrap: wrap;
-        justify-content: center;
-        border-radius: var(--radius-lg);
-    }
-}
-
 .bar-dot {
     flex-shrink: 0;
     width: 0.9rem;
@@ -1114,5 +1106,95 @@ const currentNode = computed(() =>
 
 .action.danger:hover:not(:disabled) {
     color: var(--node-problem, #ef4444);
+}
+
+/* ---------------------------------------------------------------------------
+   Thin panes (IDE side panels, up to ~700px). Every override for that width
+   lives here, at the END of the sheet, and deliberately so: a media query
+   carries no extra specificity, so a block sitting next to the rule it
+   refines silently loses to any same-specificity rule declared below it.
+   (That is what kept `.bar-title` at its 22rem cap and the jump buttons at
+   2.6rem while the media block looked correct.)
+
+   Two shapes recur. The floating bars stop being centered pills and span the
+   pane: an absolutely positioned wrapping box shrinks to fit the gap between
+   `left: 50%` and the right edge, so a centered pill only ever gets HALF the
+   width to lay out in — which folded the toolbar into three rows while it
+   looked half empty. And anything that is context rather than content (the
+   note count, the action bar's title) yields its space to the controls.
+   --------------------------------------------------------------------------- */
+@media (width <= 700px) {
+    .feed {
+        gap: 1.2rem;
+        /* 30vh of nothing reads as a broken screen on a sliver of a viewport. */
+        padding: 24vh 0.8rem;
+        scroll-padding-block: 20vh;
+    }
+
+    .card {
+        gap: 0.7rem;
+        padding: 1.1rem 1.2rem;
+    }
+
+    .card-head {
+        gap: 0.5rem;
+    }
+
+    .card-title {
+        font-size: var(--text-body);
+    }
+
+    .feed-toolbar {
+        top: 6.6rem;
+        left: 0.8rem;
+        right: 0.8rem;
+        justify-content: center;
+        gap: 0.5rem;
+        max-width: none;
+        padding: 0.4rem 0.6rem;
+        transform: none;
+    }
+
+    .feed-toolbar :deep(.segment) {
+        padding: 0.35rem 0.8rem;
+    }
+
+    /* The one control in the bar that answers a question nobody asks mid-scroll. */
+    .feed-count {
+        display: none;
+    }
+
+    .jump {
+        width: 2.2rem;
+        height: 2.2rem;
+    }
+
+    .action-bar {
+        flex-wrap: wrap;
+        justify-content: center;
+        border-radius: var(--radius-lg);
+        left: 0.8rem;
+        right: 0.8rem;
+        gap: 0.5rem;
+        row-gap: 0.6rem;
+        max-width: none;
+        padding: 0.6rem 0.8rem;
+        transform: none;
+    }
+
+    /* Basis = the row minus the dot, and no shrinking: that is what makes the
+       title take row one alone and truncate there, instead of letting one
+       lucky button squeeze in beside it and push the rest into a third row. */
+    .bar-title {
+        flex: 1 0 calc(100% - 1.4rem);
+        max-width: none;
+        min-width: 0;
+    }
+
+    .action {
+        flex: 1 1 auto;
+        padding: 0.4rem 0.6rem;
+        text-align: center;
+    }
 }
 </style>
