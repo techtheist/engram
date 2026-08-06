@@ -72,7 +72,8 @@ export const useGraphStore = defineStore('graph', () => {
     const error = ref<string | null>(null)
     const connected = ref(false)
 
-    let stream: EventSource | null = null
+    /** Teardown for the live stream, or null when detached. */
+    let stream: (() => void) | null = null
     let lastSig = ''
 
     const nodeList = computed(() => [...nodes.value.values()])
@@ -276,20 +277,21 @@ export const useGraphStore = defineStore('graph', () => {
 
     function connect(): void {
         if (stream) return
-        stream = new EventSource(api.eventsUrl())
-        stream.onopen = () => (connected.value = true)
-        stream.onerror = () => (connected.value = false)
-        stream.onmessage = (ev) => {
-            try {
-                applyEvent(ev.data)
-            } catch {
-                /* ignore malformed frame */
-            }
-        }
+        stream = api.subscribe({
+            open: () => (connected.value = true),
+            error: () => (connected.value = false),
+            message: (raw) => {
+                try {
+                    applyEvent(raw)
+                } catch {
+                    /* ignore malformed frame */
+                }
+            },
+        })
     }
 
     function disconnect(): void {
-        stream?.close()
+        stream?.()
         stream = null
         connected.value = false
     }

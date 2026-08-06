@@ -10,6 +10,10 @@
 
 > The most powerful and feature-rich inspectable long-term graph memory for software development with AI agents — built on reproducible research.
 
+**[Open the live demo →](https://techtheist.github.io/engram/demo/)** — the real
+pane, in your browser, over an invented project's memory. Nothing to install:
+create notes, judge a conflict, retire a decision. Your edits stay in the tab.
+
 ![The Engram pane: the live memory graph with the review queue open on the left and the theme & layout menu on the right](.screenshots/engram-alpha-standalone.png)
 
 <details>

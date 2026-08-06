@@ -20,6 +20,7 @@ import ProjectSwitcher from '@/components/panels/ProjectSwitcher.vue'
 import ReviewPanel from '@/components/panels/ReviewPanel.vue'
 import SettingsMenu from '@/components/panels/SettingsMenu.vue'
 import SystemInfoPanel from '@/components/panels/SystemInfoPanel.vue'
+import { hostChrome } from '@/services/hostChrome'
 import { useConfigStore } from '@/stores/config'
 import { useGraphStore } from '@/stores/graph'
 import { useLayoutStore, type ViewMode } from '@/stores/layout'
@@ -126,6 +127,9 @@ onBeforeUnmount(() => store.disconnect())
             <SettingsMenu />
         </div>
     </header>
+
+    <!-- Nothing in the shipped builds; the Pages demo mounts its banner here. -->
+    <component :is="hostChrome" v-if="hostChrome" />
 
     <NodeDetail />
     <NodeCreatePanel v-model="creating" />

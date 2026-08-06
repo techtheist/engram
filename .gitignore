@@ -34,6 +34,7 @@ node_modules/
 # Build outputs
 build/
 frontend/dist/
+frontend/dist-demo/
 engram-vscode/dist/
 engram-vscode/media/pane/
 *.vsix

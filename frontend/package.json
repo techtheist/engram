@@ -8,11 +8,14 @@
     "build": "run-p type-check \"build-only {@}\" --",
     "preview": "vite preview",
     "build-only": "vite build",
+    "build:demo": "ENGRAM_DEMO=1 vite build",
+    "dev:demo": "ENGRAM_DEMO=1 vite",
+    "preview:demo": "vite preview --outDir dist-demo",
     "type-check": "vue-tsc --build",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "lint:style": "stylelint \"src/**/*.{css,vue}\"",
-    "lint:style:fix": "stylelint \"src/**/*.{css,vue}\" --fix"
+    "lint:style": "stylelint \"src/**/*.{css,vue}\" \"demo/**/*.vue\"",
+    "lint:style:fix": "stylelint \"src/**/*.{css,vue}\" \"demo/**/*.vue\" --fix"
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.0.0",

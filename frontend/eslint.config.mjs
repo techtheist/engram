@@ -3,7 +3,7 @@ import { defineConfigWithVueTs, vueTsConfigs } from '@vue/eslint-config-typescri
 
 export default defineConfigWithVueTs(
   { files: ['**/*.{ts,mts,tsx,vue}'] },
-  { ignores: ['dist/**', 'node_modules/**'] },
+  { ignores: ['dist/**', 'dist-demo/**', 'node_modules/**'] },
   pluginVue.configs['flat/recommended'],
   vueTsConfigs.recommended,
   {

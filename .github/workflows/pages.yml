@@ -1,0 +1,87 @@
+name: Demo (GitHub Pages)
+
+# Publishes the browser-only pane demo (frontend/demo/) to
+# https://techtheist.github.io/engram/demo/ — the real pane running against a
+# mock daemon that lives in the visitor's tab. Nothing here touches the
+# release artifacts: the demo builds to dist-demo/, never dist/.
+#
+# One-time setup in the repo: Settings → Pages → Source = "GitHub Actions".
+
+on:
+  push:
+    branches: [main]
+    paths: ['frontend/**', '.github/workflows/pages.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; a newer commit supersedes an in-flight one.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build the demo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install
+        run: bun install --frozen-lockfile
+        working-directory: frontend
+
+      # The demo mock must satisfy the same EngramApi the HTTP client defines,
+      # so this is the check that catches a demo drifting from the product.
+      - name: Type-check
+        run: bun run type-check
+        working-directory: frontend
+
+      - name: Build
+        run: bun run build:demo
+        working-directory: frontend
+
+      - name: Assemble the site
+        run: |
+          mkdir -p site/demo
+          cp -R frontend/dist-demo/. site/demo/
+          # Pages runs Jekyll otherwise, which drops files it dislikes.
+          touch site/.nojekyll
+          # The demo owns /demo/ so the site root stays free for docs later;
+          # anyone landing on the root gets sent there.
+          cat > site/index.html <<'HTML'
+          <!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="utf-8" />
+              <title>Engram Alpha</title>
+              <meta http-equiv="refresh" content="0; url=./demo/" />
+              <link rel="canonical" href="./demo/" />
+            </head>
+            <body>
+              <p><a href="./demo/">Open the Engram Alpha demo</a></p>
+            </body>
+          </html>
+          HTML
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
