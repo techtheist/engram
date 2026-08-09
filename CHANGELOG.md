@@ -199,6 +199,45 @@ tricks bench measured (`eval/README.md` has the full tables).
   `policy.auto_tune` button governs both dials; every move lands in one
   journaled `auto_tuned` row.
 
+### The daemon gets lighter and faster at once — batch width was the culprit
+
+- **Inference batches are capped at 2** (`engram_core::onnx`), instead of
+  inheriting fastembed's default of 256. The daemon's footprint had been
+  climbing through normal use and never coming back down, well past what the
+  three models' weights account for; the batch width turned out to be the
+  whole of it. Narrowing it removes **almost all of that growth** — a
+  workload of searches, a `check_claim` and a conflict scan now barely moves
+  the daemon off its startup footprint, where before it added hundreds of
+  megabytes and kept them for the life of the process.
+- It is **faster**, not a trade. Padding is `BatchLongest`, so a wide batch
+  pads every short text out to the longest one in it and pays full attention
+  cost on the padding — and Engram's notes vary a lot in length. On the eval
+  bench, the narrow batch cut wall-clock by **~40%** and CPU time by more than
+  half, reproducibly; on the two-size gate run, ~16% end to end.
+- **Retrieval is untouched, and that is checked rather than asserted.** The
+  gate ran the bench at sizes 100 and 500 under the old and new batch widths:
+  **every headline metric is identical on all seven arms** — recall, focus,
+  noise, oblique recall, false-positive rate, tokens per query. Of 878 values
+  compared, 14 move, and all of them are float summation order (a different
+  batch shape blocks the kernels differently): mean scores agree to about
+  eight decimal places instead of exactly, and one brief came out two tokens
+  shorter downstream of that. Numerically equivalent, not bit-identical —
+  stated plainly so a future receipt diff is not mistaken for a regression.
+- Three other suspects were measured and **rejected**: ONNX Runtime's arena
+  allocator (no effect on either axis once the batch is narrow — left off as
+  cheap insurance), per-session thread pools (worth ~20 MB, cost ~20% of
+  wall-clock, so the default stays wide), and the allocator holding freed
+  pages (disproved outright — a `malloc_zone_pressure_relief` timer reclaimed
+  nothing, because the heap is genuinely live).
+- New `scripts/mem-probe.sh` runs a daemon against an isolated copy of a
+  graph and reports its footprint across startup, search, NLI and idle — the
+  harness these numbers come from, so the next person can re-measure instead
+  of trusting this entry.
+- New escape hatches for anyone wanting a different trade:
+  `ENGRAM_ONNX_BATCH`, `ENGRAM_ONNX_THREADS` (cap inference threads — gives
+  up retrieval latency so a background daemon does not saturate every core),
+  and `ENGRAM_ONNX_ARENA=1`.
+
 ### Pane
 
 - Graph settings → Calibrated delivery grew the knee-trim toggle with its

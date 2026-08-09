@@ -8,6 +8,8 @@ mod hub;
 pub mod id;
 mod migrate;
 pub mod nli;
+#[cfg(feature = "fastembed")]
+pub mod onnx;
 pub mod policy;
 pub mod rag;
 pub mod redact;

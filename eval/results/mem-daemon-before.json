@@ -1,0 +1,11 @@
+{
+  "label": "baseline (stock ORT defaults)",
+  "stages": [
+    {"stage": "startup (3 models)", "kb": 669696},
+    {"stage": "after 1 search", "kb": 720896},
+    {"stage": "after 10 searches", "kb": 752640},
+    {"stage": "after check_claim (NLI)", "kb": 892928},
+    {"stage": "after conflict scan", "kb": 896000},
+    {"stage": "after 30s idle", "kb": 896000}
+  ]
+}

@@ -197,7 +197,11 @@ mod fast {
                     // user's repo). Cache machine-wide next to our own model
                     // dir instead, so every repo shares one copy.
                     let mut opts = InitOptions::new(EmbeddingModel::BGESmallENV15)
-                        .with_show_download_progress(false);
+                        .with_show_download_progress(false)
+                        .with_execution_providers(crate::onnx::execution_providers());
+                    if let Some(t) = crate::onnx::intra_threads() {
+                        opts = opts.with_intra_threads(t);
+                    }
                     if let Some(cache) = shared_cache_dir() {
                         opts = opts.with_cache_dir(cache);
                     }
@@ -245,8 +249,18 @@ mod fast {
                 quantization: QuantizationMode::None,
                 output_key: None,
             };
-            TextEmbedding::try_new_from_user_defined(model, InitOptionsUserDefined::default())
-                .map_err(emb_err)
+            TextEmbedding::try_new_from_user_defined(model, embed_opts()).map_err(emb_err)
+        }
+    }
+
+    /// Session policy for the embedder — see [`crate::onnx`] for what was
+    /// measured and what was rejected.
+    fn embed_opts() -> InitOptionsUserDefined {
+        let opts = InitOptionsUserDefined::new()
+            .with_execution_providers(crate::onnx::execution_providers());
+        match crate::onnx::intra_threads() {
+            Some(t) => opts.with_intra_threads(t),
+            None => opts,
         }
     }
 
@@ -260,10 +274,14 @@ mod fast {
         }
 
         fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+            // An explicit ceiling instead of fastembed's 256. Every text is
+            // embedded independently, so this changes only how wide a tensor
+            // the session builds — which is both the memory the process ends
+            // up holding and, through padding waste, most of its compute.
             self.model
                 .lock()
                 .expect("embedder mutex")
-                .embed(texts, None)
+                .embed(texts, Some(crate::onnx::batch()))
                 .map_err(emb_err)
         }
     }
@@ -291,7 +309,11 @@ mod fast {
                     let mut opts = fastembed::RerankInitOptions::new(
                         fastembed::RerankerModel::JINARerankerV1TurboEn,
                     )
-                    .with_show_download_progress(false);
+                    .with_show_download_progress(false)
+                    .with_execution_providers(crate::onnx::execution_providers());
+                    if let Some(t) = crate::onnx::intra_threads() {
+                        opts = opts.with_intra_threads(t);
+                    }
                     if let Some(cache) = shared_cache_dir() {
                         opts = opts.with_cache_dir(cache);
                     }
@@ -324,11 +346,20 @@ mod fast {
                     tokenizer_config_file: read("tokenizer_config.json")?,
                 },
             );
-            fastembed::TextRerank::try_new_from_user_defined(
-                model,
-                fastembed::RerankInitOptionsUserDefined::default(),
-            )
-            .map_err(emb_err)
+            fastembed::TextRerank::try_new_from_user_defined(model, rerank_opts()).map_err(emb_err)
+        }
+    }
+
+    /// Same session policy as the embedder. The cross-encoder is the larger
+    /// of the two fp32 graphs and sees the widest inputs (a rerank fans out
+    /// over up to 50 candidates), so it is the one the batch ceiling matters
+    /// most for.
+    fn rerank_opts() -> fastembed::RerankInitOptionsUserDefined {
+        let opts = fastembed::RerankInitOptionsUserDefined::new()
+            .with_execution_providers(crate::onnx::execution_providers());
+        match crate::onnx::intra_threads() {
+            Some(t) => opts.with_intra_threads(t),
+            None => opts,
         }
     }
 
@@ -339,7 +370,7 @@ mod fast {
                 .model
                 .lock()
                 .expect("reranker mutex")
-                .rerank(query, docs, false, None)
+                .rerank(query, docs, false, Some(crate::onnx::batch()))
                 .map_err(emb_err)?;
             // fastembed returns best-first; restore input order for the caller.
             results.sort_by_key(|r| r.index);
