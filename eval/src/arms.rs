@@ -192,7 +192,7 @@ pub struct CuratedFileArm {
 /// added to remove. The splitmix64 finaliser supplies the avalanche FNV does
 /// not, and the test below runs on a corpus large enough for the difference
 /// to show. Seeded constants only: the harness reproduces from `--seed`.
-fn scramble(key: &str) -> u64 {
+pub(crate) fn scramble(key: &str) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in key.bytes() {
         h ^= u64::from(b);
@@ -297,7 +297,7 @@ impl GrepArm {
     }
 }
 
-fn terms(query: &str) -> Vec<String> {
+pub(crate) fn terms(query: &str) -> Vec<String> {
     let mut out: Vec<String> = query
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| w.len() > 2)
@@ -468,6 +468,9 @@ pub struct EngramArm {
     /// Report the graph the arm actually built, so a run can never quietly
     /// measure an edgeless corpus again.
     pub edges_written: usize,
+    /// `replaces` edges written for the corpus's supersession chains — zero on
+    /// every regular corpus, and each one archived the generation under it.
+    pub supersessions_written: usize,
 }
 
 impl EngramArm {
@@ -520,12 +523,37 @@ impl EngramArm {
             edges_written += 1;
         }
 
+        // Chains last, newer-replaces-older in write order, so each `replaces`
+        // edge archives the generation it supersedes exactly as the product
+        // would — this is the one place the harness WANTS the state mutation
+        // the regular corpus bans.
+        let mut supersessions_written = 0;
+        for ch in &corpus.chains {
+            for w in ch.keys.windows(2) {
+                let (Some(older), Some(newer)) = (ids.get(&w[0]), ids.get(&w[1])) else {
+                    continue;
+                };
+                engine.add_edge(engram_core::NewEdge {
+                    edge_type: engram_core::EdgeType::parse("replaces")?,
+                    from_id: newer.clone(),
+                    to_id: older.clone(),
+                    source: engram_core::Source::Claude,
+                    note: None,
+                    confidence: None,
+                    strength: None,
+                    status: None,
+                })?;
+                supersessions_written += 1;
+            }
+        }
+
         let brief_cost = tokens(&engine.brief(engine.brief_chars(None))?);
         Ok(Self {
             engine,
             by_id,
             brief_cost,
             edges_written,
+            supersessions_written,
         })
     }
 
@@ -581,11 +609,20 @@ impl EngramArm {
 }
 
 fn new_node(f: &Fact) -> NewNode {
+    // Backdating only exists for chain generations; the regular corpus writes
+    // `None` and stays wall-clock independent, which the rerun test relies on.
+    let created_at = (f.backdate_days > 0).then(|| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        now - f.backdate_days as i64 * 86_400
+    });
     NewNode {
         node_type: f.kind.node_type(),
         title: f.title.clone(),
         body: Some(f.body.clone()),
-        created_at: None,
+        created_at,
         durability: engram_core::Durability::Stable,
         source: engram_core::Source::Claude,
         session_id: Some("eval".to_string()),

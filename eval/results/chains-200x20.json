@@ -1,0 +1,82 @@
+{
+  "embedder": "bge-small-en-v1.5",
+  "reranker": "jina-reranker-v1-turbo-en",
+  "embeddings_are_fake": false,
+  "seed": 1,
+  "limit": 10,
+  "sizes": [
+    {
+      "graph": 660,
+      "chains": 20,
+      "chain_len": 3,
+      "questions": 60,
+      "supersessions_written": 40,
+      "superseded": {
+        "questions": 60,
+        "recall_at_1": 0.75,
+        "recall_at_5": 0.85,
+        "pollution": 0.0,
+        "head_first": 1.0,
+        "tokens_mean": 219.55
+      },
+      "flat": {
+        "questions": 60,
+        "recall_at_1": 0.5,
+        "recall_at_5": 0.8333333333333334,
+        "pollution": 0.8833333333333333,
+        "head_first": 0.5862068965517241,
+        "tokens_mean": 292.75
+      },
+      "baselines": [
+        {
+          "arm": "rag",
+          "score": {
+            "questions": 60,
+            "recall_at_1": 0.3,
+            "recall_at_5": 0.9666666666666667,
+            "pollution": 0.9666666666666667,
+            "head_first": 0.4067796610169492,
+            "tokens_mean": 2144.233333333333
+          }
+        },
+        {
+          "arm": "grep",
+          "score": {
+            "questions": 60,
+            "recall_at_1": 0.0,
+            "recall_at_5": 0.6666666666666666,
+            "pollution": 0.7,
+            "head_first": 0.023255813953488372,
+            "tokens_mean": 2656.766666666667
+          }
+        },
+        {
+          "arm": "curated-file",
+          "score": {
+            "questions": 60,
+            "recall_at_1": 0.0,
+            "recall_at_5": 0.0,
+            "pollution": 0.0,
+            "head_first": 0.0,
+            "tokens_mean": 3000.0
+          }
+        },
+        {
+          "arm": "whole-file",
+          "score": {
+            "questions": 60,
+            "recall_at_1": 1.0,
+            "recall_at_5": 1.0,
+            "pollution": 1.0,
+            "head_first": 0.0,
+            "tokens_mean": 165115.0
+          }
+        }
+      ],
+      "history_reachable": 1.0,
+      "retired_searchable": 0.0,
+      "retired_fetchable": 1.0,
+      "neighbors_carry_history": 1.0
+    }
+  ]
+}

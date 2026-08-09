@@ -29,8 +29,8 @@ use crate::rng::Rng;
 /// exactly this many entries, and every s2 pool (CONSTRAINTS, TRIGGERS,
 /// REASONS, CONDITIONS, CAUSES) likewise — the slot arithmetic in
 /// `Vocab::slots` indexes them interchangeably per kind.
-const S1_LEN: usize = 12;
-const S2_LEN: usize = 12;
+const S1_LEN: usize = 25;
+const S2_LEN: usize = 25;
 
 /// Unique (component, descriptor, qualifier) triples per kind. Slot space now
 /// exceeds the invented-name space, so the binding cap on corpus size is the
@@ -118,6 +118,63 @@ const PARAMS: [(&str, &str, &str); S1_LEN] = [
         "days",
         "how long suspects stay isolated",
     ),
+    ("grace period", "seconds", "how long overruns are forgiven"),
+    (
+        "checkpoint cadence",
+        "minutes",
+        "how often restart state is saved",
+    ),
+    (
+        "dedupe horizon",
+        "entries",
+        "how far back repeats are noticed",
+    ),
+    (
+        "warmup allowance",
+        "requests",
+        "how much slack a cold spin-up gets",
+    ),
+    (
+        "eviction ratio",
+        "percent",
+        "what share gets pushed out each pass",
+    ),
+    (
+        "gossip interval",
+        "milliseconds",
+        "how often peers exchange rumours",
+    ),
+    (
+        "snapshot depth",
+        "generations",
+        "how many past copies stay kept",
+    ),
+    (
+        "drain deadline",
+        "seconds",
+        "how long a shutdown may linger",
+    ),
+    (
+        "parity stripe",
+        "blocks",
+        "the breadth of the redundancy striping",
+    ),
+    (
+        "rewind cursor lag",
+        "records",
+        "how far behind the reread may trail",
+    ),
+    (
+        "compaction floor",
+        "segments",
+        "the level beneath which nothing gets squeezed together",
+    ),
+    ("quota refresh", "hours", "how often the cap tops back up"),
+    (
+        "stall tolerance",
+        "ticks",
+        "how long zero progress is acceptable",
+    ),
 ];
 
 /// Every pair below is (wording the fact uses, word-disjoint paraphrase).
@@ -170,6 +227,58 @@ const CONSTRAINTS: [(&str, &str); S2_LEN] = [
         "the observatory publishes on a fixed almanac",
         "release dates follow a preset calendar",
     ),
+    (
+        "the gateway meters admissions per tenant",
+        "entry is rationed for each customer",
+    ),
+    (
+        "the journal truncates only at a checkpoint",
+        "history is trimmed just where restart points exist",
+    ),
+    (
+        "the balancer rehomes work only between epochs",
+        "tasks move to new owners at term boundaries alone",
+    ),
+    (
+        "the freezer defrosts on a rotating schedule",
+        "thawing happens in a fixed rotation",
+    ),
+    (
+        "the notary countersigns in daily batches",
+        "official approval lands once per day in bulk",
+    ),
+    (
+        "the mixer requires a settled queue before dosing",
+        "ingredients only feed in once the backlog is calm",
+    ),
+    (
+        "the antenna realigns during quiet hours",
+        "pointing is corrected when nothing is transmitting",
+    ),
+    (
+        "the warehouse audits one aisle per shift",
+        "stock checks cover a single row at a time",
+    ),
+    (
+        "the compiler pins its toolchain per release",
+        "build tools are frozen for every version cut",
+    ),
+    (
+        "the incubator holds temperature within one degree",
+        "warmth is kept inside a tight band",
+    ),
+    (
+        "the turnstile admits badge holders only",
+        "entry needs a registered pass",
+    ),
+    (
+        "the scheduler forbids overlapping maintenance",
+        "upkeep windows can never coincide",
+    ),
+    (
+        "the printer queues plates strictly first-come",
+        "output order matches arrival, no exceptions",
+    ),
 ];
 
 const FAILURES: [(&str, &str); S1_LEN] = [
@@ -191,6 +300,49 @@ const FAILURES: [(&str, &str); S1_LEN] = [
     ),
     ("overruns its dwell", "lingers longer than scheduled"),
     ("garbles its telemetry", "scrambles what it reports home"),
+    (
+        "starves its consumers",
+        "leaves downstream readers with nothing",
+    ),
+    ("shreds its manifest", "destroys its own table of contents"),
+    (
+        "forgets its offsets",
+        "loses track of positions previously read",
+    ),
+    (
+        "poisons its snapshot",
+        "writes a restore image that cannot be trusted",
+    ),
+    (
+        "swallows its errors",
+        "reports success where something went wrong",
+    ),
+    (
+        "fragments its heap",
+        "splinters memory into unusable pieces",
+    ),
+    (
+        "misroutes its callbacks",
+        "sends completions to the wrong caller",
+    ),
+    (
+        "expires its own grants",
+        "cancels permissions it just issued",
+    ),
+    ("clones its timers", "fires the same alarm repeatedly"),
+    ("desyncs its mirrors", "lets copies drift out of agreement"),
+    (
+        "hoards its scratch pages",
+        "never gives borrowed space back",
+    ),
+    (
+        "blackholes its retries",
+        "repeat attempts vanish leaving no trace",
+    ),
+    (
+        "upends its ordering",
+        "delivers things in scrambled sequence",
+    ),
 ];
 
 const TRIGGERS: [(&str, &str); S2_LEN] = [
@@ -233,6 +385,52 @@ const TRIGGERS: [(&str, &str); S2_LEN] = [
         "a stray magnet passes the bay",
         "unshielded metal drifts too close",
     ),
+    (
+        "the daylight saving shift lands",
+        "the wall time jumps an hour by decree",
+    ),
+    (
+        "a tenant exceeds its envelope",
+        "one customer outgrows its slice",
+    ),
+    ("the failover rehearsal runs", "the standby drill kicks off"),
+    (
+        "a checksum disagrees on arrival",
+        "verification fails as the data comes in",
+    ),
+    (
+        "the backfill overtakes live traffic",
+        "historical catch-up outruns the fresh stream",
+    ),
+    (
+        "a poison message recirculates",
+        "one bad payload keeps coming back",
+    ),
+    (
+        "the license check phones home",
+        "the entitlement ping goes out",
+    ),
+    (
+        "a bulk delete lands mid-compaction",
+        "a mass removal arrives while squeezing is underway",
+    ),
+    ("the mains power browns out", "supply voltage sags briefly"),
+    (
+        "a leap second is injected",
+        "an extra tick is wedged into the day",
+    ),
+    (
+        "the standby promotes itself",
+        "the backup takes over on its own",
+    ),
+    (
+        "a schema migration half-applies",
+        "a structure change stops partway",
+    ),
+    (
+        "the dedupe window slides",
+        "the repeat-spotting span moves along",
+    ),
 ];
 
 const FORBIDDEN: [(&str, &str); S1_LEN] = [
@@ -274,6 +472,52 @@ const FORBIDDEN: [(&str, &str); S1_LEN] = [
     (
         "hand-tune the weights mid-flight",
         "nudging parameters while the system is airborne",
+    ),
+    ("mutate a sealed segment", "editing a chunk after its seal"),
+    (
+        "promote an unverified backup",
+        "elevating a restore nobody tested",
+    ),
+    (
+        "bypass the admission meter",
+        "slipping past the intake gate",
+    ),
+    (
+        "rewind a shared cursor",
+        "moving a common read position backwards",
+    ),
+    (
+        "fork the settlement record",
+        "splitting the book of account in two",
+    ),
+    (
+        "suppress a failing healthcheck",
+        "silencing a probe that says no",
+    ),
+    (
+        "interleave two restore streams",
+        "braiding distinct recoveries together",
+    ),
+    (
+        "outrun the replication horizon",
+        "writing faster than copies can keep up",
+    ),
+    ("reuse a burned nonce", "presenting a one-time secret twice"),
+    (
+        "widen the voting circle mid-ballot",
+        "growing the electorate while votes are cast",
+    ),
+    (
+        "archive an open incident",
+        "shelving a problem that is live",
+    ),
+    (
+        "trust a client-supplied timestamp",
+        "believing the sender's own clock",
+    ),
+    (
+        "hot-patch the verifier itself",
+        "changing the checker while it checks",
     ),
 ];
 
@@ -326,6 +570,58 @@ const REASONS: [(&str, &str); S2_LEN] = [
         "the instrument's warranty voids on first opening",
         "cracking the case forfeits all support",
     ),
+    (
+        "the blast radius includes every tenant at once",
+        "one mistake reaches all customers together",
+    ),
+    (
+        "the rollback path was never built",
+        "there is no route back by design",
+    ),
+    (
+        "insurance cover lapses the moment it happens",
+        "the policy stops paying right then",
+    ),
+    (
+        "the alarm that would catch it is the thing disabled",
+        "the very siren meant to fire is off",
+    ),
+    (
+        "no operator can re-derive the missing constant",
+        "the lost figure cannot be recomputed by hand",
+    ),
+    (
+        "the certificate chain cannot be reissued quickly",
+        "new credentials take too long to mint",
+    ),
+    (
+        "silent corruption spreads through every mirror",
+        "bad bytes copy themselves everywhere",
+    ),
+    (
+        "the legal hold forbids touching those records",
+        "compliance freezes that data outright",
+    ),
+    (
+        "the downstream contract promises exactly-once",
+        "consumers were guaranteed no repeats",
+    ),
+    (
+        "only the failing node knew the session keys",
+        "the secrets died with the machine that held them",
+    ),
+    (
+        "the deadline is enforced by physics, not policy",
+        "no configuration can buy the time back",
+    ),
+    (
+        "every later measurement inherits the skew",
+        "all subsequent readings carry the tilt",
+    ),
+    (
+        "the customer-visible number can never be reused",
+        "an identifier the public saw is spent forever",
+    ),
 ];
 
 const SYMPTOMS: [(&str, &str); S1_LEN] = [
@@ -347,6 +643,31 @@ const SYMPTOMS: [(&str, &str); S1_LEN] = [
         "echoes its own commands",
         "repeats instructions back to itself",
     ),
+    ("flaps its liveness", "keeps toggling between up and down"),
+    (
+        "inflates its estimates",
+        "predicts far more than materialises",
+    ),
+    (
+        "clips its bursts",
+        "cuts short every spike it should absorb",
+    ),
+    ("misplaces its permits", "cannot say who holds which grant"),
+    ("staggers its heartbeats", "checks in at ragged intervals"),
+    ("shadows its primary", "silently repeats the leader's work"),
+    (
+        "overfills its journal",
+        "writes more log than the space allows",
+    ),
+    ("stutters its stream", "delivers output in fits and bursts"),
+    (
+        "ignores its backpressure",
+        "keeps pushing when told to slow",
+    ),
+    ("splits its brain", "two halves each think they lead"),
+    ("lags its dashboard", "feeds the operator stale numbers"),
+    ("churns its connections", "opens and drops links nonstop"),
+    ("misfiles its alerts", "routes warnings to the wrong inbox"),
 ];
 
 const CONDITIONS: [(&str, &str); S2_LEN] = [
@@ -383,6 +704,43 @@ const CONDITIONS: [(&str, &str); S2_LEN] = [
         "while the archive migrates",
         "as records move to new shelves",
     ),
+    (
+        "during a rolling upgrade",
+        "while versions change one node at a time",
+    ),
+    ("under clock skew", "when machines disagree about the time"),
+    ("at quota exhaustion", "once the allowance runs dry"),
+    (
+        "behind a cold boot",
+        "right after power returns from nothing",
+    ),
+    (
+        "inside the maintenance window",
+        "while planned upkeep is underway",
+    ),
+    (
+        "across a region failover",
+        "when service jumps to another site",
+    ),
+    ("past the retention cutoff", "once old records age out"),
+    (
+        "amid a thundering herd",
+        "when every client returns at once",
+    ),
+    ("beneath peak load", "while demand is at its highest"),
+    (
+        "after an unclean shutdown",
+        "when the stop was not graceful",
+    ),
+    (
+        "during certificate rotation",
+        "as credentials are being swapped",
+    ),
+    (
+        "under audit sampling",
+        "while the compliance spot-checks run",
+    ),
+    ("within the grace period", "before forgiveness runs out"),
 ];
 
 const BEHAVIOURS: [(&str, &str); S1_LEN] = [
@@ -416,6 +774,43 @@ const BEHAVIOURS: [(&str, &str); S1_LEN] = [
         "mirrors its rival's cadence",
         "copies the rhythm of its counterpart",
     ),
+    (
+        "undercounts its retries",
+        "owns up to fewer attempts than occur",
+    ),
+    (
+        "favours the loudest tenant",
+        "gives the noisiest customer priority",
+    ),
+    ("defers its compaction", "keeps postponing the squeeze"),
+    (
+        "pre-warms the wrong keys",
+        "readies exactly what nobody asks for",
+    ),
+    (
+        "round-robins its failures",
+        "rotates errors evenly instead of isolating them",
+    ),
+    ("saves its work twice", "persists every result in duplicate"),
+    ("escalates too eagerly", "raises alarms at the first wobble"),
+    (
+        "trims from the head",
+        "throws away the oldest instead of the newest",
+    ),
+    ("idles between batches", "rests longer than it runs"),
+    (
+        "recomputes the constant",
+        "derives afresh what it could remember",
+    ),
+    (
+        "mirrors stale reads",
+        "serves yesterday's answers confidently",
+    ),
+    (
+        "chases its own tail",
+        "cleans up the mess its own tidying creates",
+    ),
+    ("polls beyond its share", "asks for updates far too often"),
 ];
 
 const CAUSES: [(&str, &str); S2_LEN] = [
@@ -466,6 +861,58 @@ const CAUSES: [(&str, &str); S2_LEN] = [
     (
         "the backoff timer starts only after the first success",
         "waiting does not begin until something works",
+    ),
+    (
+        "the retry queue and the dead-letter queue share a disk",
+        "failed and pending work compete for the same spindle",
+    ),
+    (
+        "the config loader keeps its first answer forever",
+        "settings are read once and never again",
+    ),
+    (
+        "the health probe tests the proxy, not the service",
+        "the check watches the middleman instead of the target",
+    ),
+    (
+        "the pool hands out connections newest-first",
+        "the freshest link is always reused ahead of idle ones",
+    ),
+    (
+        "the migration left a shadow column behind",
+        "an orphaned field survives from the old layout",
+    ),
+    (
+        "the timeout is measured from queueing, not execution",
+        "waiting in line counts toward the clock",
+    ),
+    (
+        "the metric averages away the spikes",
+        "smoothing hides every burst",
+    ),
+    (
+        "the lock is advisory and one caller ignores it",
+        "the rule only binds those who choose to obey",
+    ),
+    (
+        "the batch size was tuned for the old hardware",
+        "the grouping still fits machines long gone",
+    ),
+    (
+        "the parser accepts both spellings silently",
+        "two written forms mean the same and nobody knows",
+    ),
+    (
+        "the feature flag defaults on in exactly one environment",
+        "a switch sits differently on a single machine",
+    ),
+    (
+        "the cleanup job holds the same lock as intake",
+        "housekeeping and arrivals fight over a single latch",
+    ),
+    (
+        "the estimator never saw a leap year",
+        "the forecast misses the calendar's odd day",
     ),
 ];
 
@@ -586,6 +1033,11 @@ pub struct Fact {
     /// Plausible file paths, because the embed composition covers code_refs
     /// and real nodes carry a median of one.
     pub code_refs: Vec<String>,
+    /// Days before "now" this fact is written as created. Zero for the whole
+    /// regular corpus; only supersession chains backdate their retired
+    /// generations, so the flat-store ablation can ask whether recency alone
+    /// would have picked the head.
+    pub backdate_days: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -615,6 +1067,32 @@ pub struct Pair {
     pub gold: NliLabel,
 }
 
+/// One ADR-shaped supersession chain: the same subject decided several times,
+/// each generation replacing the last. Only the head is current; the retired
+/// generations exist so the harness can measure what supersession is FOR —
+/// the losing side leaving ambient retrieval while staying reachable through
+/// the `replaces` chain.
+#[derive(Debug, Clone, Serialize)]
+pub struct Chain {
+    /// Fact keys oldest first; the last entry is the live head.
+    pub keys: Vec<String>,
+    /// Questions about the CURRENT state; gold is always the head key.
+    pub questions: Vec<Question>,
+}
+
+impl Chain {
+    pub fn head(&self) -> &str {
+        self.keys
+            .last()
+            .expect("a chain has at least one generation")
+    }
+
+    /// Every generation except the head — the ones supersession retires.
+    pub fn retired(&self) -> &[String] {
+        &self.keys[..self.keys.len() - 1]
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Corpus {
     pub seed: u64,
@@ -631,6 +1109,11 @@ pub struct Corpus {
     /// a graph with no edges, which is what the first version of this harness
     /// did.
     pub edges: Vec<GeneratedEdge>,
+    /// Supersession chains (empty for the regular corpus). Kept apart from
+    /// `edges` on purpose: `replaces` mutates node state at write time, and
+    /// the invariant that `edges` never does is load-bearing for every recall
+    /// number. The chains mode wants exactly that mutation, deliberately.
+    pub chains: Vec<Chain>,
 }
 
 /// One sentence-shaped link between two generated facts.
@@ -807,6 +1290,43 @@ pub fn corpus_full(
     profile: &Profile,
     type_mix: &[(Kind, u32)],
 ) -> Corpus {
+    corpus_impl(tested, distractors, seed, profile, type_mix, 0, 0)
+}
+
+/// As `corpus_full`, plus `n_chains` ADR-shaped supersession chains of
+/// `chain_len` generations each. Chain generations are written to the graph
+/// as untested facts (never counted by the regular metrics); the questions
+/// about their CURRENT state live on `Corpus::chains`.
+pub fn corpus_chained(
+    tested: usize,
+    distractors: usize,
+    seed: u64,
+    profile: &Profile,
+    type_mix: &[(Kind, u32)],
+    n_chains: usize,
+    chain_len: usize,
+) -> Corpus {
+    assert!(chain_len >= 2, "a chain needs something to supersede");
+    corpus_impl(
+        tested,
+        distractors,
+        seed,
+        profile,
+        type_mix,
+        n_chains,
+        chain_len,
+    )
+}
+
+fn corpus_impl(
+    tested: usize,
+    distractors: usize,
+    seed: u64,
+    profile: &Profile,
+    type_mix: &[(Kind, u32)],
+    n_chains: usize,
+    chain_len: usize,
+) -> Corpus {
     let mut rng = Rng::new(seed);
     let vocab = Vocab::new(&mut rng);
     let mut names = Names::new(&mut rng);
@@ -863,9 +1383,24 @@ pub fn corpus_full(
 
     apply_type_mix(&mut facts, type_mix, seed);
 
-    let (unanswerable, phantom_subjects) = controls(tested, &mut names);
+    // Chains are generated BEFORE the controls so a phantom subject can never
+    // collide with a chain's — the same `names` supply hands out both.
+    // Base edges and NLI pairs are built over the pre-chain facts only:
+    // chain generations deliberately share a subject, and letting `pairs`
+    // draw a "neutral" partner from the same subject would mislabel it.
     let pairs = pairs(&facts, &mut rng);
     let edges = edges(&facts, profile, &mut rng);
+    let chains = chains(
+        &mut facts,
+        n_chains,
+        chain_len,
+        tested + distractors,
+        &vocab,
+        &mut names,
+        profile,
+    );
+
+    let (unanswerable, phantom_subjects) = controls(tested, &mut names);
 
     Corpus {
         seed,
@@ -874,7 +1409,115 @@ pub fn corpus_full(
         phantom_subjects,
         pairs,
         edges,
+        chains,
     }
+}
+
+/// Generate the supersession chains. Each chain claims a fresh invented
+/// subject and a Decision slot triple past the range the regular facts used,
+/// so no chain's oblique question is answerable by anything else — and each
+/// generation re-decides the same parameter to a DIFFERENT value, which is
+/// what makes a retired generation genuinely wrong rather than merely stale.
+fn chains(
+    facts: &mut Vec<Fact>,
+    n_chains: usize,
+    chain_len: usize,
+    total: usize,
+    vocab: &Vocab,
+    names: &mut Names,
+    profile: &Profile,
+) -> Vec<Chain> {
+    if n_chains == 0 {
+        return Vec::new();
+    }
+    // Decision facts consumed slot ordinals 0..ceil(total/KINDS); continue
+    // past them so the mixed-radix triples stay unique by construction.
+    let used = total.div_ceil(KINDS.len());
+    assert!(
+        used + n_chains <= MAX_PER_KIND,
+        "{n_chains} chains exceed the free Decision slot space"
+    );
+
+    let mut out = Vec::with_capacity(n_chains);
+    for ci in 0..n_chains {
+        let j = used + ci;
+        let (c, s1, s2) = vocab.slots(j);
+        let component = COMPONENTS[c];
+        let subject = format!("{} {component}", coined(names.next()));
+        let (param, unit, param_desc) = PARAMS[s1];
+        let (constraint, constraint_desc) = CONSTRAINTS[s2];
+
+        let mut keys = Vec::with_capacity(chain_len);
+        for g in 0..chain_len {
+            // 89 and 977 are coprime, so every generation lands on its own
+            // value — a retired generation that repeated the head's number
+            // would be a right answer wearing the wrong key.
+            let value = 3 + (j * 13 + (g + 1) * 89) % 977;
+            let key = format!("c{ci:03}g{g}");
+            let ord = (total + ci * chain_len + g) as u64;
+            let mix = ord.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let title = extend_title(format!("{subject} uses a {param} of {value} {unit}"), mix);
+            let body = pad_body(
+                format!(
+                    "Chosen deliberately: {constraint}, so anything larger re-enters a window \
+                     that has already closed."
+                ),
+                &subject,
+                component,
+                profile.body_chars.sample(mix),
+                mix,
+            );
+            facts.push(Fact {
+                key: key.clone(),
+                kind: Kind::Decision,
+                subject: subject.clone(),
+                title,
+                body,
+                answer: format!("{value} {unit}"),
+                predicate: format!("uses a {param} of {value} {unit}"),
+                questions: Vec::new(),
+                tested: false,
+                // Suffixed per generation: within a chain the triple is shared
+                // on purpose, and the corpus-wide uniqueness set must not see
+                // that as two facts answering one question.
+                oblique_key: format!(
+                    "which {component} picked {param_desc} around the fact that \
+                     {constraint_desc}? [{key}]"
+                ),
+                twin_of: None,
+                code_refs: code_refs(component, profile.code_refs.sample(mix >> 3), mix),
+                // The head is written "now"; each earlier generation a month
+                // further back, so the flat-store ablation can ask whether
+                // recency alone would have picked the head.
+                backdate_days: ((chain_len - 1 - g) as u64) * 30,
+            });
+            keys.push(key);
+        }
+
+        let head = keys.last().expect("chain_len >= 2").clone();
+        let questions = vec![
+            Question {
+                text: format!("{subject} {param}"),
+                phrasing: Phrasing::Lexical,
+                gold: Some(head.clone()),
+            },
+            Question {
+                text: format!("what {param} did we settle on for the {subject}?"),
+                phrasing: Phrasing::Paraphrase,
+                gold: Some(head.clone()),
+            },
+            Question {
+                text: format!(
+                    "which {component} picked {param_desc} around the fact that \
+                     {constraint_desc}?"
+                ),
+                phrasing: Phrasing::Oblique,
+                gold: Some(head),
+            },
+        ];
+        out.push(Chain { keys, questions });
+    }
+    out
 }
 
 /// Verbs the generator will emit, with the kinds each one legally joins.
@@ -1156,6 +1799,7 @@ fn build(
         oblique_key,
         twin_of,
         code_refs,
+        backdate_days: 0,
     }
 }
 
@@ -1826,6 +2470,56 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(tested(&a), tested(&b));
+    }
+
+    #[test]
+    fn chains_share_a_subject_and_disagree_on_the_value() {
+        let c = corpus_chained(40, 80, 15, &Profile::default(), &DEFAULT_TYPE_MIX, 6, 3);
+        assert_eq!(c.chains.len(), 6);
+        assert_eq!(c.facts.len(), 40 + 80 + 6 * 3);
+        for ch in &c.chains {
+            assert_eq!(ch.keys.len(), 3);
+            assert_eq!(ch.retired().len(), 2);
+            let gens: Vec<&Fact> = ch.keys.iter().map(|k| c.fact(k).unwrap()).collect();
+            // One subject, three distinct answers, three distinct titles —
+            // the shape of a re-decided decision rather than a duplicate.
+            assert!(gens.iter().all(|f| f.subject == gens[0].subject));
+            let answers: HashSet<&String> = gens.iter().map(|f| &f.answer).collect();
+            assert_eq!(answers.len(), 3, "every generation re-decides the value");
+            let titles: HashSet<&String> = gens.iter().map(|f| &f.title).collect();
+            assert_eq!(titles.len(), 3);
+            // The head is written now; every earlier generation further back.
+            let head = c.fact(ch.head()).unwrap();
+            assert_eq!(head.backdate_days, 0);
+            for r in ch.retired() {
+                assert!(c.fact(r).unwrap().backdate_days > 0);
+            }
+            // Chain generations are graph residents, never regular metrics
+            // inputs: untested, question-less, and absent from the NLI pairs.
+            for f in &gens {
+                assert!(!f.tested && f.questions.is_empty());
+            }
+            assert_eq!(ch.questions.len(), 3);
+            assert!(
+                ch.questions
+                    .iter()
+                    .all(|q| q.gold.as_deref() == Some(ch.head()))
+            );
+        }
+        // Chain subjects never collide with each other, the regular facts, or
+        // the phantom controls.
+        let subjects: HashSet<&String> = c.facts.iter().map(|f| &f.subject).collect();
+        assert_eq!(subjects.len(), 40 + 80 + 6, "one subject per chain");
+        for p in &c.phantom_subjects {
+            assert!(!subjects.contains(p));
+        }
+        // And the regular corpus stays byte-identical without them.
+        let plain = corpus_full(40, 80, 15, &Profile::default(), &DEFAULT_TYPE_MIX);
+        assert!(plain.chains.is_empty());
+        assert_eq!(
+            plain.facts.iter().map(|f| &f.title).collect::<Vec<_>>(),
+            c.facts[..120].iter().map(|f| &f.title).collect::<Vec<_>>(),
+        );
     }
 
     #[test]

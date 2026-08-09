@@ -68,25 +68,58 @@ simplified); the confidence line comes from probes about invented subjects
 the graph provably doesn't contain — it calibrates itself, no labels needed.
 Details and the refuted alternatives: [the research cycle](#the-delivery-strategy-research-cycle-081).
 
+### The current answer, not the whole argument — supersession, measured (0.8.2)
+
+Real project memory gets **re-decided**. The chain bench (`--chains`) plants
+ADR-shaped history in the corpus: the same decision made three times, each
+generation `replaces`-ing the last, only the head current. Then it asks every
+stack about the subject's current state. 200 facts plus 20 chains × 3
+generations, real embeddings:
+
+| stack | R@1 | R@5 | pollution | head-first | tok/query |
+|---|---|---|---|---|---|
+| **engram (superseded — the product)** | **0.75** | 0.85 | **0.00** | **1.00** | 220 |
+| engram, no supersession (ablation) | 0.50 | 0.83 | 0.88 | 0.59 | 293 |
+| rag (pure vectors) | 0.30 | 0.97 | 0.97 | 0.41 | 2,144 |
+| grep | 0.00 | 0.67 | 0.70 | 0.02 | 2,657 |
+| curated-file (3k tokens) | 0.00 | 0.00 | 0.00 | 0.00 | 3,000 |
+| whole-file | 1.00 | 1.00 | 1.00 | 0.00 | 165,115 |
+
+`pollution` is the share of questions that delivered a **retired** generation.
+The product's zero is structural — supersession archives the losing side out
+of retrieval at write time — while every baseline hands the model conflicting
+generations and leaves it to guess which one is current: rag *finds*
+everything (R@5 0.97) and ranks the right generation first 30% of the time;
+the whole file always contains the answer and **never** delivers it
+unambiguously (`head-first` for file-in-context arms = the current answer
+without a retired generation beside it). The curated 3k file simply doesn't
+hold the chains at all. And retirement is not removal: every retired
+generation stays fetchable by id and reachable from the head along the
+`replaces` chain (mechanism checks 1.00/0.00/1.00, test-asserted), so the
+winning hit carries its own history as 1-hop context on 100% of answered
+questions. Details: [the 0.8.2 additions](#external-corpus-and-history--the-082-additions).
+
 ### Against every baseline
 
-The same corpus, every arm. Engram appears twice: **pre-tune** is the 0.8.0
-delivery (fixed floor only), **post-tune** is what 0.8.1 ships — knee trim
-plus the self-calibrated recommendation line — measured end to end by
-`--posttune`, graph credit included in both. Post-tune FP follows the
-recommendation regime: candidates are never cut, a warned answer to a
-never-written question counts as honest.
+The same corpus, every arm, at 1,500 notes with every fact questioned.
+Measured 2026-08-07 on the **enriched 0.8.2 corpus** (each slot-vocabulary
+pool grew 12 → 25 entries, a more diverse and less template-shaped crowd —
+numbers before and after the enrichment are different corpora and are never
+mixed in one table). The engram row is the shipped stack measured end to end
+by `--posttune`: knee trim, the self-calibrated recommendation line
+(auto-tuned weak line 0.905 from 24 phantom probes), graph credit included.
+FP follows the recommendation regime: candidates are never cut, a warned
+answer to a never-written question counts as honest.
 
 | arm | standing | tok/query | focus | noise | R@1 | R@5 | lex | para | oblique | FP |
 |---|---|---|---|---|---|---|---|---|---|---|
-| chance | 0 | 2511 | 0.10 | 1.00 | 0.00 | 0.00 | 0.01 | 0.00 | 0.00 | 1.00 |
-| grep | 0 | 2741 | 0.10 | 0.93 | 0.66 | 0.68 | 1.00 | 0.99 | 0.04 | 1.00 |
-| rag (pure vectors) | 0 | 2673 | 0.10 | 0.91 | 0.66 | 0.80 | 1.00 | 0.94 | 0.47 | 1.00 |
-| **engram (pre-tune)** | 3062 | **528** | 0.10 | 0.91 | **0.69** | **0.81** | 1.00 | **1.00** | 0.42 | 1.00 |
-| **engram (post-tune, 0.8.1)** | 3062 | **315** | **0.44** | **0.61** | 0.69 | 0.80 | 1.00 | 0.98 | 0.40 | **0.02** |
-| curated-file 3k | 2928 | 2928 | 0.03 | 1.00 | 0.02 | 0.02 | 0.02 | 0.02 | 0.02 | 1.00 |
-| curated-file 30k | 29966 | 29966 | 0.00 | 1.00 | 0.25 | 0.25 | 0.25 | 0.25 | 0.25 | 1.00 |
-| whole-file | 377260 | 377260 | 0.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+| chance | 0 | 2517 | 0.08 | 1.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 1.00 |
+| grep | 0 | 2739 | 0.10 | 0.93 | 0.64 | 0.68 | 1.00 | 1.00 | 0.05 | 1.00 |
+| rag (pure vectors) | 0 | 2721 | 0.10 | 0.91 | 0.66 | 0.79 | 1.00 | 0.93 | 0.45 | 1.00 |
+| **engram (0.8.2)** | 3042 | **297** | **0.52** | **0.55** | **0.69** | 0.79 | 1.00 | **0.99** | 0.39 | **0.01** |
+| curated-file 3k | 2944 | 2944 | 0.03 | 1.00 | 0.02 | 0.02 | 0.02 | 0.02 | 0.02 | 1.00 |
+| curated-file 30k | 29997 | 29997 | 0.00 | 1.00 | 0.25 | 0.25 | 0.25 | 0.25 | 0.25 | 1.00 |
+| whole-file | 377898 | 377898 | 0.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
 
 (Extra columns here: **standing** — tokens paid every session before any
 question, e.g. an always-in-context file; **R@1** — the right note ranked
@@ -96,15 +129,16 @@ from the first table because the arms bill delivery without markdown
 framing.)
 
 Weighted for how often each phrasing actually occurs, the ranking is
-**engram 0.94 (0.93 post-tune), rag 0.92, grep 0.90** — engram beats pure
-vectors on the headline, and the tuning spends at most 0.01 of it.
+**engram 0.93, rag 0.91, grep 0.90** — engram beats pure vectors on the
+headline, on a corpus made deliberately harder to keyword-match than the
+one it was tuned on.
 
 Four things follow.
 
-**Engram delivers the most recall per token, by about 8×.** It returns a title
-and a matched snippet; the flat-file arms return whole records. 315 tokens per
-query post-tune (528 pre-tune) against rag's 2,673 at the same recall@5 — the
-one gap on the table that is an order of magnitude.
+**Engram delivers the most recall per token, by about 9×.** It returns a title
+and a matched snippet; the flat-file arms return whole records. 297 tokens per
+query against rag's 2,721 at the same recall@5 — the one gap on the table
+that is an order of magnitude.
 
 **The perfect-recall rows are the cautionary ones.** `whole-file` and the 30k
 curated file score 1.00 on recall with the answer at under 1% of the delivered
@@ -119,17 +153,17 @@ post-tune stack instead calibrates a per-graph confidence line on two families
 of phantom probes — question templates over its own vocabulary, and transplant
 sentences lifted from its own notes with the subjects coined out — and leads
 low-confidence replies with *"likely not in memory"*, candidates intact.
-Measured end to end that takes FP to **0.02 at 1500 notes and 0.00 at 100**,
-at the price of the same hedge on ~45% of real questions (answers still
-delivered; `weak_line_quantile` softens it per graph).
+Measured end to end that takes FP to **0.01 at 1500 notes**, at the price of
+the same hedge on ~48% of real questions (answers still delivered;
+`weak_line_quantile` softens it per graph).
 
-**Reading the whole file is not expensive — it is impossible.** 377,260 tokens
-against a 3,062-token brief; the strategy works, works, then does not exist.
+**Reading the whole file is not expensive — it is impossible.** 377,898 tokens
+against a 3,042-token brief; the strategy works, works, then does not exist.
 And a session is cheapest on engram from the second question onward: the brief
-plus 315/query crosses rag's 2,673/query at ~1.3 questions.
+plus 297/query crosses rag's 2,721/query at ~1.3 questions.
 
 On questions that name what they are looking for — which is most of them —
-Engram is at **1.00 lexical and 1.00 paraphrase**, against rag's 1.00 and 0.94,
+Engram is at **1.00 lexical and 0.99 paraphrase**, against rag's 1.00 and 0.93,
 with the best **R@1** of any retrieving arm: the right answer is more often the
 *first* thing returned, not merely somewhere in the list.
 
@@ -137,30 +171,29 @@ with the best **R@1** of any retrieving arm: the right answer is more often the
 
 The attention story is scale-dependent, so here is the same table at **100
 notes** — the young-project size where a memory layer earns or loses its
-keep. At scale, everything that survives to the top ten already scores above
-the delivery floor, so the trim goes quiet (focus 0.12 at 300 notes, 0.11 at
-500, 0.10 at 1500); on a young graph the tail is genuinely weak and the floor
-works hardest:
+keep, measured 2026-08-07 on the same enriched 0.8.2 corpus as the table
+above, engram row by `--posttune` (auto-tuned weak line 0.886, graph credit
+included). On a young graph the delivered tail is genuinely weak and the
+trims work hardest:
 
 | arm | standing | tok/query | focus | noise | R@1 | R@5 | lex | para | oblique | FP |
 |---|---|---|---|---|---|---|---|---|---|---|
-| chance | 0 | 2536 | 0.10 | 0.99 | 0.01 | 0.06 | 0.08 | 0.05 | 0.05 | 1.00 |
-| grep | 0 | 2652 | 0.10 | 0.91 | 0.67 | 0.82 | 1.00 | 1.00 | 0.47 | 1.00 |
-| rag (pure vectors) | 0 | 2269 | 0.12 | 0.88 | 0.82 | 0.97 | 1.00 | 1.00 | 0.92 | 1.00 |
-| **engram (pre-tune)** | 3041 | **373** | 0.20 | 0.80 | **0.79** | 0.97 | 1.00 | 1.00 | 0.91 | 0.96 |
-| **engram (post-tune, 0.8.1)** | 3041 | **192** | **0.64** | **0.35** | 0.77 | 0.94 | 1.00 | 1.00 | 0.82 | **0.00** |
-| curated-file 3k | 2929 | 2929 | 0.03 | 0.99 | 0.36 | 0.36 | 0.36 | 0.36 | 0.36 | 1.00 |
-| curated-file 30k | 8403 | 8403 | 0.01 | 0.99 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
-| whole-file | 25179 | 25179 | 0.01 | 0.99 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+| chance | 0 | 2518 | 0.09 | 0.99 | 0.01 | 0.05 | 0.04 | 0.04 | 0.06 | 1.00 |
+| grep | 0 | 2547 | 0.10 | 0.90 | 0.72 | 0.84 | 1.00 | 1.00 | 0.52 | 1.00 |
+| rag (pure vectors) | 0 | 2295 | 0.12 | 0.88 | 0.81 | 0.96 | 1.00 | 1.00 | 0.87 | 1.00 |
+| **engram (0.8.2)** | 3051 | **198** | **0.63** | **0.36** | 0.80 | 0.95 | 1.00 | 1.00 | 0.85 | **0.00** |
+| curated-file 3k | 2998 | 2998 | 0.03 | 0.99 | 0.37 | 0.37 | 0.37 | 0.37 | 0.37 | 1.00 |
+| curated-file 30k | 8409 | 8409 | 0.01 | 0.99 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+| whole-file | 25184 | 25184 | 0.01 | 0.99 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
 
-The post-tune row is where the young-graph story peaks: **focus 0.64 at 192
+The engram row is where the young-graph story peaks: **focus 0.63 at 198
 tokens/query** — a twelfth of rag's bill with nearly two-thirds of it being
 the answer — and **FP 0.00**, against a field where every other arm answers
-every never-written question. The knee costs 0.03 recall@5 and 0.09 oblique
-here (a trimmed hit also takes its graph neighbors with it, which the
-research bench could not see); what it buys is that an assistant reading the
+every never-written question. The trims now cost 0.01 recall@5 and 0.02
+oblique against rag (the enriched, less template-shaped crowd narrowed what
+used to be a 0.03/0.09 gap); what they buy is that an assistant reading the
 reply sees the answer, not a pile. And the 30k curated file's recall-1.00
-column sits next to its own price: 8,403 standing tokens every session with
+column sits next to its own price: 8,409 standing tokens every session with
 the answer at 1% of the text — at exactly the size where a diligent file
 still *can* hold everything, holding everything is already the expensive way
 to remember.
@@ -589,6 +622,73 @@ clear loss.
 
 ---
 
+## External corpus and history — the 0.8.2 additions
+
+Two modes landed after a fair external criticism: every number above is graded
+on a corpus this harness generated itself.
+
+**`--longmemeval s|oracle`** runs
+[LongMemEval](https://github.com/xiaowu0162/LongMemEval) (Wu et al., MIT) —
+500 questions, each over its own multi-session chat history, evidence sessions
+labelled, ~6% deliberately unanswerable. The full write-up — the comparison
+table, the chat ontology, and why this is deliberately *not* a LongMemEval
+score — has its own page: [`LONGMEMEVAL.md`](./LONGMEMEVAL.md). The dataset is fetched on demand into
+`eval/data/` (gitignored) and verified against a SHA-256 pinned in
+`longmem.rs`; the repo never carries it. Ingestion is **as-is** — one note per
+chat turn, verbatim, because Engram ships no extractor and the agent-written
+register would be a different (disclosed) experiment. Grading is **retrieval
+over the full population**: a hit is a delivered note from a labelled evidence
+session, no LLM judge anywhere, and the `_abs` questions are scored under the
+calibrated recommendation verdict — a warned answer is honest, an unwarned one
+is the false positive. `--lme-limit N` runs a smoke subset and says so loudly
+in the output; a capped run is not a result. The full-population run
+(2026-08-08, `results/longmemeval-s-full.json`): engram ties rag's R@1
+(0.91) within 0.02 R@5 at **208 vs 2,654 tokens/query**, and the 30
+never-answerable questions produce **zero unwarned answers** — the
+calibrated line holds on real chat it was never tuned for.
+
+By default the LongMemEval stores run under a **chat ontology defined as
+data** (`--lme-ontology chat`): two per-graph types replacing the stock
+software set — user `statement` (a small rank prior, so the first-party
+source wins ties against restating replies) over assistant `reply` (no
+prior, muted). It is the one distinction the as-is ingester can make without
+a classifier, and it exercises exactly the per-graph GraphConfig machinery
+the product ships: same engine, zero engine changes, a register it was never
+written for. Notes are stamped with their session's real date, so recency
+reads the conversation timeline rather than a flat ingestion instant.
+`--lme-ontology default` runs the stock set beside it.
+
+**`--chains`** generates what the regular corpus deliberately bans: ADR-shaped
+supersession history. Each chain is one invented subject decided
+`--chain-len` times, every generation `replaces`-ing the last (retired ones
+backdated a month apart), written through the real engine so each `replaces`
+edge archives the generation under it. The report answers three questions:
+
+- **current** — asked about the subject, does the live head come back
+  (R@1/R@5), and does a retired generation ever arrive beside it
+  (`pollution` — 0.00 by construction on the superseded store)?
+- **flat ablation** — the identical facts with no supersession edges, so
+  every generation stays live: what pollution looks like without the
+  mechanism, and whether recency alone would have picked the head.
+- **retired means retired** — every retired generation must be absent from
+  search *when queried with its own title verbatim* (`retired searchable`,
+  want 0.00) while staying fetchable by id, archived (`retired fetchable`,
+  want 1.00) and fully reachable from the head along the `replaces` chain
+  (`history reachable`, want 1.00). Retirement is not removal; both halves
+  are asserted by tests, not just reported.
+
+The measured table — the product against its own no-supersession ablation,
+rag, grep, the curated file, and the whole file — sits at the front of this
+page: [supersession, measured](#the-current-answer-not-the-whole-argument--supersession-measured-082).
+The one-line version: without the `replaces` verb, 88% of current-state
+questions deliver a retired generation (97% for pure rag) and the current
+one wins the ranking 59% of the time (41% for rag); with it, pollution is
+0.00 by construction at +0.25 R@1 — while every retired generation stays
+fetchable by id and walkable from the head. Recency alone does not do what
+supersession does, and no flat stack can.
+
+---
+
 ## The online half — not yet run
 
 `src/online.rs` is the contract for the part that needs a live model. It
@@ -636,6 +736,8 @@ Results will be added here once they are measured.
 | `metrics.rs` | recall@k, MRR, twin confusion, threshold separation |
 | `nli_eval.rs` | confusion matrix and per-label precision/recall |
 | `run.rs` | the suite, the fusion sweep, the strategy grid, the contradiction bench |
+| `chains.rs` | supersession chains: current-state recall, pollution, the flat ablation |
+| `longmem.rs` | the LongMemEval adapter: pinned download, as-is ingestion, retrieval grading |
 | `CONTRADICTIONS.md` | the logic layer's own metric — the model swap, the gate, the real-graph check |
 | `online.rs` | the online half's contract |
 | `rng.rs` | seeded splitmix64 — every run reproduces from `--seed` |

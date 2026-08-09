@@ -38,3 +38,6 @@ frontend/dist-demo/
 engram-vscode/dist/
 engram-vscode/media/pane/
 *.vsix
+
+# External eval corpora, fetched on demand and SHA-pinned (eval/src/longmem.rs)
+eval/data/

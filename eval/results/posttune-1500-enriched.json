@@ -1,0 +1,98 @@
+{
+  "embedder": "bge-small-en-v1.5",
+  "reranker": "jina-reranker-v1-turbo-en",
+  "embeddings_are_fake": false,
+  "seed": 1,
+  "limit": 10,
+  "sizes": [
+    {
+      "graph": 1500,
+      "edges": 1590,
+      "questions": 4500,
+      "controls": 375,
+      "weak_line": 0.9051880225322,
+      "auto_tune_note": "weak line 0.897 -> 0.905 (fit 0.913, damped) from 24 phantom probes at q90, two families",
+      "standing_tokens": 3042,
+      "overall": {
+        "queries": 4500,
+        "recall_at_1": 0.6828888888888889,
+        "recall_at_3": 0.7475555555555555,
+        "recall_at_5": 0.7833333333333333,
+        "recall_at_10": 0.8304444444444444,
+        "mrr": 0.7253969135802475,
+        "tokens_mean": 296.8086666666667,
+        "twin_confusion": 0.0,
+        "neighbor_only": 0.018444444444444444,
+        "focus": 0.5203724593740154,
+        "noise": 0.549773456790136
+      },
+      "assisted": {
+        "queries": 4500,
+        "recall_at_1": 0.6855555555555556,
+        "recall_at_3": 0.7542222222222222,
+        "recall_at_5": 0.7937777777777778,
+        "recall_at_10": 0.8488888888888889,
+        "mrr": 0.7315283068783073,
+        "tokens_mean": 296.8086666666667,
+        "twin_confusion": 0.0,
+        "neighbor_only": 0.018444444444444444,
+        "focus": 0.5203724593740154,
+        "noise": 0.5479166666666803
+      },
+      "by_phrasing": [
+        {
+          "phrasing": "lexical",
+          "score": {
+            "queries": 1500,
+            "recall_at_1": 0.9986666666666667,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0,
+            "recall_at_10": 1.0,
+            "mrr": 0.9993333333333333,
+            "tokens_mean": 106.948,
+            "twin_confusion": 0.0,
+            "neighbor_only": 0.0,
+            "focus": 0.756630868197769,
+            "noise": 0.2091317460317458
+          }
+        },
+        {
+          "phrasing": "paraphrase",
+          "score": {
+            "queries": 1500,
+            "recall_at_1": 0.942,
+            "recall_at_3": 0.9806666666666667,
+            "recall_at_5": 0.9886666666666667,
+            "recall_at_10": 0.99,
+            "mrr": 0.9625952380952382,
+            "tokens_mean": 269.932,
+            "twin_confusion": 0.0,
+            "neighbor_only": 0.0,
+            "focus": 0.490425939921301,
+            "noise": 0.49530608465608034
+          }
+        },
+        {
+          "phrasing": "oblique",
+          "score": {
+            "queries": 1500,
+            "recall_at_1": 0.116,
+            "recall_at_3": 0.282,
+            "recall_at_5": 0.39266666666666666,
+            "recall_at_10": 0.5566666666666666,
+            "mrr": 0.23265634920634887,
+            "tokens_mean": 513.546,
+            "twin_confusion": 0.0,
+            "neighbor_only": 0.0,
+            "focus": 0.10824874680969584,
+            "noise": 0.939312169312176
+          }
+        }
+      ],
+      "weighted_recall": 0.9341666666666667,
+      "controls_unwarned": 0.010666666666666666,
+      "controls_empty": 0.0,
+      "answerable_warned": 0.4802222222222222
+    }
+  ]
+}

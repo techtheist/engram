@@ -64,6 +64,43 @@ OPTIONS:
                           questions costs in recall, and what trimming the
                           weak tail buys in focus/noise. The calibrated-
                           delivery default comes from this table
+    --chains              the supersession-chain bench: ADR-shaped history
+                          (N generations of one decision, each replacing the
+                          last). Scores current-state recall and retired-
+                          generation pollution against a flat ablation with
+                          no supersession edges, plus the mechanism checks:
+                          retired gone from search, reachable by link
+    --chain-count N       chains per run          [default: sizes[0]/10, >=4]
+    --chain-len N         generations per chain   [default: 3]
+    --longmemeval V       run the LongMemEval external corpus, variant
+                          s | oracle. Downloaded on demand into eval/data/
+                          (gitignored), SHA-256-pinned, MIT-licensed; graded
+                          as retrieval against the labelled evidence sessions
+                          — full population, no LLM judge. `_abs` questions
+                          are scored under the calibrated recommendation
+                          verdict. Expect a long run on the s variant
+    --lme-limit N         cap LongMemEval questions — a smoke run, loudly
+                          labelled as capped, never a quotable result
+    --lme-ontology V      per-graph ontology for the LongMemEval stores:
+                          chat (default — two data-defined types, user
+                          `statement` with a rank prior over assistant
+                          `reply`) or default (the stock software set,
+                          every turn an Insight). The delta is what the
+                          type layer buys on a register it was fitted to
+    --lme-workers N       parallel question workers for the LongMemEval run
+                          (default: 8 with the ollama embedder, else 1 — the
+                          fastembed path serialises on a mutex anyway)
+    --lme-embedder V      embedding runtime for the LongMemEval run only:
+                          fastembed (default — the shipped CPU path) or
+                          ollama (same bge-small weights as GGUF F16 on a
+                          local Ollama server, GPU; the write path is ~99%
+                          embedder time, so this is the wall-clock lever)
+    --budget              research bench: the delivery-budget sweep — rag and
+                          three engram configurations (shipped, open pool,
+                          open + no trims) each at result budgets 10/15/20/30,
+                          asking whether engram's token headroom can buy the
+                          weighted headline from pure vectors and which knob
+                          pays for it. Research only — nothing here ships
     --sweep               grid-search the fusion balance against the semantic
                           floor, printed against what pure vectors score
     --bench               run candidate retrieval strategies that do NOT ship
@@ -106,10 +143,19 @@ fn cli() -> anyhow::Result<()> {
     let mut json_out: Option<String> = None;
     let mut tasks_out: Option<String> = None;
     let mut sample = false;
+    let mut chains_mode = false;
+    let mut chain_count: Option<usize> = None;
+    let mut chain_len: usize = 3;
+    let mut longmemeval: Option<String> = None;
+    let mut lme_limit: Option<usize> = None;
+    let mut lme_ontology: String = "chat".to_string();
+    let mut lme_embedder: String = "fastembed".to_string();
+    let mut lme_workers: Option<usize> = None;
     let mut floor_mode = false;
     let mut tricks_mode = false;
     let mut qpp_mode = false;
     let mut posttune_mode = false;
+    let mut budget_mode = false;
     let mut sweep_mode = false;
     let mut bench_mode = false;
     let mut contradiction_mode = false;
@@ -147,11 +193,20 @@ fn cli() -> anyhow::Result<()> {
                 series_mode = true;
                 apply_ladder(&mut cfg);
             }
+            "--chains" => chains_mode = true,
+            "--chain-count" => chain_count = Some(value()?.parse()?),
+            "--chain-len" => chain_len = value()?.parse()?,
+            "--longmemeval" => longmemeval = Some(value()?),
+            "--lme-limit" => lme_limit = Some(value()?.parse()?),
+            "--lme-ontology" => lme_ontology = value()?,
+            "--lme-embedder" => lme_embedder = value()?,
+            "--lme-workers" => lme_workers = Some(value()?.parse()?),
             "--floor" => floor_mode = true,
             "--tricks" => tricks_mode = true,
             "--qpp" => qpp_mode = true,
             "--posttune" => posttune_mode = true,
             "--rerank-full" => cfg.rerank_full = true,
+            "--budget" => budget_mode = true,
             "--sweep" => sweep_mode = true,
             "--bench" => bench_mode = true,
             "--contradictions" => contradiction_mode = true,
@@ -181,6 +236,34 @@ fn cli() -> anyhow::Result<()> {
 
     if sample {
         print_sample(&cfg);
+        return Ok(());
+    }
+    if chains_mode {
+        anyhow::ensure!(chain_len >= 2, "--chain-len needs at least 2 generations");
+        let n =
+            chain_count.unwrap_or_else(|| (cfg.sizes.first().copied().unwrap_or(50) / 10).max(4));
+        let report = engram_eval::chains::run(&cfg, n, chain_len)?;
+        print_chains(&report);
+        if let Some(path) = json_out {
+            std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
+            println!("\nwrote {path}");
+        }
+        return Ok(());
+    }
+    if let Some(dataset) = longmemeval {
+        let report = engram_eval::longmem::run(
+            &cfg,
+            &dataset,
+            lme_limit,
+            &lme_ontology,
+            &lme_embedder,
+            lme_workers,
+        )?;
+        print_longmem(&report);
+        if let Some(path) = json_out {
+            std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
+            println!("\nwrote {path}");
+        }
         return Ok(());
     }
     if floor_mode {
@@ -214,6 +297,15 @@ fn cli() -> anyhow::Result<()> {
     if posttune_mode {
         let report = engram_eval::run::posttune(&cfg)?;
         print_posttune(&report);
+        if let Some(path) = json_out {
+            std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
+            println!("\nwrote {path}");
+        }
+        return Ok(());
+    }
+    if budget_mode {
+        let report = engram_eval::run::budget(&cfg)?;
+        print_budget(&report, &cfg);
         if let Some(path) = json_out {
             std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
             println!("\nwrote {path}");
@@ -386,6 +478,116 @@ fn parse_phrasing(spec: &str) -> anyhow::Result<PhrasingMix> {
         paraphrase,
         oblique,
     })
+}
+
+fn print_chains(r: &engram_eval::chains::ChainsReport) {
+    println!("engram-eval — supersession chains (ADR-shaped history)");
+    println!(
+        "runtime: embedder={}  reranker={}  seed={}  limit={}",
+        r.embedder, r.reranker, r.seed, r.limit
+    );
+    if r.embeddings_are_fake {
+        println!(
+            "!! FAKE EMBEDDINGS — semantic numbers below are noise; the mechanism checks still hold"
+        );
+    }
+    for s in &r.sizes {
+        println!(
+            "\ngraph {} facts / {} chains x {} generations / {} questions / {} replaces edges",
+            s.graph, s.chains, s.chain_len, s.questions, s.supersessions_written
+        );
+        println!(
+            "  {:<28} {:>6} {:>6} {:>10} {:>11} {:>9}",
+            "store", "R@1", "R@5", "pollution", "head-first", "tok/query"
+        );
+        let mut rows: Vec<(&str, &engram_eval::chains::ChainArmScore)> = vec![
+            ("superseded (the product)", &s.superseded),
+            ("flat ablation", &s.flat),
+        ];
+        rows.extend(s.baselines.iter().map(|b| (b.arm.as_str(), &b.score)));
+        for (name, a) in rows {
+            println!(
+                "  {:<28} {:>6.2} {:>6.2} {:>10.2} {:>11.2} {:>9.0}",
+                name, a.recall_at_1, a.recall_at_5, a.pollution, a.head_first, a.tokens_mean
+            );
+        }
+        println!(
+            "  mechanism: history reachable by link {:.2}  retired searchable {:.2}  retired fetchable {:.2}  neighbours carry history {:.2}",
+            s.history_reachable,
+            s.retired_searchable,
+            s.retired_fetchable,
+            s.neighbors_carry_history
+        );
+    }
+    println!(
+        "\nReading it: `pollution` is the share of current-state questions that delivered\n\
+         a RETIRED generation — on the superseded store it must be 0.00 by construction,\n\
+         and the flat ablation shows what it would be without supersession. `retired\n\
+         searchable` asks search for each retired generation with its own title verbatim\n\
+         (want 0.00); `retired fetchable` gets it by id, archived (want 1.00): retirement\n\
+         is not removal. The two stores hold identical facts; the delta is what the\n\
+         `replaces` verb buys. Baseline rows have no supersession concept at all — for\n\
+         the file-in-context arms `head-first` reads as UNAMBIGUOUS: the current answer\n\
+         delivered without a retired generation beside it, which a file that holds the\n\
+         whole history can never do."
+    );
+}
+
+fn print_longmem(r: &engram_eval::longmem::LmeReport) {
+    println!("engram-eval — LongMemEval (external corpus, retrieval-graded)");
+    println!(
+        "dataset: {} ({})  questions {}/{}{}",
+        r.dataset,
+        r.file,
+        r.questions_run,
+        r.questions_total,
+        if r.capped {
+            "  !! CAPPED — smoke run, not a result"
+        } else {
+            ""
+        }
+    );
+    println!(
+        "runtime: embedder={}  reranker={}  ontology={}  limit={}  notes/question ~{:.0}",
+        r.embedder, r.reranker, r.ontology, r.limit, r.notes_mean
+    );
+    if r.embeddings_are_fake {
+        println!("!! FAKE EMBEDDINGS — every number below is noise");
+    }
+    println!(
+        "\n  {:<14} {:>6} {:>6} {:>6} {:>6} {:>9}",
+        "arm", "asked", "R@1", "R@5", "MRR", "tok/query"
+    );
+    for row in &r.arms {
+        let a = &row.score;
+        println!(
+            "  {:<14} {:>6} {:>6.2} {:>6.2} {:>6.2} {:>9.0}",
+            row.arm, a.queries, a.recall_at_1, a.recall_at_5, a.mrr, a.tokens_mean
+        );
+    }
+    if !r.by_type.is_empty() {
+        println!("\n  engram by question type:");
+        for t in &r.by_type {
+            println!(
+                "  {:<28} {:>5} asked  R@5 {:>5.2}  MRR {:>5.2}",
+                t.question_type, t.score.queries, t.score.recall_at_5, t.score.mrr
+            );
+        }
+    }
+    let a = &r.abstention;
+    if a.questions > 0 {
+        println!(
+            "\n  abstention (_abs questions, never answerable): {} asked — empty {}  warned {}  UNWARNED (the honest FP) {}  ({} stores auto-tuned)",
+            a.questions, a.empty, a.warned, a.unwarned, a.tuned_stores
+        );
+    }
+    println!(
+        "\nReading it: graded as retrieval — a hit counts when a note from a labelled\n\
+         evidence session is delivered — over the full population, no LLM judge.\n\
+         Ingestion is as-is (one note per chat turn, verbatim): the unflattering\n\
+         register, disclosed. An `_abs` answer under the calibrated \"likely not in\n\
+         memory\" line counts as honest; only an unwarned one is a false positive."
+    );
 }
 
 fn print_posttune(r: &engram_eval::run::PostTuneReport) {
@@ -617,6 +819,60 @@ fn print_floor(r: &engram_eval::run::FloorReport) {
          `decl-ans` is what that restraint costs on real questions, and R@5 is what\n\
          survives after the trim. The shipped floor should sit where decl-ctrl is\n\
          high, decl-ans is negligible, and R@5 has not moved."
+    );
+}
+
+fn print_budget(r: &engram_eval::run::BudgetReport, cfg: &Config) {
+    println!("engram-eval — delivery-budget sweep (research only, nothing here ships)");
+    println!(
+        "runtime: embedder={}  reranker={}  seed={}",
+        r.embedder, r.reranker, r.seed
+    );
+    if r.embeddings_are_fake {
+        println!("!! FAKE EMBEDDINGS — every number below is noise");
+    }
+    println!(
+        "graph {} facts / {} questions — weighted by lexical={} paraphrase={} oblique={}\n",
+        r.graph, r.questions, cfg.phrasing.lexical, cfg.phrasing.paraphrase, cfg.phrasing.oblique
+    );
+    println!(
+        "  {:<22} {:>5} {:>9} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>9} {:>5}",
+        "arm",
+        "limit",
+        "weighted",
+        "lex",
+        "para",
+        "obliq",
+        "R@5",
+        "R@10",
+        "noise",
+        "tok/query",
+        "FP"
+    );
+    for row in &r.rows {
+        println!(
+            "  {:<22} {:>5} {:>9.3} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>9.0} {:>5.2}",
+            row.label,
+            row.limit,
+            row.weighted_recall,
+            row.lexical,
+            row.paraphrase,
+            row.oblique,
+            row.recall_at_5,
+            row.recall_at_10,
+            row.noise,
+            row.tokens_mean,
+            row.false_positive_rate,
+        );
+    }
+    println!(
+        "\nReading it: the question is whether any engram configuration reaches rag's\n\
+         weighted number while spending fewer delivered tokens. `open-pool` turns off\n\
+         every pre-rank cut (min score, relative cut, semantic floor) so nothing is\n\
+         deleted before the reranker votes; `open+no-trims` also disables the delivery\n\
+         floor and knee — the noisy ceiling. R@5 moves only if the wider pool feeds the\n\
+         reranker candidates the cuts were deleting; R@10 and tokens show what the\n\
+         extra budget costs."
     );
 }
 

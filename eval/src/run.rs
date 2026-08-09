@@ -1139,6 +1139,167 @@ fn nli() -> (Box<dyn Nli>, String) {
     (Box::new(FakeNli), "fake".to_string())
 }
 
+// ------------------------------------------------------------- budget sweep
+
+/// One point of the delivery-budget sweep: an arm, a result budget, and what
+/// it bought.
+#[derive(Debug, Clone, Serialize)]
+pub struct BudgetRow {
+    pub label: String,
+    pub limit: usize,
+    pub weighted_recall: f64,
+    pub lexical: f64,
+    pub paraphrase: f64,
+    pub oblique: f64,
+    pub recall_at_5: f64,
+    pub recall_at_10: f64,
+    pub noise: f64,
+    pub tokens_mean: f64,
+    pub false_positive_rate: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BudgetReport {
+    pub embedder: String,
+    pub reranker: String,
+    pub embeddings_are_fake: bool,
+    pub seed: u64,
+    pub graph: usize,
+    pub questions: usize,
+    pub rows: Vec<BudgetRow>,
+}
+
+/// The 0.8.2 research question: engram wins the token column by an order of
+/// magnitude — can some of that headroom be spent on recall until the
+/// weighted headline beats pure vectors, and which knob buys it?
+///
+/// Three configurations of the same built store, each at four result
+/// budgets, against rag at the same four budgets:
+///
+/// * `shipped` — the stack as configured today, just allowed to return more.
+/// * `open pool` — every pre-rank cut off (`search_min_score`,
+///   `search_relative_cut`, `semantic_floor` all zero): the candidate pool
+///   goes as wide as rag's and nothing is deleted before the reranker sees
+///   it. Delivery trims (floor + knee) stay on — "let more in, still cut
+///   hard at the end", which is the candidate mechanism for a recall mode.
+/// * `open + no trims` — the trims off too: the widest, noisiest delivery
+///   this stack can produce, the ceiling on what opening up can buy.
+pub fn budget(cfg: &Config) -> anyhow::Result<BudgetReport> {
+    let model = cfg.embed_model.as_deref();
+    let size = *cfg.sizes.first().expect("at least one size");
+    let c = corpus_full(
+        size,
+        size * cfg.distractor_ratio,
+        cfg.seed,
+        &cfg.profile,
+        &cfg.type_mix,
+    );
+    let twins = twin_map(&c);
+    let (_, embedder_name) = embedder(model);
+    let engram = EngramArm::build(
+        &c,
+        embedder(model).0,
+        if cfg.no_rerank { None } else { reranker().0 },
+    )?;
+    let base = engram.engine().graph_config();
+    let limits = [10usize, 15, 20, 30];
+
+    let mut rows = Vec::new();
+    let mut push = |label: &str, limit: usize, outcomes: &[Outcome], sep: &Separation| {
+        let split = by_phrasing(outcomes);
+        let at = |p: Phrasing| {
+            split
+                .iter()
+                .find(|(q, _)| *q == p)
+                .map(|(_, s)| s.recall_at_5)
+                .unwrap_or_default()
+        };
+        let overall = score(outcomes);
+        eprintln!(
+            "  {label:<22} limit {limit:>2}  weighted {:.3}  obliq {:.2}  R@5 {:.2}  R@10 {:.2}  tok {:.0}  FP {:.2}",
+            cfg.phrasing.weighted_recall(&split),
+            at(Phrasing::Oblique),
+            overall.recall_at_5,
+            overall.recall_at_10,
+            overall.tokens_mean,
+            sep.false_positive_rate,
+        );
+        rows.push(BudgetRow {
+            label: label.to_string(),
+            limit,
+            weighted_recall: cfg.phrasing.weighted_recall(&split),
+            lexical: at(Phrasing::Lexical),
+            paraphrase: at(Phrasing::Paraphrase),
+            oblique: at(Phrasing::Oblique),
+            recall_at_5: overall.recall_at_5,
+            recall_at_10: overall.recall_at_10,
+            noise: overall.noise,
+            tokens_mean: overall.tokens_mean,
+            false_positive_rate: sep.false_positive_rate,
+        });
+    };
+
+    // The reference the whole exercise is against.
+    let rag = RagArm::new(&engram, embedder(model).0);
+    for limit in limits {
+        let (o, s) = measure(&rag, &c, limit, &twins);
+        push("rag", limit, &o, &s);
+    }
+
+    type PolicyTweak = fn(&mut engram_core::config::PolicyConfig);
+    let configs: [(&str, PolicyTweak); 5] = [
+        ("engram shipped", |_p| {}),
+        ("engram open-pool", |p| {
+            p.search_min_score = 0.0;
+            p.search_relative_cut = 0.0;
+            p.semantic_floor = 0.0;
+        }),
+        ("engram open+no-trims", |p| {
+            p.search_min_score = 0.0;
+            p.search_relative_cut = 0.0;
+            p.semantic_floor = 0.0;
+            p.delivery_floor = 0.0;
+            p.knee_cliff = None;
+        }),
+        // The ranking-side levers, because the 50-record sweep showed the
+        // budget-side ones flat: the keyword channel silenced, with and
+        // without the pool cuts. The oblique gap's suspects live here.
+        ("engram kw0", |p| {
+            p.keyword_weight = 0.0;
+        }),
+        ("engram kw0 open-pool", |p| {
+            p.keyword_weight = 0.0;
+            p.search_min_score = 0.0;
+            p.search_relative_cut = 0.0;
+            p.semantic_floor = 0.0;
+        }),
+    ];
+    for (label, apply) in configs {
+        let mut fresh = base.clone();
+        apply(&mut fresh.policy);
+        engram.engine().set_graph_config(&fresh)?;
+        for limit in limits {
+            let (o, s) = measure(&engram, &c, limit, &twins);
+            push(label, limit, &o, &s);
+        }
+    }
+    engram.engine().set_graph_config(&base)?;
+
+    Ok(BudgetReport {
+        embeddings_are_fake: embedder_name.contains("(fake)"),
+        embedder: embedder_name,
+        reranker: if cfg.no_rerank {
+            "disabled (--no-rerank)".to_string()
+        } else {
+            reranker().1
+        },
+        seed: cfg.seed,
+        graph: c.facts.len(),
+        questions: c.questions().count(),
+        rows,
+    })
+}
+
 // ------------------------------------------------------------ delivery floor
 
 /// One candidate delivery floor, scored over recorded retrievals.

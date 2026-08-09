@@ -11,6 +11,11 @@ engram-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+# Verifies the pinned digest of on-demand external corpora (LongMemEval).
+# Already in the workspace tree transitively; this only makes it direct.
+sha2 = "0.10"
+# Plain-HTTP client for the eval-only Ollama embedder (localhost, no TLS).
+ureq = { version = "2", default-features = false }
 
 [features]
 # Real embeddings. The default (fake) embedder is a character-frequency bag —

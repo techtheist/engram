@@ -21,9 +21,12 @@
 //!   against a generated answer, so it never needs a judge either.
 
 pub mod arms;
+pub mod chains;
 pub mod generate;
+pub mod longmem;
 pub mod metrics;
 pub mod nli_eval;
+pub mod ollama;
 pub mod online;
 pub mod profile;
 pub mod rng;
