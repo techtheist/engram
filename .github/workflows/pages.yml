@@ -52,6 +52,9 @@ jobs:
           cp -R frontend/dist-demo/. site/demo/
           # Pages runs Jekyll otherwise, which drops files it dislikes.
           touch site/.nojekyll
+          # Browsers ask the site root for /favicon.ico; give the redirect
+          # page the same icon the demo carries.
+          cp frontend/public/favicon.ico frontend/public/favicon.svg site/
           # The demo owns /demo/ so the site root stays free for docs later;
           # anyone landing on the root gets sent there.
           cat > site/index.html <<'HTML'
@@ -60,6 +63,8 @@ jobs:
             <head>
               <meta charset="utf-8" />
               <title>Engram Alpha</title>
+              <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+              <link rel="alternate icon" href="./favicon.ico" />
               <meta http-equiv="refresh" content="0; url=./demo/" />
               <link rel="canonical" href="./demo/" />
             </head>
