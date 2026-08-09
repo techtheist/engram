@@ -3,7 +3,116 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
-## v0.8.1 — the knee and the phantom probes
+## v0.8.2
+
+### merge_nodes — consolidation becomes one atomic verb
+
+- **New MCP tool `merge_nodes`** (`Engine::merge_nodes`): merge several notes
+  stating the same knowledge into one survivor. Tags and code_refs union onto
+  the survivor, the victims' **live edges rehome onto it** — deduped by
+  (verb, endpoint, direction), self-loops and edges internal to the merged
+  set stay behind, and incoming `replaces` edges never move (they are the
+  victim's own story) — and each victim is archived behind a `replaces` edge
+  so its generation stays traversable. A rehomed edge keeps its id and
+  timestamps; a rehomed `conflicts-with` re-runs demotion reconciliation, so
+  the survivor genuinely inherits a live conflict. Supersession, not
+  deletion: nothing is destroyed, every step lands in the audit journal, and
+  the victims get a new `merged` audit action. Pinned victims are refused
+  for the assistant (surfaced instead) and archived explicitly for a
+  user-sourced merge — the same contract as the pane's replaces verdict.
+  The response is the usual write verdict (`warnings` / `suspects` /
+  `canon`), with warnings about the victims themselves filtered out.
+  Previously the guidance was "merge via `update_node`" plus hand-written
+  `replaces` links, which stranded the victims' edges on archived nodes.
+
+### External corpus — the harness stops grading only its own homework
+
+- **LongMemEval adapter** (`engram-eval --longmemeval s|oracle`): the first
+  corpus the harness runs that we did not generate. The dataset (Wu et al.,
+  MIT) is downloaded on demand into `eval/data/` (gitignored), verified
+  against a **pinned SHA-256**, and cached — the repo carries only the
+  loader and the digests. Ingestion is deliberately **as-is** (one note per
+  chat turn, verbatim — Engram ships no extractor, so the unflattering
+  register is the honest one) and grading is **retrieval**: a hit counts
+  when a note from a labelled evidence session is delivered — the full
+  population, deterministic, no LLM judge anywhere. The `_abs` questions
+  (deliberately unanswerable) are scored under the calibrated "likely not
+  in memory" verdict: a warned answer is honest, only an unwarned one is a
+  false positive. `--lme-limit` caps a smoke run and is loudly labelled.
+  Measured, full population (`eval/results/longmemeval-s-full.json`):
+  engram ties rag's R@1 (0.91) within 0.02 R@5 at **208 vs 2,654 delivered
+  tokens per query**, and the 30 never-answerable questions produce **0
+  unwarned answers** under the auto-tuned line (28 warned, 2 empty) — every
+  arm without a verdict layer confidently answers all 30.
+- **The chat ontology, defined as data** (`--lme-ontology chat`, the
+  default): the LongMemEval stores run under a two-type per-graph config —
+  user `statement` (small rank prior: the first-party source wins ties) over
+  assistant `reply` (no prior, muted) — the one distinction an as-is
+  ingester can make honestly without a classifier. Same engine, not a line
+  of engine code changed: per-graph GraphConfig doing what it was built for
+  on a register the stock software ontology was never meant to fit. Notes
+  are stamped with their session's real date (`created_at` — the knowledge's
+  original date), so recency reads the conversation timeline.
+  `--lme-ontology default` runs the stock set for comparison.
+- **GPU embeddings for the LongMemEval run** (`--lme-embedder ollama`,
+  `--lme-workers`): a live profile put 99.5% of the run's wall-clock in the
+  CPU embedder, so the harness — and only the harness, the daemon is
+  untouched — can serve the same `bge-small-en-v1.5` weights (GGUF F16, CLS
+  pooling, L2-normalised) from a local Ollama or llama-server endpoint,
+  auto-detected, with parallel question workers feeding it. Grades are
+  identical to the shipped CPU path to the digit on every arm; the only
+  thing that changes is the clock: ~119 s/question → ~13, a 16-hour full
+  run in under two.
+
+### Supersession chains — what `replaces` buys, measured
+
+- **The chain bench** (`engram-eval --chains`): ADR-shaped history in the
+  generated corpus — N generations of the same decision, each `replaces`-ing
+  the last, retired generations backdated a month apart. Three questions the
+  regular suite structurally cannot ask: does the **live head** come back
+  when the subject is asked about; does a **retired generation** ever arrive
+  beside it (pollution — on the superseded store it is 0 by construction,
+  and a **flat ablation** with no supersession edges shows what it would be
+  without the mechanism); and does **retired mean retired** — every retired
+  generation must be absent from search even when queried with its own title
+  verbatim, while staying reachable through the `replaces` chain and
+  fetchable by id. Chains live on their own corpus field so the regular
+  suite's no-state-mutating-edges invariant stays intact.
+- First measured run (200 facts + 20 chains × 3 generations, bge-small +
+  jina reranker): superseded store **R@1 0.75 / pollution 0.00 /
+  head-first 1.00**; flat ablation R@1 0.50 / **pollution 0.88** /
+  head-first 0.59. All mechanism checks perfect — history reachable by link
+  1.00, retired searchable by its own verbatim title 0.00, retired
+  fetchable-by-id (archived) 1.00. The "a reversed decision keeps polluting
+  the corpus" failure mode is what the flat ablation shows; supersession is
+  what removes it, by construction, at +0.25 R@1.
+- **Baselines beside both external benches.** The chain bench also scores
+  rag, grep, the curated file, and the whole file over the same chain
+  questions — stacks with no supersession concept, for which every
+  generation is just another record (a file holding the whole history can
+  never deliver an unambiguous current answer). The LongMemEval runner
+  gained the same three flat-data arms beside engram and rag, and the run
+  has its own page — `eval/LONGMEMEVAL.md` — including why the offline
+  retrieval-graded protocol is deliberately not a LongMemEval *score*, and
+  a reserved section for the future official-suite online half.
+
+### Corpus enrichment and the delivery-budget question
+
+- **Every slot-vocabulary pool grew 12 → 25 entries** (130 new hand-written
+  wording/paraphrase pairs across the ten template pools), taking the unique
+  slot space from 2,304 to 10,000 combinations per kind. At 1,500 notes each
+  vocabulary entry now repeats ~12× instead of ~25×: a more diverse, less
+  template-shaped crowd. The word-disjointness invariants that make the
+  oblique column meaningful are test-enforced and held through the change.
+  **Comparability note:** results measured before and after the enrichment
+  are different corpora — the README tables refresh wholesale with the next
+  `--series` run, never row by row.
+- **`--budget`** (research bench): the delivery-budget sweep — rag and three
+  engram configurations (shipped; open pool = every pre-rank cut off; open +
+  no delivery trims) each at result budgets 10/15/20/30, asking whether
+  engram's order-of-magnitude token headroom can buy the weighted headline
+  from pure vectors, and which knob pays for it. Groundwork for an optional
+  user-selectable recall profile (token economy vs extended recall).
 
 ### NLI model swap — contradictions stop firing at strangers
 
@@ -96,6 +205,9 @@ tricks bench measured (`eval/README.md` has the full tables).
   cliff stepper and the weak-line quantile, with the plain-word explanations
   rendered from the live values (carried from earlier in this cycle: the
   calibrated-delivery settings block itself).
+- Side-pane drawers open at a uniform 42 rem default width, both sides.
+- New favicon, and the GitHub Pages site root now serves it too (browsers
+  ask the root for `/favicon.ico`; only `/demo/` carried one).
 
 ### Measured end to end, and the field lesson
 

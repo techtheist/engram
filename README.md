@@ -69,10 +69,11 @@ from pretraining, substring grading with no LLM judge, seeded and
 reproducible — and since 0.8.0 the product's retrieval defaults are outputs
 of benchmark runs, with the runs published next to the code:
 
-- **~5× the recall per token of a conventional vector stack.** At 1,500
-  realistic notes, Engram answers from ~530 delivered tokens per query what
-  pure-vector RAG needs ~2,700 for — at equal recall, and ahead of it on the
-  phrasing-weighted headline (0.94 vs 0.92).
+- **~9× the recall per token of a conventional vector stack.** At 1,500
+  realistic notes, Engram answers from ~300 delivered tokens per query what
+  pure-vector RAG needs ~2,700 for — at equal recall@5, ahead on the
+  phrasing-weighted headline (0.93 vs 0.91), with over half of every
+  delivery being the answer itself (focus 0.52 vs rag's 0.10).
 - **Where a maintained memory file loses, measured — not asserted.** A
   3,000-token CLAUDE.md is whole below ~40 notes and overtaken by retrieval
   at 100; an unusually diligent 30,000-token one genuinely wins recall up to
@@ -90,14 +91,31 @@ of benchmark runs, with the runs published next to the code:
   false-positive, and attention columns — including the negative result:
   hard abstention was measured, priced, and rejected because it costs real
   answers.
+- **Superseded knowledge stays out of the answer — measured, with an
+  ablation.** ADR-shaped history (the same decision re-decided three times,
+  each generation `replaces`-ing the last): the shipped stack returns the
+  current answer with **zero** retired generations delivered and the history
+  one link away; the identical store without supersession delivers a retired
+  generation on 88% of questions and lets the current one win the ranking
+  only 59% of the time. Flat files and pure RAG cannot make this distinction
+  at all — the table is in [`eval/`](./eval/README.md).
+- **Tested on an external corpus, not just our own.** The harness runs
+  [LongMemEval](./eval/LONGMEMEVAL.md) (real multi-session chat histories,
+  evidence labels, MIT) as-is — no LLM anywhere in ingestion or grading —
+  under a chat ontology defined purely as per-graph data. Full population,
+  all 500 questions: rag's recall@1 matched at 8% of its delivered tokens
+  (208 vs 2,654/query), and the 30 never-answerable questions drew **zero**
+  confident answers — on data we did not write.
 - **Rejected mechanisms stay on the record.** The harness documents what was
   tried and didn't survive measurement — graph spreading activation, a
   deciding cross-encoder, deeper reranking — because a benchmark that only
   reports wins is an advertisement.
 
-Method, tables, and the honest caveats: [`eval/`](./eval/README.md). Next on
-the bench: the online half (live models answering from each arm's delivered
-context) and competitor memory systems run as arms on the same corpus.
+Method, tables, and the honest caveats: [`eval/`](./eval/README.md); the
+external-corpus run has [its own page](./eval/LONGMEMEVAL.md). Next on the
+bench: the online half (live models answering from each arm's delivered
+context — including the official LongMemEval answer protocol) and competitor
+memory systems run as arms on the same corpus.
 
 ## Install
 

@@ -19,7 +19,7 @@
 ## Workflows & sharp edges
 - **Pane/daemon rebuild: `scripts/deploy-pane.sh` only** (never hand-chain build/install/restart); after any redeploy, `/mcp` reconnect — live stdio sessions keep the OLD binary and stale tool descriptions.
 - **Release:** CHANGELOG section (one `## v<version>` per release) → push → `gh workflow run draft-release.yml -f version=X.Y.Z` → publish the draft. Bump the graph's working version (`set_version`) when a cycle OPENS, not at release.
-- **Eval:** `cargo run -p engram-eval --features fastembed -- --series|--ladder|--sizes N|--tricks|--posttune|--floor|--bench` — receipts in `eval/results/`; `--distractors 0` = question-everything mode.
+- **Eval:** `cargo run -p engram-eval --features fastembed -- --series|--ladder|--sizes N|--tricks|--posttune|--floor|--bench|--chains|--longmemeval s` — receipts in `eval/results/`; `--distractors 0` = question-everything mode; `--longmemeval` downloads SHA-pinned into `eval/data/` (gitignored).
 - Search-before-write; every write response is a verdict (matched → merge, suspects → judge now, warnings → check canon).
 
 ## Chronicle (slim — search the graph with these keywords for the full story)
