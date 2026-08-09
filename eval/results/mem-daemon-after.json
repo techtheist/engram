@@ -1,0 +1,11 @@
+{
+  "label": "FINAL (shipped defaults)",
+  "stages": [
+    {"stage": "startup (3 models)", "kb": 667648},
+    {"stage": "after 1 search", "kb": 675840},
+    {"stage": "after 10 searches", "kb": 684032},
+    {"stage": "after check_claim (NLI)", "kb": 691200},
+    {"stage": "after conflict scan", "kb": 695296},
+    {"stage": "after 30s idle", "kb": 696320}
+  ]
+}

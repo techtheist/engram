@@ -194,8 +194,21 @@ mod fast {
 
         pub fn from_dir(dir: &Path) -> Result<Self> {
             let path = |name: &str| dir.join(name);
-            let session = Session::builder()
-                .and_then(|mut b| b.commit_from_file(path("model.onnx")))
+            // Session policy lives in `crate::onnx` — arena off, no
+            // memory-pattern pre-planner, threads left to ORT unless capped.
+            // Allocation only: the logits this model produces are unchanged.
+            // Each `with_*` hands its builder back inside the error type, so
+            // the steps unwrap one at a time rather than chaining `and_then`.
+            let mut builder = Session::builder().map_err(nli_err)?;
+            builder = builder
+                .with_execution_providers(crate::onnx::execution_providers())
+                .map_err(nli_err)?;
+            if let Some(t) = crate::onnx::intra_threads() {
+                builder = builder.with_intra_threads(t).map_err(nli_err)?;
+            }
+            builder = builder.with_memory_pattern(false).map_err(nli_err)?;
+            let session = builder
+                .commit_from_file(path("model.onnx"))
                 .map_err(nli_err)?;
             let need_token_type_ids = session
                 .inputs()
@@ -241,7 +254,23 @@ mod fast {
     }
 
     impl Nli for FastNli {
+        /// Judge every pair, in batches of at most [`crate::onnx::batch`].
+        ///
+        /// Each pair is scored independently of the others, so chunking is
+        /// numerically exact — it only bounds how wide a tensor the session
+        /// ever allocates. (Padding is per-batch `BatchLongest`, but the
+        /// attention mask makes padding width irrelevant to the logits.)
         fn judge(&self, pairs: &[(String, String)]) -> Result<Vec<NliJudgment>> {
+            let mut out = Vec::with_capacity(pairs.len());
+            for chunk in pairs.chunks(crate::onnx::batch()) {
+                out.extend(self.judge_batch(chunk)?);
+            }
+            Ok(out)
+        }
+    }
+
+    impl FastNli {
+        fn judge_batch(&self, pairs: &[(String, String)]) -> Result<Vec<NliJudgment>> {
             if pairs.is_empty() {
                 return Ok(Vec::new());
             }
@@ -278,8 +307,26 @@ mod fast {
                 ));
             }
 
+            // With the arena on (`ENGRAM_ONNX_ARENA=1`) ask ORT to hand the
+            // run's allocations back afterwards, so the comparison mode stays
+            // bounded too. This is *not* inert when the arena is off — ORT
+            // errors out if nothing is registered to shrink — so it is gated,
+            // not always-on. Weights are initializers and sit outside the
+            // shrinkable region either way.
+            let run_opts = if crate::onnx::arena_enabled() {
+                let mut o = ort::session::RunOptions::new().map_err(nli_err)?;
+                o.add_config_entry("memory.enable_memory_arena_shrinkage", "cpu:0")
+                    .map_err(nli_err)?;
+                Some(o)
+            } else {
+                None
+            };
             let mut session = self.session.lock().expect("nli session mutex");
-            let outputs = session.run(session_inputs).map_err(nli_err)?;
+            let outputs = match &run_opts {
+                Some(o) => session.run_with_options(session_inputs, o),
+                None => session.run(session_inputs),
+            }
+            .map_err(nli_err)?;
             let logits = outputs
                 .get("logits")
                 .ok_or_else(|| crate::Error::Embedding("model output lacks 'logits'".into()))?
