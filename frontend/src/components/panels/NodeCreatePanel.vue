@@ -85,7 +85,7 @@ function close(): void {
     :open="open"
     side="right"
     panel-id="create"
-    :default-rem="40"
+    :default-rem="42"
     :min-rem="28"
     :dismiss="close"
     :accent="accent"

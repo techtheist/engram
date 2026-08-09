@@ -226,7 +226,7 @@ export interface TimelineEntry {
 export interface AuditEntry {
     seq: number
     ts: number
-    /** created | updated | approved | unapproved | pinned | unpinned | demoted | archived | deleted | imported */
+    /** created | updated | approved | unapproved | pinned | unpinned | demoted | archived | deleted | imported | merged */
     action: string
     /** node | edge | graph */
     entity: string

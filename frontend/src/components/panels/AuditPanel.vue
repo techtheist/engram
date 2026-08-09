@@ -105,7 +105,7 @@ function fmtDate(secs: number): string {
     :open="open"
     side="left"
     panel-id="audit"
-    :default-rem="48"
+    :default-rem="42"
     :min-rem="32"
     :dismiss="hide"
     title="Audit log"

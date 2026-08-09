@@ -142,7 +142,7 @@ async function scanNow(): Promise<void> {
         :open="open"
         side="left"
         panel-id="review"
-        :default-rem="36"
+        :default-rem="42"
         :min-rem="28"
         :dismiss="() => (open = false)"
         title="Review"

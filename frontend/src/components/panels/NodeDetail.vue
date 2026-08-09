@@ -219,7 +219,7 @@ function close(): void {
     :open="selected != null && detailOpen"
     side="right"
     panel-id="detail"
-    :default-rem="40"
+    :default-rem="42"
     :min-rem="28"
     :dismiss="close"
     :accent="accent"

@@ -212,7 +212,7 @@ const STRUCT_CAP = 8
         :open="open"
         side="left"
         panel-id="checkup"
-        :default-rem="36"
+        :default-rem="42"
         :min-rem="28"
         :dismiss="() => (open = false)"
         title="Checkup"
