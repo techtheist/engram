@@ -5,6 +5,27 @@ body of its GitHub Release (draft-release.yml lifts it automatically).
 
 ## v0.8.3
 
+### The default embedder is pinned to fp32 — the shipped weights now match the measured ones
+
+- `cortex::presets` pinned `bge-small-en-v1.5` to **`onnx/model.onnx`**
+  (fp32), explicitly, the way the default reranker already was — instead of
+  inheriting the quantized `onnx/model_quantized.onnx` default.
+- **Why:** every number in `eval/results/` was produced by the fp32 weights.
+  The quantized default arrived later, and `provision()` skips a model
+  directory that already holds a `model.onnx`, so no machine that had ever
+  run Engram picked the int8 file up. The shipped default and the measured
+  default had quietly diverged — and this project gates retrieval changes on
+  that bench, so they cannot be allowed to disagree.
+- **Not a claim that int8 is worse.** It would take roughly 100 MB off the
+  daemon and may well be fine; it is a retrieval change, so it belongs behind
+  a `--ladder` run rather than behind a default nobody measured. The other
+  embedding presets (`bge-base-en-v1.5`, `all-MiniLM-L6-v2`) are untouched
+  and stay quantized.
+- **Caveat, stated plainly:** this aligns *fresh* installs. Anyone who
+  provisioned during v0.8.2 already has the int8 file on disk, and
+  `provision()` will not replace it — they keep running quantized weights
+  until that directory is cleared.
+
 ### The daemon gets lighter and faster at once — batch width was the culprit
 
 - **Inference batches are capped at 2** (`engram_core::onnx`), instead of

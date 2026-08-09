@@ -148,10 +148,25 @@ pub fn presets(role: Role) -> Vec<ModelSpec> {
     let hf = |repo: &str| format!("https://huggingface.co/{repo}/resolve/main");
     match role {
         Role::Embedding => vec![
+            // fp32, pinned explicitly like the default reranker below — NOT
+            // the quantized export the other entries take.
+            //
+            // Every number in `eval/results/` was produced by the fp32
+            // weights: the quantized default was added later, and
+            // `provision()` skips a model dir that already has a
+            // `model.onnx`, so no machine that had already run Engram ever
+            // picked the int8 file up. That left the shipped default and the
+            // measured default disagreeing, which is the one thing a bench
+            // this project gates releases on cannot afford. Pinning fp32
+            // makes what a fresh install runs the same thing the receipts
+            // describe. Switching to int8 is a live option — it would take
+            // roughly 100 MB off the daemon — but it is a retrieval change
+            // and belongs behind a `--ladder` run, not behind a default
+            // nobody measured.
             ModelSpec {
                 name: crate::rag::DEFAULT_EMBED_MODEL.to_string(),
                 base_url: hf("Xenova/bge-small-en-v1.5"),
-                model_file: default_model_file(),
+                model_file: "onnx/model.onnx".into(),
                 dim: Some(384),
                 pooling: Some("cls".into()),
             },
