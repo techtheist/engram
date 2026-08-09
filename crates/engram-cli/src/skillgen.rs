@@ -224,6 +224,7 @@ Nodes carry computed `trust` (0..1) under this graph's tuned policy: a fresh ass
 ## Maintenance — keep the graph honest
 
 - Judge suspected conflicts early (`list_suspects` / the brief's queue) — the scan only nominates; you are the judge.
+- When several notes state the same knowledge, consolidate with `merge_nodes` — tags/refs union, live edges rehome onto the survivor, victims archive behind `{supersession}` edges; compose the merged body yourself.
 - Close the loop: when work settles an open {worklist_names}, link the settling node with the answer verb and set the item resolved.
 - Repair drifted `code_refs` (`list_drift`) when files move.
 - If the brief opens with "Current working version", new notes are stamped with it automatically; call `set_version` when the project moves to a new version.

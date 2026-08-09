@@ -30,7 +30,9 @@ first. Capture every decision as it happens — a feature request usually hides 
 one (library picked, shape chosen, tradeoff accepted) and it belongs in the \
 graph even though nobody said \"remember this\". Every write's response is a \
 verdict, not a receipt: `add_note` returns {matched, created:false} on a \
-near-duplicate (merge via `update_node`), `warnings` when the text lands near \
+near-duplicate (merge via `update_node`; when SEVERAL notes state the same \
+knowledge, consolidate them with `merge_nodes` — it rehomes their edges \
+instead of stranding them), `warnings` when the text lands near \
 contradicted or superseded knowledge, and `suspects` when it queued unjudged \
 look-alike pairs — judge those immediately with `resolve_suspect` and tell \
 the user when one is a genuine contradiction; that alert is the one exception \
@@ -918,6 +920,52 @@ impl Engram {
         Ok(out)
     }
 
+    #[tool(description = "Merge duplicate notes into one survivor: unions tags \
+        and code_refs, rehomes the victims' live edges onto the survivor \
+        (deduped; self-loops and incoming replaces stay behind as the \
+        victim's story), writes a replaces edge per victim so each remains \
+        traversable as an archived generation, and stamps the survivor \
+        confirmed. Supersession, not deletion — nothing is destroyed. Use \
+        when several notes state the same knowledge; pass title/body with \
+        the merged text you composed from the parts (omitted = the \
+        survivor's text stands, which silently drops the victims' content). \
+        Refused when a victim is user-pinned — surface that to the user. \
+        Read the response like add_note's: `warnings` and `suspects` carry \
+        the same act-now duties.")]
+    async fn merge_nodes(
+        &self,
+        Parameters(a): Parameters<MergeArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if a.victims.len() > BATCH_CAP {
+            return Err(ErrorData::invalid_params(
+                format!("at most {BATCH_CAP} victims per call"),
+                None,
+            ));
+        }
+        let engine = self.engine_for(&a.project)?;
+        let outcome = self
+            .mcp(&engine)
+            .merge_nodes(&a.survivor, &a.victims, a.title, a.body, Source::Claude)
+            .map_err(map_err)?;
+        let mut out = json!({
+            "ok": true,
+            "survivor": outcome.survivor.id,
+            "merged": outcome.merged,
+        });
+        if !outcome.warnings.is_empty() {
+            out["warnings"] = json!(outcome.warnings);
+        }
+        if !outcome.missing_refs.is_empty() {
+            out["missing_code_refs"] = json!(outcome.missing_refs);
+        }
+        if !outcome.suspects.is_empty() {
+            out["suspects"] = json!(outcome.suspects);
+            out["action_required"] = json!(SUSPECT_ACTION);
+        }
+        Self::attach_canon(&mut out, &outcome.canon);
+        self.reply(&out)
+    }
+
     #[tool(
         description = "Batch update: apply several node patches in one call — \
         the bulk counterpart of update_node for curation sweeps (term renames, \
@@ -1531,6 +1579,25 @@ struct UpdateArgs {
     /// Set or correct the node's captured-at version (version tracking).
     #[serde(default)]
     version: Option<String>,
+    /// Omit = current project; name/id = that project; "home".
+    #[serde(default)]
+    project: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct MergeArgs {
+    /// The node that lives on and receives the union.
+    survivor: String,
+    /// Nodes to fold into the survivor — each ends archived behind a
+    /// replaces edge, its live edges moved to the survivor.
+    victims: Vec<String>,
+    /// Merged title, composed from the parts (omit = survivor's stands).
+    #[serde(default)]
+    title: Option<String>,
+    /// Merged body, composed from the parts (omit = survivor's stands —
+    /// the victims' bodies are NOT appended automatically).
+    #[serde(default)]
+    body: Option<String>,
     /// Omit = current project; name/id = that project; "home".
     #[serde(default)]
     project: Option<String>,

@@ -548,6 +548,37 @@ pub struct CheckedUpdate {
     pub canon: Vec<CanonVerdict>,
 }
 
+/// What `merge_nodes` did: the survivor after convergence, one entry per
+/// victim, and the same checked-update verdict set the survivor's new text
+/// earned (warnings about victims themselves are filtered — archiving them
+/// was the point).
+#[derive(Debug, Clone, Serialize)]
+pub struct MergeOutcome {
+    pub survivor: Node,
+    pub merged: Vec<MergedVictim>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<WriteWarning>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub suspects: Vec<SuspectView>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub missing_refs: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub canon: Vec<CanonVerdict>,
+}
+
+/// One victim's outcome inside a merge.
+#[derive(Debug, Clone, Serialize)]
+pub struct MergedVictim {
+    pub id: String,
+    pub title: String,
+    /// Live edges moved onto the survivor.
+    pub rehomed_edges: usize,
+    /// Live edges deliberately left on the victim: already present on the
+    /// survivor, internal to the merged set, or an incoming supersession
+    /// (part of the victim's own story).
+    pub skipped_edges: usize,
+}
+
 /// One canon node's NLI verdict on freshly-written text — the graph's
 /// same-turn answer to "does existing knowledge support or dispute this".
 /// `supports` rides plain entailment; `contradicts` is only issued inside
