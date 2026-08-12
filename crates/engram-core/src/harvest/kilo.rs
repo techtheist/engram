@@ -122,7 +122,10 @@ impl HistoryAdapter for KiloAdapter {
             if text.trim().is_empty() {
                 continue;
             }
-            let ts_ms = m.get("ts").and_then(|t| t.as_i64()).unwrap_or(last_ts * 1000);
+            let ts_ms = m
+                .get("ts")
+                .and_then(|t| t.as_i64())
+                .unwrap_or(last_ts * 1000);
             let ts = ts_ms / 1000;
             last_ts = ts;
             events.push(HistoryEvent {
@@ -152,11 +155,9 @@ fn workspace_of(ui_messages: &Path, task_id: &str) -> Option<PathBuf> {
     // ancestors: [file, <task>, tasks, kilocode.kilo-code, globalStorage]
     let global_storage = ui_messages.ancestors().nth(4)?;
     let db = global_storage.join("state.vscdb");
-    let conn = rusqlite::Connection::open_with_flags(
-        &db,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .ok()?;
+    let conn =
+        rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .ok()?;
     let raw: String = conn
         .query_row(
             "SELECT value FROM ItemTable WHERE key = ?1",

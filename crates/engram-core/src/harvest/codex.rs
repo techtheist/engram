@@ -59,10 +59,7 @@ fn read_meta(v: &serde_json::Value, meta: &mut Meta) {
             .and_then(|s| s.as_str().map(str::to_string));
     }
     if meta.cwd.is_none() {
-        meta.cwd = p
-            .get("cwd")
-            .and_then(|c| c.as_str())
-            .map(PathBuf::from);
+        meta.cwd = p.get("cwd").and_then(|c| c.as_str()).map(PathBuf::from);
     }
 }
 

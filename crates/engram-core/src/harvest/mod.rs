@@ -508,9 +508,10 @@ impl Harvester {
                 SessionCache {
                     node_id: node.id,
                     count: p("messages").and_then(|v| v.as_u64()).unwrap_or(0),
-                    last_message_id: p("last_message")
-                        .and_then(|v| v.as_str().map(str::to_string)),
-                    last_ts: p("ended").and_then(|v| v.as_i64()).unwrap_or(node.created_at),
+                    last_message_id: p("last_message").and_then(|v| v.as_str().map(str::to_string)),
+                    last_ts: p("ended")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(node.created_at),
                     titled: p("titled").and_then(|v| v.as_bool()).unwrap_or(false),
                     seen: None,
                     touched: false,

@@ -452,13 +452,10 @@ impl Engine {
                 .filter(|m| m.1 >= p.ts)
                 .filter_map(|m| m.3.as_deref())
                 .collect();
-            let best = msgs
-                .iter()
-                .filter(|m| m.2 && m.1 <= p.ts)
-                .max_by_key(|m| {
-                    let in_alive = m.3.as_deref().is_some_and(|s| alive.contains(s));
-                    (in_alive, m.1, m.0.clone())
-                });
+            let best = msgs.iter().filter(|m| m.2 && m.1 <= p.ts).max_by_key(|m| {
+                let in_alive = m.3.as_deref().is_some_and(|s| alive.contains(s));
+                (in_alive, m.1, m.0.clone())
+            });
             if let Some(m) = best {
                 edges.push((p.note_id.clone(), m.0.clone()));
             }
@@ -496,7 +493,11 @@ impl Engine {
     /// NEVER blended with curated scores (the 0.8.1 register lesson) — the
     /// caller renders these as their own labeled section. Empty when the
     /// layer is off or `search_fallthrough` gates it at the call site.
-    pub fn search_history(&self, query: &str, limit: usize) -> Result<Vec<crate::history::HistoryHit>> {
+    pub fn search_history(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::history::HistoryHit>> {
         if limit == 0 {
             return Ok(vec![]);
         }
@@ -906,7 +907,10 @@ impl Engine {
                 match crate::history::open_history_store(path) {
                     Ok(s) => *slot = Some(s),
                     Err(e) => {
-                        eprintln!("engram: couldn't open history store {}: {e}", path.display())
+                        eprintln!(
+                            "engram: couldn't open history store {}: {e}",
+                            path.display()
+                        )
                     }
                 }
             }

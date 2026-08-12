@@ -94,7 +94,11 @@ impl HistoryAdapter for OpencodeAdapter {
         let mut files = Vec::new();
         let msgs = root.join("message");
         for session in std::fs::read_dir(&msgs).into_iter().flatten().flatten() {
-            for entry in std::fs::read_dir(session.path()).into_iter().flatten().flatten() {
+            for entry in std::fs::read_dir(session.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
                 let path = entry.path();
                 if path.extension().is_some_and(|e| e == "json")
                     && path

@@ -1380,7 +1380,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             .await
             .unwrap_or_else(|e| {
                 tracing::warn!("harvest task panicked: {e}");
-                (engram_core::harvest::Harvester::first_wave(), Default::default())
+                (
+                    engram_core::harvest::Harvester::first_wave(),
+                    Default::default(),
+                )
             });
             harvester = h;
             if stats.wrote_anything() {

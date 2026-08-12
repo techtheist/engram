@@ -56,11 +56,9 @@ impl HistoryAdapter for BobAdapter {
     }
 
     fn poll(&self, path: &Path, cursor: u64) -> Result<(Vec<HistoryEvent>, u64)> {
-        let conn = rusqlite::Connection::open_with_flags(
-            path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )
-        .map_err(|e| crate::Error::Io(format!("{}: {e}", path.display())))?;
+        let conn =
+            rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|e| crate::Error::Io(format!("{}: {e}", path.display())))?;
         let mut stmt = conn
             .prepare(
                 "SELECT m.id, m.role, m.data, m.created_at,

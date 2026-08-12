@@ -94,11 +94,8 @@ pub fn cascade(cfg: &Config) -> anyhow::Result<CascadeReport> {
         );
 
         // A real sibling history store next to nothing: temp-dir tepin.
-        let dir = std::env::temp_dir().join(format!(
-            "engram-cascade-{}-{}",
-            std::process::id(),
-            size
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("engram-cascade-{}-{}", std::process::id(), size));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir)?;
         engram
@@ -140,7 +137,11 @@ pub fn cascade(cfg: &Config) -> anyhow::Result<CascadeReport> {
                     .ok_or_else(|| anyhow::anyhow!("history layer closed"))?;
                 Ok(node.id)
             };
-            mk("user", &format!("what do we know about {}?", f.subject), (i as u64 % 8) * 2)?;
+            mk(
+                "user",
+                &format!("what do we know about {}?", f.subject),
+                (i as u64 % 8) * 2,
+            )?;
             let assistant = mk(
                 "assistant",
                 &format!("{} {}", f.title, f.body),

@@ -439,9 +439,7 @@ impl Engram {
         // queried only when the calibrated verdict says the curated graph
         // likely doesn't hold the answer — a separate labeled section,
         // never interleaved, never score-blended.
-        if scope == "auto"
-            && matches!(confidence, Some("weak") | Some("none"))
-        {
+        if scope == "auto" && matches!(confidence, Some("weak") | Some("none")) {
             let guard = engine.lock().unwrap();
             if guard.config().history.search_fallthrough && guard.history_open() {
                 drop(guard);
@@ -2576,10 +2574,8 @@ pub(crate) mod tool_tests {
 
     /// A history-backed server: engine + sibling history store in a temp dir.
     fn history_server() -> (Engram, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "engram-mcp-hist-{}",
-            engram_core::id::new_id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("engram-mcp-hist-{}", engram_core::id::new_id()));
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("graph.tepin");
         let mut engine = Engine::with_store(
@@ -2650,7 +2646,10 @@ pub(crate) mod tool_tests {
         let text = text_of(&res);
         assert!(text.contains("history"), "{text}");
         assert!(text.contains("sess-42"), "{text}");
-        assert!(!text.contains("\"confidence\""), "history scope skips curated: {text}");
+        assert!(
+            !text.contains("\"confidence\""),
+            "history scope skips curated: {text}"
+        );
 
         let res = s
             .expand_history(Parameters(ExpandHistoryArgs {
@@ -2718,7 +2717,10 @@ pub(crate) mod tool_tests {
             .await
             .unwrap();
         let text = text_of(&res);
-        assert!(text.contains("sess-new") && text.contains("sess-old"), "{text}");
+        assert!(
+            text.contains("sess-new") && text.contains("sess-old"),
+            "{text}"
+        );
         assert!(
             text.find("sess-new").unwrap() < text.find("sess-old").unwrap(),
             "newest first: {text}"
@@ -2732,7 +2734,10 @@ pub(crate) mod tool_tests {
             .await
             .unwrap();
         let text = text_of(&res);
-        assert!(text.contains("sess-new") && !text.contains("sess-old"), "{text}");
+        assert!(
+            text.contains("sess-new") && !text.contains("sess-old"),
+            "{text}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -2745,7 +2750,11 @@ pub(crate) mod tool_tests {
             let engine = s.engine.lock().unwrap();
             for (i, (role, text, ts)) in [
                 ("user", "how should we cap the batch", 1_786_400_000i64),
-                ("assistant", "cap it at two — measured, not guessed", 1_786_400_010),
+                (
+                    "assistant",
+                    "cap it at two — measured, not guessed",
+                    1_786_400_010,
+                ),
             ]
             .iter()
             .enumerate()
@@ -2825,7 +2834,11 @@ pub(crate) mod tool_tests {
     #[tokio::test]
     async fn search_auto_falls_through_to_history_only_on_weak_verdicts() {
         let (s, dir) = history_server();
-        seed_history(&s, "sess-7", &[("assistant", "we pinned the embedder to fp32")]);
+        seed_history(
+            &s,
+            "sess-7",
+            &[("assistant", "we pinned the embedder to fp32")],
+        );
         // Empty curated graph: verdict "none" — the section appears.
         let res = s
             .search(Parameters(SearchArgs {
@@ -2854,7 +2867,10 @@ pub(crate) mod tool_tests {
             .await
             .unwrap();
         let text = text_of(&res);
-        assert!(!text.contains("sess-7"), "memory scope stays curated: {text}");
+        assert!(
+            !text.contains("sess-7"),
+            "memory scope stays curated: {text}"
+        );
         // The knob: search_fallthrough=false silences the section.
         {
             let engine = s.engine.lock().unwrap();
@@ -2874,7 +2890,10 @@ pub(crate) mod tool_tests {
             .await
             .unwrap();
         let text = text_of(&res);
-        assert!(!text.contains("sess-7"), "knob off = no fall-through: {text}");
+        assert!(
+            !text.contains("sess-7"),
+            "knob off = no fall-through: {text}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -3427,7 +3446,7 @@ mod push_and_params_tests {
                         limit: None,
                         project: None,
                         scope: None,
-            }))
+                    }))
                     .await
                     .unwrap(),
                 )

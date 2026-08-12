@@ -53,7 +53,11 @@ impl HistoryAdapter for ClaudeCodeAdapter {
             if !project.path().is_dir() {
                 continue;
             }
-            for entry in std::fs::read_dir(project.path()).into_iter().flatten().flatten() {
+            for entry in std::fs::read_dir(project.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
                 let path = entry.path();
                 if path.extension().is_some_and(|e| e == "jsonl") {
                     files.push(path);
@@ -91,7 +95,14 @@ impl HistoryAdapter for ClaudeCodeAdapter {
                 break; // partial tail — the writer is mid-append; next sweep
             }
             let line_end = line_start + line.len() as u64;
-            if let Some(ev) = parse_record(line, path, line_start, line_end, &fallback_session, &mut last_ts) {
+            if let Some(ev) = parse_record(
+                line,
+                path,
+                line_start,
+                line_end,
+                &fallback_session,
+                &mut last_ts,
+            ) {
                 events.push(ev);
             }
             line_start = line_end;

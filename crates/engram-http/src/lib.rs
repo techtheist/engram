@@ -342,10 +342,7 @@ fn api_router(state: Arc<AppState>) -> Router {
         .route("/config/rename-verb", post(rename_verb))
         .route("/skills/install", post(skills_install))
         .route("/refs/match", get(refs_match))
-        .route(
-            "/history",
-            get(history_stats).delete(history_reset),
-        )
+        .route("/history", get(history_stats).delete(history_reset))
         .route("/nodes/{id}/born-in", get(node_born_in))
         .route("/history/sessions", get(history_sessions))
         .route(

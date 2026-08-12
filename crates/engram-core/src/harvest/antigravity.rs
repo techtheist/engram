@@ -54,7 +54,11 @@ impl HistoryAdapter for AntigravityAdapter {
             return vec![];
         };
         let mut files = Vec::new();
-        for conv in std::fs::read_dir(root.join("brain")).into_iter().flatten().flatten() {
+        for conv in std::fs::read_dir(root.join("brain"))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
             let t = conv.path().join(".system_generated/logs/transcript.jsonl");
             if t.is_file() {
                 files.push(t);
@@ -130,9 +134,7 @@ fn parse_step(line: &[u8], last_ts: &mut i64) -> Option<(Role, String, i64, u64)
         "USER_INPUT" => (Role::User, user_request(content)?),
         // An empty PLANNER_RESPONSE is a tool-call step; prose ones carry
         // the assistant's actual reply.
-        "PLANNER_RESPONSE" if !content.trim().is_empty() => {
-            (Role::Assistant, content.to_string())
-        }
+        "PLANNER_RESPONSE" if !content.trim().is_empty() => (Role::Assistant, content.to_string()),
         _ => return None,
     };
     let ts = v

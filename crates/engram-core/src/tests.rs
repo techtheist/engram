@@ -6129,8 +6129,15 @@ fn engine_opens_history_store_beside_the_graph_and_toggles_live() {
             .id
         })
         .unwrap();
-    assert!(e.get_node(&sid).unwrap().is_none(), "curated store can't see it");
-    assert_eq!(e.graph().unwrap().0.len(), 0, "pane feed stays history-free");
+    assert!(
+        e.get_node(&sid).unwrap().is_none(),
+        "curated store can't see it"
+    );
+    assert_eq!(
+        e.graph().unwrap().0.len(),
+        0,
+        "pane feed stays history-free"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -6205,29 +6212,71 @@ fn claude_code_adapter_filters_and_cursors() {
 
     let lines = [
         // Keep: plain user prose (string content).
-        cc_record("user", "u1", "s1", &cwd, "2026-08-11T10:00:00Z",
-            serde_json::json!("how do I fix the flaky test?"), &[]),
+        cc_record(
+            "user",
+            "u1",
+            "s1",
+            &cwd,
+            "2026-08-11T10:00:00Z",
+            serde_json::json!("how do I fix the flaky test?"),
+            &[],
+        ),
         // Keep: assistant — text block only survives out of the mix.
-        cc_record("assistant", "a1", "s1", &cwd, "2026-08-11T10:00:05Z",
+        cc_record(
+            "assistant",
+            "a1",
+            "s1",
+            &cwd,
+            "2026-08-11T10:00:05Z",
             serde_json::json!([
                 {"type": "thinking", "thinking": "…"},
                 {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}},
                 {"type": "text", "text": "Run it with --nocapture."}
-            ]), &[]),
+            ]),
+            &[],
+        ),
         // Drop: tool-result echo (role user, machine traffic).
-        cc_record("user", "u2", "s1", &cwd, "2026-08-11T10:00:06Z",
+        cc_record(
+            "user",
+            "u2",
+            "s1",
+            &cwd,
+            "2026-08-11T10:00:06Z",
             serde_json::json!([{"type": "tool_result", "content": "…"}]),
-            &[("toolUseResult", serde_json::json!({"stdout": "…"}))]),
+            &[("toolUseResult", serde_json::json!({"stdout": "…"}))],
+        ),
         // Drop: sidechain (subagent) traffic.
-        cc_record("assistant", "a2", "s1", &cwd, "2026-08-11T10:00:07Z",
+        cc_record(
+            "assistant",
+            "a2",
+            "s1",
+            &cwd,
+            "2026-08-11T10:00:07Z",
             serde_json::json!([{"type": "text", "text": "subagent says"}]),
-            &[("isSidechain", serde_json::json!(true))]),
+            &[("isSidechain", serde_json::json!(true))],
+        ),
         // Drop: synthetic meta record.
-        cc_record("user", "u3", "s1", &cwd, "2026-08-11T10:00:08Z",
-            serde_json::json!("meta"), &[("isMeta", serde_json::json!(true))]),
+        cc_record(
+            "user",
+            "u3",
+            "s1",
+            &cwd,
+            "2026-08-11T10:00:08Z",
+            serde_json::json!("meta"),
+            &[("isMeta", serde_json::json!(true))],
+        ),
         // Drop: slash-command scaffolding wearing type user (live-backfill find).
-        cc_record("user", "u5", "s1", &cwd, "2026-08-11T10:00:08Z",
-            serde_json::json!("<command-name>/clear</command-name>\n<command-message>clear</command-message>"), &[]),
+        cc_record(
+            "user",
+            "u5",
+            "s1",
+            &cwd,
+            "2026-08-11T10:00:08Z",
+            serde_json::json!(
+                "<command-name>/clear</command-name>\n<command-message>clear</command-message>"
+            ),
+            &[],
+        ),
         // Drop: non-conversational record types entirely.
         r#"{"type":"file-history-snapshot","messageId":"x"}"#.to_string(),
         r#"{"type":"system","content":"…"}"#.to_string(),
@@ -6318,10 +6367,24 @@ fn harvest_sweep_end_to_end() {
     let sub = canon_root.join("frontend");
     std::fs::create_dir_all(&sub).unwrap();
     let mut body = [
-        cc_record("user", "u1", "sess-1", &sub, "2026-08-11T10:00:00Z",
-            serde_json::json!("why does the daemon leak memory?"), &[]),
-        cc_record("assistant", "a1", "sess-1", &sub, "2026-08-11T10:00:09Z",
-            serde_json::json!([{ "type": "text", "text": "The batch width is the memory." }]), &[]),
+        cc_record(
+            "user",
+            "u1",
+            "sess-1",
+            &sub,
+            "2026-08-11T10:00:00Z",
+            serde_json::json!("why does the daemon leak memory?"),
+            &[],
+        ),
+        cc_record(
+            "assistant",
+            "a1",
+            "sess-1",
+            &sub,
+            "2026-08-11T10:00:09Z",
+            serde_json::json!([{ "type": "text", "text": "The batch width is the memory." }]),
+            &[],
+        ),
     ]
     .join("\n");
     body.push('\n');
@@ -6356,12 +6419,21 @@ fn harvest_sweep_end_to_end() {
     assert_eq!(sessions[0].title, "why does the daemon leak memory?");
     let sp = sessions[0].props.as_ref().unwrap();
     assert_eq!(sp.get("messages").and_then(|v| v.as_u64()), Some(2));
-    assert_eq!(sp.get("harness").and_then(|v| v.as_str()), Some("claude-code"));
+    assert_eq!(
+        sp.get("harness").and_then(|v| v.as_str()),
+        Some("claude-code")
+    );
     // The chain: both messages `in` the session, u1 `next` a1.
     let in_edges = engine
         .with_history(|s| s.edges_in(&sessions[0].id).unwrap())
         .unwrap();
-    assert_eq!(in_edges.iter().filter(|e| e.edge_type.as_str() == "in").count(), 2);
+    assert_eq!(
+        in_edges
+            .iter()
+            .filter(|e| e.edge_type.as_str() == "in")
+            .count(),
+        2
+    );
     let user_msg = messages.iter().find(|m| m.source == Source::User).unwrap();
     let next: Vec<_> = engine
         .with_history(|s| s.edges_out(&user_msg.id).unwrap())
@@ -6440,7 +6512,9 @@ fn born_in_provenance_parks_and_resolves() {
     e.park_provenance(&note.id, base + 8);
     assert_eq!(e.resolve_provenance().unwrap(), 0, "waits for catch-up");
     assert!(
-        e.with_history(|s| s.edges_out(&note.id).unwrap()).unwrap().is_empty()
+        e.with_history(|s| s.edges_out(&note.id).unwrap())
+            .unwrap()
+            .is_empty()
     );
     // Session A continues past the note — catch-up reached. b1 (base+5) is
     // the closer preceding assistant, but session B died before the note;
@@ -6450,7 +6524,10 @@ fn born_in_provenance_parks_and_resolves() {
     let out = e.with_history(|s| s.edges_out(&note.id).unwrap()).unwrap();
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].edge_type.as_str(), VERB_BORN_IN);
-    assert_eq!(out[0].to_id, a1.id, "alive session wins over closer dead one");
+    assert_eq!(
+        out[0].to_id, a1.id,
+        "alive session wins over closer dead one"
+    );
     // The provenance handle the search hit renders.
     let born = e.born_in_of(&note.id).expect("born_in resolves");
     assert_eq!(born.message_id, a1.id);
@@ -6465,7 +6542,9 @@ fn born_in_provenance_parks_and_resolves() {
     e.park_provenance(&orphan.id, base - 100);
     assert_eq!(e.resolve_provenance().unwrap(), 0);
     assert!(
-        e.with_history(|s| s.edges_out(&orphan.id).unwrap()).unwrap().is_empty()
+        e.with_history(|s| s.edges_out(&orphan.id).unwrap())
+            .unwrap()
+            .is_empty()
     );
     // Sanity: history layer off = park is a no-op.
     let mut cfg = e.graph_config();
@@ -6647,8 +6726,11 @@ fn kilo_adapter_parses_ui_messages_and_routes_via_editor_state() {
     .unwrap();
     // The editor's global state names the task's workspace.
     let conn = rusqlite::Connection::open(storage.join("state.vscdb")).unwrap();
-    conn.execute("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)", [])
-        .unwrap();
+    conn.execute(
+        "CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)",
+        [],
+    )
+    .unwrap();
     conn.execute(
         "INSERT INTO ItemTable VALUES ('kilocode.kilo-code', ?1)",
         [serde_json::json!({
@@ -6675,7 +6757,10 @@ fn kilo_adapter_parses_ui_messages_and_routes_via_editor_state() {
     // Whole-file reparse keeps identities stable (the seen-set's contract).
     let (again, _) = adapter.poll(&file, cursor).unwrap();
     assert_eq!(
-        events.iter().map(|e| e.event_id.clone()).collect::<Vec<_>>(),
+        events
+            .iter()
+            .map(|e| e.event_id.clone())
+            .collect::<Vec<_>>(),
         again.iter().map(|e| e.event_id.clone()).collect::<Vec<_>>()
     );
 
@@ -6785,13 +6870,55 @@ fn bob_adapter_reads_the_shared_sqlite_and_cursors_by_timestamp() {
         .unwrap();
     };
     // Bob batches a flush under one created_at; _meta carries the moment.
-    insert("m1", "t1", "system", serde_json::json!({"role": "system", "content": "scaffold"}), 1_786_400_000_000);
-    insert("m2", "t1", "user", serde_json::json!({"role": "user", "content": "why does the daemon leak?", "envContext": "<environment_details>…</environment_details>"}), 1_786_400_000_000);
-    insert("m3", "t1", "assistant", serde_json::json!({"role": "assistant", "content": "", "toolCalls": [{"name": "grep"}]}), 1_786_400_000_000);
-    insert("m4", "t1", "tool", serde_json::json!({"role": "tool", "content": "grep output"}), 1_786_400_000_000);
-    insert("m5", "t1", "assistant", serde_json::json!({"role": "assistant", "content": "The batch width is the memory.", "_meta": {"timestamp": 1_786_400_009_000i64}}), 1_786_400_010_000);
-    insert("m6", "t2", "user", serde_json::json!({"role": "user", "content": "sidechain task"}), 1_786_400_011_000);
-    insert("m7", "t3", "user", serde_json::json!({"role": "user", "content": "uri-less playground"}), 1_786_400_012_000);
+    insert(
+        "m1",
+        "t1",
+        "system",
+        serde_json::json!({"role": "system", "content": "scaffold"}),
+        1_786_400_000_000,
+    );
+    insert(
+        "m2",
+        "t1",
+        "user",
+        serde_json::json!({"role": "user", "content": "why does the daemon leak?", "envContext": "<environment_details>…</environment_details>"}),
+        1_786_400_000_000,
+    );
+    insert(
+        "m3",
+        "t1",
+        "assistant",
+        serde_json::json!({"role": "assistant", "content": "", "toolCalls": [{"name": "grep"}]}),
+        1_786_400_000_000,
+    );
+    insert(
+        "m4",
+        "t1",
+        "tool",
+        serde_json::json!({"role": "tool", "content": "grep output"}),
+        1_786_400_000_000,
+    );
+    insert(
+        "m5",
+        "t1",
+        "assistant",
+        serde_json::json!({"role": "assistant", "content": "The batch width is the memory.", "_meta": {"timestamp": 1_786_400_009_000i64}}),
+        1_786_400_010_000,
+    );
+    insert(
+        "m6",
+        "t2",
+        "user",
+        serde_json::json!({"role": "user", "content": "sidechain task"}),
+        1_786_400_011_000,
+    );
+    insert(
+        "m7",
+        "t3",
+        "user",
+        serde_json::json!({"role": "user", "content": "uri-less playground"}),
+        1_786_400_012_000,
+    );
     drop(conn);
 
     let adapter = BobAdapter::with_db(db.clone());
@@ -6805,7 +6932,10 @@ fn bob_adapter_reads_the_shared_sqlite_and_cursors_by_timestamp() {
     assert_eq!(events[0].timestamp, 1_786_400_000);
     assert_eq!(events[0].project_hint, std::path::PathBuf::from("/repo"));
     assert_eq!(events[1].role, Role::Assistant);
-    assert_eq!(events[1].timestamp, 1_786_400_009, "_meta beats the flush time");
+    assert_eq!(
+        events[1].timestamp, 1_786_400_009,
+        "_meta beats the flush time"
+    );
     assert!(events.iter().all(|e| e.session_id == "t1"));
     // The cursor is the max row timestamp seen — including filtered rows.
     assert_eq!(cursor, 1_786_400_012_000);
@@ -6816,8 +6946,14 @@ fn bob_adapter_reads_the_shared_sqlite_and_cursors_by_timestamp() {
     assert_eq!(c2, cursor);
     let (replay, _) = adapter.poll(&db, 0).unwrap();
     assert_eq!(
-        replay.iter().map(|e| e.event_id.clone()).collect::<Vec<_>>(),
-        events.iter().map(|e| e.event_id.clone()).collect::<Vec<_>>()
+        replay
+            .iter()
+            .map(|e| e.event_id.clone())
+            .collect::<Vec<_>>(),
+        events
+            .iter()
+            .map(|e| e.event_id.clone())
+            .collect::<Vec<_>>()
     );
 
     std::fs::remove_dir_all(&tmp).ok();

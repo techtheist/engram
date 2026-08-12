@@ -222,7 +222,8 @@ impl Hub {
     /// The current history-reset epoch — the harvester compares this at
     /// each sweep and forgets its cursors/caches when it moved.
     pub fn history_epoch(&self) -> u64 {
-        self.history_epoch.load(std::sync::atomic::Ordering::Relaxed)
+        self.history_epoch
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Signal every harvester that history state was wiped (pane wholesale
