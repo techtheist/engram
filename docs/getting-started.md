@@ -99,6 +99,9 @@ macOS arm64, Linux x64, and Windows x64 binaries are on
 [GitHub Releases](https://github.com/techtheist/engram/releases). Intel Macs
 have no prebuilt binary (onnxruntime upstream dropped Intel-mac builds) —
 build with `cargo install --path crates/engram-cli` from a checkout instead.
+On Linux, building from source needs the D-Bus headers for the OS-keystore
+integration (the history-sealing key): `sudo apt install libdbus-1-dev
+pkg-config` or your distribution's equivalent.
 
 Installer options: `--skill relaxed|normal|aggressive` (default relaxed),
 `--bin-only` to skip repo wiring, `ENGRAM_VERSION=vX.Y.Z` to pin a version.

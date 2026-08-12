@@ -20,6 +20,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # keyring's Linux secret-service backend (the history-sealing key,
+      # 0.8.4) links libdbus at build time.
+      - name: Linux system deps
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
       - uses: oven-sh/setup-bun@v2
 
       # engram-http embeds frontend/dist at compile time (rust-embed),
