@@ -630,6 +630,7 @@ fn new_node(f: &Fact) -> NewNode {
         code_refs: f.code_refs.clone(),
         tags: vec![],
         version: None,
+        props: None,
     }
 }
 

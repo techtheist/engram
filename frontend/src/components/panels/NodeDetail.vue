@@ -9,11 +9,79 @@ import { useConfigStore } from '@/stores/config'
 import { BADGE_TIPS, explainTrust } from '@/constants/trust'
 import { api } from '@/services/api'
 import { useGraphStore } from '@/stores/graph'
-import type { EdgeType, GraphEdge, TimelineEntry } from '@/types/graph'
+import { useHistoryStore } from '@/stores/history'
+import { useLayoutStore } from '@/stores/layout'
+import type { BornIn, EdgeType, GraphEdge, TimelineEntry } from '@/types/graph'
 
 const store = useGraphStore()
 const config = useConfigStore()
 const { selected, detailOpen, nodes, edgeList, driftByNode } = storeToRefs(store)
+
+// --- born-in provenance (0.8.4): the history chip -------------------------
+
+const historyStore = useHistoryStore()
+const layout = useLayoutStore()
+const bornIn = ref<BornIn | null>(null)
+
+watch(
+    () => selected.value?.id,
+    async (id) => {
+        bornIn.value = null
+        if (!id) return
+        try {
+            bornIn.value = (await api.bornIn(id)).born_in
+        } catch {
+            bornIn.value = null
+        }
+        // Pre-history notes have no born-in edge; the time-window fallback
+        // below needs the session lanes to match against.
+        if (!bornIn.value && !historyStore.sessions.length) {
+            void historyStore.load()
+        }
+    },
+    { immediate: true },
+)
+
+/**
+ * The recorded session a pre-history note most plausibly belongs to: its
+ * capture time falls inside (or hugs) a session's window. An approximation,
+ * offered only within tight slack — a wrong-looking guess is worse than a
+ * plain chip.
+ */
+const timeSession = computed(() => {
+    if (bornIn.value || !selected.value) return null
+    const t = selected.value.created_at
+    let best: { session: string; gap: number } | null = null
+    for (const s of historyStore.sessions) {
+        const end = s.ended ?? s.started
+        if (t < s.started - 600 || t > end + 3600) continue
+        const gap = t < s.started ? s.started - t : t > end ? t - end : 0
+        if (!best || gap < best.gap) best = { session: s.session, gap }
+    }
+    return best?.session ?? null
+})
+
+/** Jump into the history view: exact birth exchange when born-in exists,
+ *  else the session recorded around the note's capture time. */
+function openBirth(): void {
+    const jump = (session: string, turn: number | null, ts: number | null): void => {
+        layout.setView('history')
+        void historyStore.open(session, turn, ts)
+        // Narrow mode (phone / IDE side pane): the drawer takes the whole
+        // width, so left open it would cover the very exchange it linked to.
+        if (window.matchMedia('(max-width: 719px)').matches) {
+            store.select(null)
+        }
+    }
+    const b = bornIn.value
+    if (b) {
+        jump(b.session, b.turn ?? null, null)
+        return
+    }
+    if (timeSession.value && selected.value) {
+        jump(timeSession.value, null, selected.value.created_at)
+    }
+}
 
 /** Code refs of this node that no longer exist in the project (drifted). */
 const missingRefs = computed(() =>
@@ -375,9 +443,32 @@ function close(): void {
             <h3 class="block-title">Provenance</h3>
             <dl class="meta">
                 <div><dt>Created</dt><dd>{{ fmtDate(selected.created_at) }} · by {{ selected.source }}</dd></div>
-                <div v-if="selected.session_id">
+                <!-- Not every note has an mcp session (pane/HTTP writes carry
+                     none) — but born-in provenance can still exist, so the
+                     row shows whenever there is anything to link or say. -->
+                <div v-if="selected.session_id || bornIn || timeSession">
                     <dt>Session</dt>
-                    <dd><span class="session-chip">{{ selected.session_id }}</span></dd>
+                    <dd>
+                        <button
+                            v-if="bornIn"
+                            class="session-chip session-link"
+                            type="button"
+                            title="This note was captured during a recorded session — open the exact exchange in the history view"
+                            @click="openBirth"
+                        >
+                            {{ selected.session_id ?? 'recorded session' }} ⤴
+                        </button>
+                        <button
+                            v-else-if="timeSession"
+                            class="session-chip session-link"
+                            type="button"
+                            title="No exact record for this note — open the session recorded around its capture time"
+                            @click="openBirth"
+                        >
+                            {{ selected.session_id ?? 'recorded session' }} ≈⤴
+                        </button>
+                        <span v-else class="session-chip">{{ selected.session_id }}</span>
+                    </dd>
                 </div>
                 <div v-if="selected.last_seen != null" :title="BADGE_TIPS.lastSeen">
                     <dt>Last retrieved</dt><dd>{{ fmtDate(selected.last_seen) }}</dd>
@@ -932,6 +1023,18 @@ function close(): void {
     overflow-x: auto;
     white-space: nowrap;
     vertical-align: bottom;
+}
+
+/* Provenance-backed sessions are a door, not a label. */
+.session-link {
+    border: none;
+    color: var(--interactive-primary, #38bdf8);
+    font-size: inherit;
+    cursor: pointer;
+}
+
+.session-link:hover {
+    text-decoration: underline;
 }
 
 .actions {

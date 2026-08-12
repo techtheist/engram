@@ -5,12 +5,13 @@ import SegmentedControl from '@/components/common/SegmentedControl.vue'
 import SidePanel from '@/components/common/SidePanel.vue'
 import StepperInput from '@/components/common/StepperInput.vue'
 import ToggleChip from '@/components/common/ToggleChip.vue'
+import ToggleSwitch from '@/components/common/ToggleSwitch.vue'
 import { useGraphSettings } from '@/composables/useGraphSettings'
 import { humanDays, pct } from '@/constants/trust'
 import { useConfigStore } from '@/stores/config'
 import { useGraphStore } from '@/stores/graph'
 import { api } from '@/services/api'
-import type { Durability, GraphConfig, TypeDef, VerbDef } from '@/types/graph'
+import type { Durability, GraphConfig, HistoryStatus, TypeDef, VerbDef } from '@/types/graph'
 
 /**
  * Settings → Graph settings: the ontology redactor (PLAN §7D stage 4).
@@ -47,8 +48,71 @@ watch(open, (isOpen) => {
             .then(resetDraft)
             .catch((e) => (error.value = e instanceof Error ? e.message : String(e)))
         void loadVersion()
+        void loadHistory()
     }
 })
+
+// ---- session history (0.8.4) ----------------------------------------------
+
+const historyStatus = ref<HistoryStatus | null>(null)
+
+async function loadHistory(): Promise<void> {
+    try {
+        historyStatus.value = await api.historyStatus()
+    } catch {
+        historyStatus.value = null
+    }
+}
+
+/** The exclude-path editor lives behind a button, in a small modal —
+ *  one absolute path per line. Edits land in the draft; Save persists. */
+const showExcludeEditor = ref(false)
+const excludePathsText = computed({
+    get: () => draft.value?.history.exclude_paths.join('\n') ?? '',
+    set: (text: string) => {
+        if (!draft.value) return
+        draft.value.history.exclude_paths = text
+            .split('\n')
+            .map((l) => l.trim())
+            .filter((l) => l.length > 0)
+    },
+})
+
+// The main agent roster (harness.rs AGENTS), one toggle each.
+const HARNESS_LABELS: Array<{ key: keyof GraphConfig['history']['harnesses']; label: string }> = [
+    { key: 'claude_code', label: 'Claude Code' },
+    { key: 'codex', label: 'Codex' },
+    { key: 'opencode', label: 'opencode' },
+    { key: 'kilo', label: 'Kilo' },
+    { key: 'gemini', label: 'Gemini CLI' },
+    { key: 'antigravity', label: 'Antigravity' },
+    { key: 'bob', label: 'Bob' },
+]
+
+/** Wholesale delete: user-only, like curated hard delete. */
+async function wipeHistory(): Promise<void> {
+    const n = historyStatus.value?.stats?.nodes ?? 0
+    if (
+        !window.confirm(
+            `Delete this project's recorded session history${n ? ` (${n} nodes)` : ''}? ` +
+                'The curated graph is untouched. Transcripts on disk are re-indexed ' +
+                'from scratch only while harvesting stays enabled. This cannot be undone.',
+        )
+    ) {
+        return
+    }
+    busy.value = true
+    error.value = null
+    try {
+        await api.historyReset()
+        await loadHistory()
+        flash('Session history wiped — the store re-seeds empty.')
+    } catch (e) {
+        error.value = shortHttpError(e)
+    } finally {
+        busy.value = false
+    }
+}
 
 const dirty = computed(
     () =>
@@ -719,6 +783,96 @@ const kneeCliff = computed({
         </section>
 
         <section class="block">
+            <h3 class="block-title">Session history</h3>
+            <p class="hint">
+                Opt-in: when recording is on, the daemon indexes your coding-assistant
+                conversations into a separate store, sealed at rest — searchable only as
+                a labeled fall-through when curated memory likely doesn't hold the
+                answer, and browsable in the history view. It never mixes with the
+                curated graph. Sealing keeps a key in your OS keystore, so macOS may ask
+                for keychain access when it starts.
+            </p>
+            <div class="switch-rows">
+                <ToggleSwitch
+                    v-model="draft.history.enabled"
+                    label="Record sessions"
+                    title="Harvest this project's transcripts into the history layer; off = the store closes and the backlog waits"
+                />
+                <ToggleSwitch
+                    v-model="draft.history.search_fallthrough"
+                    :disabled="!draft.history.enabled"
+                    label="History in search"
+                    title="Allow recorded dialogue to appear as the labeled fall-through section when the confidence verdict says the answer is likely not in curated memory"
+                />
+                <span class="check">(save to apply)</span>
+            </div>
+            <div v-if="draft.history.enabled" class="checks">
+                <span class="check">record from:</span>
+                <ToggleChip
+                    v-for="h in HARNESS_LABELS"
+                    :key="h.key"
+                    v-model="draft.history.harnesses[h.key]"
+                    :label="h.label"
+                    :title="`Ingest ${h.label} transcripts`"
+                />
+            </div>
+            <div v-if="draft.history.enabled" class="skill-row">
+                <button class="mini" type="button" @click="showExcludeEditor = true">
+                    Set ignored paths…
+                </button>
+                <span class="check">
+                    {{ draft.history.exclude_paths.length || 'no' }} path{{
+                        draft.history.exclude_paths.length === 1 ? '' : 's'
+                    }} excluded
+                </span>
+            </div>
+            <p v-if="historyStatus" class="hint">
+                <template v-if="historyStatus.stats">
+                    Recorded so far: {{ historyStatus.stats.nodes }} nodes
+                    ({{ historyStatus.stats.embedded }} embedded) in
+                    <span class="mono">.engram/history.tepin</span>.
+                </template>
+                <template v-else-if="!historyStatus.open">
+                    The history store is closed{{ historyStatus.enabled ? ' (opening on next write)' : ' — recording is off' }}.
+                </template>
+            </p>
+            <div class="skill-row">
+                <button class="mini danger" type="button" :disabled="busy" @click="wipeHistory">
+                    Delete all history
+                </button>
+                <span class="check">removes history.tepin — curated memory is untouched</span>
+            </div>
+            <Teleport to="body">
+                <div
+                    v-if="showExcludeEditor && draft"
+                    class="modal-backdrop"
+                    @click.self="showExcludeEditor = false"
+                >
+                    <div class="modal glass-panel" role="dialog" aria-label="Ignored paths">
+                        <h4 class="modal-title">Ignored paths</h4>
+                        <p class="hint">
+                            The harvester never reads these — one absolute path per line, a
+                            file or a whole directory. Deleting a recorded session adds its
+                            transcript here automatically. Save the settings to apply.
+                        </p>
+                        <textarea
+                            v-model="excludePathsText"
+                            class="edit-input grow"
+                            rows="8"
+                            placeholder="/Users/you/private-repo"
+                            aria-label="History exclude paths"
+                        />
+                        <div class="modal-actions">
+                            <button class="mini" type="button" @click="showExcludeEditor = false">
+                                Done
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </Teleport>
+        </section>
+
+        <section class="block">
             <h3 class="block-title">Assistant skill</h3>
             <p class="hint">
                 The capture skill teaches the assistant this graph's vocabulary.
@@ -984,5 +1138,43 @@ const kneeCliff = computed({
 
 .mono {
     font-family: var(--font-mono);
+}
+/* Session history: the group togglers as switch rows, the path editor as a
+   small modal instead of an always-there textarea. */
+.switch-rows {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+    align-items: center;
+}
+
+.modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgb(0 0 0 / 45%);
+}
+
+.modal {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: min(560px, calc(100vw - 48px));
+    padding: 16px 18px;
+    border-radius: 12px;
+}
+
+.modal-title {
+    margin: 0;
+    font-size: var(--text-body);
+    font-weight: 600;
+}
+
+.modal-actions {
+    display: flex;
+    justify-content: flex-end;
 }
 </style>

@@ -53,6 +53,11 @@ OPTIONS:
     --rerank-full         rerank on title + FULL note body instead of the
                           keyword-window snippet (research candidate; works
                           under any mode's engram arm)
+    --cascade             0.8.4 history fall-through bench: false fall-through
+                          rate on curated-answerable queries (+ the noise a
+                          router mistake drags in), and dialogue-only recall
+                          split into router (verdict fired), pipeline (gold
+                          message in top-k) and end-to-end
     --posttune            measure the SHIPPED post-tune stack end to end at
                           each size: knee trim on, weak line calibrated by
                           auto-tune's phantom-probe dial, FP scored under the
@@ -155,6 +160,7 @@ fn cli() -> anyhow::Result<()> {
     let mut tricks_mode = false;
     let mut qpp_mode = false;
     let mut posttune_mode = false;
+    let mut cascade_mode = false;
     let mut budget_mode = false;
     let mut sweep_mode = false;
     let mut bench_mode = false;
@@ -205,6 +211,7 @@ fn cli() -> anyhow::Result<()> {
             "--tricks" => tricks_mode = true,
             "--qpp" => qpp_mode = true,
             "--posttune" => posttune_mode = true,
+            "--cascade" => cascade_mode = true,
             "--rerank-full" => cfg.rerank_full = true,
             "--budget" => budget_mode = true,
             "--sweep" => sweep_mode = true,
@@ -288,6 +295,15 @@ fn cli() -> anyhow::Result<()> {
     if qpp_mode {
         let report = engram_eval::run::qpp(&cfg)?;
         print_qpp(&report);
+        if let Some(path) = json_out {
+            std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
+            println!("\nwrote {path}");
+        }
+        return Ok(());
+    }
+    if cascade_mode {
+        let report = engram_eval::cascade::cascade(&cfg)?;
+        print_cascade(&report);
         if let Some(path) = json_out {
             std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
             println!("\nwrote {path}");
@@ -1406,4 +1422,33 @@ fn print_report(r: &Report) {
          whose answer was reachable ONLY through a neighbour — engram-full minus\n\
          engram-hybrid is what the edges bought."
     );
+}
+
+fn print_cascade(r: &engram_eval::cascade::CascadeReport) {
+    println!("cascade bench — history fall-through (0.8.4)");
+    println!(
+        "embedder {} | reranker {} | seed {} | limit {}",
+        r.embedder, r.reranker, r.seed, r.limit
+    );
+    if r.embeddings_are_fake {
+        println!("!! fake embeddings — numbers are plumbing checks, not receipts");
+    }
+    for s in &r.sizes {
+        println!(
+            "\ngraph {} + {} dialogue-only facts (weak line {:.3})",
+            s.graph, s.dialogue_facts, s.weak_line
+        );
+        println!(
+            "  router  false fall-through {:.3} over {} curated questions (noise ride-along {:.3})",
+            s.false_fallthrough, s.curated_questions, s.fallthrough_noise
+        );
+        println!(
+            "  router  fired {:.3} / missed-strong {:.3} over {} dialogue-only questions",
+            s.fired, s.missed_strong, s.history_questions
+        );
+        println!(
+            "  pipeline recall@k {:.3} (oblique {:.3}) | end-to-end {:.3}",
+            s.history_recall_at_k, s.history_oblique_recall, s.end_to_end
+        );
+    }
 }

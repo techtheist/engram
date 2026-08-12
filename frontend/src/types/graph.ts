@@ -454,11 +454,83 @@ export interface BriefConfig {
     ontology: BriefToggle
 }
 
+/** Per-harness ingestion switches for the history layer (0.8.4). */
+export interface HarnessToggles {
+    claude_code: boolean
+    codex: boolean
+    gemini: boolean
+    opencode: boolean
+    kilo: boolean
+    antigravity: boolean
+    /** IBM Bob — one switch for both surfaces (IDE + BobShell). */
+    bob: boolean
+}
+
+/** The history layer's knobs — every one a pane gesture. */
+export interface HistoryConfig {
+    enabled: boolean
+    harnesses: HarnessToggles
+    exclude_paths: string[]
+    /** May history answer as the sectioned search fall-through. */
+    search_fallthrough: boolean
+}
+
+/** One recorded session (GET /history/sessions). */
+export interface HistorySession {
+    node_id: string
+    session: string
+    title: string
+    harness?: string
+    started: number
+    ended?: number
+    messages: number
+    version?: string
+}
+
+/** One recorded turn (GET /history/sessions/{sid}). */
+export interface HistoryMessage {
+    message_id: string
+    role: string
+    turn?: number
+    timestamp: number
+    text: string
+}
+
+/** One history-layer search hit (GET /search?scope=history). */
+export interface HistoryHit {
+    message_id: string
+    session: string
+    session_title: string
+    harness?: string
+    role: string
+    turn?: number
+    timestamp: number
+    snippet: string
+    score: number
+}
+
+/** Where a curated node was born (GET /nodes/{id}/born-in). */
+export interface BornIn {
+    session: string
+    message_id: string
+    timestamp: number
+    turn?: number
+}
+
+/** GET /history — the settings section's status line. */
+export interface HistoryStatus {
+    enabled: boolean
+    open: boolean
+    search_fallthrough: boolean
+    stats: { backend: string; nodes: number; edges: number; embedded: number } | null
+}
+
 export interface GraphConfig {
     ontology: OntologyConfig
     policy: PolicyConfig
     brief: BriefConfig
     versioning: { enabled: boolean }
+    history: HistoryConfig
 }
 
 /** One curated ontology template (GET /config/presets). */

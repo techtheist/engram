@@ -1,0 +1,37 @@
+{
+  "embedder": "bge-small-en-v1.5",
+  "reranker": "jina-reranker-v1-turbo-en",
+  "embeddings_are_fake": false,
+  "seed": 1,
+  "limit": 10,
+  "sizes": [
+    {
+      "graph": 300,
+      "dialogue_facts": 40,
+      "weak_line": 0.85,
+      "curated_questions": 171,
+      "false_fallthrough": 0.45614035087719296,
+      "fallthrough_noise": 1.0,
+      "history_questions": 69,
+      "fired": 0.9710144927536232,
+      "missed_strong": 0.028985507246376812,
+      "history_recall_at_k": 0.8507462686567164,
+      "history_oblique_recall": 0.5652173913043478,
+      "end_to_end": 0.8260869565217391
+    },
+    {
+      "graph": 1500,
+      "dialogue_facts": 40,
+      "weak_line": 0.898268289229152,
+      "curated_questions": 858,
+      "false_fallthrough": 0.46736596736596736,
+      "fallthrough_noise": 1.0,
+      "history_questions": 69,
+      "fired": 0.9855072463768116,
+      "missed_strong": 0.014492753623188406,
+      "history_recall_at_k": 0.8529411764705882,
+      "history_oblique_recall": 0.5652173913043478,
+      "end_to_end": 0.8405797101449275
+    }
+  ]
+}

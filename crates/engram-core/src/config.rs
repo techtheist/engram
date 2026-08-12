@@ -34,6 +34,83 @@ pub struct GraphConfig {
     pub brief: BriefConfig,
     #[serde(default)]
     pub versioning: VersioningConfig,
+    #[serde(default)]
+    pub history: HistoryConfig,
+}
+
+/// The history layer (0.8.4): the daemon harvests coding-assistant chat
+/// transcripts into a sibling `history.tepin` store. Every knob here is a
+/// pane gesture (Settings → History). Recording is OPT-IN: sealing keys live
+/// in the OS keystore (a keychain prompt on macOS), so the layer starts only
+/// on an explicit user gesture — the history view offers the switch with a
+/// description of what turning it on means.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HistoryConfig {
+    /// Master switch: harvest this project's sessions at all. Off by
+    /// default — enabling is the user's gesture (pane).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Per-harness ingestion switches — a harness the user turns off is
+    /// skipped by the harvester even when its transcripts are discovered.
+    #[serde(default)]
+    pub harnesses: HarnessToggles,
+    /// Absolute paths (files or directories) the harvester must never read,
+    /// on top of the harness toggles.
+    #[serde(default)]
+    pub exclude_paths: Vec<String>,
+    /// May history answer as the sectioned search fall-through. Off = history
+    /// is ingested and browsable but never surfaces in `search`.
+    #[serde(default = "default_true")]
+    pub search_fallthrough: bool,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            harnesses: HarnessToggles::default(),
+            exclude_paths: Vec::new(),
+            search_fallthrough: true,
+        }
+    }
+}
+
+/// One switch per harness, aligned with the main agent roster
+/// ([`crate::harness::AGENTS`]): claude, codex, gemini-cli, opencode, kilo,
+/// antigravity. All on by default once recording is enabled; a later-wave
+/// harness gets a field here when its adapter lands.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HarnessToggles {
+    #[serde(default = "default_true")]
+    pub claude_code: bool,
+    #[serde(default = "default_true")]
+    pub codex: bool,
+    #[serde(default = "default_true")]
+    pub gemini: bool,
+    #[serde(default = "default_true")]
+    pub opencode: bool,
+    #[serde(default = "default_true")]
+    pub kilo: bool,
+    #[serde(default = "default_true")]
+    pub antigravity: bool,
+    /// IBM Bob — one switch for both surfaces (IDE + BobShell), which share
+    /// one on-disk store.
+    #[serde(default = "default_true")]
+    pub bob: bool,
+}
+
+impl Default for HarnessToggles {
+    fn default() -> Self {
+        Self {
+            claude_code: true,
+            codex: true,
+            gemini: true,
+            opencode: true,
+            kilo: true,
+            antigravity: true,
+            bob: true,
+        }
+    }
 }
 
 /// Version tracking (0.7.0): when enabled, the graph carries a CURRENT
@@ -424,7 +501,7 @@ fn default_true() -> bool {
     true
 }
 
-fn tdef(
+pub(crate) fn tdef(
     name: &str,
     hue: u16,
     thought: &str,
@@ -442,7 +519,7 @@ fn tdef(
     }
 }
 
-fn vdef(name: &str, reads_as: &str, roles: VerbRoles) -> VerbDef {
+pub(crate) fn vdef(name: &str, reads_as: &str, roles: VerbRoles) -> VerbDef {
     VerbDef {
         name: name.into(),
         reads_as: reads_as.into(),
@@ -450,7 +527,7 @@ fn vdef(name: &str, reads_as: &str, roles: VerbRoles) -> VerbDef {
     }
 }
 
-fn hidden_brief() -> BriefSection {
+pub(crate) fn hidden_brief() -> BriefSection {
     BriefSection {
         show: false,
         cap: 8,
@@ -1150,6 +1227,12 @@ impl GraphConfig {
         validate_section(&b.recent, "brief.recent")?;
         validate_section(&b.open, "brief.open")?;
         validate_section(&b.handoff, "brief.handoff")?;
+
+        for p in &self.history.exclude_paths {
+            if p.trim().is_empty() {
+                return fail("history.exclude_paths contains an empty entry".into());
+            }
+        }
         Ok(())
     }
 }

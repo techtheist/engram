@@ -3,6 +3,74 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
+## v0.8.4
+
+### The history layer — your coding sessions become memory's footnotes
+
+The daemon can now record coding-assistant conversations into a hidden,
+**encrypted** per-project history layer, cross-linked to curated memory and
+searchable only as a labeled fall-through behind it. Curated memory stays the
+answer; history is its footnotes and its escape hatch. Recording is
+**opt-in** — the history view explains what turning it on does and offers
+the switch.
+
+- **The harvester** tails transcripts on a 60-second sweep
+  (`ENGRAM_HARVEST_INTERVAL`), first tick at startup — months of existing
+  sessions appear retroactively. Seven adapters, one per harness of the main
+  agent roster: **Claude Code** (JSONL, the richest), **Codex CLI** (streamed
+  line-by-line — 700 MB rollouts never slurped), **Gemini CLI**, **opencode**,
+  **Kilo Code** (the VS Code extension's task storage), **Antigravity**
+  (the CLI's brain transcripts, format verified live), **IBM Bob** (one
+  SQLite serves the IDE and BobShell, so one toggle covers both; format
+  verified live against a Bob IDE install). Only
+  user text and assistant prose survive: tool traffic, thinking blocks,
+  subagent sidechains and harness scaffolding are dropped at parse level,
+  and every message keeps a `raw_ref` back into the original transcript.
+  Routing follows the cwd each harness recorded (longest registered root
+  wins); sessions of unregistered projects are skipped, not hoarded.
+- **A sibling store, not a filter.** History lives in
+  `.engram/history.tepin` beside the curated graph — search, brief, drift,
+  decay, suspects and the graph pane structurally cannot see it. Session and
+  Message nodes (a chat ontology, outside the default 8 types) chain with
+  `next`, carry no trust and never decay: they're records, not knowledge.
+- **Sealed at rest.** Message and session text is zstd-compressed then
+  encrypted (XChaCha20-Poly1305) under a per-machine key in the OS keystore
+  (file fallback for headless; `ENGRAM_KEYRING=off`). Stored text measures
+  ~0.25× its raw size; decrypting a full candidate set costs ~0.2 ms.
+  Structure, timestamps and embedding vectors stay open — the threat model
+  is stated honestly in SECURITY.md (protects copied files, backups, other
+  users; not same-user malware).
+- **Sectioned search, never blended.** `search` grew
+  `scope: auto | memory | history`. On `auto`, history is queried only when
+  the calibrated verdict says the answer is likely not in curated memory,
+  and appears as its own labeled section — snippets plus handles. The section
+  is gated on its top hit clearing the calibrated delivery floor: an
+  all-noise section vanishes, a section with any real match keeps its full
+  candidate list (measured against per-hit trimming, which cost 0.09 oblique
+  dialogue recall for the same noise reduction). The new `expand_history`
+  tool returns the surrounding exchange, and `list_sessions` browses the
+  recordings (newest first, per-harness filter) when no search hit points
+  the way; the model decides how much raw dialogue to spend context on. Measured before shipping (`--cascade`, the
+  new bench): the router fires on 97–99% of dialogue-only questions and
+  end-to-end recall of facts that exist only in conversation is 0.83–0.84
+  at sizes 100/500.
+- **born-in provenance, both directions.** Notes captured over MCP link to
+  the exchange they were born in (resolved by the harvester's parking lot —
+  closest preceding assistant message, alive sessions preferred). Search
+  hits and `get_node` carry a `born_in` handle; `expand_history` returns the
+  reverse — `notes`, every curated note born during that session — and the
+  node drawer's Session field jumps into the history view centered on the
+  birth exchange.
+- **The pane owns every knob.** A third **History** view (session lanes; the
+  conversation zigzags user-left / assistant-right down a time axis), a
+  Settings section with the group switches (record sessions / history in
+  search), per-harness toggles, an ignored-paths editor and the search
+  fall-through knob, per-session delete (which also excludes that transcript
+  from re-indexing), wholesale delete (`history.tepin` removed, cursors
+  reset), and live stats. Recording is **off by default**: the sealing key
+  lives in the OS keystore (a keychain prompt on macOS), so the layer starts
+  only on the user's own gesture — from the history view or settings.
+
 ## v0.8.3
 
 ### The default embedder is pinned to fp32 — the shipped weights now match the measured ones

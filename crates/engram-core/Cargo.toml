@@ -21,6 +21,12 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 getrandom = "0.4"
 sqlite-vec = "0.1.9"
+# History layer at-rest sealing (0.8.4): zstd-then-XChaCha20-Poly1305 over
+# message bodies/titles, key in the OS keystore (file fallback for headless).
+zstd = "0.13"
+chacha20poly1305 = "0.10"
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+base64 = "0.22"
 fastembed = { version = "5.17.2", optional = true }
 # The NLI layer runs on the same ONNX/tokenizer stack fastembed already
 # links — versions pinned to fastembed 5.17.2's own, so one runtime is built.

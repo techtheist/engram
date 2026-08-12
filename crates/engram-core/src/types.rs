@@ -200,6 +200,11 @@ pub struct Node {
     /// version-less.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    /// Layer-specific extension bag (0.8.4 history layer): harness, role,
+    /// turn order and raw_ref on history Messages/Sessions. The curated
+    /// ontology never writes it, and no default surface reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub props: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl Node {
@@ -243,6 +248,10 @@ pub struct NewNode {
     /// current working version when tracking is on.
     #[serde(default)]
     pub version: Option<String>,
+    /// Layer-specific extension bag — see [`Node::props`]. Not exposed over
+    /// MCP; only the history harvester writes it.
+    #[serde(default)]
+    pub props: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

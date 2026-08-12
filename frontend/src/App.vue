@@ -4,6 +4,7 @@ import { onClickOutside } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import FeedView from '@/components/FeedView.vue'
 import GraphCanvas from '@/components/GraphCanvas.vue'
+import HistoryView from '@/components/HistoryView.vue'
 import EmptyGraph from '@/components/common/EmptyGraph.vue'
 import EngramMark from '@/components/common/EngramMark.vue'
 import SegmentedControl from '@/components/common/SegmentedControl.vue'
@@ -13,6 +14,7 @@ import ConfigPanel from '@/components/panels/ConfigPanel.vue'
 import SearchBar from '@/components/panels/SearchBar.vue'
 import FilterMenu from '@/components/panels/FilterMenu.vue'
 import HealthStrip from '@/components/panels/HealthStrip.vue'
+import HistoryNotice from '@/components/panels/HistoryNotice.vue'
 import MemoryLensPanel from '@/components/panels/MemoryLensPanel.vue'
 import NodeCreatePanel from '@/components/panels/NodeCreatePanel.vue'
 import NodeDetail from '@/components/panels/NodeDetail.vue'
@@ -36,6 +38,7 @@ const { loading, error, connected, nodeList } = storeToRefs(store)
 const VIEW_OPTIONS = [
     { value: 'graph', label: 'Graph' },
     { value: 'feed', label: 'Feed' },
+    { value: 'history', label: 'History' },
 ]
 
 useGraphSync() // poll-reconcile cross-process writes, but only while the user is active
@@ -81,6 +84,7 @@ onBeforeUnmount(() => store.disconnect())
          graph screen). -->
     <GraphCanvas v-show="layout.view === 'graph'" class="canvas-layer" />
     <FeedView v-if="layout.view === 'feed'" />
+    <HistoryView v-if="layout.view === 'history'" />
 
     <header class="topbar">
         <div class="brand">
@@ -140,6 +144,7 @@ onBeforeUnmount(() => store.disconnect())
     <!-- Graph view only: the feed's bottom row belongs to the action bar,
          and the strip earned no other home there. -->
     <HealthStrip v-if="layout.view === 'graph'" />
+    <HistoryNotice />
 
     <Transition name="fade">
         <div v-if="loading" class="overlay glass-panel">Loading memory…</div>
@@ -324,6 +329,28 @@ onBeforeUnmount(() => store.disconnect())
 @media (width <= 400px) {
     .brand .brand-chip,
     .brand .switcher-root {
+        display: none;
+    }
+
+    /* Everything shrinks so the settings gear never falls off the edge —
+       it is the only path to Settings. */
+    .topbar {
+        left: 0.8rem;
+        right: 0.8rem;
+    }
+
+    .topbar-actions {
+        gap: 0.4rem;
+    }
+
+    .topbar-actions :deep(.segment) {
+        padding: 0.35rem 0.7rem;
+    }
+}
+
+/* Phone-narrow (300px pane): the view switch, burger and gear ARE the bar. */
+@media (width <= 360px) {
+    .brand {
         display: none;
     }
 }

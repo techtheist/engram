@@ -29,7 +29,7 @@ const STORAGE_KEY = 'engram.layout'
 const DEFAULT_LAYOUT: LayoutMode = 'skyline'
 
 /** The two screens: the spatial graph canvas, or the vertical card feed. */
-export type ViewMode = 'graph' | 'feed'
+export type ViewMode = 'graph' | 'feed' | 'history'
 const VIEW_KEY = 'engram.view'
 
 function initialLayout(): LayoutMode {

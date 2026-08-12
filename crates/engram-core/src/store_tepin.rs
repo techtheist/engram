@@ -336,6 +336,7 @@ impl Store for TepinStore {
             code_refs: n.code_refs,
             tags: normalize_tags(&n.tags),
             version: n.version,
+            props: n.props,
         };
         self.write_node(&node, false)?;
         self.get_node(&id)?.ok_or(Error::NotFound(id))

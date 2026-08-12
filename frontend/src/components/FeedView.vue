@@ -730,7 +730,7 @@ const currentNode = computed(() =>
     overflow: hidden auto;
 
     /* Room so the first/last card can center, with neighbors peeking. */
-    padding: 30vh 1.6rem;
+    padding: 40vh 1.6rem;
     scroll-padding-block: 22vh;
 
     /* Gentle centering — proximity, so free scrolling still feels free. */

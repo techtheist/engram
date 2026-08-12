@@ -50,7 +50,15 @@ static CANDIDATE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[A-Za-z0-9+/=_-]{24,}").expect("static candidate pattern"));
 
 /// Scrub a single field. Idempotent: running it twice yields the same output.
+///
+/// Sealed history blobs pass untouched: they're base64 ciphertext, which the
+/// entropy fallback would otherwise eat as a "secret" — and their plaintext
+/// was scrubbed BEFORE sealing (Engine::add_history_node), so there is
+/// nothing left here to find.
 pub fn scrub(text: &str) -> String {
+    if text.starts_with(crate::history::SEAL_PREFIX) {
+        return text.to_string();
+    }
     let mut out = text.to_string();
     for re in WHOLE.iter() {
         out = re.replace_all(&out, MASK).into_owned();

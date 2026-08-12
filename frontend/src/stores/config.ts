@@ -135,8 +135,34 @@ export const useConfigStore = defineStore('config', () => {
 
     // ---- lifecycle -------------------------------------------------------
 
+    /** A config from an older daemon (or the demo seed) predates the history
+     *  section — fill the shipped defaults so the panel always has knobs. */
+    function withHistoryDefaults(c: GraphConfig): GraphConfig {
+        // Recording is opt-in (0.8.4): a document without the section reads
+        // as disabled, with every harness pre-checked for the enable gesture.
+        c.history ??= {
+            enabled: false,
+            harnesses: {
+                claude_code: true,
+                codex: true,
+                gemini: true,
+                opencode: true,
+                kilo: true,
+                antigravity: true,
+                bob: true,
+            },
+            exclude_paths: [],
+            search_fallthrough: true,
+        }
+        // Documents saved before the roster grew: new harnesses default on.
+        c.history.harnesses.kilo ??= true
+        c.history.harnesses.antigravity ??= true
+        c.history.harnesses.bob ??= true
+        return c
+    }
+
     async function load(): Promise<void> {
-        cfg.value = await api.config()
+        cfg.value = withHistoryDefaults(await api.config())
         injectCss()
     }
 
@@ -146,7 +172,7 @@ export const useConfigStore = defineStore('config', () => {
 
     /** PUT the whole document; the backend validates the hard invariants. */
     async function save(next: GraphConfig): Promise<void> {
-        cfg.value = await api.putConfig(next)
+        cfg.value = withHistoryDefaults(await api.putConfig(next))
         injectCss()
     }
 

@@ -1,1 +1,311 @@
-{"ontology":{"preset":"custom","types":[{"name":"Principle","hue":258,"thought":"this is how I like things / what I value","durability":"stable","roles":{"worklist":false,"anchor":false,"rank_prior":0.025,"highlight":true,"versioned":true},"brief":{"show":true,"cap":8,"excerpt":140}},{"name":"Decision","hue":217,"thought":"we chose this, for a reason","durability":"stable","roles":{"worklist":false,"anchor":false,"rank_prior":0.02,"highlight":true,"versioned":true},"brief":{"show":true,"cap":7,"excerpt":80}},{"name":"Caution","hue":38,"thought":"watch out — this bites","durability":"stable","roles":{"worklist":false,"anchor":false,"rank_prior":0.025,"highlight":true,"versioned":true},"brief":{"show":true,"cap":10,"excerpt":140}},{"name":"Problem","hue":0,"thought":"this was hard / went wrong","durability":"episodic","roles":{"worklist":true,"anchor":false,"rank_prior":0.0,"highlight":true,"versioned":true},"brief":{"show":false,"cap":8,"excerpt":140}},{"name":"Resolution","hue":142,"thought":"here's how it got solved","durability":"episodic","roles":{"worklist":false,"anchor":false,"rank_prior":0.0,"highlight":true,"versioned":true},"brief":{"show":false,"cap":8,"excerpt":140}},{"name":"Insight","hue":292,"thought":"I realized something non-obvious","durability":"episodic","roles":{"worklist":false,"anchor":false,"rank_prior":0.02,"highlight":true,"versioned":true},"brief":{"show":false,"cap":8,"excerpt":140}},{"name":"Intent","hue":199,"thought":"do this later","durability":"volatile","roles":{"worklist":true,"anchor":false,"rank_prior":0.0,"highlight":true,"versioned":true},"brief":{"show":false,"cap":8,"excerpt":140}},{"name":"Anchor","hue":215,"thought":"what this is about — a code subject","durability":"stable","roles":{"worklist":false,"anchor":true,"rank_prior":0.0,"highlight":true,"versioned":true},"brief":{"show":false,"cap":8,"excerpt":140}}],"verbs":[{"name":"about","reads_as":"Insight about Anchor","roles":{"supersession":false,"contradiction":false,"reason":false,"answer":false,"dependency":false}},{"name":"because","reads_as":"Decision because Principle","roles":{"supersession":false,"contradiction":false,"reason":true,"answer":false,"dependency":false}},{"name":"answers","reads_as":"Resolution answers Problem","roles":{"supersession":false,"contradiction":false,"reason":false,"answer":true,"dependency":false}},{"name":"builds-on","reads_as":"Insight builds-on Insight","roles":{"supersession":false,"contradiction":false,"reason":false,"answer":false,"dependency":false}},{"name":"replaces","reads_as":"Decision replaces Decision","roles":{"supersession":true,"contradiction":false,"reason":false,"answer":false,"dependency":false}},{"name":"conflicts-with","reads_as":"Insight conflicts-with Decision","roles":{"supersession":false,"contradiction":true,"reason":false,"answer":false,"dependency":false}},{"name":"needs","reads_as":"Intent needs Decision","roles":{"supersession":false,"contradiction":false,"reason":false,"answer":false,"dependency":true}}]},"policy":{"trust_created":0.5,"trust_confirmed":0.6,"trust_approved":1.0,"trust_approved_floor":0.2,"trust_floor":0.01,"stale_trust":0.3,"episodic_window_days":183,"volatile_window_days":30,"approved_window_days":365,"decay_ttl_days":14,"duplicate_similarity":0.9,"conflict_suspect_similarity":0.8897531032562256,"warn_similarity":0.7,"nli_sweep_min_confidence":0.800000011920929,"keyword_weight":0.15,"semantic_floor":0.6,"search_min_score":0.1,"search_relative_cut":0.25,"rerank_trust_weight":0.15,"claim_contradiction_min_confidence":0.8,"rerank_vote_k":10.0,"auto_tune":true,"delivery_floor":0.22,"weak_evidence_top":0.95,"knee_cliff":0.25,"weak_line_quantile":0.9,"weak_line_probes":24,"rerank_full_note":false},"brief":{"total_chars":16000,"tags":{"show":true,"cap":7},"conflicts":{"show":true,"cap":0},"suspects":{"show":true,"cap":8},"recent":{"show":true,"cap":7,"excerpt":140},"open":{"show":true,"cap":10,"excerpt":140},"home_reserve":1500,"ontology":{"show":false,"cap":0},"handoff":{"show":true,"cap":10,"excerpt":400}},"versioning":{"enabled":true}}
+{
+    "ontology": {
+        "preset": "custom",
+        "types": [
+            {
+                "name": "Principle",
+                "hue": 258,
+                "thought": "this is how I like things / what I value",
+                "durability": "stable",
+                "roles": {
+                    "worklist": false,
+                    "anchor": false,
+                    "rank_prior": 0.025,
+                    "highlight": true,
+                    "versioned": true
+                },
+                "brief": {
+                    "show": true,
+                    "cap": 8,
+                    "excerpt": 140
+                }
+            },
+            {
+                "name": "Decision",
+                "hue": 217,
+                "thought": "we chose this, for a reason",
+                "durability": "stable",
+                "roles": {
+                    "worklist": false,
+                    "anchor": false,
+                    "rank_prior": 0.02,
+                    "highlight": true,
+                    "versioned": true
+                },
+                "brief": {
+                    "show": true,
+                    "cap": 7,
+                    "excerpt": 80
+                }
+            },
+            {
+                "name": "Caution",
+                "hue": 38,
+                "thought": "watch out \u2014 this bites",
+                "durability": "stable",
+                "roles": {
+                    "worklist": false,
+                    "anchor": false,
+                    "rank_prior": 0.025,
+                    "highlight": true,
+                    "versioned": true
+                },
+                "brief": {
+                    "show": true,
+                    "cap": 10,
+                    "excerpt": 140
+                }
+            },
+            {
+                "name": "Problem",
+                "hue": 0,
+                "thought": "this was hard / went wrong",
+                "durability": "episodic",
+                "roles": {
+                    "worklist": true,
+                    "anchor": false,
+                    "rank_prior": 0.0,
+                    "highlight": true,
+                    "versioned": true
+                },
+                "brief": {
+                    "show": false,
+                    "cap": 8,
+                    "excerpt": 140
+                }
+            },
+            {
+                "name": "Resolution",
+                "hue": 142,
+                "thought": "here's how it got solved",
+                "durability": "episodic",
+                "roles": {
+                    "worklist": false,
+                    "anchor": false,
+                    "rank_prior": 0.0,
+                    "highlight": true,
+                    "versioned": true
+                },
+                "brief": {
+                    "show": false,
+                    "cap": 8,
+                    "excerpt": 140
+                }
+            },
+            {
+                "name": "Insight",
+                "hue": 292,
+                "thought": "I realized something non-obvious",
+                "durability": "episodic",
+                "roles": {
+                    "worklist": false,
+                    "anchor": false,
+                    "rank_prior": 0.02,
+                    "highlight": true,
+                    "versioned": true
+                },
+                "brief": {
+                    "show": false,
+                    "cap": 8,
+                    "excerpt": 140
+                }
+            },
+            {
+                "name": "Intent",
+                "hue": 199,
+                "thought": "do this later",
+                "durability": "volatile",
+                "roles": {
+                    "worklist": true,
+                    "anchor": false,
+                    "rank_prior": 0.0,
+                    "highlight": true,
+                    "versioned": true
+                },
+                "brief": {
+                    "show": false,
+                    "cap": 8,
+                    "excerpt": 140
+                }
+            },
+            {
+                "name": "Anchor",
+                "hue": 215,
+                "thought": "what this is about \u2014 a code subject",
+                "durability": "stable",
+                "roles": {
+                    "worklist": false,
+                    "anchor": true,
+                    "rank_prior": 0.0,
+                    "highlight": true,
+                    "versioned": true
+                },
+                "brief": {
+                    "show": false,
+                    "cap": 8,
+                    "excerpt": 140
+                }
+            }
+        ],
+        "verbs": [
+            {
+                "name": "about",
+                "reads_as": "Insight about Anchor",
+                "roles": {
+                    "supersession": false,
+                    "contradiction": false,
+                    "reason": false,
+                    "answer": false,
+                    "dependency": false
+                }
+            },
+            {
+                "name": "because",
+                "reads_as": "Decision because Principle",
+                "roles": {
+                    "supersession": false,
+                    "contradiction": false,
+                    "reason": true,
+                    "answer": false,
+                    "dependency": false
+                }
+            },
+            {
+                "name": "answers",
+                "reads_as": "Resolution answers Problem",
+                "roles": {
+                    "supersession": false,
+                    "contradiction": false,
+                    "reason": false,
+                    "answer": true,
+                    "dependency": false
+                }
+            },
+            {
+                "name": "builds-on",
+                "reads_as": "Insight builds-on Insight",
+                "roles": {
+                    "supersession": false,
+                    "contradiction": false,
+                    "reason": false,
+                    "answer": false,
+                    "dependency": false
+                }
+            },
+            {
+                "name": "replaces",
+                "reads_as": "Decision replaces Decision",
+                "roles": {
+                    "supersession": true,
+                    "contradiction": false,
+                    "reason": false,
+                    "answer": false,
+                    "dependency": false
+                }
+            },
+            {
+                "name": "conflicts-with",
+                "reads_as": "Insight conflicts-with Decision",
+                "roles": {
+                    "supersession": false,
+                    "contradiction": true,
+                    "reason": false,
+                    "answer": false,
+                    "dependency": false
+                }
+            },
+            {
+                "name": "needs",
+                "reads_as": "Intent needs Decision",
+                "roles": {
+                    "supersession": false,
+                    "contradiction": false,
+                    "reason": false,
+                    "answer": false,
+                    "dependency": true
+                }
+            }
+        ]
+    },
+    "policy": {
+        "trust_created": 0.5,
+        "trust_confirmed": 0.6,
+        "trust_approved": 1.0,
+        "trust_approved_floor": 0.2,
+        "trust_floor": 0.01,
+        "stale_trust": 0.3,
+        "episodic_window_days": 183,
+        "volatile_window_days": 30,
+        "approved_window_days": 365,
+        "decay_ttl_days": 14,
+        "duplicate_similarity": 0.9,
+        "conflict_suspect_similarity": 0.8897531032562256,
+        "warn_similarity": 0.7,
+        "nli_sweep_min_confidence": 0.800000011920929,
+        "keyword_weight": 0.15,
+        "semantic_floor": 0.6,
+        "search_min_score": 0.1,
+        "search_relative_cut": 0.25,
+        "rerank_trust_weight": 0.15,
+        "claim_contradiction_min_confidence": 0.8,
+        "rerank_vote_k": 10.0,
+        "auto_tune": true,
+        "delivery_floor": 0.22,
+        "weak_evidence_top": 0.95,
+        "knee_cliff": 0.25,
+        "weak_line_quantile": 0.9,
+        "weak_line_probes": 24,
+        "rerank_full_note": false
+    },
+    "brief": {
+        "total_chars": 16000,
+        "tags": {
+            "show": true,
+            "cap": 7
+        },
+        "conflicts": {
+            "show": true,
+            "cap": 0
+        },
+        "suspects": {
+            "show": true,
+            "cap": 8
+        },
+        "recent": {
+            "show": true,
+            "cap": 7,
+            "excerpt": 140
+        },
+        "open": {
+            "show": true,
+            "cap": 10,
+            "excerpt": 140
+        },
+        "home_reserve": 1500,
+        "ontology": {
+            "show": false,
+            "cap": 0
+        },
+        "handoff": {
+            "show": true,
+            "cap": 10,
+            "excerpt": 400
+        }
+    },
+    "versioning": {
+        "enabled": true
+    },
+    "history": {
+        "enabled": true,
+        "harnesses": {
+            "claude_code": true,
+            "codex": true,
+            "gemini": true,
+            "opencode": true,
+            "kilo": true,
+            "antigravity": true
+        },
+        "exclude_paths": [],
+        "search_fallthrough": true
+    }
+}

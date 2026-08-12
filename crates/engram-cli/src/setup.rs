@@ -96,6 +96,7 @@ impl Setup {
                 "opencode" => self.wire_mcp_array("opencode.json", "opencode")?,
                 "kilo" => self.wire_mcp_array("kilo.json", "kilo")?,
                 "antigravity" => self.wire_antigravity()?,
+                "bob" => self.wire_bob()?,
                 other => anyhow::bail!("unknown agent: {other}"),
             }
         }
@@ -393,6 +394,21 @@ impl Setup {
 
     fn wire_antigravity(&self) -> anyhow::Result<()> {
         self.write_mcp_servers(".agents/mcp_config.json", "antigravity")?;
+        self.write_instructions("AGENTS.md")
+    }
+
+    /// IBM Bob IDE and BobShell share the `~/.bob/` home directory.
+    /// - Bob IDE global: `~/.bob/mcp.json`  (mcpServers shape)
+    /// - BobShell global: `~/.bob/mcp_settings.json`  (same mcpServers shape)
+    /// - Both: project-level `.bob/mcp.json` takes precedence when names collide.
+    ///
+    /// This writes the project-level file only (the safe default for a per-repo
+    /// setup). To wire globally: add the entry to `~/.bob/mcp.json` (IDE) or
+    /// `~/.bob/mcp_settings.json` (BobShell) by hand.
+    /// Bob has no agent-harness hooks, so the AGENTS.md instruction block
+    /// (which Bob's /init flow reads) carries the recall discipline.
+    fn wire_bob(&self) -> anyhow::Result<()> {
+        self.write_mcp_servers(".bob/mcp.json", "bob")?;
         self.write_instructions("AGENTS.md")
     }
 

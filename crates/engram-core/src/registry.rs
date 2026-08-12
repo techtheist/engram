@@ -47,6 +47,18 @@ impl Registry {
             .iter()
             .find(|p| p.id == selector || p.name == selector)
     }
+
+    /// Find the project whose root contains `path` — longest root wins, so a
+    /// repo registered inside another repo resolves to the inner one. The
+    /// harvester's project router: a transcript's recorded cwd may be any
+    /// directory under the repo, never trust a lossy path slug instead.
+    pub fn resolve_root(&self, path: &Path) -> Option<&ProjectEntry> {
+        let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        self.projects
+            .iter()
+            .filter(|p| canon.starts_with(Path::new(&p.root)))
+            .max_by_key(|p| p.root.len())
+    }
 }
 
 /// The engram home dir (`ENGRAM_HOME` override for tests, else `~/.engram`).

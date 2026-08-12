@@ -6,8 +6,9 @@ import { api } from '@/services/api'
 import { onProjectSwitch } from '@/composables/onProjectSwitch'
 import { useGraphStore } from '@/stores/graph'
 import { useConfigStore } from '@/stores/config'
+import { useHistoryStore } from '@/stores/history'
 import { useLayoutStore } from '@/stores/layout'
-import type { SearchHit } from '@/types/graph'
+import type { HistoryHit, SearchHit } from '@/types/graph'
 
 /**
  * The backend marks FTS matches with private-use sentinels (U+E000/U+E001) —
@@ -21,10 +22,12 @@ const safeSnippet = (s: string): string =>
 
 const store = useGraphStore()
 const config = useConfigStore()
+const history = useHistoryStore()
 const layout = useLayoutStore()
 
 const query = ref('')
 const hits = ref<SearchHit[]>([])
+const historyHits = ref<HistoryHit[]>([])
 const open = ref(false)
 const searching = ref(false)
 const error = ref<string | null>(null)
@@ -35,17 +38,27 @@ watchDebounced(
         const term = q.trim()
         if (term.length < 2) {
             hits.value = []
+            historyHits.value = []
             open.value = false
             return
         }
         searching.value = true
         error.value = null
         try {
-            hits.value = await api.search(term)
+            // The box searches what the screen shows: recordings on the
+            // history view, curated memory everywhere else.
+            if (layout.view === 'history') {
+                historyHits.value = await api.searchHistory(term)
+                hits.value = []
+            } else {
+                hits.value = await api.search(term)
+                historyHits.value = []
+            }
             open.value = true
         } catch (e) {
             error.value = e instanceof Error ? e.message : String(e)
             hits.value = []
+            historyHits.value = []
         } finally {
             searching.value = false
         }
@@ -59,10 +72,27 @@ function pick(hit: SearchHit): void {
     query.value = ''
 }
 
+function pickHistory(hit: HistoryHit): void {
+    void history.open(hit.session, hit.turn ?? null)
+    open.value = false
+    query.value = ''
+}
+
 function clear(): void {
     query.value = ''
     hits.value = []
+    historyHits.value = []
     open.value = false
+}
+
+// Results belong to the mode they were searched in.
+watch(() => layout.view, clear)
+
+function clock(ts: number): string {
+    return new Date(ts * 1000).toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+    })
 }
 
 // Hits belong to the graph they were searched in.
@@ -105,16 +135,28 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKey))
             v-model="query"
             class="input"
             type="search"
-            placeholder="Search memory…"
-            aria-label="Search the graph"
-            @focus="((open = hits.length > 0), (focused = true))"
+            :placeholder="layout.view === 'history' ? 'Search session history…' : 'Search memory…'"
+            aria-label="Search"
+            @focus="((open = hits.length > 0 || historyHits.length > 0), (focused = true))"
             @blur="focused = false"
         />
         <kbd v-if="!query && !focused" class="kbd" aria-hidden="true">{{ kbd }}</kbd>
         <button v-if="query" class="clear" type="button" aria-label="Clear" @click="clear">×</button>
     </div>
 
-    <ul v-if="open && hits.length" class="results glass-panel">
+    <ul v-if="open && historyHits.length" class="results glass-panel">
+        <li v-for="hit in historyHits" :key="hit.message_id">
+            <button class="result" type="button" @click="pickHistory(hit)">
+                <span class="result-text">
+                    <span class="result-title">{{ hit.session_title }}</span>
+                    <span class="result-snippet">{{ hit.snippet }}</span>
+                </span>
+                <span class="result-type">{{ hit.role }} · {{ clock(hit.timestamp) }}</span>
+            </button>
+        </li>
+    </ul>
+
+    <ul v-else-if="open && hits.length" class="results glass-panel">
         <li v-for="hit in hits" :key="hit.id">
             <button class="result" type="button" @click="pick(hit)">
                 <span class="type-dot" :style="{ backgroundColor: config.accent(hit.type) }" />
@@ -130,7 +172,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKey))
     </ul>
 
     <p v-else-if="open && !searching && query.trim().length >= 2" class="empty glass-panel">
-        No matches.
+        {{ layout.view === 'history' ? 'Nothing recorded matches.' : 'No matches.' }}
     </p>
     <p v-if="error" class="empty glass-panel error">{{ error }}</p>
 </div>

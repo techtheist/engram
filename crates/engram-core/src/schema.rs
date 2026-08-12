@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS nodes (
   confirmed_at INTEGER,           -- last deliberate act; the unapproved trust anchor
   approved_at INTEGER,            -- last explicit approval; trust anchors here
   demoted_at  INTEGER,            -- when contradicting evidence landed
-  trust_override REAL             -- user pin: constant trust, decay off
+  trust_override REAL,            -- user pin: constant trust, decay off
+  props       TEXT                -- JSON extension bag (history layer only)
 );
 
 CREATE TABLE IF NOT EXISTS edges (

@@ -144,6 +144,10 @@ impl SqliteStore {
         if !column_exists(conn, "nodes", "version")? {
             conn.execute_batch("ALTER TABLE nodes ADD COLUMN version TEXT;")?;
         }
+        // History layer (0.8.4): the layer-specific extension bag.
+        if !column_exists(conn, "nodes", "props")? {
+            conn.execute_batch("ALTER TABLE nodes ADD COLUMN props TEXT;")?;
+        }
         // Local cortex (v0.5.0): suspects carry an optional NLI hint.
         if !column_exists(conn, "suspects", "nli_label")? {
             conn.execute_batch(
@@ -371,8 +375,8 @@ impl Store for SqliteStore {
             "INSERT INTO nodes
                (id, type, title, body, durability, source, session_id,
                 created_at, valid_from, valid_until, status, code_refs, tags, last_seen,
-                approved_at, version)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+                approved_at, version, props)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
             params![
                 id,
                 n.node_type.as_str(),
@@ -391,6 +395,7 @@ impl Store for SqliteStore {
                 // User-authored knowledge is approved by construction.
                 (n.source == Source::User).then_some(created),
                 n.version,
+                n.props.as_ref().map(serde_json::to_string).transpose()?,
             ],
         )?;
         // Trust anchors at created_at until a deliberate act confirms the node.
@@ -551,8 +556,8 @@ impl Store for SqliteStore {
             "INSERT INTO nodes
                (id, type, title, body, durability, source, session_id,
                 created_at, valid_from, valid_until, status, code_refs, tags, last_seen,
-                approved_at, confirmed_at, demoted_at, trust_override, version)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
+                approved_at, confirmed_at, demoted_at, trust_override, version, props)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)
              ON CONFLICT(id) DO UPDATE SET
                type=excluded.type, title=excluded.title, body=excluded.body,
                durability=excluded.durability, source=excluded.source,
@@ -562,7 +567,7 @@ impl Store for SqliteStore {
                tags=excluded.tags, last_seen=excluded.last_seen,
                approved_at=excluded.approved_at, confirmed_at=excluded.confirmed_at,
                demoted_at=excluded.demoted_at, trust_override=excluded.trust_override,
-               version=excluded.version",
+               version=excluded.version, props=excluded.props",
             params![
                 n.id,
                 n.node_type.as_str(),
@@ -583,6 +588,7 @@ impl Store for SqliteStore {
                 n.demoted_at,
                 n.trust_override,
                 n.version,
+                n.props.as_ref().map(serde_json::to_string).transpose()?,
             ],
         )?;
         Ok(())
@@ -1258,7 +1264,7 @@ fn meta_set(conn: &Connection, key: &str, value: &str) -> Result<()> {
 
 const NODE_SELECT: &str = "SELECT id, type, title, body, durability, source, session_id, \
      created_at, valid_from, valid_until, status, code_refs, last_seen, approved_at, tags, \
-     confirmed_at, demoted_at, trust_override, version FROM nodes";
+     confirmed_at, demoted_at, trust_override, version, props FROM nodes";
 
 const EDGE_SELECT: &str = "SELECT id, type, from_id, to_id, source, created_at, \
      confidence, strength, note, valid_from, valid_until, status FROM edges WHERE id=?1";
@@ -1333,6 +1339,12 @@ fn row_to_node(row: &Row, policy: &PolicyConfig) -> rusqlite::Result<Node> {
         trust,
         stale: crate::policy::is_stale(trust, policy),
         version: row.get(18)?,
+        props: match row.get::<_, Option<String>>(19)? {
+            Some(s) => Some(serde_json::from_str(&s).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(19, Type::Text, Box::new(e))
+            })?),
+            None => None,
+        },
         code_refs: match refs_s {
             Some(s) => serde_json::from_str(&s).map_err(|e| {
                 rusqlite::Error::FromSqlConversionFailure(11, Type::Text, Box::new(e))

@@ -23,6 +23,11 @@ import type {
     ModelApplyResult,
     ModelSelection,
     GraphConfig,
+    HistoryStatus,
+    HistorySession,
+    HistoryMessage,
+    HistoryHit,
+    BornIn,
     ConfigPreset,
     SystemInfo,
     TagStat,
@@ -114,6 +119,12 @@ export const api = {
     search: (query: string, limit = 12) =>
         request<SearchHit[]>(`/search?q=${encodeURIComponent(query)}&limit=${limit}`),
 
+    /** The history view's search box: vector-first over recorded dialogue. */
+    searchHistory: (query: string, limit = 8) =>
+        request<HistoryHit[]>(
+            `/search?q=${encodeURIComponent(query)}&limit=${limit}&scope=history`,
+        ),
+
     reconfirm: (id: string) => request<GraphNode>(`/nodes/${id}/reconfirm`, { method: 'POST' }),
     approve: (id: string) => request<GraphNode>(`/nodes/${id}/approve`, { method: 'POST' }),
 
@@ -168,6 +179,21 @@ export const api = {
 
     /** Daemon-side diagnostics for the System info panel (launch project). */
     system: () => metaRequest<SystemInfo>('/system'),
+
+    /** History layer (0.8.4): status for the settings section, and the
+     *  user-only wholesale delete (removes history.tepin; curated untouched). */
+    historyStatus: () => request<HistoryStatus>('/history'),
+    historyReset: () => request<{ reset: boolean }>('/history', { method: 'DELETE' }),
+    historySessions: () => request<{ sessions: HistorySession[] }>('/history/sessions'),
+    historyMessages: (sid: string) =>
+        request<{ session: string; messages: HistoryMessage[] }>(
+            `/history/sessions/${encodeURIComponent(sid)}`,
+        ),
+    historyDeleteSession: (sid: string) =>
+        request<{ removed: number }>(`/history/sessions/${encodeURIComponent(sid)}`, {
+            method: 'DELETE',
+        }),
+    bornIn: (id: string) => request<{ born_in: BornIn | null }>(`/nodes/${id}/born-in`),
 
     /** The per-graph configuration (PLAN §7D) — project-scoped. */
     config: () => request<GraphConfig>('/config'),

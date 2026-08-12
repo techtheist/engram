@@ -130,6 +130,10 @@ pub struct Hub {
     open: Mutex<HashMap<String, ProjectHandle>>,
     /// The mid-session conflict push's transport (v0.6.3).
     alerts: Arc<AlertBus>,
+    /// History-layer reset epoch (0.8.4): bumped by the pane's wholesale
+    /// delete so the running harvester drops its cursors and caches. A
+    /// counter, not an event — the harvester compares at each sweep.
+    history_epoch: std::sync::atomic::AtomicU64,
 }
 
 impl Hub {
@@ -174,6 +178,7 @@ impl Hub {
             listener_factory: Mutex::new(None),
             open: Mutex::new(HashMap::new()),
             alerts,
+            history_epoch: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -196,6 +201,7 @@ impl Hub {
             listener_factory: Mutex::new(None),
             open: Mutex::new(HashMap::new()),
             alerts,
+            history_epoch: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -211,6 +217,19 @@ impl Hub {
 
     pub fn current(&self) -> &ProjectHandle {
         &self.current
+    }
+
+    /// The current history-reset epoch — the harvester compares this at
+    /// each sweep and forgets its cursors/caches when it moved.
+    pub fn history_epoch(&self) -> u64 {
+        self.history_epoch.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Signal every harvester that history state was wiped (pane wholesale
+    /// delete): cursors and caches must be rebuilt from the stores.
+    pub fn bump_history_epoch(&self) {
+        self.history_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Subscribe to judged-conflict alerts across every project this hub

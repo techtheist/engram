@@ -4,6 +4,8 @@ pub mod digest;
 mod engine;
 mod error;
 pub mod harness;
+pub mod harvest;
+pub mod history;
 mod hub;
 pub mod id;
 mod migrate;

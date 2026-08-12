@@ -7,13 +7,14 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-pub const AGENTS: [&str; 6] = [
+pub const AGENTS: [&str; 7] = [
     "claude",
     "codex",
     "gemini",
     "opencode",
     "kilo",
     "antigravity",
+    "bob",
 ];
 
 /// Which assistants look installed on this machine (binary on PATH or a
@@ -42,6 +43,10 @@ pub fn detect_agents() -> Vec<&'static str> {
     }
     if on_path("antigravity") || on_path("agy") || dir(".antigravity") {
         found.push("antigravity");
+    }
+    // IBM Bob: the IDE (a VS Code fork) and BobShell share ~/.bob.
+    if on_path("bob") || dir(".bob") || Path::new("/Applications/IBM Bob.app").exists() {
+        found.push("bob");
     }
     found
 }
@@ -84,6 +89,14 @@ pub fn is_wired(repo: &Path, agent: &str) -> bool {
         "opencode" => has_engram(repo.join("opencode.json")),
         "kilo" => has_engram(repo.join("kilo.json")),
         "antigravity" => has_engram(repo.join(".agents/mcp_config.json")),
+        // Project-level .bob/mcp.json wins inside Bob; either global also
+        // counts — the IDE's ~/.bob/mcp.json or BobShell's
+        // ~/.bob/mcp_settings.json (two products, two global files).
+        "bob" => {
+            has_engram(repo.join(".bob/mcp.json"))
+                || home_file(".bob/mcp.json").is_some_and(has_engram)
+                || home_file(".bob/mcp_settings.json").is_some_and(has_engram)
+        }
         _ => false,
     }
 }

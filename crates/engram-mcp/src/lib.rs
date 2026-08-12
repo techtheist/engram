@@ -99,6 +99,12 @@ struct SessionTrace {
 
 const VALIDATION_MIN_INTERVAL_SECS: i64 = 60;
 
+/// The label every history section carries — raw dialogue is a different
+/// register from curated memory and must never read as equivalent.
+const HISTORY_SECTION_NOTE: &str = "From session history — raw recorded dialogue, not curated \
+     memory. Snippets only; call expand_history(session, turn) to read the surrounding \
+     exchange before relying on one.";
+
 impl SessionTrace {
     fn start(
         engine: &Arc<Mutex<Engine>>,
@@ -393,6 +399,22 @@ impl Engram {
             return self.reply(&json!({ "hits": hits, "skipped": skipped }));
         }
         let engine = self.engine_for(&a.project)?;
+        let scope = a.scope.as_deref().unwrap_or("auto");
+        if !matches!(scope, "auto" | "memory" | "history") {
+            return Err(ErrorData::invalid_params(
+                format!("scope {scope:?} must be auto, memory or history"),
+                None,
+            ));
+        }
+        if scope == "history" {
+            let hits = {
+                let guard = self.mcp(&engine);
+                guard.search_history(&a.query, limit).map_err(map_err)?
+            };
+            return self.reply(&json!({
+                "history": { "hits": hits, "note": HISTORY_SECTION_NOTE },
+            }));
+        }
         let (mut hits, confidence) = {
             let guard = self.mcp(&engine);
             let hits = guard.search(&a.query, &types, limit).map_err(map_err)?;
@@ -400,8 +422,41 @@ impl Engram {
             (hits, confidence)
         };
         hits.iter_mut().for_each(debracket);
-        let hits = self.shape_hits(&detail, hits, Some(&engine));
+        let hit_ids: Vec<String> = hits.iter().map(|h| h.id.clone()).collect();
+        let mut hits = self.shape_hits(&detail, hits, Some(&engine));
+        // Provenance line (0.8.4): a curated hit born in a recorded exchange
+        // says so — the birth dialogue is one expand_history away.
+        if let Some(arr) = hits.as_array_mut() {
+            let guard = engine.lock().unwrap();
+            for (shaped, id) in arr.iter_mut().zip(&hit_ids) {
+                if let Some(born) = guard.born_in_of(id) {
+                    shaped["born_in"] = json!(born);
+                }
+            }
+        }
         let mut body = json!({ "hits": hits });
+        // Verdict-routed fall-through (decision 00bgftfdusll): history is
+        // queried only when the calibrated verdict says the curated graph
+        // likely doesn't hold the answer — a separate labeled section,
+        // never interleaved, never score-blended.
+        if scope == "auto"
+            && matches!(confidence, Some("weak") | Some("none"))
+        {
+            let guard = engine.lock().unwrap();
+            if guard.config().history.search_fallthrough && guard.history_open() {
+                drop(guard);
+                let history = {
+                    let guard = self.mcp(&engine);
+                    guard.search_history(&a.query, limit).map_err(map_err)?
+                };
+                if !history.is_empty() {
+                    body["history"] = json!({
+                        "hits": history,
+                        "note": HISTORY_SECTION_NOTE,
+                    });
+                }
+            }
+        }
         if let Some(v) = confidence {
             body["confidence"] = json!(v);
             let note = match v {
@@ -427,12 +482,81 @@ impl Engram {
     }
 
     #[tool(
+        description = "Read the recorded exchange around one turn of a session-history hit: \
+        the surrounding user/assistant dialogue, in order. Takes the `session` and `turn` \
+        handles a history hit (or a curated hit's born_in line) carried; `window` messages \
+        of context each side (default 4). History is raw dialogue, not curated memory. \
+        The reply also carries `notes`: every curated memory note born during this \
+        session (its born-in provenance, reversed), each one a get_node away."
+    )]
+    async fn expand_history(
+        &self,
+        Parameters(a): Parameters<ExpandHistoryArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let engine = self.engine_for(&a.project)?;
+        let window = a.window.unwrap_or(4).min(25);
+        let (messages, notes) = {
+            let guard = self.mcp(&engine);
+            let messages = guard
+                .expand_history(&a.session, a.turn, window)
+                .map_err(map_err)?;
+            let notes = guard.session_notes(&a.session).map_err(map_err)?;
+            (messages, notes)
+        };
+        if messages.is_empty() {
+            return Err(ErrorData::invalid_params(
+                format!("no recorded messages for session {:?}", a.session),
+                None,
+            ));
+        }
+        let mut body = json!({ "session": a.session, "messages": messages });
+        if !notes.is_empty() {
+            body["notes"] = json!(notes);
+        }
+        self.reply(&body)
+    }
+
+    #[tool(
+        description = "Browse the recorded session history: every session, newest first — \
+        title (the opening user message), harness, start/end, message count, and the \
+        `session` handle expand_history takes. The browsing entry point when you don't \
+        have a search hit to start from; empty when recording is off. History is raw \
+        dialogue records, not curated memory."
+    )]
+    async fn list_sessions(
+        &self,
+        Parameters(a): Parameters<ListSessionsArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let engine = self.engine_for(&a.project)?;
+        let mut sessions = {
+            let guard = self.mcp(&engine);
+            guard.list_history_sessions().map_err(map_err)?
+        };
+        if let Some(h) = &a.harness {
+            sessions.retain(|s| s.harness.as_deref() == Some(h.as_str()));
+        }
+        let limit = a.limit.unwrap_or(20).min(100);
+        let total = sessions.len();
+        sessions.truncate(limit);
+        let mut body = json!({ "sessions": sessions, "total": total });
+        if total == 0 {
+            body["note"] = json!(
+                "Nothing recorded — session recording is off (the user's switch, in the \
+                 pane) or no transcripts have been ingested yet."
+            );
+        }
+        self.reply(&body)
+    }
+
+    #[tool(
         description = "Fetch one node by id with its outgoing and incoming edges. \
         Node fields include computed trust (0..1) and stale (true = trust < 0.3). \
         Optional `parents`/`children` (depth 0-3) also return the reasoning \
         hierarchy: parents are nodes this one points at (its reasons/subjects — \
         e.g. the Principle behind a Decision); children are nodes pointing at it \
-        (what answers / builds on it). Nested as {edge, node, parents|children}."
+        (what answers / builds on it). Nested as {edge, node, parents|children}. \
+        A node born in a recorded exchange carries `born_in` (session, turn) — \
+        the birth dialogue is one expand_history away."
     )]
     async fn get_node(
         &self,
@@ -449,6 +573,11 @@ impl Engram {
         let out = engine.edges_out(&a.id).map_err(map_err)?;
         let incoming = engine.edges_in(&a.id).map_err(map_err)?;
         let mut payload = json!({ "node": node, "edges_out": out, "edges_in": incoming });
+        // Provenance (0.8.4): same line search hits carry — where this note
+        // was born, when the history layer recorded the exchange.
+        if let Some(born) = engine.born_in_of(&a.id) {
+            payload["born_in"] = json!(born);
+        }
         let up = a.parents.unwrap_or(0).min(HIERARCHY_MAX_DEPTH);
         let down = a.children.unwrap_or(0).min(HIERARCHY_MAX_DEPTH);
         if up > 0 {
@@ -534,6 +663,7 @@ impl Engram {
                 code_refs: a.code_refs,
                 tags: a.tags,
                 version: a.version,
+                props: None,
             })
             .map_err(map_err)?;
         Ok(match outcome {
@@ -544,6 +674,13 @@ impl Engram {
                 missing_refs,
                 canon,
             } => {
+                // born-in provenance (0.8.4): a live MCP write was born in
+                // whatever exchange is happening right now — park it; the
+                // harvester links it once the transcript catches up.
+                engine
+                    .lock()
+                    .unwrap()
+                    .park_provenance(&node.id, node.created_at);
                 let mut out = json!({ "id": node.id, "created": true });
                 if !warnings.is_empty() {
                     out["warnings"] = json!(warnings);
@@ -1447,6 +1584,37 @@ struct SearchArgs {
     /// every project + home with provenance (reads only).
     #[serde(default)]
     project: Option<String>,
+    /// "auto" (default) = curated memory, with session history appearing as
+    /// a separate labeled section only when the confidence verdict says the
+    /// answer is likely not in memory; "memory" = curated only;
+    /// "history" = session history only.
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct ExpandHistoryArgs {
+    /// The session handle a history hit carried.
+    session: String,
+    /// The turn to center on.
+    turn: u64,
+    /// Messages of context on each side (default 4, max 25).
+    #[serde(default)]
+    window: Option<u64>,
+    #[serde(default)]
+    project: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct ListSessionsArgs {
+    /// Max sessions returned, newest first (default 20, max 100).
+    #[serde(default)]
+    limit: Option<usize>,
+    /// Only sessions of one harness ("claude-code", "codex", "bob", …).
+    #[serde(default)]
+    harness: Option<String>,
+    #[serde(default)]
+    project: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -1886,6 +2054,7 @@ mod tests {
                 types: vec![],
                 limit: None,
                 project: None,
+                scope: None,
             }))
             .await
             .unwrap();
@@ -2405,6 +2574,310 @@ pub(crate) mod tool_tests {
         assert!(text_of(&node).contains("renamed title"), "patch landed");
     }
 
+    /// A history-backed server: engine + sibling history store in a temp dir.
+    fn history_server() -> (Engram, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "engram-mcp-hist-{}",
+            engram_core::id::new_id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("graph.tepin");
+        let mut engine = Engine::with_store(
+            engram_core::open_store(&db).unwrap(),
+            Box::new(FakeEmbedder::default()),
+        );
+        engine.set_history_path(engram_core::history::history_store_path(&db));
+        // Recording is opt-in (0.8.4): flip the switch the way the pane does.
+        let mut cfg = engine.graph_config();
+        cfg.history.enabled = true;
+        engine.set_graph_config(&cfg).unwrap();
+        (Engram::new(engine), dir)
+    }
+
+    fn seed_history(s: &Engram, sid: &str, texts: &[(&str, &str)]) {
+        let engine = s.engine.lock().unwrap();
+        let base = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        for (i, (role, text)) in texts.iter().enumerate() {
+            let mut props = serde_json::Map::new();
+            props.insert("role".into(), (*role).into());
+            props.insert("turn".into(), (i as u64).into());
+            engine
+                .add_history_node(engram_core::NewNode {
+                    node_type: engram_core::NodeType::parse("Message").unwrap(),
+                    title: text.to_string(),
+                    body: Some(text.to_string()),
+                    created_at: Some(base - 100 + i as i64),
+                    durability: engram_core::Durability::Stable,
+                    source: engram_core::Source::Claude,
+                    session_id: Some(sid.into()),
+                    status: None,
+                    code_refs: vec![],
+                    tags: vec![],
+                    version: None,
+                    props: Some(props),
+                })
+                .unwrap()
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn search_scope_history_returns_sectioned_hits_and_expands() {
+        let (s, dir) = history_server();
+        seed_history(
+            &s,
+            "sess-42",
+            &[
+                ("user", "why does the daemon leak memory"),
+                ("assistant", "the onnx batch width was the memory culprit"),
+                ("user", "ship it"),
+            ],
+        );
+        let res = s
+            .search(Parameters(SearchArgs {
+                detail: None,
+                query: "onnx batch width memory".into(),
+                types: vec![],
+                limit: None,
+                project: None,
+                scope: Some("history".into()),
+            }))
+            .await
+            .unwrap();
+        let text = text_of(&res);
+        assert!(text.contains("history"), "{text}");
+        assert!(text.contains("sess-42"), "{text}");
+        assert!(!text.contains("\"confidence\""), "history scope skips curated: {text}");
+
+        let res = s
+            .expand_history(Parameters(ExpandHistoryArgs {
+                session: "sess-42".into(),
+                turn: 1,
+                window: Some(1),
+                project: None,
+            }))
+            .await
+            .unwrap();
+        let text = text_of(&res);
+        assert!(text.contains("batch width"), "{text}");
+        assert!(text.contains("ship it"), "{text}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn list_sessions_browses_newest_first_with_harness_filter() {
+        let (s, dir) = history_server();
+        // An empty layer says so instead of returning a bare [].
+        let res = s
+            .list_sessions(Parameters(ListSessionsArgs {
+                limit: None,
+                harness: None,
+                project: None,
+            }))
+            .await
+            .unwrap();
+        assert!(text_of(&res).contains("Nothing recorded"));
+
+        {
+            let engine = s.engine.lock().unwrap();
+            for (sid, harness, ts) in [
+                ("sess-old", "claude-code", 1_786_300_000i64),
+                ("sess-new", "bob", 1_786_400_000),
+            ] {
+                let mut props = serde_json::Map::new();
+                props.insert("harness".into(), harness.into());
+                props.insert("messages".into(), 2u64.into());
+                engine
+                    .add_history_node(engram_core::NewNode {
+                        node_type: engram_core::NodeType::parse("Session").unwrap(),
+                        title: format!("{sid} opening question"),
+                        body: None,
+                        created_at: Some(ts),
+                        durability: engram_core::Durability::Stable,
+                        source: engram_core::Source::Claude,
+                        session_id: Some(sid.into()),
+                        status: None,
+                        code_refs: vec![],
+                        tags: vec![],
+                        version: None,
+                        props: Some(props),
+                    })
+                    .unwrap()
+                    .unwrap();
+            }
+        }
+        let res = s
+            .list_sessions(Parameters(ListSessionsArgs {
+                limit: None,
+                harness: None,
+                project: None,
+            }))
+            .await
+            .unwrap();
+        let text = text_of(&res);
+        assert!(text.contains("sess-new") && text.contains("sess-old"), "{text}");
+        assert!(
+            text.find("sess-new").unwrap() < text.find("sess-old").unwrap(),
+            "newest first: {text}"
+        );
+        let res = s
+            .list_sessions(Parameters(ListSessionsArgs {
+                limit: None,
+                harness: Some("bob".into()),
+                project: None,
+            }))
+            .await
+            .unwrap();
+        let text = text_of(&res);
+        assert!(text.contains("sess-new") && !text.contains("sess-old"), "{text}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn get_node_and_expand_history_carry_born_in_provenance() {
+        let (s, dir) = history_server();
+        // Two recorded turns at fixed times; the note parks at the assistant
+        // turn's moment, so provenance resolves in the same pass.
+        {
+            let engine = s.engine.lock().unwrap();
+            for (i, (role, text, ts)) in [
+                ("user", "how should we cap the batch", 1_786_400_000i64),
+                ("assistant", "cap it at two — measured, not guessed", 1_786_400_010),
+            ]
+            .iter()
+            .enumerate()
+            {
+                let mut props = serde_json::Map::new();
+                props.insert("role".into(), (*role).into());
+                props.insert("turn".into(), (i as u64).into());
+                engine
+                    .add_history_node(engram_core::NewNode {
+                        node_type: engram_core::NodeType::parse("Message").unwrap(),
+                        title: text.to_string(),
+                        body: Some(text.to_string()),
+                        created_at: Some(*ts),
+                        durability: engram_core::Durability::Stable,
+                        source: engram_core::Source::Claude,
+                        session_id: Some("sess-born".into()),
+                        status: None,
+                        code_refs: vec![],
+                        tags: vec![],
+                        version: None,
+                        props: Some(props),
+                    })
+                    .unwrap()
+                    .unwrap();
+            }
+        }
+        let created = s
+            .create_note(AddNoteArgs {
+                node_type: "Decision".into(),
+                title: "Batch capped at two".into(),
+                body: Some("The inference batch stays at two.".into()),
+                durability: None,
+                tags: vec![],
+                code_refs: vec![],
+                session_id: None,
+                version: None,
+                created_at: None,
+                project: None,
+            })
+            .unwrap();
+        let note_id = created["id"].as_str().unwrap().to_string();
+        {
+            let engine = s.engine.lock().unwrap();
+            engine.park_provenance(&note_id, 1_786_400_010);
+            assert_eq!(engine.resolve_provenance().unwrap(), 1);
+        }
+        // get_node carries the born_in line…
+        let res = s
+            .get_node(Parameters(GetNodeArgs {
+                id: note_id.clone(),
+                parents: None,
+                children: None,
+                project: None,
+            }))
+            .await
+            .unwrap();
+        let text = text_of(&res);
+        assert!(text.contains("born_in"), "{text}");
+        assert!(text.contains("sess-born"), "{text}");
+        // …and expand_history the reverse: the notes this session left.
+        let res = s
+            .expand_history(Parameters(ExpandHistoryArgs {
+                session: "sess-born".into(),
+                turn: 1,
+                window: Some(2),
+                project: None,
+            }))
+            .await
+            .unwrap();
+        let text = text_of(&res);
+        assert!(text.contains("\\\"notes\\\""), "{text}"); // debug-escaped JSON
+        assert!(text.contains(&note_id), "{text}");
+        assert!(text.contains("Batch capped at two"), "{text}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn search_auto_falls_through_to_history_only_on_weak_verdicts() {
+        let (s, dir) = history_server();
+        seed_history(&s, "sess-7", &[("assistant", "we pinned the embedder to fp32")]);
+        // Empty curated graph: verdict "none" — the section appears.
+        let res = s
+            .search(Parameters(SearchArgs {
+                detail: None,
+                query: "embedder pin".into(),
+                types: vec![],
+                limit: None,
+                project: None,
+                scope: None,
+            }))
+            .await
+            .unwrap();
+        let text = text_of(&res);
+        assert!(text.contains("history"), "fall-through fired: {text}");
+        assert!(text.contains("sess-7"), "{text}");
+        // scope=memory never shows history, whatever the verdict.
+        let res = s
+            .search(Parameters(SearchArgs {
+                detail: None,
+                query: "embedder pin".into(),
+                types: vec![],
+                limit: None,
+                project: None,
+                scope: Some("memory".into()),
+            }))
+            .await
+            .unwrap();
+        let text = text_of(&res);
+        assert!(!text.contains("sess-7"), "memory scope stays curated: {text}");
+        // The knob: search_fallthrough=false silences the section.
+        {
+            let engine = s.engine.lock().unwrap();
+            let mut cfg = engine.graph_config();
+            cfg.history.search_fallthrough = false;
+            engine.set_graph_config(&cfg).unwrap();
+        }
+        let res = s
+            .search(Parameters(SearchArgs {
+                detail: None,
+                query: "embedder pin".into(),
+                types: vec![],
+                limit: None,
+                project: None,
+                scope: None,
+            }))
+            .await
+            .unwrap();
+        let text = text_of(&res);
+        assert!(!text.contains("sess-7"), "knob off = no fall-through: {text}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[tokio::test]
     async fn search_snippets_use_brackets_not_sentinels() {
         let s = server();
@@ -2418,6 +2891,7 @@ pub(crate) mod tool_tests {
                 types: vec![],
                 limit: None,
                 project: None,
+                scope: None,
             }))
             .await
             .unwrap();
@@ -2473,6 +2947,7 @@ mod project_tests {
                 types: vec![],
                 limit: None,
                 project: Some("definitely-not-registered-xyz".into()),
+                scope: None,
             }))
             .await
             .unwrap_err();
@@ -2733,6 +3208,7 @@ mod scoped_transport_tests {
                 status: None,
                 code_refs: vec![],
                 tags: vec![],
+                props: None,
             })
             .unwrap();
         }
@@ -2863,6 +3339,7 @@ mod push_and_params_tests {
                 types: vec![],
                 limit: None,
                 project: None,
+                scope: None,
             }))
             .await
             .unwrap();
@@ -2889,6 +3366,7 @@ mod push_and_params_tests {
                 types: vec![],
                 limit: None,
                 project: None,
+                scope: None,
             }))
             .await
             .unwrap();
@@ -2917,6 +3395,7 @@ mod push_and_params_tests {
                 types: vec![],
                 limit: None,
                 project: None,
+                scope: None,
             }))
             .await
             .unwrap();
@@ -2947,7 +3426,8 @@ mod push_and_params_tests {
                         types: vec![],
                         limit: None,
                         project: None,
-                    }))
+                        scope: None,
+            }))
                     .await
                     .unwrap(),
                 )
@@ -2972,6 +3452,7 @@ mod push_and_params_tests {
                 types: vec![],
                 limit: None,
                 project: None,
+                scope: None,
             }))
             .await;
         assert!(bad.is_err(), "unknown detail level is refused");

@@ -81,6 +81,13 @@ impl Default for AuditOrigin {
     }
 }
 
+/// One note waiting for its birth exchange to be harvested.
+struct ParkedProvenance {
+    note_id: String,
+    ts: i64,
+    parked_at: i64,
+}
+
 pub struct Engine {
     store: Box<dyn Store>,
     embedder: Box<dyn Embedder>,
@@ -93,6 +100,22 @@ pub struct Engine {
     nli: Option<Box<dyn Nli>>,
     /// Repo root for write-time code_ref checks (serve/mcp set it).
     repo_root: Option<std::path::PathBuf>,
+    /// The history layer (0.8.4): where this graph's sibling `history.tepin`
+    /// lives, and the open handle when `config().history.enabled`. Interior-
+    /// mutable because config writes (`&self`) open/drop it live. Never a hub
+    /// engine — the librarian sweep (decay/conflicts/drift) can't reach it.
+    history_path: Option<std::path::PathBuf>,
+    history: std::sync::Mutex<Option<Box<dyn Store>>>,
+    /// born-in provenance parking lot (0.8.4): notes written mid-session
+    /// whose birth exchange the harvester hasn't ingested yet. In-memory on
+    /// purpose — provenance is a footnote, losing a few entries to a daemon
+    /// restart costs a link, never knowledge.
+    provenance_lot: std::sync::Mutex<Vec<ParkedProvenance>>,
+    /// The at-rest sealing key, loaded once on first history write/read —
+    /// but only when the daemon opted in (tests and library embedders must
+    /// never touch the OS keychain).
+    sealing_wanted: bool,
+    history_key: std::sync::OnceLock<Option<crate::history::HistoryKey>>,
     listeners: Vec<Listener>,
     audit_origin: AuditOrigin,
     /// Binary-side context captured once per process — the enrichment every
@@ -119,6 +142,11 @@ impl Engine {
             reranker: None,
             nli: None,
             repo_root: None,
+            history_path: None,
+            history: std::sync::Mutex::new(None),
+            provenance_lot: std::sync::Mutex::new(Vec::new()),
+            sealing_wanted: false,
+            history_key: std::sync::OnceLock::new(),
             listeners: Vec::new(),
             audit_origin: AuditOrigin::default(),
             audit_cwd: std::env::current_dir()
@@ -188,6 +216,703 @@ impl Engine {
     /// scoped project must use *its* root, never the daemon's cwd.
     pub fn repo_root(&self) -> Option<&std::path::Path> {
         self.repo_root.as_deref()
+    }
+
+    /// Tell this engine where its history store lives (serve wires it to
+    /// `history.tepin` beside the curated store). Opens right away when the
+    /// graph's history config is enabled.
+    pub fn set_history_path(&mut self, path: std::path::PathBuf) {
+        self.history_path = Some(path);
+        self.sync_history_store();
+    }
+
+    /// Where this graph's history store lives, when serve installed it.
+    pub fn history_path(&self) -> Option<&std::path::Path> {
+        self.history_path.as_deref()
+    }
+
+    /// Run `f` against the history layer's store — `None` when the layer is
+    /// disabled, pathless, or failed to open. The closure shape (rather than
+    /// a borrow) is what lets config writes swap the handle under `&self`.
+    pub fn with_history<R>(&self, f: impl FnOnce(&dyn Store) -> R) -> Option<R> {
+        match self.history.lock() {
+            Ok(guard) => guard.as_deref().map(f),
+            Err(_) => None,
+        }
+    }
+
+    /// Whether the history layer is live on this engine right now.
+    pub fn history_open(&self) -> bool {
+        self.history.lock().is_ok_and(|g| g.is_some())
+    }
+
+    /// The machine's history sealing key, loaded once per process (keyring,
+    /// then file fallback). `None` = sealing unavailable — writes stay
+    /// plaintext rather than failing, and the backlog pass seals them the
+    /// moment a key exists.
+    /// Opt this engine into at-rest history sealing (serve does; tests and
+    /// library embedders don't, so they never touch the OS keychain).
+    pub fn enable_history_sealing(&mut self) {
+        self.sealing_wanted = true;
+    }
+
+    fn history_key(&self) -> Option<&crate::history::HistoryKey> {
+        if !self.sealing_wanted {
+            return None;
+        }
+        self.history_key
+            .get_or_init(crate::history::HistoryKey::load_or_create)
+            .as_ref()
+    }
+
+    /// Decrypt one stored history string for a reader. Unsealed strings pass
+    /// through (pre-seal rows, structural fields); an undecryptable blob
+    /// renders as a placeholder, never as garbage.
+    fn unseal_str(&self, s: &str) -> String {
+        if !crate::history::is_sealed(s) {
+            return s.to_string();
+        }
+        self.history_key()
+            .and_then(|k| k.unseal(s))
+            .unwrap_or_else(|| "[sealed — history key unavailable]".to_string())
+    }
+
+    /// Write one node into the history layer and embed it there — the
+    /// harvester's write path. Deliberately NOT [`Engine::add_node`]: no
+    /// audit row, no change event, no dupe verdicts, no version stamp —
+    /// history is records, not knowledge.
+    ///
+    /// Order is load-bearing: scrub the plaintext (the store's own scrub
+    /// can't see through a seal), embed the SCRUBBED PLAINTEXT (vectors stay
+    /// deliberately open — documented inversion risk), then seal title+body
+    /// and store. `Ok(None)` when the layer is disabled or closed.
+    pub fn add_history_node(&self, mut n: NewNode) -> Result<Option<Node>> {
+        n.title = crate::redact::scrub(&n.title);
+        n.body = n.body.as_deref().map(crate::redact::scrub);
+        let plain_title = n.title.clone();
+        let plain_body = n.body.clone();
+        if let Some(key) = self.history_key() {
+            n.title = key.seal(&n.title);
+            n.body = n.body.as_deref().map(|b| key.seal(b));
+        }
+        let Some(node) = self.with_history(|s| s.add_node(n)).transpose()? else {
+            return Ok(None);
+        };
+        let mut texts = vec![embed_text(
+            &plain_title,
+            plain_body.as_deref(),
+            &node.tags,
+            &node.code_refs,
+        )];
+        texts.extend(claim_texts(&plain_title, plain_body.as_deref()));
+        let vectors = self.embedder.embed(&texts)?;
+        self.with_history(|s| s.upsert_embeddings(&node.id, &vectors))
+            .transpose()?;
+        Ok(Some(node))
+    }
+
+    /// Seal any plaintext rows a pre-seal daemon (or a keyless period) left
+    /// behind — the re-seal pass the "encryption last" build order requires.
+    /// Vectors are untouched: they were computed from the same plaintext and
+    /// stay open by design. Returns how many nodes were sealed.
+    pub fn seal_history_backlog(&self) -> Result<usize> {
+        let Some(_) = self.history_key() else {
+            return Ok(0);
+        };
+        let nodes = self
+            .with_history(|s| s.all_nodes())
+            .transpose()?
+            .unwrap_or_default();
+        let mut sealed = 0usize;
+        for mut node in nodes {
+            let title_open = !crate::history::is_sealed(&node.title);
+            let body_open = node
+                .body
+                .as_deref()
+                .is_some_and(|b| !crate::history::is_sealed(b));
+            if !title_open && !body_open {
+                continue;
+            }
+            let key = self.history_key().expect("checked above");
+            if title_open {
+                node.title = key.seal(&node.title);
+            }
+            if body_open && let Some(b) = &node.body {
+                node.body = Some(key.seal(b));
+            }
+            self.with_history(|s| s.upsert_node(&node)).transpose()?;
+            sealed += 1;
+        }
+        Ok(sealed)
+    }
+
+    /// Write one edge into the history layer (`in`/`next`/`born-in` chains).
+    /// `Ok(None)` when the layer is disabled or closed.
+    pub fn add_history_edge(&self, e: NewEdge) -> Result<Option<Edge>> {
+        self.with_history(|s| s.add_edge(e)).transpose()
+    }
+
+    /// Park a freshly-created curated note for born-in provenance (decision
+    /// 00bgftf9usll): the harvester lags the live transcript, so the note's
+    /// birth exchange resolves on a later tick via
+    /// [`Engine::resolve_provenance`]. No-op when the history layer is off.
+    pub fn park_provenance(&self, note_id: &str, ts: i64) {
+        if !self.history_open() {
+            return;
+        }
+        let Ok(mut lot) = self.provenance_lot.lock() else {
+            return;
+        };
+        // Bounded: a graph nobody harvests must not grow a queue forever.
+        if lot.len() >= 256 {
+            lot.remove(0);
+        }
+        lot.push(ParkedProvenance {
+            note_id: note_id.to_string(),
+            ts,
+            parked_at: crate::store::now(),
+        });
+    }
+
+    /// Rebuild the parking lot after a restart: recent assistant-written
+    /// notes that never got their born-in edge re-park from the store, so a
+    /// daemon restart (deploys are routine here) costs no provenance. The
+    /// in-memory lot stays the fast path; this is its recovery. Bounded by
+    /// recency so pre-history notes never enter.
+    pub fn repark_recent_provenance(&self, window_secs: i64) -> Result<usize> {
+        if !self.history_open() {
+            return Ok(0);
+        }
+        let now = crate::store::now();
+        let already: std::collections::HashSet<String> = match self.provenance_lot.lock() {
+            Ok(lot) => lot.iter().map(|p| p.note_id.clone()).collect(),
+            Err(_) => return Ok(0),
+        };
+        let mut reparked = 0;
+        for node in self.store.all_nodes()? {
+            if node.source != crate::types::Source::Claude
+                || node.valid_until.is_some()
+                || now - node.created_at > window_secs
+                || already.contains(&node.id)
+                || self.born_in_of(&node.id).is_some()
+            {
+                continue;
+            }
+            self.park_provenance(&node.id, node.created_at);
+            reparked += 1;
+        }
+        Ok(reparked)
+    }
+
+    /// Resolve parked notes to their birth exchange: the closest preceding
+    /// assistant Message, preferring sessions still alive after the note's
+    /// moment (concurrent sessions on one project can't steal provenance
+    /// from a dead one). An entry resolves once ingestion has caught up past
+    /// its timestamp, or best-effort after a grace period; either way it
+    /// leaves the lot. Returns how many `born-in` edges were written.
+    pub fn resolve_provenance(&self) -> Result<usize> {
+        const GRACE_SECS: i64 = 900;
+        {
+            let Ok(lot) = self.provenance_lot.lock() else {
+                return Ok(0);
+            };
+            if lot.is_empty() {
+                return Ok(0);
+            }
+        }
+        // One history scan amortized over every parked entry.
+        let msgs: Vec<(String, i64, bool, Option<String>)> = self
+            .with_history(|s| s.all_nodes())
+            .transpose()?
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|n| n.node_type.as_str() == crate::history::MESSAGE_TYPE)
+            .map(|n| {
+                let assistant = n
+                    .props
+                    .as_ref()
+                    .and_then(|p| p.get("role"))
+                    .and_then(|r| r.as_str())
+                    == Some("assistant");
+                (n.id, n.created_at, assistant, n.session_id)
+            })
+            .collect();
+        let ingested_up_to = msgs.iter().map(|m| m.1).max().unwrap_or(i64::MIN);
+        let now = crate::store::now();
+        let Ok(mut lot) = self.provenance_lot.lock() else {
+            return Ok(0);
+        };
+        let mut edges = Vec::new();
+        lot.retain(|p| {
+            if ingested_up_to < p.ts && now - p.parked_at <= GRACE_SECS {
+                return true; // the transcript hasn't caught up — wait
+            }
+            let alive: std::collections::HashSet<&str> = msgs
+                .iter()
+                .filter(|m| m.1 >= p.ts)
+                .filter_map(|m| m.3.as_deref())
+                .collect();
+            let best = msgs
+                .iter()
+                .filter(|m| m.2 && m.1 <= p.ts)
+                .max_by_key(|m| {
+                    let in_alive = m.3.as_deref().is_some_and(|s| alive.contains(s));
+                    (in_alive, m.1, m.0.clone())
+                });
+            if let Some(m) = best {
+                edges.push((p.note_id.clone(), m.0.clone()));
+            }
+            false // resolved or expired — either way, done
+        });
+        drop(lot);
+        let n = edges.len();
+        let ts = now;
+        for (note, msg) in edges {
+            // born-in is the one half-resident edge: it lives in the history
+            // store but its `from` is a curated node. `add_edge` validates
+            // endpoints, so it goes through the verbatim upsert path instead.
+            let edge = crate::types::Edge {
+                id: crate::id::new_id(),
+                edge_type: crate::types::EdgeType::parse(crate::history::VERB_BORN_IN)?,
+                from_id: note,
+                to_id: msg,
+                source: crate::types::Source::Claude,
+                created_at: ts,
+                confidence: None,
+                strength: None,
+                note: None,
+                valid_from: Some(ts),
+                valid_until: None,
+                status: None,
+            };
+            self.with_history(|s| s.upsert_edge(&edge)).transpose()?;
+        }
+        Ok(n)
+    }
+
+    /// Search the history layer: vector-first (no FTS exists over history —
+    /// caution 00bgftfbusll), then the cross-encoder re-scores the candidate
+    /// texts at query time. Scores live on the reranker's scale but are
+    /// NEVER blended with curated scores (the 0.8.1 register lesson) — the
+    /// caller renders these as their own labeled section. Empty when the
+    /// layer is off or `search_fallthrough` gates it at the call site.
+    pub fn search_history(&self, query: &str, limit: usize) -> Result<Vec<crate::history::HistoryHit>> {
+        if limit == 0 {
+            return Ok(vec![]);
+        }
+        let qv = self.embedder.embed_one(query)?;
+        let mut hits = self
+            .with_history(|s| -> Result<Vec<crate::history::HistoryHit>> {
+                let k = (limit * 8).clamp(16, 64);
+                let mut session_titles = std::collections::HashMap::new();
+                for n in s.nodes_by_type_active(
+                    &crate::types::NodeType::parse(crate::history::SESSION_TYPE)?,
+                    usize::MAX,
+                )? {
+                    if let Some(sid) = &n.session_id {
+                        session_titles.insert(sid.clone(), n.title);
+                    }
+                }
+                let mut out = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                for (id, dist) in s.search_vec(&qv, k)? {
+                    // Claim chunks share the node id — first (closest) wins.
+                    if !seen.insert(id.clone()) {
+                        continue;
+                    }
+                    let Some(n) = s.get_node(&id)? else { continue };
+                    if n.node_type.as_str() != crate::history::MESSAGE_TYPE {
+                        continue;
+                    }
+                    let p = |k: &str| n.props.as_ref().and_then(|m| m.get(k).cloned());
+                    let session = n.session_id.clone().unwrap_or_default();
+                    out.push(crate::history::HistoryHit {
+                        message_id: n.id.clone(),
+                        session_title: session_titles
+                            .get(&session)
+                            .map(|t| self.unseal_str(t))
+                            .unwrap_or_default(),
+                        session,
+                        harness: p("harness").and_then(|v| v.as_str().map(str::to_string)),
+                        role: p("role")
+                            .and_then(|v| v.as_str().map(str::to_string))
+                            .unwrap_or_else(|| "assistant".into()),
+                        turn: p("turn").and_then(|v| v.as_u64()),
+                        timestamp: n.created_at,
+                        snippet: crate::harvest::truncate_words(
+                            &self.unseal_str(n.body.as_deref().unwrap_or(&n.title)),
+                            240,
+                        ),
+                        score: (1.0 - dist).clamp(0.0, 1.0),
+                    });
+                }
+                Ok(out)
+            })
+            .transpose()?
+            .unwrap_or_default();
+        if let Some(reranker) = &self.reranker
+            && !hits.is_empty()
+        {
+            // Re-score over the FULL text (re-read per candidate — the same
+            // shape the encrypted store needs later: decrypt N candidates in
+            // memory at query time, nothing persistent).
+            let docs: Vec<String> = hits
+                .iter()
+                .map(|h| {
+                    self.with_history(|s| {
+                        s.get_node(&h.message_id)
+                            .ok()
+                            .flatten()
+                            .and_then(|n| n.body)
+                            .map(|b| self.unseal_str(&b))
+                            .unwrap_or_else(|| h.snippet.clone())
+                    })
+                    .unwrap_or_else(|| h.snippet.clone())
+                })
+                .collect();
+            if let Ok(logits) = reranker.rank(query, &docs) {
+                for (h, l) in hits.iter_mut().zip(logits) {
+                    h.score = 1.0 / (1.0 + (-f64::from(l)).exp());
+                }
+            }
+        }
+        hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+        hits.truncate(limit);
+        // Section gate, not per-hit trim (measured 2026-08-11): the per-hit
+        // delivery floor halved false-fall-through noise but cost 0.03
+        // end-to-end and 0.09 oblique dialogue recall — the 0.8.1 register
+        // lesson (0.22 was calibrated on curated notes, not chat). Gating on
+        // the TOP hit instead makes an all-noise section vanish while a
+        // section with any real match keeps its full candidate list — low-
+        // ranked gold survives.
+        if self.reranker.is_some()
+            && hits
+                .first()
+                .is_none_or(|top| top.score < self.store.config().policy.delivery_floor)
+        {
+            hits.clear();
+        }
+        Ok(hits)
+    }
+
+    /// Every message of one session, decrypted in memory and in
+    /// conversation order — the pane's history view reads whole sessions.
+    pub fn history_messages(
+        &self,
+        session: &str,
+    ) -> Result<Vec<crate::history::HistoryMessageView>> {
+        let msgs = self
+            .with_history(|s| -> Result<Vec<crate::types::Node>> {
+                Ok(s.all_nodes()?
+                    .into_iter()
+                    .filter(|n| {
+                        n.node_type.as_str() == crate::history::MESSAGE_TYPE
+                            && n.session_id.as_deref() == Some(session)
+                    })
+                    .collect())
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let mut views: Vec<crate::history::HistoryMessageView> = msgs
+            .into_iter()
+            .map(|n| {
+                let p = |k: &str| n.props.as_ref().and_then(|m| m.get(k).cloned());
+                crate::history::HistoryMessageView {
+                    role: p("role")
+                        .and_then(|v| v.as_str().map(str::to_string))
+                        .unwrap_or_else(|| "assistant".into()),
+                    turn: p("turn").and_then(|v| v.as_u64()),
+                    timestamp: n.created_at,
+                    text: self.unseal_str(&n.body.unwrap_or_default()),
+                    message_id: n.id,
+                }
+            })
+            .collect();
+        views.sort_by_key(|v| (v.turn.unwrap_or(u64::MAX), v.timestamp));
+        Ok(views)
+    }
+
+    /// The exchange around one turn of a session, decrypted in memory —
+    /// `expand_history(session, turn, window)`. The model decides how much
+    /// raw dialogue to spend context on; nothing is auto-injected.
+    pub fn expand_history(
+        &self,
+        session: &str,
+        turn: u64,
+        window: u64,
+    ) -> Result<Vec<crate::history::HistoryMessageView>> {
+        let views = self.history_messages(session)?;
+        if views.is_empty() {
+            return Ok(views);
+        }
+        let center = views
+            .iter()
+            .position(|v| v.turn == Some(turn))
+            .unwrap_or_else(|| {
+                // Nearest by turn when the exact one was filtered/absent.
+                views
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, v)| v.turn.unwrap_or(u64::MAX).abs_diff(turn))
+                    .map(|(i, _)| i)
+                    .unwrap_or(0)
+            });
+        let window = (window as usize).min(views.len());
+        let lo = center.saturating_sub(window);
+        let hi = (center + window + 1).min(views.len());
+        Ok(views[lo..hi].to_vec())
+    }
+
+    /// Every recorded session, newest lane first — the history browser's
+    /// spine.
+    pub fn list_history_sessions(&self) -> Result<Vec<crate::history::HistorySessionView>> {
+        let mut out: Vec<crate::history::HistorySessionView> = self
+            .with_history(|s| {
+                s.nodes_by_type_active(
+                    &crate::types::NodeType::parse(crate::history::SESSION_TYPE)?,
+                    usize::MAX,
+                )
+            })
+            .transpose()?
+            .unwrap_or_default()
+            .into_iter()
+            .map(|n| {
+                let p = |k: &str| n.props.as_ref().and_then(|m| m.get(k).cloned());
+                crate::history::HistorySessionView {
+                    session: n.session_id.clone().unwrap_or_default(),
+                    title: self.unseal_str(&n.title),
+                    harness: p("harness").and_then(|v| v.as_str().map(str::to_string)),
+                    started: n.created_at,
+                    ended: p("ended").and_then(|v| v.as_i64()),
+                    messages: p("messages").and_then(|v| v.as_u64()).unwrap_or(0),
+                    version: n.version,
+                    node_id: n.id,
+                }
+            })
+            .collect();
+        out.sort_by_key(|s| std::cmp::Reverse(s.started));
+        Ok(out)
+    }
+
+    /// Per-session hard delete (pane-only, like every hard delete): the
+    /// Session node, its messages, and their edges leave the history store —
+    /// and the session's transcript path joins `history.exclude_paths`, or
+    /// the harvester would quietly resurrect it from the file that still
+    /// sits on disk. The exclusion is visible (and reversible) in settings.
+    pub fn delete_history_session(&self, session: &str) -> Result<usize> {
+        let (removed, transcript) = self
+            .with_history(|s| -> Result<(usize, Option<String>)> {
+                let nodes: Vec<Node> = s
+                    .all_nodes()?
+                    .into_iter()
+                    .filter(|n| n.session_id.as_deref() == Some(session))
+                    .collect();
+                let transcript = nodes
+                    .iter()
+                    .find(|n| n.node_type.as_str() == crate::history::SESSION_TYPE)
+                    .and_then(|n| n.props.as_ref())
+                    .and_then(|p| p.get("path"))
+                    .and_then(|v| v.as_str().map(str::to_string));
+                for n in &nodes {
+                    s.delete_node(&n.id)?;
+                }
+                Ok((nodes.len(), transcript))
+            })
+            .transpose()?
+            .unwrap_or((0, None));
+        if let Some(path) = transcript {
+            let mut cfg = (*self.store.config()).clone();
+            if !cfg.history.exclude_paths.contains(&path) {
+                cfg.history.exclude_paths.push(path);
+                self.set_graph_config(&cfg)?;
+            }
+        }
+        if removed > 0 {
+            self.audit(
+                "history_session_deleted",
+                "graph",
+                session,
+                Some(format!("{removed} recorded node(s) removed")),
+                None,
+                None,
+                None,
+            )?;
+        }
+        Ok(removed)
+    }
+
+    /// Counts for the pane's History settings (None = layer closed).
+    pub fn history_stats(&self) -> Option<crate::StoreStats> {
+        self.with_history(|s| s.stats().ok()).flatten()
+    }
+
+    /// Wholesale history delete — the user-only escape hatch the sibling
+    /// store exists for. Drops the handle, removes the file, and (when the
+    /// layer is enabled) reopens fresh with a re-seeded ontology. The caller
+    /// (HTTP layer) also bumps the hub's history epoch so the running
+    /// harvester forgets its cursors and caches.
+    pub fn reset_history(&self) -> Result<()> {
+        let Some(path) = self.history_path.clone() else {
+            return Ok(());
+        };
+        {
+            let Ok(mut slot) = self.history.lock() else {
+                return Err(crate::Error::Io("history handle poisoned".into()));
+            };
+            *slot = None; // close before deleting — redb is single-handle
+            if path.exists() {
+                std::fs::remove_file(&path)
+                    .map_err(|e| crate::Error::Io(format!("removing {}: {e}", path.display())))?;
+            }
+        }
+        self.sync_history_store();
+        self.audit(
+            "history_reset",
+            "graph",
+            "",
+            Some("history layer wiped by the user".into()),
+            None,
+            None,
+            None,
+        )?;
+        Ok(())
+    }
+
+    /// Where a curated node was born, when its `born-in` edge exists — the
+    /// provenance line on search hits and the pane's history chip.
+    pub fn born_in_of(&self, node_id: &str) -> Option<crate::history::BornIn> {
+        self.with_history(|s| {
+            let edge = s
+                .edges_out(node_id)
+                .ok()?
+                .into_iter()
+                .find(|e| e.edge_type.as_str() == crate::history::VERB_BORN_IN)?;
+            let msg = s.get_node(&edge.to_id).ok()??;
+            Some(crate::history::BornIn {
+                session: msg.session_id.clone().unwrap_or_default(),
+                turn: msg
+                    .props
+                    .as_ref()
+                    .and_then(|p| p.get("turn"))
+                    .and_then(|v| v.as_u64()),
+                timestamp: msg.created_at,
+                message_id: msg.id,
+            })
+        })
+        .flatten()
+    }
+
+    /// Every curated note born inside one recorded session, in turn order —
+    /// the reverse of [`Self::born_in_of`]: what a conversation left in
+    /// memory. The `born-in` edges live in the history store (half-resident,
+    /// curated `from`), so the scan walks the session's messages there and
+    /// resolves the notes against the curated store.
+    pub fn session_notes(&self, session: &str) -> Result<Vec<crate::history::SessionNote>> {
+        // (note id, turn, message id, message ts) per born-in edge.
+        type Born = Vec<(String, Option<u64>, String, i64)>;
+        let born: Born = self
+            .with_history(|s| -> Result<Born> {
+                let mut out = Vec::new();
+                for n in s.all_nodes()? {
+                    if n.node_type.as_str() != crate::history::MESSAGE_TYPE
+                        || n.session_id.as_deref() != Some(session)
+                    {
+                        continue;
+                    }
+                    let turn = n
+                        .props
+                        .as_ref()
+                        .and_then(|p| p.get("turn"))
+                        .and_then(|v| v.as_u64());
+                    for e in s.edges_in(&n.id)? {
+                        if e.edge_type.as_str() == crate::history::VERB_BORN_IN {
+                            out.push((e.from_id.clone(), turn, n.id.clone(), n.created_at));
+                        }
+                    }
+                }
+                Ok(out)
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let mut notes = Vec::new();
+        for (note_id, turn, message_id, timestamp) in born {
+            let Some(node) = self.store.get_node(&note_id)? else {
+                continue; // the note was hard-deleted; its edge is a ghost
+            };
+            notes.push(crate::history::SessionNote {
+                id: node.id,
+                node_type: node.node_type.as_str().to_string(),
+                title: node.title,
+                turn,
+                message_id,
+                timestamp,
+            });
+        }
+        notes.sort_by_key(|n| (n.turn.unwrap_or(u64::MAX), n.timestamp));
+        Ok(notes)
+    }
+
+    /// Replace a history node in place (the harvester's cursor bumps and
+    /// title upgrades live in `Session.props`). Fields arrive plaintext (a
+    /// retitle) or still sealed (a props-only flush) — plaintext gets
+    /// sealed, sealed passes through. Re-embeds only when asked, always
+    /// from plaintext. Returns whether the layer was open to take the write.
+    pub fn upsert_history_node(&self, node: &Node, re_embed: bool) -> Result<bool> {
+        let mut stored = node.clone();
+        let plain_title = self.unseal_str(&stored.title);
+        let plain_body = stored.body.as_deref().map(|b| self.unseal_str(b));
+        if let Some(key) = self.history_key() {
+            if !crate::history::is_sealed(&stored.title) {
+                stored.title = key.seal(&stored.title);
+            }
+            if let Some(b) = &stored.body
+                && !crate::history::is_sealed(b)
+            {
+                stored.body = Some(key.seal(b));
+            }
+        }
+        let wrote = self
+            .with_history(|s| {
+                s.upsert_node(&stored)?;
+                Ok::<_, crate::Error>(())
+            })
+            .transpose()?;
+        if wrote.is_some() && re_embed {
+            let mut texts = vec![embed_text(
+                &plain_title,
+                plain_body.as_deref(),
+                &stored.tags,
+                &stored.code_refs,
+            )];
+            texts.extend(claim_texts(&plain_title, plain_body.as_deref()));
+            let vectors = self.embedder.embed(&texts)?;
+            self.with_history(|s| s.upsert_embeddings(&stored.id, &vectors))
+                .transpose()?;
+        }
+        Ok(wrote.is_some())
+    }
+
+    /// Reconcile the open handle with `config().history.enabled` — runs on
+    /// path install and after every config write, so the pane's toggle takes
+    /// effect without a daemon restart. Disabling drops the handle; the file
+    /// stays on disk (delete is a user gesture).
+    fn sync_history_store(&self) {
+        let Ok(mut slot) = self.history.lock() else {
+            return;
+        };
+        let enabled = self.store.config().history.enabled;
+        if enabled && slot.is_none() {
+            if let Some(path) = &self.history_path {
+                match crate::history::open_history_store(path) {
+                    Ok(s) => *slot = Some(s),
+                    Err(e) => {
+                        eprintln!("engram: couldn't open history store {}: {e}", path.display())
+                    }
+                }
+            }
+        } else if !enabled && slot.is_some() {
+            *slot = None;
+        }
     }
 
     /// Path-shaped code_refs that don't resolve against the repo root right
@@ -1184,6 +1909,7 @@ impl Engine {
             None,
         )?;
         self.notify(ChangeEvent::ConfigChanged);
+        self.sync_history_store();
         Ok(())
     }
 
@@ -2907,6 +3633,13 @@ impl Engine {
     }
 
     fn embed_node(&self, node: &Node) -> Result<()> {
+        self.embed_node_into(self.store.as_ref(), node)
+    }
+
+    /// The one embedding recipe, aimed at an explicit store — the curated
+    /// store on every normal write, the history store for harvested nodes
+    /// (same composition, so history search rides the same pipeline).
+    fn embed_node_into(&self, store: &dyn Store, node: &Node) -> Result<()> {
         let mut texts = vec![embed_text(
             &node.title,
             node.body.as_deref(),
@@ -2915,7 +3648,7 @@ impl Engine {
         )];
         texts.extend(claim_texts(&node.title, node.body.as_deref()));
         let vectors = self.embedder.embed(&texts)?;
-        self.store.upsert_embeddings(&node.id, &vectors)
+        store.upsert_embeddings(&node.id, &vectors)
     }
 
     /// Bring stored vectors in line with the ACTIVE embedding model (PLAN §7A

@@ -342,6 +342,16 @@ fn api_router(state: Arc<AppState>) -> Router {
         .route("/config/rename-verb", post(rename_verb))
         .route("/skills/install", post(skills_install))
         .route("/refs/match", get(refs_match))
+        .route(
+            "/history",
+            get(history_stats).delete(history_reset),
+        )
+        .route("/nodes/{id}/born-in", get(node_born_in))
+        .route("/history/sessions", get(history_sessions))
+        .route(
+            "/history/sessions/{sid}",
+            get(history_session_messages).delete(history_session_delete),
+        )
         .route("/audit/stale", post(audit_stale))
         .route("/events", get(sse))
         // Anything not an API route is the Vue pane (served from the embedded
@@ -833,6 +843,10 @@ async fn search(
         return Ok(Json(json!({ "hits": hits, "skipped": skipped })));
     }
     let engine = state.engine_arc(&scope)?;
+    if p.scope.as_deref() == Some("history") {
+        let hits = engine.lock().unwrap().search_history(&p.q, limit)?;
+        return Ok(Json(json!(hits)));
+    }
     let hits = pane(&engine).search(&p.q, &types, limit)?;
     Ok(Json(json!(hits)))
 }
@@ -1006,6 +1020,89 @@ struct DecayParams {
 }
 
 /// The decay pass (PLAN §6B). `dry_run=true` previews what would archive.
+/// History-layer status for the pane's settings section: whether the layer
+/// is open, and what it holds. Cheap enough to poll.
+async fn history_stats(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    let engine = engine.lock().unwrap();
+    let cfg = engine.config();
+    let stats = engine.history_stats();
+    Ok(Json(json!({
+        "enabled": cfg.history.enabled,
+        "open": engine.history_open(),
+        "search_fallthrough": cfg.history.search_fallthrough,
+        "stats": stats,
+    })))
+}
+
+/// Wholesale history delete — user-only, like curated hard delete. Wipes
+/// `history.tepin` (reopening fresh when the layer stays enabled) and bumps
+/// the hub's epoch so the running harvester forgets its cursors.
+async fn history_reset(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    {
+        let mut engine = engine.lock().unwrap();
+        engine.set_audit_origin(engram_core::AuditOrigin::pane());
+        engine.reset_history()?;
+    }
+    state.hub.bump_history_epoch();
+    Ok(Json(json!({ "reset": true })))
+}
+
+/// The curated node's birth exchange, when born-in provenance exists — the
+/// pane's "history" chip.
+async fn node_born_in(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    let born = engine.lock().unwrap().born_in_of(&id);
+    Ok(Json(json!({ "born_in": born })))
+}
+
+async fn history_sessions(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    let sessions = engine.lock().unwrap().list_history_sessions()?;
+    Ok(Json(json!({ "sessions": sessions })))
+}
+
+async fn history_session_messages(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+    Path(sid): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    let messages = engine.lock().unwrap().history_messages(&sid)?;
+    Ok(Json(json!({ "session": sid, "messages": messages })))
+}
+
+/// Per-session hard delete — pane-only, like every hard delete.
+async fn history_session_delete(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+    Path(sid): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    let removed = {
+        let mut engine = engine.lock().unwrap();
+        engine.set_audit_origin(AuditOrigin::pane());
+        // No epoch bump: the deletion excludes the transcript path itself,
+        // and a cursor wipe would only re-scan what's now excluded anyway.
+        engine.delete_history_session(&sid)?
+    };
+    Ok(Json(json!({ "removed": removed })))
+}
+
 async fn decay(
     State(state): State<Arc<AppState>>,
     scope: Scope,
@@ -1386,6 +1483,9 @@ struct SearchParams {
     q: String,
     limit: Option<usize>,
     types: Option<String>,
+    /// "history" = search the recorded-session layer instead of curated
+    /// memory (the pane's history view routes its search box here).
+    scope: Option<String>,
 }
 
 #[derive(Deserialize)]

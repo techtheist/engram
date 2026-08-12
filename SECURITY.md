@@ -24,8 +24,33 @@ the graph file like you treat your shell history.
 
 **Data at rest.** Graph stores (`.engram/graph.db` / `graph.tepin`) stay
 inside the repo, are git-ignored by `setup` (and checked by `doctor`), and
-never leave the machine unless you explicitly export. They are protected by
-OS file permissions only — see *Known gaps* for the encryption plan.
+never leave the machine unless you explicitly export. The curated graph is
+protected by OS file permissions (plus full-disk encryption if you run it —
+recommended).
+
+**Session history at rest (0.8.4).** The history layer
+(`.engram/history.tepin`) records raw assistant conversations, so it gets
+more: message and session **text is sealed** — zstd-compressed, then
+encrypted with XChaCha20-Poly1305 under a per-machine 256-bit key minted on
+first need and stored in the OS keystore (macOS Keychain / Windows credential
+store / Linux secret-service), with a `~/.engram/history.key` (0600) fallback
+for headless machines (`ENGRAM_KEYRING=off` forces the file). Honest scope:
+
+- **Protects**: copied `.tepin` files, backups, stolen disks without FDE,
+  other OS users. Losing the key makes history unreadable; the curated graph
+  is unaffected.
+- **Does NOT protect** against malware running as your user — it can read the
+  keystore exactly like the daemon does. That boundary belongs to the OS.
+- **Stays plaintext, by design**: node/edge structure, types, timestamps,
+  session ids — and **embedding vectors**. Vectors admit inversion attacks
+  that recover the *gist* of a message, not its text; sealing them would
+  break vector-first retrieval. Stated here so nobody mistakes the layer for
+  more than it is.
+- **No keyword index over history text**: history search is vector-first, and
+  candidate text is decrypted in memory at query time only. (The index would
+  otherwise persist exactly the plaintext the seal protects.)
+- Redaction runs on the plaintext **before** sealing — secrets never reach
+  the store, encrypted or not.
 
 **Memory poisoning.** An assistant can be prompt-injected by hostile content
 into writing false "knowledge". The trust model limits the blast radius:
@@ -43,10 +68,15 @@ over HTTPS from their recorded Hugging Face URLs into `~/.cache/engram/`.
 
 ## Known gaps (tracked, in the open)
 
-- **No encryption at rest — yet.** App-level encryption of the graph stores
-  is planned for a later release; this release deliberately ships without it.
-  Until then, disk encryption (FileVault/LUKS/BitLocker) is the effective
-  at-rest protection.
+- **The curated graph is not encrypted at rest.** 0.8.4 sealed the history
+  layer (see above) — the deliberately-scoped first step of the app-level
+  encryption thread. The curated store still relies on OS permissions and
+  disk encryption (FileVault/LUKS/BitLocker); extending sealing to it is a
+  separate decision (it would cost the pane's `npx tepindb` inspectability).
+- **Deleted history can linger in freed pages.** Hard-deleting a session (or
+  wiping the layer) removes the rows, but the storage engine's freed pages
+  aren't scrubbed — the same caveat already documented for curated hard
+  deletes. Sealed rows reduce this to ciphertext residue.
 - **Permissive CORS on the localhost API.** Any page in your browser can
   currently call the daemon's REST API. Hardening to an origin allowlist
   (localhost + the IDE webview origins the pane embeds under) is scheduled

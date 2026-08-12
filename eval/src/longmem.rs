@@ -622,6 +622,7 @@ fn run_question(
                 code_refs: vec![],
                 tags: vec![],
                 version: None,
+                props: None,
             })?;
             sid_of.insert(node.id, sid.clone());
             flat_turns.push((sid.clone(), content.to_string()));
@@ -840,6 +841,7 @@ mod tests {
             code_refs: vec![],
             tags: vec![],
             version: None,
+            props: None,
         };
         let n = engine.add_node(note("statement")).unwrap();
         assert_eq!(n.node_type.as_str(), "statement");

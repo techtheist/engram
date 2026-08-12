@@ -33,8 +33,11 @@ import presets from './data/presets.json'
 import models from './data/models.json'
 import {
     ANSWERED_HINTS,
+    BORN_IN,
     DRIFT,
     FS_LISTING,
+    HISTORY_MESSAGES,
+    HISTORY_SESSIONS,
     PROJECTS,
     SEARCH_HITS,
     claimReport,
@@ -79,6 +82,26 @@ export const api: EngramApi = {
 
     // Pre-recorded: ranking is the cortex's job and the cortex isn't here.
     search: () => ok(SEARCH_HITS),
+
+    searchHistory: (query: string) => {
+        const q = query.toLowerCase()
+        const hits = HISTORY_SESSIONS.flatMap((s) =>
+            (HISTORY_MESSAGES[s.session] ?? [])
+                .filter((m) => m.text.toLowerCase().includes(q))
+                .map((m) => ({
+                    message_id: m.message_id,
+                    session: s.session,
+                    session_title: s.title,
+                    harness: s.harness,
+                    role: m.role,
+                    turn: m.turn,
+                    timestamp: m.timestamp,
+                    snippet: m.text.slice(0, 240),
+                    score: 0.7,
+                })),
+        )
+        return ok(hits.slice(0, 8))
+    },
 
     reconfirm: (id) => ok(engine.reconfirm(id)),
     approve: (id) => ok(engine.approve(id)),
@@ -168,6 +191,38 @@ export const api: EngramApi = {
         }
         return ok(info)
     },
+
+    /** Canned history: two recorded Lantern sessions the decisions were born in. */
+    historyStatus: () =>
+        ok({
+            enabled: engine.state().config.history?.enabled ?? true,
+            open: true,
+            search_fallthrough: engine.state().config.history?.search_fallthrough ?? true,
+            stats: {
+                backend: 'tepindb',
+                nodes:
+                    HISTORY_SESSIONS.length +
+                    Object.values(HISTORY_MESSAGES).reduce((n, m) => n + m.length, 0),
+                edges: Object.values(HISTORY_MESSAGES).reduce((n, m) => n + m.length, 0),
+                embedded:
+                    HISTORY_SESSIONS.length +
+                    Object.values(HISTORY_MESSAGES).reduce((n, m) => n + m.length, 0),
+            },
+        }),
+    historyReset: () => {
+        HISTORY_SESSIONS.length = 0
+        return ok({ reset: true })
+    },
+    historySessions: () => ok({ sessions: [...HISTORY_SESSIONS] }),
+    historyMessages: (sid: string) =>
+        ok({ session: sid, messages: HISTORY_MESSAGES[sid] ?? [] }),
+    historyDeleteSession: (sid: string) => {
+        const i = HISTORY_SESSIONS.findIndex((s) => s.session === sid)
+        const removed = i >= 0 ? 1 + (HISTORY_MESSAGES[sid]?.length ?? 0) : 0
+        if (i >= 0) HISTORY_SESSIONS.splice(i, 1)
+        return ok({ removed })
+    },
+    bornIn: (id: string) => ok({ born_in: BORN_IN[id] ?? null }),
 
     config: () => ok(engine.state().config),
     putConfig: (cfg: GraphConfig) => {

@@ -25,6 +25,16 @@ You interact with it through the `engram` MCP tools. Three jobs: **recall** (rea
 - For **whole-graph work**: `list_nodes` pages complete nodes (full bodies, filters by type/status/tag) — the lossless read for reviews and exports like a decisions.md; `update_nodes` / `add_notes` batch a curation sweep or a multi-note capture into one call (same per-item dupe checks and warnings).
 - `list_open` shows the live worklist (open Problems and Intents) — check it when picking up work.
 
+## Session history — the layer beneath memory
+
+Since 0.8.4 the daemon can record coding-assistant conversations (this one included) into a hidden per-project history layer — raw dialogue, encrypted at rest, never mixed with curated memory. Recording is opt-in (off by default); the user turns it on in the pane, and when it is off the history surfaces simply return nothing.
+
+- When a `search`'s confidence verdict says the answer is likely **not in memory**, the response may carry a separate `history` section labeled "from session history": snippets of past conversations with handles. Treat them as leads, not knowledge — call `expand_history(session, turn)` to read the surrounding exchange before relying on one.
+- If a fact from history matters going forward, **capture it as a proper note** — promotion into the curated graph is the only way history becomes knowledge.
+- Curated hits may carry a `born_in` line: the recorded exchange the note was captured in. Expand it when the user asks how a decision actually happened.
+- `list_sessions` browses the recordings (newest first, per-harness filter) when no search hit points the way; any listed session is an `expand_history` away.
+- `scope: "history"` on `search` reads only the recordings; `scope: "memory"` never falls through. The user controls all of this (per-harness toggles, exclusion, deletion) in the pane's settings.
+
 ## Maintenance — keep the graph honest
 
 - **Judge suspects early.** When the brief lists Suspected conflicts, resolve them with `resolve_suspect` before diving into work. The scan only finds look-alikes; you are the judge:

@@ -158,7 +158,7 @@ struct MigrateArgs {
 
 #[derive(clap::Args)]
 struct SetupArgs {
-    /// Assistants to wire, comma-separated: claude|codex|gemini|opencode|kilo|antigravity|all.
+    /// Assistants to wire, comma-separated: claude|codex|gemini|opencode|kilo|antigravity|bob|all.
     /// Default: auto-detect what's installed.
     #[arg(long)]
     cli: Option<String>,
@@ -341,7 +341,7 @@ fn run_setup(args: SetupArgs) -> anyhow::Result<()> {
             for a in list.split(',').map(str::trim).filter(|a| !a.is_empty()) {
                 let known = setup::AGENTS.iter().find(|k| **k == a).with_context(|| {
                     format!(
-                        "unknown --cli '{a}' (claude|codex|gemini|opencode|kilo|antigravity|all)"
+                        "unknown --cli '{a}' (claude|codex|gemini|opencode|kilo|antigravity|bob|all)"
                     )
                 })?;
                 v.push(*known);
@@ -801,6 +801,13 @@ fn open_engine(db: &Path, models: &Models) -> engram_core::Result<Engine> {
     if let Some(root) = root {
         engine.set_repo_root(root);
     }
+    // History layer (0.8.4): the sibling store beside the curated one, opened
+    // by the engine when the graph's history config is enabled (opt-in).
+    // The daemon opts into at-rest sealing (keyring / file-fallback key);
+    // bodies written before a key existed are sealed by the harvester's
+    // backlog pass.
+    engine.enable_history_sealing();
+    engine.set_history_path(engram_core::history::history_store_path(&resolved));
     if let Some(r) = &set.reranker {
         engine.set_reranker(Box::new(r.clone()));
     }
@@ -1342,6 +1349,55 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 tracing::info!(
                     "sweep: archived {archived_total} stale nodes, queued {added_total} suspected conflicts"
                 );
+            }
+        }
+    });
+
+    // History harvester (0.8.4): tail coding-assistant transcripts into each
+    // project's history layer. Same detached-task shape as the librarian
+    // sweep; the sweep interval is short because the born-in provenance
+    // parking lot resolves "on next harvest tick". First tick fires at
+    // startup — that's the backfill (months of sessions appear at once).
+    let harvest_hub = hub.clone();
+    tokio::spawn(async move {
+        let interval = std::env::var("ENGRAM_HARVEST_INTERVAL")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|v| *v >= 5)
+            .unwrap_or(60);
+        let mut harvester = engram_core::harvest::Harvester::first_wave();
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(interval));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut announced_backfill = false;
+        loop {
+            tick.tick().await;
+            let hub = harvest_hub.clone();
+            let (h, stats) = tokio::task::spawn_blocking(move || {
+                let mut h = harvester;
+                let stats = h.sweep(&hub);
+                (h, stats)
+            })
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("harvest task panicked: {e}");
+                (engram_core::harvest::Harvester::first_wave(), Default::default())
+            });
+            harvester = h;
+            if stats.wrote_anything() {
+                if !announced_backfill {
+                    announced_backfill = true;
+                    tracing::info!(
+                        "history backfill: {} message(s) across {} new session(s) ingested",
+                        stats.messages,
+                        stats.sessions
+                    );
+                } else {
+                    tracing::debug!(
+                        "harvest: +{} message(s), {} new session(s)",
+                        stats.messages,
+                        stats.sessions
+                    );
+                }
             }
         }
     });
