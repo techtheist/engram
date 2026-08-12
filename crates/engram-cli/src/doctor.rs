@@ -82,6 +82,13 @@ fn check_store(r: &mut Report, db: &Path) {
     }
     let store = match engram_core::open_store(db) {
         Ok(s) => s,
+        // A tepin store lazily opened by the MACHINE core (no repo-local
+        // daemon.json to find it by) is legitimately locked — the core owns
+        // it and serves it to the pane and every bridge; that's health, not
+        // failure. Anything else holding the lock is still a FAIL.
+        Err(e) if format!("{e}").contains("database_locked") && core_owns(db) => {
+            return r.ok("store is open in the machine core — it owns the lock and serves this repo's pane and MCP");
+        }
         Err(e) => return r.fail(&format!("cannot open {}: {e}", db.display())),
     };
     match store.health() {
@@ -126,6 +133,28 @@ fn check_store(r: &mut Report, db: &Path) {
         }
         Err(e) => r.fail(&format!("store stats failed: {e}")),
     }
+}
+
+/// Does the machine core have this store registered and open right now?
+/// (`/projects` reports `db` + `open` per project — `open:true` means the
+/// core's hub holds the engine, and with it a tepin store's exclusive lock.)
+fn core_owns(db: &Path) -> bool {
+    let Some(port) = crate::machine_core() else {
+        return false;
+    };
+    let Some(projects) = http_get(port, "/projects")
+        .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+    else {
+        return false;
+    };
+    let canon = std::fs::canonicalize(db)
+        .unwrap_or_else(|_| db.to_path_buf())
+        .display()
+        .to_string();
+    projects.as_array().is_some_and(|list| {
+        list.iter()
+            .any(|p| p["db"].as_str() == Some(canon.as_str()) && p["open"].as_bool() == Some(true))
+    })
 }
 
 /// The daemon-served version of `check_store`, reporting from `/system` so
@@ -268,7 +297,41 @@ pub(crate) fn http_get(port: u16, path: &str) -> Option<String> {
         .map(|(_, body)| body.to_string())
 }
 
+/// Corporate proxies intercept loopback HTTP unless excluded (issue #2). Our
+/// own bridge client opts out of proxies entirely, but other local MCP/HTTP
+/// clients on this machine (IDE plugins, other assistants) follow the env.
+fn check_proxy_env(r: &mut Report) {
+    let get = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    let proxy_set = [
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ]
+    .iter()
+    .find_map(|k| get(k).map(|_| *k));
+    let Some(var) = proxy_set else { return };
+    let no_proxy = get("NO_PROXY")
+        .or_else(|| get("no_proxy"))
+        .unwrap_or_default();
+    let loopback_excluded = no_proxy.split(',').map(str::trim).any(|e| {
+        e == "*" || e == "127.0.0.1" || e == "localhost" || e == "loopback" || e == "127.0.0.0/8"
+    });
+    if loopback_excluded {
+        r.ok(&format!("{var} is set and NO_PROXY excludes loopback"));
+    } else {
+        r.warn(&format!(
+            "{var} is set without a NO_PROXY loopback exclusion — engram-alpha's own MCP bridge \
+             ignores proxies, but other local clients may route 127.0.0.1 through the proxy; \
+             consider NO_PROXY=127.0.0.1,localhost"
+        ));
+    }
+}
+
 fn check_wiring(r: &mut Report, repo: &Path, db_abs: &Path) {
+    check_proxy_env(r);
     let gitignored = std::fs::read_to_string(repo.join(".gitignore")).is_ok_and(|s| {
         s.lines()
             .any(|l| matches!(l.trim(), ".engram/" | ".engram"))
@@ -364,7 +427,13 @@ fn mcp_json_problems(raw: &str, db_abs: &Path) -> Vec<String> {
         .position(|a| *a == "--db")
         .and_then(|i| args.get(i + 1))
     {
-        let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        // Compare the stores the paths OPEN, not the strings: setup used to
+        // write graph.db and every command resolves it to graph.tepin, so a
+        // .db config on a migrated repo is healthy, not a wrong graph.
+        let canon = |p: &Path| {
+            let r = engram_core::resolve_db_path(p);
+            std::fs::canonicalize(&r).unwrap_or(r)
+        };
         let arg_path = Path::new(db_arg);
         if arg_path.is_absolute() && canon(arg_path) != canon(db_abs) {
             problems.push(format!("--db points at {db_arg}, not this repo's graph"));
@@ -424,6 +493,15 @@ mod tests {
     fn healthy_mcp_json_has_no_problems() {
         let raw = r#"{"mcpServers":{"engram":{"command":"/bin/sh","args":["mcp","--db","/repo/.engram/graph.db"]}}}"#;
         assert!(mcp_json_problems(raw, &db()).is_empty());
+    }
+
+    #[test]
+    fn legacy_graph_db_config_matches_the_resolved_tepin_store() {
+        // setup wrote graph.db for every 0.7.x repo; the store it opens is
+        // graph.tepin — doctor must not flag its own generated config.
+        let raw = r#"{"mcpServers":{"engram":{"command":"/bin/sh","args":["mcp","--db","/repo/.engram/graph.db"]}}}"#;
+        let tepin = PathBuf::from("/repo/.engram/graph.tepin");
+        assert!(mcp_json_problems(raw, &tepin).is_empty());
     }
 
     #[test]

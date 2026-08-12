@@ -174,17 +174,20 @@ struct SetupArgs {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Logs go to STDERR: stdout is the MCP protocol channel and must stay clean.
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+    let cli = Cli::parse();
+    init_tracing(&cli.command);
 
-    match Cli::parse().command {
+    match cli.command {
         Command::Serve(args) => serve(args).await,
-        Command::Mcp(args) => run_mcp(args).await,
+        Command::Mcp(args) => {
+            let result = run_mcp(args).await;
+            if let Err(e) = &result {
+                // The bridge's fatal error must reach mcp.log — IDE clients
+                // swallow stderr, and this line is the whole diagnosis.
+                tracing::error!("mcp exiting: {e:#}");
+            }
+            result
+        }
         Command::Export(args) => run_export(args),
         Command::Import(args) => run_import(args),
         Command::Brief(args) => run_brief(args),
@@ -194,6 +197,49 @@ async fn main() -> anyhow::Result<()> {
         Command::Migrate(args) => run_migrate(args),
         Command::Stop => run_stop(),
     }
+}
+
+/// Logs go to STDERR: stdout is the MCP protocol channel and must stay clean.
+/// The `mcp` command additionally tees into `.engram/mcp.log` next to the
+/// store (append; `ENGRAM_MCP_LOG=0` disables) — IDE clients swallow stderr,
+/// which left bridge failures like a proxy-intercepted loopback invisible.
+/// RUST_LOG controls the level of both writers.
+fn init_tracing(command: &Command) {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::{Layer, fmt};
+
+    let filter = || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let file_layer = match command {
+        Command::Mcp(args) if std::env::var("ENGRAM_MCP_LOG").as_deref() != Ok("0") => {
+            mcp_log_file(&args.db).map(|f| {
+                fmt::layer()
+                    .with_writer(f)
+                    .with_ansi(false)
+                    .with_filter(filter())
+            })
+        }
+        _ => None,
+    };
+    tracing_subscriber::registry()
+        .with(
+            fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_filter(filter()),
+        )
+        .with(file_layer)
+        .init();
+}
+
+fn mcp_log_file(db: &Path) -> Option<std::sync::Arc<std::fs::File>> {
+    let dir = engram_core::resolve_db_path(db).parent()?.to_path_buf();
+    std::fs::create_dir_all(&dir).ok()?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("mcp.log"))
+        .ok()?;
+    Some(std::sync::Arc::new(file))
 }
 
 /// Cut them all at once: terminate every advertised engram daemon — the
@@ -530,7 +576,7 @@ fn run_brief(args: BriefArgs) -> anyhow::Result<()> {
     }
     // The hub form appends the home-graph section (PLAN §7C); a brief is a
     // read, so it deliberately does not touch the registry.
-    let (hub, _) = build_hub(&db, args.fake_embeddings, false, false)?;
+    let (hub, _) = build_hub(&db, args.fake_embeddings, false, false, true)?;
     let max_chars = hub
         .current_engine()
         .lock()
@@ -848,6 +894,7 @@ fn build_hub(
     fake_embeddings: bool,
     cortex: bool,
     register: bool,
+    tepin_satellites: bool,
 ) -> anyhow::Result<(Arc<Hub>, Models)> {
     let db = &engram_core::resolve_db_path(db);
     let models = load_models(fake_embeddings, cortex)?;
@@ -863,7 +910,20 @@ fn build_hub(
         _ => None,
     };
     let factory_models = models.clone();
-    let factory: engram_core::EngineFactory = Box::new(move |db| open_engine(db, &factory_models));
+    // tepin_satellites=false is the direct-open stdio hub (0.8.5): a tepin
+    // satellite would take a machine-wide exclusive lock (home.tepin!) that
+    // this non-daemon process must never hold — the owning core does.
+    let factory: engram_core::EngineFactory = Box::new(move |db| {
+        let resolved = engram_core::resolve_db_path(db);
+        if !tepin_satellites && engram_core::is_tepin_path(&resolved) {
+            return Err(engram_core::Error::Io(format!(
+                "{} is a tepin store owned by a core daemon — this direct stdio session \
+                 won't lock it; start/restart the core (`engram-alpha serve`) and reconnect",
+                resolved.display()
+            )));
+        }
+        open_engine(db, &factory_models)
+    });
     let hub = Arc::new(Hub::new(Arc::new(Mutex::new(engine)), entry, Some(factory)));
     Ok((hub, models))
 }
@@ -1062,16 +1122,31 @@ fn daemon_for(db: &Path) -> Option<u16> {
 /// up (offline first run, port trouble) and the caller falls back.
 fn spawn_daemon_and_wait(db: &Path) -> Option<u16> {
     let exe = std::env::current_exe().ok()?;
-    let log = std::fs::File::create(db.parent()?.join("serve.log")).ok()?;
+    // On a brand-new repo .engram/ doesn't exist yet — a failed serve.log
+    // create must not abort the spawn (it silently did until 0.8.5, and the
+    // caller's fallback then direct-opened the tepin store: the Bob lockup).
+    let log = db.parent().and_then(|dir| {
+        std::fs::create_dir_all(dir).ok()?;
+        std::fs::File::create(dir.join("serve.log")).ok()
+    });
+    let (stdout, stderr) = match log {
+        Some(f) => match f.try_clone() {
+            Ok(c) => (c.into(), f.into()),
+            Err(_) => (std::process::Stdio::null(), f.into()),
+        },
+        None => (std::process::Stdio::null(), std::process::Stdio::null()),
+    };
     std::process::Command::new(exe)
         .args(["serve", "--http-only", "--db"])
         .arg(db)
         .stdin(std::process::Stdio::null())
-        .stdout(log.try_clone().ok()?)
-        .stderr(log)
+        .stdout(stdout)
+        .stderr(stderr)
         .spawn()
         .ok()?;
-    for _ in 0..120 {
+    // A first run may be downloading models before it can own the store —
+    // 60s wasn't enough for that; time out only well past provisioning.
+    for _ in 0..360 {
         std::thread::sleep(std::time::Duration::from_millis(500));
         // The spawned serve may have become the core — or converged with one
         // that won a startup race; either way counts as up.
@@ -1105,6 +1180,14 @@ fn resolve_mcp_target(db: &Path) -> Option<String> {
 
 async fn run_mcp(args: McpArgs) -> anyhow::Result<()> {
     let db = engram_core::resolve_db_path(&args.db);
+    // mcp.log is append-mode and shared by every bridge on this repo — the
+    // pid is what tells concurrent sessions apart.
+    tracing::info!(
+        "engram-alpha mcp v{} (pid {}, db: {})",
+        env!("CARGO_PKG_VERSION"),
+        std::process::id(),
+        db.display()
+    );
     // Thin client first (PLAN §7C): when a daemon owns stores on this
     // machine, bridge stdio to it — mandatory on a TepinDB store (redb
     // allows one process), and it puts MCP writes on the pane's SSE feed.
@@ -1118,11 +1201,29 @@ async fn run_mcp(args: McpArgs) -> anyhow::Result<()> {
         tracing::info!("bridging stdio MCP to {url} (db: {})", db.display());
         return engram_mcp::serve_stdio_proxy(&url).await;
     }
-    // No daemon: open the store directly (SQLite coexists via WAL; a tepin
-    // store works too as long as this stays the only process).
-    // Registering keeps the registry fresh even for repos only ever opened
-    // over MCP (PLAN §7C: serve/mcp/setup all register).
-    let (hub, _) = build_hub(&db, args.fake_embeddings, true, true)?;
+    // A tepin store is NEVER opened from here (0.8.5). This long-lived
+    // process would take the exclusive lock — and the hub's lazy factory
+    // would take home.tepin with it — starving every core started later:
+    // an IDE-launched bridge held a repo's graph AND the home graph hostage
+    // for a whole session, while the pane showed a fresh empty graph. Better
+    // no tools than a stolen lock; the error lands in mcp.log.
+    if engram_core::is_tepin_path(&db) {
+        anyhow::bail!(
+            "no core owns {} and starting one didn't succeed — a tepin store allows one \
+             process, so this MCP server won't open it directly. See {} for why the core \
+             didn't come up, or start it yourself: `engram-alpha serve` from the repo root.",
+            db.display(),
+            db.parent()
+                .map(|d| d.join("serve.log").display().to_string())
+                .unwrap_or_else(|| "serve.log".into())
+        );
+    }
+    // No daemon, SQLite store: open it directly — WAL coexists with other
+    // readers. Registering keeps the registry fresh even for repos only ever
+    // opened over MCP (PLAN §7C: serve/mcp/setup all register). Satellites
+    // stay non-tepin here too (the factory refuses them) so a direct hub can
+    // never grab the machine-wide home.tepin.
+    let (hub, _) = build_hub(&db, args.fake_embeddings, true, true, false)?;
     tracing::info!("MCP server ready on stdio (db: {})", db.display());
     engram_mcp::serve_stdio_hub(hub).await
 }
@@ -1216,7 +1317,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let (hub, models, db, db_display) = match role {
         ServeRole::Project(db) => {
             ensure_gitignored(&db);
-            let (hub, models) = build_hub(&db, args.fake_embeddings, true, true)?;
+            let (hub, models) = build_hub(&db, args.fake_embeddings, true, true, true)?;
             let display = std::fs::canonicalize(&db)
                 .unwrap_or_else(|_| db.clone())
                 .display()

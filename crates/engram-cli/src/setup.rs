@@ -73,7 +73,12 @@ impl Setup {
             .context("locating the engram binary")?
             .display()
             .to_string();
-        let db = repo.join(".engram/graph.db").display().to_string();
+        // Wire the store that will actually open: on a tepin repo (the 0.7+
+        // default, including fresh ones) that's graph.tepin — a graph.db here
+        // would trip doctor's path check against the resolved store.
+        let db = engram_core::resolve_db_path(&repo.join(".engram/graph.db"))
+            .display()
+            .to_string();
         Ok(Self {
             repo,
             bin,
@@ -381,7 +386,7 @@ impl Setup {
                 "codex: registered engram in ~/.codex/config.toml (launch codex from the repo root)",
             );
             say(
-                "codex: the desktop app may launch MCP servers from another cwd — if you use it, pin this repo there: add `cwd = \"<repo>\"` or `args = [\"mcp\", \"--db\", \"<repo>/.engram/graph.db\"]` to that entry (`engram-alpha doctor` checks this)",
+                "codex: the desktop app may launch MCP servers from another cwd — if you use it, pin this repo there: add `cwd = \"<repo>\"` or `args = [\"mcp\", \"--db\", \"<repo>/.engram/graph.tepin\"]` to that entry (`engram-alpha doctor` checks this)",
             );
         }
         self.write_instructions("AGENTS.md")

@@ -18,6 +18,9 @@ rmcp = { version = "2", features = [
     "transport-streamable-http-server",
     "transport-streamable-http-client-reqwest",
 ] }
+# Same version rmcp's client transport uses; only here to build the bridge's
+# proxy-free Client (plain http to 127.0.0.1 — no TLS features needed).
+reqwest = { version = "0.13", default-features = false }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

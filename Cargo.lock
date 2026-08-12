@@ -970,6 +970,7 @@ dependencies = [
  "anyhow",
  "axum",
  "engram-core",
+ "reqwest 0.13.4",
  "rmcp",
  "schemars",
  "serde",

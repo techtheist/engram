@@ -35,6 +35,20 @@ external tool reports this, either it predates sidecar discovery (use
 two processes raced; `engram-alpha stop` then `serve` resets the state.
 Details in [Storage & TepinDB](./storage.md#the-single-owner-model).
 
+**MCP tools fail inside an IDE and there's nothing to look at.** The stdio
+MCP server logs to `<repo>/.engram/mcp.log` (IDE clients usually swallow its
+stderr) — startup, the daemon it bridges to, and any fatal error land there.
+`RUST_LOG=debug` (or `trace`) in the server's `env` raises the detail on both
+stderr and the file; `ENGRAM_MCP_LOG=0` turns the file off.
+
+**Corporate proxy: MCP dies with an HTML error page in `mcp.log`.** A proxy
+configured via `HTTP_PROXY`/`HTTPS_PROXY` was intercepting the bridge's
+loopback connection to the core. Since 0.8.5 engram's own bridge ignores
+proxies entirely, so this fixes itself on update. On older versions — or for
+*other* local tools that follow the proxy env — exclude loopback explicitly:
+`NO_PROXY=127.0.0.1,localhost`. `doctor` warns when a proxy is configured
+without that exclusion.
+
 **Search quality is degraded / "reranker unavailable" in the logs.** A model
 layer failed to load — usually a first run that happened offline. The daemon
 runs without it (that's by design); it provisions itself on the next online
@@ -68,6 +82,8 @@ wrote what, with before/after values.
 |---|---|
 | `<repo>/.engram/graph.db` / `graph.tepin` | The repository's graph (git-ignored) |
 | `<repo>/.engram/daemon.json` | A repo-launched daemon's advertisement (port, pid) |
+| `<repo>/.engram/mcp.log` | The stdio MCP server's log (append; `ENGRAM_MCP_LOG=0` disables) |
+| `<repo>/.engram/serve.log` | Output of a core auto-started by `mcp` |
 | `~/.engram/registry.json` | The machine's project registry |
 | `~/.engram/daemon.json` | The machine core's advertisement |
 | `~/.engram/home.db` | The shared home graph |

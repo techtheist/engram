@@ -1508,7 +1508,21 @@ impl rmcp::Service<rmcp::RoleServer> for Passthrough {
 /// Serve stdio by bridging every message to the daemon's MCP endpoint
 /// (`http://127.0.0.1:<port>/mcp`) until the stdio client disconnects.
 pub async fn serve_stdio_proxy(url: &str) -> anyhow::Result<()> {
-    let transport = rmcp::transport::StreamableHttpClientTransport::from_uri(url.to_string());
+    // The daemon is always on 127.0.0.1, but reqwest honors HTTP(S)_PROXY env
+    // vars by default — under a corporate proxy the loopback connection gets
+    // routed through it and dies with the proxy's HTML error page (issue #2).
+    // No proxy ever makes sense here, so opt out instead of asking users to
+    // set NO_PROXY.
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .map_err(|e| anyhow::anyhow!("building the bridge HTTP client: {e}"))?;
+    let transport = rmcp::transport::StreamableHttpClientTransport::with_client(
+        client,
+        rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig::with_uri(
+            url.to_string(),
+        ),
+    );
     let client = ().serve(transport).await?;
     let info = client
         .peer()
