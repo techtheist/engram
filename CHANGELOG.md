@@ -3,6 +3,44 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
+## v0.8.5
+
+### Bugfix release — first field reports (thank you!)
+
+Locking, corporate proxies, and self-consistent configs — everything found
+by the first users running Engram outside its home machine.
+
+- **A tepin store can no longer be locked away from its core.** The stdio
+  MCP server's last-resort fallback used to open the store directly when no
+  core answered; an IDE-launched session could then hold the repo's graph —
+  and, through lazy multi-project federation, the machine-wide home graph —
+  hostage for hours, while the pane showed a fresh empty graph and
+  `/projects/home/graph` returned `database_locked`. The fallback now
+  refuses tepin stores outright (SQLite stays fine — WAL coexists), the
+  direct hub's project factory refuses tepin satellites, and the auto-started
+  core gets a real chance to come up: the spawn no longer aborts when
+  `.engram/` doesn't exist yet (a fresh repo hit exactly that), and the wait
+  accommodates first-run model provisioning (180s, was 60s). `doctor` learned
+  the flip side: a store the machine core holds open is *healthy*-locked, not
+  a failure.
+- **Corporate proxies can't intercept the MCP bridge anymore** (#2). The
+  bridge talks to the core on 127.0.0.1 but its HTTP client honored
+  `HTTP(S)_PROXY`, so a corporate proxy answered instead — with an HTML error
+  page. The bridge client now opts out of proxies entirely; `NO_PROXY`
+  workarounds are no longer needed.
+- **MCP failures are finally visible** (#2). The stdio MCP server logs to
+  `.engram/mcp.log` (IDE clients swallow stderr) — startup, the bridge
+  target, and any fatal error. `RUST_LOG=debug|trace` raises detail,
+  `ENGRAM_MCP_LOG=0` turns the file off. `doctor` also warns when a proxy
+  is configured without a `NO_PROXY` loopback exclusion, and the
+  troubleshooting guide gained a proxy section.
+- **`setup` and `doctor` agree about the store path again.** `setup` wrote
+  `--db …/graph.db` into agent configs while the store is `graph.tepin`,
+  and `doctor` then failed its own generated config ("--db points at …,
+  not this repo's graph"). `setup` now writes the resolved store path, and
+  `doctor` compares the store a path *opens* rather than the string, so
+  existing configs pass without re-running setup.
+
 ## v0.8.4
 
 ### The history layer — your coding sessions become memory's footnotes
