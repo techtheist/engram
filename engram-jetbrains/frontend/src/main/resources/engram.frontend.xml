@@ -3,7 +3,10 @@
         <module name="intellij.platform.frontend"/>
         <!-- JCEF moved out of core into the com.intellij.modules.jcef plugin in 2026.2
              (build 262); this module dep is how bundled plugins (markdown) reach
-             JBCefApp there. On 2026.1 the same module name resolves into core.
+             JBCefApp there. On a 2026.1 CLASSIC runtime the name does NOT resolve
+             (module-descriptors.jar only feeds the split-mode loader — issue #1:
+             the declaration disables the whole module), so the 261 artifact strips
+             this line at build time (frontend/build.gradle.kts, -PplatformLine=261).
              intellij.libraries.jcef (org.cef.*) stays undeclared: it is internal
              in 261 and we never touch org.cef directly. -->
         <module name="intellij.platform.ui.jcef"/>

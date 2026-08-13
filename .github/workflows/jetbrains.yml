@@ -34,11 +34,19 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build plugin
-        run: ./gradlew buildPlugin
+      # Two artifacts (issue #1): the 261 line ships without the
+      # intellij.platform.ui.jcef module dep (unresolvable on a 2026.1 classic
+      # runtime), the 262+ line with it. -PplatformLine selects; see
+      # engram-jetbrains/build.gradle.kts.
+      - name: Build plugin (261 + 262 artifacts)
+        run: |
+          ./gradlew buildPlugin -PplatformLine=261
+          ./gradlew buildPlugin
 
-      - name: Verify plugin structure
-        run: ./gradlew verifyPlugin
+      - name: Verify plugin structure (both artifacts)
+        run: |
+          ./gradlew verifyPlugin -PplatformLine=261
+          ./gradlew verifyPlugin
 
       - name: Upload distributable zip
         uses: actions/upload-artifact@v4

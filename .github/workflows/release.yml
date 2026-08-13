@@ -133,19 +133,24 @@ jobs:
 
       # Produces build/distributions/*-signed.zip. The version (and thus the
       # Marketplace channel) comes from the tag, overriding gradle.properties.
-      - name: Build & sign plugin
+      # Two artifacts per release (issue #1): "X.Y.Z-261" for 2026.1 (no
+      # intellij.platform.ui.jcef module dep) and "X.Y.Z" for 2026.2+ (with it).
+      - name: Build & sign plugin (261 + 262 artifacts)
         env:
           CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
           PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
-        run: ./gradlew signPlugin -PpluginVersion="${RELEASE_TAG#v}"
+        run: |
+          ./gradlew signPlugin -PpluginVersion="${RELEASE_TAG#v}" -PplatformLine=261
+          ./gradlew signPlugin -PpluginVersion="${RELEASE_TAG#v}"
 
       # signPlugin silently skips when the signing secrets are absent — fail
       # here with a clear message instead of a confusing empty-glob upload.
-      - name: Assert signed zip exists
+      - name: Assert both signed zips exist
         run: |
-          ls build/distributions/*-signed.zip || {
-            echo "::error::No signed zip. Are CERTIFICATE_CHAIN / PRIVATE_KEY / PRIVATE_KEY_PASSWORD secrets set?"
+          COUNT=$(ls build/distributions/*-signed.zip 2>/dev/null | wc -l)
+          [ "$COUNT" -eq 2 ] || {
+            echo "::error::Expected 2 signed zips (261 + 262 artifacts), found $COUNT. Are CERTIFICATE_CHAIN / PRIVATE_KEY / PRIVATE_KEY_PASSWORD secrets set?"
             exit 1
           }
 
@@ -161,16 +166,24 @@ jobs:
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
           PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
         # A re-dispatch for an already-published tag must not read as failure.
+        # Both artifacts publish under one plugin id; the Marketplace serves
+        # each IDE the one whose compatibility range matches.
         run: |
           set +e
-          OUT=$(./gradlew publishPlugin -PpluginVersion="${RELEASE_TAG#v}" 2>&1)
-          CODE=$?
-          echo "$OUT"
-          if [ $CODE -ne 0 ] && echo "$OUT" | grep -q "already contains version"; then
-            echo "Version already on Marketplace — treating as success."
-            exit 0
-          fi
-          exit $CODE
+          FAIL=0
+          for LINE in 261 262; do
+            OUT=$(./gradlew publishPlugin -PpluginVersion="${RELEASE_TAG#v}" -PplatformLine=$LINE 2>&1)
+            CODE=$?
+            echo "$OUT"
+            if [ $CODE -ne 0 ]; then
+              if echo "$OUT" | grep -q "already contains version"; then
+                echo "Version ($LINE artifact) already on Marketplace — treating as success."
+              else
+                FAIL=1
+              fi
+            fi
+          done
+          exit $FAIL
 
   vscode:
     name: VSCode — package, attach

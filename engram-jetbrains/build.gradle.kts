@@ -3,7 +3,21 @@ import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.intellij.platform.gradle.tasks.aware.SplitModeAware
 
 group = providers.gradleProperty("pluginGroup").get()
-version = providers.gradleProperty("pluginVersion").get()
+
+// One descriptor cannot serve both platform lines (issue #1): on 2026.2+ JCEF
+// lives in the com.intellij.modules.jcef plugin and engram.frontend MUST
+// declare the intellij.platform.ui.jcef module dep to see JBCefApp — but on a
+// 2026.1 CLASSIC (single-process) runtime that module name is unresolvable
+// (the dist's module-descriptors.jar only feeds the split-mode loader) and the
+// declaration gets the whole module disabled. So the build produces two
+// artifacts, selected by -PplatformLine:
+//   261 — version "X.Y.Z-261", sinceBuild 261 / untilBuild 261.*, WITHOUT the
+//         module dep (JBCefApp is reachable from core there; 0.2.1 proved it);
+//   262 — (default) version "X.Y.Z", sinceBuild 262 / open-ended, WITH it.
+// The Marketplace serves each IDE the artifact whose range matches.
+val platformLine = providers.gradleProperty("platformLine").getOrElse("262")
+version = providers.gradleProperty("pluginVersion").get() +
+    if (platformLine == "261") "-261" else ""
 
 val intellijPlatformVersion = providers.gradleProperty("intellijPlatformVersion").get()
 
@@ -30,14 +44,21 @@ dependencies {
 }
 
 intellijPlatform {
-    splitMode = true
+    // Split mode resolves module descriptors the classic desktop loader can't —
+    // it's exactly how issue #1 slipped past runIde. `-PsplitMode=false` runs
+    // the sandbox IDE the way a user's desktop IDE actually loads the plugin.
+    splitMode = providers.gradleProperty("splitMode").map(String::toBoolean).getOrElse(true)
     pluginInstallationTarget = SplitModeAware.PluginInstallationTarget.BOTH
 
     pluginConfiguration {
         ideaVersion {
-            // 2026.1 == build 261; leave untilBuild open so alpha installs on later builds.
-            sinceBuild = "261"
-            untilBuild = provider { null }
+            if (platformLine == "261") {
+                sinceBuild = "261"
+                untilBuild = "261.*"
+            } else {
+                sinceBuild = "262"
+                untilBuild = provider { null }
+            }
         }
     }
 
@@ -61,10 +82,14 @@ intellijPlatform {
 
     pluginVerification {
         ides {
-            create(IntelliJPlatformType.IntellijIdeaUltimate, intellijPlatformVersion)
-            // JCEF classes moved plugins in 262 — also verify against a newer IDE
-            // when one is installed locally (CI just skips this).
-            file("/Applications/IntelliJ IDEA 2026.2 EAP.app").takeIf { it.exists() }?.let { local(it) }
+            // Each artifact is verified against an IDE inside its own range —
+            // the verifier flags an out-of-range IDE as a failure, not a skip.
+            if (platformLine == "261") {
+                create(IntelliJPlatformType.IntellijIdeaUltimate, intellijPlatformVersion)
+            } else {
+                create(IntelliJPlatformType.IntellijIdeaUltimate, "2026.2.1")
+                file("/Applications/IntelliJ IDEA 2026.2 EAP.app").takeIf { it.exists() }?.let { local(it) }
+            }
         }
     }
 }

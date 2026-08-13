@@ -3,6 +3,31 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
+## v0.8.6
+
+- **JetBrains plugin works on 2026.1 again** (#1). Installing on IDEA 2026.1.x
+  disabled the plugin with "Module engram.frontend is not enabled because
+  dependency intellij.platform.ui.jcef is not available": that module dep is
+  required on 2026.2+ (JCEF moved into a separate bundled plugin there) but
+  unresolvable on a 2026.1 classic desktop runtime — the name only exists for
+  the split-mode loader, which is also why `runIde` (split mode) and the plugin
+  verifier never caught it. One descriptor can't serve both lines, so each
+  release now ships two Marketplace artifacts under the same plugin id:
+  `X.Y.Z-261` (2026.1-only, without the dep) and `X.Y.Z` (2026.2+, with it) —
+  your IDE gets the matching one automatically.
+- **Engram now tells you when a newer release is out.** `doctor` gained a
+  `version` section that always asks GitHub Releases whether the binary is
+  behind and warns with the exact `engram-alpha update` to run — an
+  unreachable network is an informational note, never a failure. The daemon
+  does the same check in the background: at most once per 24h across
+  restarts (stamped in `~/.engram/update-check.json`), off the startup path
+  so `serve` never waits on the network, one log line when something newer
+  exists, silence otherwise — including on any curl failure; offline stays
+  fully supported. Nothing is ever installed automatically, the query is the
+  same system-curl `releases/latest` call self-update always made (still no
+  bundled HTTP client), and `ENGRAM_UPDATE_CHECK=0` switches the daemon-side
+  check off.
+
 ## v0.8.5
 
 ### Bugfix release — first field reports (thank you!)

@@ -26,7 +26,10 @@ by the next.
 - **The Engram backend.** The plugin renders nothing useful on its own; it
   connects to `engram-alpha serve` on `http://127.0.0.1:8787`.
 - A JetBrains IDE on build **261** (2026.1) or later, with JCEF (the default in
-  all standard IDE distributions).
+  all standard IDE distributions). Each release ships two artifacts — `X.Y.Z-261`
+  for 2026.1 and `X.Y.Z` for 2026.2+ (where JCEF moved into a separate bundled
+  plugin) — and the Marketplace installs the right one for your IDE
+  automatically; installing from disk, pick the one matching your IDE line.
 
 ## Install
 
