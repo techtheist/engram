@@ -88,6 +88,7 @@ wrote what, with before/after values.
 | `~/.engram/daemon.json` | The machine core's advertisement |
 | `~/.engram/home.db` | The shared home graph |
 | `~/.engram/models.json` | Your model selection (absent = defaults) |
+| `~/.engram/update-check.json` | The daemon's once-a-day update-check stamp (`ENGRAM_UPDATE_CHECK=0` disables the check) |
 | `~/.cache/engram/<model>/` | Downloaded model files |
 
 All of it is plain JSON or database files; stale daemon files are harmless —

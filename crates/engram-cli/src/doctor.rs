@@ -61,6 +61,9 @@ pub fn run(db: &Path) -> anyhow::Result<()> {
     println!("wiring");
     check_wiring(&mut r, &repo, &db_abs);
 
+    println!("version");
+    check_version(&mut r);
+
     println!();
     if r.failures > 0 {
         anyhow::bail!("{} failure(s), {} warning(s)", r.failures, r.warnings);
@@ -71,6 +74,24 @@ pub fn run(db: &Path) -> anyhow::Result<()> {
         println!("all checks passed");
     }
     Ok(())
+}
+
+/// Always ask GitHub whether a newer release is published — doctor is an
+/// explicit diagnostic gesture, so the network round-trip is expected here
+/// (`serve` throttles the same query to once a day). An unreachable GitHub
+/// is a note, not a warning: offline is a supported condition.
+fn check_version(r: &mut Report) {
+    match crate::update::newer_release() {
+        Ok(Some(tag)) => r.warn(&format!(
+            "this binary is v{} but {tag} is published — run `engram-alpha update`",
+            env!("CARGO_PKG_VERSION")
+        )),
+        Ok(None) => r.ok(&format!(
+            "v{} is the newest published release",
+            env!("CARGO_PKG_VERSION")
+        )),
+        Err(e) => r.note(&format!("update check unavailable ({e})")),
+    }
 }
 
 fn check_store(r: &mut Report, db: &Path) {

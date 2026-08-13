@@ -16,6 +16,7 @@ use tracing_subscriber::EnvFilter;
 mod doctor;
 mod setup;
 mod skillgen;
+mod update;
 
 #[derive(Parser)]
 #[command(
@@ -421,7 +422,6 @@ fn run_setup(args: SetupArgs) -> anyhow::Result<()> {
 /// curl/tar (present on macOS, Linux, WSL, and Windows 10+) so the binary
 /// doesn't carry an HTTP client for one command.
 fn run_update(args: UpdateArgs) -> anyhow::Result<()> {
-    const REPO: &str = "techtheist/engram";
     let (target, ext, bin_name) = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         ("aarch64-apple-darwin", "tar.gz", "engram-alpha")
     } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
@@ -434,26 +434,14 @@ fn run_update(args: UpdateArgs) -> anyhow::Result<()> {
 
     let tag = match args.version {
         Some(v) => v,
-        None => {
-            let out = std::process::Command::new("curl")
-                .args([
-                    "-fsSL",
-                    &format!("https://api.github.com/repos/{REPO}/releases/latest"),
-                ])
-                .output()
-                .context("running curl (is it installed?)")?;
-            anyhow::ensure!(out.status.success(), "could not query the latest release");
-            let body = String::from_utf8_lossy(&out.stdout);
-            body.split("\"tag_name\"")
-                .nth(1)
-                .and_then(|rest| rest.split('"').nth(1))
-                .map(str::to_string)
-                .context("parsing the latest release tag")?
-        }
+        None => update::latest_release_tag()?,
     };
 
     let asset = format!("engram-alpha-{tag}-{target}.{ext}");
-    let url = format!("https://github.com/{REPO}/releases/download/{tag}/{asset}");
+    let url = format!(
+        "https://github.com/{}/releases/download/{tag}/{asset}",
+        update::REPO
+    );
     let tmp = std::env::temp_dir().join(format!("engram-update-{}", std::process::id()));
     std::fs::create_dir_all(&tmp)?;
     let cleanup = scopeguard(tmp.clone());
@@ -1313,6 +1301,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     if let Some(port) = machine_core() {
         return converge_with_core(port);
     }
+    update::notify_on_newer_release();
     let role = serve_role(&args)?;
     let (hub, models, db, db_display) = match role {
         ServeRole::Project(db) => {

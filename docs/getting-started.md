@@ -137,6 +137,12 @@ After an update, restart the daemon (`engram-alpha stop`, then `serve`) and
 reconnect your assistant's MCP session (`/mcp` in Claude Code) so both run
 the new binary.
 
+You don't have to remember to check: `doctor` always compares the binary
+against the newest published release, and the daemon quietly does the same at
+most once per day (a single log line pointing at `engram-alpha update` —
+nothing is ever installed automatically, and an unreachable network is
+silently fine). Set `ENGRAM_UPDATE_CHECK=0` to keep the daemon fully offline.
+
 ## When something is off
 
 ```sh
