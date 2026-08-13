@@ -27,6 +27,9 @@ body of its GitHub Release (draft-release.yml lifts it automatically).
   same system-curl `releases/latest` call self-update always made (still no
   bundled HTTP client), and `ENGRAM_UPDATE_CHECK=0` switches the daemon-side
   check off.
+- **A narrow pane sheds its header chrome sooner.** The bare-minimum layout —
+  connection badge plus the actions burger — now kicks in at 500px instead of
+  400px, so a docked IDE pane in that range stops overflowing its header.
 
 ## v0.8.5
 

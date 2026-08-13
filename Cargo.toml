@@ -12,7 +12,7 @@ members = [
 # One version for every crate: audit rows, /health, MCP server info and
 # `engram --version` must all report the same number. release.yml stamps
 # this line from the tag.
-version = "0.8.5"
+version = "0.8.6"
 edition = "2024"
 license = "MIT"
 rust-version = "1.88"
