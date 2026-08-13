@@ -326,7 +326,7 @@ onBeforeUnmount(() => store.disconnect())
 /* Bare minimum chrome: the connection badge and the actions burger.
    (.brand-qualified so this outranks the base .brand-chip rule, which
    sits later in the file.) */
-@media (width <= 400px) {
+@media (width <= 500px) {
     .brand .brand-chip,
     .brand .switcher-root {
         display: none;
