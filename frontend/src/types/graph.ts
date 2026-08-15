@@ -257,6 +257,8 @@ export interface SearchHit {
     score: number
     durability: Durability
     status: NodeStatus | null
+    /** When the node was captured — carried so a hit can be dated or time-ordered without a second read (0.8.7). */
+    created_at: number
 }
 
 /** One node's NLI verdict against a checked claim (POST /claims/check). */
@@ -507,6 +509,8 @@ export interface HistoryHit {
     timestamp: number
     snippet: string
     score: number
+    /** Earlier statements of the same thing, newest-first — present only under `order: "recent"` (0.8.7). */
+    prior?: HistoryHit[]
 }
 
 /** Where a curated node was born (GET /nodes/{id}/born-in). */

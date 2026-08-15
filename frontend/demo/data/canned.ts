@@ -25,6 +25,10 @@ import type {
 } from '@/types/graph'
 import { synthId } from '../engine'
 
+/** Ages for the canned payloads, so anything dated or time-ordered shows real dates. */
+const HIT_NOW = Math.floor(Date.now() / 1000)
+const hitAge = (d: number): number => HIT_NOW - d * 86_400
+
 /** The backend marks keyword matches with these; SearchBar turns them into <mark>. */
 const HI = '\uE000'
 const OFF = '\uE001'
@@ -43,6 +47,7 @@ export const SEARCH_HITS: SearchHit[] = [
         score: 0.94,
         durability: 'stable',
         status: null,
+        created_at: hitAge(96),
     },
     {
         id: synthId('i-stable-doesnt-rot'),
@@ -52,6 +57,7 @@ export const SEARCH_HITS: SearchHit[] = [
         score: 0.81,
         durability: 'episodic',
         status: null,
+        created_at: hitAge(41),
     },
     {
         id: synthId('c-conflicts-surfaced'),
@@ -61,6 +67,7 @@ export const SEARCH_HITS: SearchHit[] = [
         score: 0.76,
         durability: 'stable',
         status: null,
+        created_at: hitAge(63),
     },
     {
         id: synthId('d-on-device-search'),
@@ -70,6 +77,7 @@ export const SEARCH_HITS: SearchHit[] = [
         score: 0.71,
         durability: 'stable',
         status: null,
+        created_at: hitAge(12),
     },
 ]
 

@@ -378,6 +378,15 @@ impl Engram {
         tail hits are trimmed before delivery so \
         attention stays on the answer. Being returned stamps \
         last_seen for observability only — retrieval never refreshes trust. \
+        SCOPE IT IN TIME when the question is temporal: `after`/`before` take \
+        a day, an ISO instant, or a relative expression the daemon resolves \
+        (\"yesterday\", \"last week\", \"last 3 days\", \"2 hours ago\", \"this \
+        year\") — don't compute dates yourself; `during_version` (e.g. \
+        \"0.8.4\") scopes to when that working version was current. \
+        `order: \"chronological\"` reads oldest-first for how something \
+        developed, `order: \"recent\"` newest-first for the CURRENT value of \
+        something that changed. The window filters before the confidence \
+        verdict, so a scoped verdict is about the scoped set. \
         `project: \"all\"` searches every registered project plus the home \
         graph — foreign hits carry `project` provenance and rank under a \
         locality prior, so the local canon wins ties."
@@ -406,10 +415,26 @@ impl Engram {
                 None,
             ));
         }
+        // One grammar for both layers (0.8.7): the filter is resolved once,
+        // against the graph's own version journal, and then applies to
+        // whichever layer the scope selects.
+        let filter = {
+            let guard = engine.lock().unwrap();
+            guard
+                .time_filter(
+                    a.after.as_deref(),
+                    a.before.as_deref(),
+                    a.during_version.as_deref(),
+                    a.order.as_deref(),
+                )
+                .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?
+        };
         if scope == "history" {
             let hits = {
                 let guard = self.mcp(&engine);
-                guard.search_history(&a.query, limit).map_err(map_err)?
+                guard
+                    .search_history_filtered(&a.query, limit, &filter)
+                    .map_err(map_err)?
             };
             return self.reply(&json!({
                 "history": { "hits": hits, "note": HISTORY_SECTION_NOTE },
@@ -417,7 +442,9 @@ impl Engram {
         }
         let (mut hits, confidence) = {
             let guard = self.mcp(&engine);
-            let hits = guard.search(&a.query, &types, limit).map_err(map_err)?;
+            let hits = guard
+                .search_filtered(&a.query, &types, limit, &filter)
+                .map_err(map_err)?;
             let confidence = guard.search_confidence(&hits);
             (hits, confidence)
         };
@@ -445,7 +472,9 @@ impl Engram {
                 drop(guard);
                 let history = {
                     let guard = self.mcp(&engine);
-                    guard.search_history(&a.query, limit).map_err(map_err)?
+                    guard
+                        .search_history_filtered(&a.query, limit, &filter)
+                        .map_err(map_err)?
                 };
                 if !history.is_empty() {
                     body["history"] = json!({
@@ -518,17 +547,25 @@ impl Engram {
         description = "Browse the recorded session history: every session, newest first — \
         title (the opening user message), harness, start/end, message count, and the \
         `session` handle expand_history takes. The browsing entry point when you don't \
-        have a search hit to start from; empty when recording is off. History is raw \
-        dialogue records, not curated memory."
+        have a search hit to start from; empty when recording is off. Scope it in time \
+        with `after`/`before` (a day, an ISO instant, or \"yesterday\" / \"last week\" / \
+        \"3 days ago\") to answer \"what was I working on then\" without needing a search \
+        hit at all. History is raw dialogue records, not curated memory."
     )]
     async fn list_sessions(
         &self,
         Parameters(a): Parameters<ListSessionsArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let engine = self.engine_for(&a.project)?;
+        let window = engram_core::timespec::window(
+            a.after.as_deref(),
+            a.before.as_deref(),
+            engram_core::now(),
+        )
+        .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
         let mut sessions = {
             let guard = self.mcp(&engine);
-            guard.list_history_sessions().map_err(map_err)?
+            guard.list_history_sessions_in(window).map_err(map_err)?
         };
         if let Some(h) = &a.harness {
             sessions.retain(|s| s.harness.as_deref() == Some(h.as_str()));
@@ -538,10 +575,14 @@ impl Engram {
         sessions.truncate(limit);
         let mut body = json!({ "sessions": sessions, "total": total });
         if total == 0 {
-            body["note"] = json!(
+            body["note"] = json!(if window.is_open() {
                 "Nothing recorded — session recording is off (the user's switch, in the \
                  pane) or no transcripts have been ingested yet."
-            );
+            } else {
+                "No sessions in that window. Recording may be off, or nothing was \
+                 recorded then — widen the window before concluding the work never \
+                 happened."
+            });
         }
         self.reply(&body)
     }
@@ -1578,7 +1619,7 @@ pub async fn serve_stdio_proxy(url: &str) -> anyhow::Result<()> {
 // the user-level home graph; "all" = every project, reads only (search /
 // check_claim). `list_projects` names what exists.
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Default)]
 struct SearchArgs {
     query: String,
     #[serde(default)]
@@ -1602,6 +1643,30 @@ struct SearchArgs {
     /// "history" = session history only.
     #[serde(default)]
     scope: Option<String>,
+    /// Only knowledge captured at or after this instant. Takes a day
+    /// ("2026-08-14"), an ISO instant ("2026-08-14T09:15:32Z"), or a relative
+    /// expression the daemon resolves ("today", "yesterday", "last week",
+    /// "last 3 days", "2 hours ago", "a month ago", "this year"). Relative
+    /// expressions mean the START of the span, so after: "last week" reads
+    /// "since a week ago".
+    #[serde(default)]
+    after: Option<String>,
+    /// Only knowledge captured strictly before this instant — same grammar as
+    /// `after`. Pair them for a bounded window.
+    #[serde(default)]
+    before: Option<String>,
+    /// Only knowledge captured while this working version was current (e.g.
+    /// "0.8.4"), resolved from the graph's recorded `set_version` switches.
+    /// Combines with after/before, which narrow it further.
+    #[serde(default)]
+    during_version: Option<String>,
+    /// "relevance" (default) = score order, the ranking the confidence verdict
+    /// is defined against; "chronological" = oldest first, for reading how
+    /// something developed; "recent" = newest first, for "what is the CURRENT
+    /// value of X". Ordering is applied after every cut, so it re-orders the
+    /// delivered set without changing which hits were delivered.
+    #[serde(default)]
+    order: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -1617,7 +1682,7 @@ struct ExpandHistoryArgs {
     project: Option<String>,
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema, Default)]
 struct ListSessionsArgs {
     /// Max sessions returned, newest first (default 20, max 100).
     #[serde(default)]
@@ -1625,6 +1690,15 @@ struct ListSessionsArgs {
     /// Only sessions of one harness ("claude-code", "codex", "bob", …).
     #[serde(default)]
     harness: Option<String>,
+    /// Only sessions overlapping the window starting here — same grammar as
+    /// search's `after` (a day, an ISO instant, or "last week" / "yesterday" /
+    /// "3 days ago"). A session that began earlier and ran into the window
+    /// counts as inside it.
+    #[serde(default)]
+    after: Option<String>,
+    /// Only sessions that had started before this instant — same grammar.
+    #[serde(default)]
+    before: Option<String>,
     #[serde(default)]
     project: Option<String>,
 }
@@ -2067,6 +2141,7 @@ mod tests {
                 limit: None,
                 project: None,
                 scope: None,
+                ..Default::default()
             }))
             .await
             .unwrap();
@@ -2635,6 +2710,135 @@ pub(crate) mod tool_tests {
     }
 
     #[tokio::test]
+    async fn search_takes_the_temporal_grammar_and_names_what_it_cannot_read() {
+        let (s, dir) = history_server();
+        seed_history(
+            &s,
+            "sess-now",
+            &[("assistant", "the onnx batch width was the memory culprit")],
+        );
+
+        // A relative window the daemon resolves — the assistant never does
+        // date arithmetic. The seeded messages are seconds old, so "last week"
+        // holds them.
+        let res = s
+            .search(Parameters(SearchArgs {
+                query: "onnx batch width memory".into(),
+                scope: Some("history".into()),
+                after: Some("last week".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+        assert!(text_of(&res).contains("sess-now"), "{}", text_of(&res));
+
+        // The same window shifted into the past excludes them.
+        let res = s
+            .search(Parameters(SearchArgs {
+                query: "onnx batch width memory".into(),
+                scope: Some("history".into()),
+                before: Some("last week".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+        let text = text_of(&res);
+        assert!(!text.contains("sess-now"), "window excludes it: {text}");
+
+        // An unreadable bound is an error naming the offender and teaching the
+        // grammar — never a silently dropped filter, which would answer an
+        // unscoped question while looking scoped.
+        let err = s
+            .search(Parameters(SearchArgs {
+                query: "anything".into(),
+                after: Some("whenever-ish".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("whenever-ish"), "{err}");
+        assert!(err.contains("last week"), "{err}");
+
+        // So is a bad ordering.
+        let err = s
+            .search(Parameters(SearchArgs {
+                query: "anything".into(),
+                order: Some("sideways".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("chronological"), "{err}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn list_sessions_scopes_to_a_window_and_says_so_when_empty() {
+        let (s, dir) = history_server();
+        {
+            let engine = s.engine.lock().unwrap();
+            for (sid, day) in [("sess-june", "2026-06-10"), ("sess-august", "2026-08-10")] {
+                let mut props = serde_json::Map::new();
+                props.insert("harness".into(), "claude-code".into());
+                props.insert("messages".into(), 2u64.into());
+                engine
+                    .add_history_node(engram_core::NewNode {
+                        node_type: engram_core::NodeType::parse("Session").unwrap(),
+                        title: format!("{sid} opening question"),
+                        body: None,
+                        created_at: Some(engram_core::parse_day(day).unwrap()),
+                        durability: engram_core::Durability::Stable,
+                        source: engram_core::Source::Claude,
+                        session_id: Some(sid.into()),
+                        status: None,
+                        code_refs: vec![],
+                        tags: vec![],
+                        version: None,
+                        props: Some(props),
+                    })
+                    .unwrap()
+                    .unwrap();
+            }
+        }
+
+        let listed = |after: Option<&str>, before: Option<&str>| {
+            let (after, before) = (after.map(str::to_string), before.map(str::to_string));
+            let s = &s;
+            async move {
+                text_of(
+                    &s.list_sessions(Parameters(ListSessionsArgs {
+                        after,
+                        before,
+                        ..Default::default()
+                    }))
+                    .await
+                    .unwrap(),
+                )
+            }
+        };
+
+        let text = listed(Some("2026-08-01"), None).await;
+        assert!(text.contains("sess-august"), "{text}");
+        assert!(!text.contains("sess-june"), "{text}");
+
+        let text = listed(None, Some("2026-08-01")).await;
+        assert!(text.contains("sess-june"), "{text}");
+        assert!(!text.contains("sess-august"), "{text}");
+
+        // An empty window says the window was empty — not that recording is
+        // off, which is a different diagnosis and would send the user to the
+        // wrong switch.
+        let text = listed(None, Some("2020-01-01")).await;
+        assert!(text.contains("No sessions in that window"), "{text}");
+        assert!(!text.contains("Nothing recorded"), "{text}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
     async fn search_scope_history_returns_sectioned_hits_and_expands() {
         let (s, dir) = history_server();
         seed_history(
@@ -2654,6 +2858,7 @@ pub(crate) mod tool_tests {
                 limit: None,
                 project: None,
                 scope: Some("history".into()),
+                ..Default::default()
             }))
             .await
             .unwrap();
@@ -2689,6 +2894,7 @@ pub(crate) mod tool_tests {
                 limit: None,
                 harness: None,
                 project: None,
+                ..Default::default()
             }))
             .await
             .unwrap();
@@ -2727,6 +2933,7 @@ pub(crate) mod tool_tests {
                 limit: None,
                 harness: None,
                 project: None,
+                ..Default::default()
             }))
             .await
             .unwrap();
@@ -2744,6 +2951,7 @@ pub(crate) mod tool_tests {
                 limit: None,
                 harness: Some("bob".into()),
                 project: None,
+                ..Default::default()
             }))
             .await
             .unwrap();
@@ -2862,6 +3070,7 @@ pub(crate) mod tool_tests {
                 limit: None,
                 project: None,
                 scope: None,
+                ..Default::default()
             }))
             .await
             .unwrap();
@@ -2877,6 +3086,7 @@ pub(crate) mod tool_tests {
                 limit: None,
                 project: None,
                 scope: Some("memory".into()),
+                ..Default::default()
             }))
             .await
             .unwrap();
@@ -2900,6 +3110,7 @@ pub(crate) mod tool_tests {
                 limit: None,
                 project: None,
                 scope: None,
+                ..Default::default()
             }))
             .await
             .unwrap();
@@ -2925,6 +3136,7 @@ pub(crate) mod tool_tests {
                 limit: None,
                 project: None,
                 scope: None,
+                ..Default::default()
             }))
             .await
             .unwrap();
@@ -2981,6 +3193,7 @@ mod project_tests {
                 limit: None,
                 project: Some("definitely-not-registered-xyz".into()),
                 scope: None,
+                ..Default::default()
             }))
             .await
             .unwrap_err();
@@ -3373,6 +3586,7 @@ mod push_and_params_tests {
                 limit: None,
                 project: None,
                 scope: None,
+                ..Default::default()
             }))
             .await
             .unwrap();
@@ -3400,6 +3614,7 @@ mod push_and_params_tests {
                 limit: None,
                 project: None,
                 scope: None,
+                ..Default::default()
             }))
             .await
             .unwrap();
@@ -3429,6 +3644,7 @@ mod push_and_params_tests {
                 limit: None,
                 project: None,
                 scope: None,
+                ..Default::default()
             }))
             .await
             .unwrap();
@@ -3460,6 +3676,7 @@ mod push_and_params_tests {
                         limit: None,
                         project: None,
                         scope: None,
+                        ..Default::default()
                     }))
                     .await
                     .unwrap(),
@@ -3486,6 +3703,7 @@ mod push_and_params_tests {
                 limit: None,
                 project: None,
                 scope: None,
+                ..Default::default()
             }))
             .await;
         assert!(bad.is_err(), "unknown detail level is refused");

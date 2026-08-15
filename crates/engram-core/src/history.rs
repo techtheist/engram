@@ -54,6 +54,15 @@ pub struct HistoryHit {
     pub timestamp: i64,
     pub snippet: String,
     pub score: f64,
+    /// Earlier statements of the same thing, newest-first, folded under this
+    /// hit by `order: "recent"` (0.8.7) — the episodic echo of the curated
+    /// graph's `replaces` chain, except the chain is inferred at query time
+    /// rather than judged, because nobody curates a transcript.
+    ///
+    /// Folding is PRESENTATION: every hit the search delivered is still here,
+    /// nested instead of cut. A wrong fold costs shape, never recall.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prior: Vec<HistoryHit>,
 }
 
 /// One message of an expanded exchange, in conversation order.

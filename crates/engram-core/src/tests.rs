@@ -411,7 +411,9 @@ fn vector_knn_finds_nearest() {
         .unwrap();
 
     let q = e.embed_one("alpha").unwrap();
-    let hits = s.search_hybrid("", Some(&q), &[], 2).unwrap();
+    let hits = s
+        .search_hybrid("", Some(&q), &[], 2, Default::default())
+        .unwrap();
     assert_eq!(
         hits.first().unwrap().id,
         a.id,
@@ -3224,7 +3226,9 @@ fn store_battery(s: &dyn Store, backend: &str) {
     assert_eq!(knn[0].0, a.id, "nearest neighbor first on {backend}");
     assert!(knn[0].1 < knn[1].1, "distances ascend");
     assert_eq!(s.embedding_of(&a.id).unwrap().unwrap().len(), 384);
-    let hybrid = s.search_hybrid("journaling", Some(&va), &[], 5).unwrap();
+    let hybrid = s
+        .search_hybrid("journaling", Some(&va), &[], 5, Default::default())
+        .unwrap();
     assert_eq!(hybrid[0].id, a.id);
 
     // -- archived nodes vanish from reads
@@ -4219,6 +4223,453 @@ fn parse_day_handles_days_unix_and_rfc3339_prefixes() {
     assert_eq!(parse_day(" 1784678400 "), Some(1784678400));
     assert_eq!(parse_day("2026-13-01"), None, "month range");
     assert_eq!(parse_day("yesterday"), None);
+}
+
+// ---- the temporal grammar (0.8.7): one clock language for both layers ------
+
+/// Every constant below is derived from `parse_day`, which has its own test —
+/// hand-written epoch seconds in a test are a second implementation nobody
+/// checks. `T0` is 2026-08-14T12:00:00Z: a Friday, mid-month, mid-day, so
+/// every period start is strictly in the past and no assertion can pass by
+/// landing on a boundary.
+fn day(s: &str) -> i64 {
+    parse_day(s).expect(s)
+}
+
+fn t0() -> i64 {
+    day("2026-08-14") + 12 * 3600
+}
+
+#[test]
+fn timespec_reads_absolute_instants_days_and_unix_stamps() {
+    use crate::timespec::parse_instant;
+    let (t0, d) = (t0(), day("2026-08-14"));
+
+    // A full ISO instant keeps its seconds; the same string as a bare day
+    // floors to midnight. Both shapes are accepted, and they are not the same
+    // instant — a window asked in days must not silently gain nine hours.
+    assert_eq!(parse_instant("2026-08-14T09:15:32Z", t0), Some(d + 33332));
+    assert_eq!(parse_instant("2026-08-14", t0), Some(d));
+    // Offsets shift back to UTC and fractional seconds are ignored, per the
+    // harness parser this delegates to.
+    assert_eq!(
+        parse_instant("2026-08-14T11:15:32+02:00", t0),
+        Some(d + 33332)
+    );
+    // Raw unix seconds pass through, so a caller can echo a timestamp a hit
+    // gave it without reformatting.
+    assert_eq!(parse_instant(" 1784678400 ", t0), Some(1784678400));
+    // Absolute parsing does not consult the anchor at all.
+    assert_eq!(
+        parse_instant("2026-08-14", t0),
+        parse_instant("2026-08-14", 0)
+    );
+}
+
+#[test]
+fn timespec_relative_expressions_resolve_to_span_starts() {
+    use crate::timespec::parse_instant;
+    let t0 = t0();
+    let p = |s: &str| parse_instant(s, t0).expect(s);
+
+    assert_eq!(p("now"), t0);
+    assert_eq!(p("today"), day("2026-08-14"), "midnight UTC, not now");
+    assert_eq!(p("yesterday"), day("2026-08-13"));
+    // Every relative expression is the START of the span it names, so `after:
+    // "last week"` reads "since a week ago".
+    assert_eq!(p("last week"), t0 - 7 * 86400);
+    assert_eq!(p("past week"), t0 - 7 * 86400, "past is a synonym for last");
+    assert_eq!(p("last 3 days"), t0 - 3 * 86400);
+    assert_eq!(p("2 hours ago"), t0 - 7200);
+    assert_eq!(p("a week ago"), t0 - 7 * 86400);
+    assert_eq!(p("an hour ago"), t0 - 3600);
+    assert_eq!(p("30 minutes ago"), t0 - 1800);
+    // Plural and singular are the same unit; so are the common short forms.
+    assert_eq!(p("1 day ago"), p("1 days ago"));
+    assert_eq!(p("5 min ago"), t0 - 300);
+
+    // Calendar period starts. 2026-08-14 is a Friday, so the week began Monday
+    // the 10th — weeks start Monday, the ISO convention.
+    assert_eq!(p("this week"), day("2026-08-10"));
+    assert_eq!(p("this month"), day("2026-08-01"));
+    assert_eq!(p("this year"), day("2026-01-01"));
+
+    // Nothing else is guessed at.
+    assert_eq!(parse_instant("soonish", t0), None);
+    assert_eq!(parse_instant("", t0), None);
+    assert_eq!(parse_instant("last fortnight", t0), None);
+}
+
+#[test]
+fn timespec_month_and_year_shifts_use_calendar_arithmetic() {
+    use crate::timespec::parse_instant;
+    let t0 = t0();
+    // From 2026-08-14, one month back is 2026-07-14 — 31 days, not an
+    // approximate 30. A project's cadence is calendar-shaped, and a fudged
+    // month quietly misses a whole release cycle.
+    assert_eq!(parse_instant("a month ago", t0).unwrap(), t0 - 31 * 86400);
+    assert_eq!(
+        parse_instant("6 months ago", t0).unwrap(),
+        day("2026-02-14") + 12 * 3600
+    );
+    assert_eq!(
+        parse_instant("a year ago", t0).unwrap(),
+        day("2025-08-14") + 12 * 3600
+    );
+    // Day-of-month clamps into short months instead of overflowing: one month
+    // back from the 31st of March is the 28th of February, not the 3rd of March.
+    assert_eq!(
+        parse_instant("a month ago", day("2026-03-31")).unwrap(),
+        day("2026-02-28")
+    );
+    // Leap years are real years.
+    assert_eq!(
+        parse_instant("1 month ago", day("2024-03-31")).unwrap(),
+        day("2024-02-29")
+    );
+    // A shift keeps the time of day it started from.
+    assert_eq!(
+        parse_instant("1 month ago", day("2026-03-15") + 9 * 3600).unwrap(),
+        day("2026-02-15") + 9 * 3600
+    );
+}
+
+#[test]
+fn timespec_windows_are_half_open_and_reject_empty_bounds() {
+    use crate::timespec::{TimeWindow, window};
+
+    let t0 = t0();
+    let w = window(Some("2026-08-01"), Some("2026-08-14"), t0).unwrap();
+    assert!(w.contains(day("2026-08-01")), "after is inclusive");
+    assert!(!w.contains(day("2026-08-14")), "before is exclusive");
+    assert!(!w.contains(day("2026-08-01") - 1));
+    assert!(w.contains(day("2026-08-13")));
+
+    assert!(TimeWindow::default().is_open());
+    assert!(
+        TimeWindow::default().contains(0),
+        "an open window filters nothing"
+    );
+    // Half-open is what lets adjacent windows tile: the boundary instant
+    // belongs to exactly one of them.
+    let earlier = window(Some("2026-08-01"), Some("2026-08-10"), t0).unwrap();
+    let later = window(Some("2026-08-10"), None, t0).unwrap();
+    let boundary = day("2026-08-10");
+    assert!(!earlier.contains(boundary) && later.contains(boundary));
+
+    // A bound that cannot be read is an error naming the offender — never a
+    // dropped filter, which would answer an unscoped question instead.
+    let err = window(Some("whenever"), None, t0).unwrap_err().to_string();
+    assert!(err.contains("whenever"), "{err}");
+    assert!(
+        err.contains("last week"),
+        "the error teaches the grammar: {err}"
+    );
+
+    // Crossed bounds are refused: silently returning nothing is
+    // indistinguishable from "the graph is silent".
+    let err = window(Some("2026-08-14"), Some("2026-08-01"), t0)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("empty"), "{err}");
+
+    // Blank strings are absent bounds, not unreadable ones — an omitted
+    // optional arriving as "" over JSON must not become an error.
+    assert!(window(Some(""), Some("  "), t0).unwrap().is_open());
+}
+
+#[test]
+fn timespec_windows_intersect_to_the_tighter_bound() {
+    use crate::timespec::TimeWindow;
+    let release = TimeWindow {
+        after: Some(100),
+        before: Some(200),
+    };
+    let asked = TimeWindow {
+        after: Some(150),
+        before: None,
+    };
+    let both = release.intersect(asked);
+    assert_eq!(both.after, Some(150), "the later start wins");
+    assert_eq!(both.before, Some(200), "the earlier end wins");
+    assert!(!both.contains(120));
+    assert!(both.contains(150));
+}
+
+#[test]
+fn search_order_parses_its_aliases_and_nothing_else() {
+    use crate::timespec::SearchOrder;
+    assert_eq!(SearchOrder::default(), SearchOrder::Relevance);
+    assert_eq!(SearchOrder::parse("recent"), Some(SearchOrder::Recent));
+    assert_eq!(SearchOrder::parse("NEWEST"), Some(SearchOrder::Recent));
+    assert_eq!(
+        SearchOrder::parse("chronological"),
+        Some(SearchOrder::Chronological)
+    );
+    assert_eq!(
+        SearchOrder::parse("oldest"),
+        Some(SearchOrder::Chronological)
+    );
+    assert_eq!(
+        SearchOrder::parse("relevance"),
+        Some(SearchOrder::Relevance)
+    );
+    assert_eq!(SearchOrder::parse("sideways"), None);
+    assert!(!SearchOrder::Relevance.is_temporal());
+    assert!(SearchOrder::Recent.is_temporal());
+}
+
+/// Add a node dated at `day`, so a window has something to select on.
+fn dated_note(e: &Engine, title: &str, body: &str, day_str: &str) -> Node {
+    let mut n = new_node(NodeType::Decision, title, body);
+    n.created_at = Some(day(day_str));
+    e.add_node(n).unwrap()
+}
+
+#[test]
+fn search_window_filters_curated_hits_by_capture_date() {
+    let e = engine();
+    let june = dated_note(
+        &e,
+        "sqlite storage decision",
+        "we chose sqlite",
+        "2026-06-10",
+    );
+    let august = dated_note(
+        &e,
+        "sqlite storage revisited",
+        "we chose sqlite",
+        "2026-08-10",
+    );
+
+    // Unfiltered, both are reachable.
+    let all = e.search("sqlite storage", &[], 10).unwrap();
+    assert_eq!(all.len(), 2);
+
+    let only_august = e
+        .search_filtered(
+            "sqlite storage",
+            &[],
+            10,
+            &SearchFilter {
+                window: crate::timespec::window(Some("2026-08-01"), None, day("2026-08-14"))
+                    .unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(only_august.len(), 1);
+    assert_eq!(only_august[0].id, august.id);
+
+    let only_june = e
+        .search_filtered(
+            "sqlite storage",
+            &[],
+            10,
+            &SearchFilter {
+                window: crate::timespec::window(None, Some("2026-08-01"), day("2026-08-14"))
+                    .unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(only_june.len(), 1);
+    assert_eq!(only_june[0].id, june.id);
+
+    // A window that selects nothing returns nothing — and that is a real
+    // "none", not a silent drop of the filter.
+    let none = e
+        .search_filtered(
+            "sqlite storage",
+            &[],
+            10,
+            &SearchFilter {
+                window: crate::timespec::window(Some("2020-01-01"), Some("2020-02-01"), 0).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(none.is_empty());
+}
+
+/// Found by the 0.8.7 window bench, and it was live in the shipped path: the
+/// windowed candidate pool multiplies the vector k, sqlite-vec REFUSES a k
+/// over 4096 instead of capping it, and an error there empties the entire
+/// search. A caller asking for a large `limit` next to a time window got
+/// nothing back — which is indistinguishable from "the graph is silent".
+#[test]
+fn a_deep_windowed_pool_never_outgrows_the_vector_index() {
+    let e = engine();
+    for i in 0..12 {
+        dated_note(
+            &e,
+            &format!("sqlite storage note {i}"),
+            "we chose sqlite",
+            "2026-06-10",
+        );
+    }
+    let mut cfg = e.graph_config();
+    // Far past anything shipped, so the clamp is what is under test rather
+    // than the default happening to fit.
+    cfg.policy.window_overfetch = 64;
+    e.set_graph_config(&cfg).unwrap();
+
+    let filter = SearchFilter {
+        window: crate::timespec::window(Some("2026-01-01"), None, day("2026-12-01")).unwrap(),
+        ..Default::default()
+    };
+    // A large limit is what pushed k over the ceiling.
+    for limit in [1, 8, 25, 100] {
+        let hits = e
+            .search_filtered("sqlite storage", &[], limit, &filter)
+            .unwrap_or_else(|err| panic!("limit {limit} must not error: {err}"));
+        assert!(!hits.is_empty(), "limit {limit} returned nothing");
+    }
+}
+
+#[test]
+fn search_hits_carry_their_capture_date_and_can_be_time_ordered() {
+    let e = engine();
+    let old = dated_note(&e, "sqlite one", "sqlite storage", "2026-06-10");
+    let mid = dated_note(&e, "sqlite two", "sqlite storage", "2026-07-10");
+    let new = dated_note(&e, "sqlite three", "sqlite storage", "2026-08-10");
+
+    let by_date = |order| {
+        e.search_filtered(
+            "sqlite storage",
+            &[],
+            10,
+            &SearchFilter {
+                order,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .into_iter()
+        .map(|h| h.id)
+        .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        by_date(crate::timespec::SearchOrder::Chronological),
+        vec![old.id.clone(), mid.id.clone(), new.id.clone()]
+    );
+    assert_eq!(
+        by_date(crate::timespec::SearchOrder::Recent),
+        vec![new.id.clone(), mid.id.clone(), old.id.clone()]
+    );
+    // Ordering changes the ORDER, never the membership: the same set comes
+    // back, so the verdict a caller was given still describes it.
+    let mut relevance = by_date(crate::timespec::SearchOrder::Relevance);
+    let mut chrono = by_date(crate::timespec::SearchOrder::Chronological);
+    relevance.sort();
+    chrono.sort();
+    assert_eq!(relevance, chrono);
+
+    // The date rides on the hit, so a caller can order or display without a
+    // second read.
+    let hits = e.search("sqlite storage", &[], 10).unwrap();
+    let dated: Vec<i64> = hits.iter().map(|h| h.created_at).collect();
+    assert!(dated.iter().all(|d| *d > 0));
+    assert!(dated.contains(&day("2026-06-10")));
+}
+
+#[test]
+fn during_version_resolves_from_the_recorded_version_switches() {
+    let e = engine();
+    // A cycle's worth of switches, journaled exactly as set_version writes them.
+    e.set_current_version(Some("0.8.5")).unwrap();
+    let opened_86 = crate::store::now();
+    e.set_current_version(Some("0.8.6")).unwrap();
+    e.set_current_version(Some("0.8.7")).unwrap();
+
+    let w = e
+        .version_window("0.8.6")
+        .unwrap()
+        .expect("0.8.6 was worked");
+    assert!(w.after.is_some() && w.before.is_some(), "a closed cycle");
+    assert!(w.after.unwrap() >= opened_86);
+    assert!(w.before.unwrap() >= w.after.unwrap());
+
+    // The current version is still open-ended.
+    let current = e.version_window("0.8.7").unwrap().unwrap();
+    assert!(current.after.is_some());
+    assert_eq!(current.before, None, "the open cycle has no end");
+
+    // The first version has no switch INTO it recorded from before tracking
+    // began, but the switch away still bounds it.
+    let first = e.version_window("0.8.5").unwrap().unwrap();
+    assert!(first.before.is_some());
+
+    // A version this graph never worked under is an error, not an unscoped
+    // answer.
+    assert!(e.version_window("9.9.9").unwrap().is_none());
+    let err = e
+        .time_filter(None, None, Some("9.9.9"), None)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("9.9.9"), "{err}");
+    assert!(
+        err.contains("set_version"),
+        "the error names the fix: {err}"
+    );
+}
+
+#[test]
+fn time_filter_intersects_version_window_with_explicit_bounds() {
+    let e = engine();
+    e.set_current_version(Some("0.8.6")).unwrap();
+    e.set_current_version(Some("0.8.7")).unwrap();
+    let open = e.version_window("0.8.7").unwrap().unwrap().after.unwrap();
+
+    // An explicit `after` INSIDE the release narrows it.
+    let f = e
+        .time_filter(Some("2020-01-01"), None, Some("0.8.7"), None)
+        .unwrap();
+    assert_eq!(
+        f.window.after,
+        Some(open),
+        "the release's later start wins over an earlier explicit one"
+    );
+
+    // An explicit window entirely outside the release is refused rather than
+    // silently returning nothing.
+    let err = e
+        .time_filter(None, Some("2020-01-01"), Some("0.8.7"), None)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("empty"), "{err}");
+
+    // Order parses through the same entry point, and a bad one is named.
+    assert_eq!(
+        e.time_filter(None, None, None, Some("recent"))
+            .unwrap()
+            .order,
+        crate::timespec::SearchOrder::Recent
+    );
+    let err = e
+        .time_filter(None, None, None, Some("sideways"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("chronological"), "{err}");
+}
+
+#[test]
+fn default_filter_leaves_the_unscoped_path_alone() {
+    let e = engine();
+    dated_note(
+        &e,
+        "sqlite storage decision",
+        "we chose sqlite",
+        "2026-06-10",
+    );
+    assert!(SearchFilter::default().is_default());
+    assert_eq!(
+        e.search("sqlite", &[], 5).unwrap().len(),
+        e.search_filtered("sqlite", &[], 5, &SearchFilter::default())
+            .unwrap()
+            .len()
+    );
 }
 
 #[test]
@@ -6324,6 +6775,42 @@ fn claude_code_adapter_filters_and_cursors() {
 }
 
 #[test]
+fn watch_roots_are_the_deduped_parents_of_discovered_transcripts() {
+    use crate::harvest::{Harvester, claude_code::ClaudeCodeAdapter};
+    let tmp = std::env::temp_dir().join(format!("engram-watchroots-{}", id::new_id()));
+    let projects = tmp.join("projects");
+    // Two transcripts in one project directory, one in another — the watcher
+    // should learn two directories, not three files.
+    let a = projects.join("-Users-x-alpha");
+    let b = projects.join("-Users-x-beta");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    for (dir, name) in [(&a, "s1.jsonl"), (&a, "s2.jsonl"), (&b, "s3.jsonl")] {
+        std::fs::write(dir.join(name), "{}\n").unwrap();
+    }
+
+    let h = Harvester::new(vec![Box::new(ClaudeCodeAdapter::with_root(
+        projects.clone(),
+    ))]);
+    let mut roots = h.watch_roots();
+    roots.sort();
+    assert_eq!(roots, vec![a.clone(), b.clone()], "parents, deduped");
+
+    // Directories, not files: a session that does not exist yet is a file that
+    // cannot be watched, so watching the parent is what catches its creation.
+    assert!(roots.iter().all(|r| r.is_dir()));
+
+    // Nothing discovered means nothing to arm — the caller skips the watcher
+    // entirely and leans on the timed sweep.
+    let empty = Harvester::new(vec![Box::new(ClaudeCodeAdapter::with_root(
+        tmp.join("nowhere"),
+    ))]);
+    assert!(empty.watch_roots().is_empty());
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
 fn harvest_sweep_end_to_end() {
     use crate::harvest::{Harvester, claude_code::ClaudeCodeAdapter};
     let _guard = env_home_lock();
@@ -6465,6 +6952,219 @@ fn harvest_sweep_end_to_end() {
 
     unsafe { std::env::remove_var("ENGRAM_HOME") };
     std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn history_search_and_session_listing_take_the_same_time_window() {
+    use crate::history::{MESSAGE_TYPE, SESSION_TYPE};
+    let dir = std::env::temp_dir().join(format!("engram-histwindow-{}", id::new_id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("graph.tepin");
+    let mut e = Engine::new(
+        TepinStore::open(&db).unwrap(),
+        Box::new(FakeEmbedder::default()),
+    );
+    e.set_history_path(crate::history::history_store_path(&db));
+    enable_history(&e);
+
+    let write = |type_name: &str, sid: &str, title: &str, ts: i64, extra: &[(&str, i64)]| {
+        let mut props = serde_json::Map::new();
+        props.insert("role".into(), "assistant".into());
+        props.insert("turn".into(), 1.into());
+        for (k, v) in extra {
+            props.insert((*k).into(), (*v).into());
+        }
+        e.add_history_node(NewNode {
+            node_type: NodeType::parse(type_name).unwrap(),
+            title: title.into(),
+            body: Some(format!("{title} — the daemon leaked memory")),
+            created_at: Some(ts),
+            durability: Durability::Stable,
+            source: Source::Claude,
+            session_id: Some(sid.into()),
+            status: None,
+            code_refs: vec![],
+            tags: vec![],
+            version: None,
+            props: Some(props),
+        })
+        .unwrap()
+        .unwrap()
+    };
+
+    let june = day("2026-06-10");
+    let august = day("2026-08-10");
+    let old_msg = write(MESSAGE_TYPE, "sess-june", "the june leak", june, &[]);
+    let new_msg = write(MESSAGE_TYPE, "sess-august", "the august leak", august, &[]);
+    // Sessions carry a start and an end; the june one ran for an hour.
+    write(
+        SESSION_TYPE,
+        "sess-june",
+        "june session",
+        june,
+        &[("ended", june + 3600)],
+    );
+    write(
+        SESSION_TYPE,
+        "sess-august",
+        "august session",
+        august,
+        &[("ended", august + 3600)],
+    );
+
+    let scoped = |after: Option<&str>, before: Option<&str>| {
+        let filter = SearchFilter {
+            window: crate::timespec::window(after, before, day("2026-09-01")).unwrap(),
+            ..Default::default()
+        };
+        e.search_history_filtered("daemon leaked memory", 10, &filter)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.message_id)
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(scoped(None, None).len(), 2, "unscoped sees both");
+    assert_eq!(scoped(Some("2026-08-01"), None), vec![new_msg.id.clone()]);
+    assert_eq!(scoped(None, Some("2026-08-01")), vec![old_msg.id.clone()]);
+    assert!(scoped(Some("2027-01-01"), None).is_empty());
+
+    // The session lane list takes the same grammar, so "what was I doing then"
+    // is answerable without a search hit to start from.
+    let sessions = |after: Option<&str>, before: Option<&str>| {
+        let w = crate::timespec::window(after, before, day("2026-09-01")).unwrap();
+        e.list_history_sessions_in(w)
+            .unwrap()
+            .into_iter()
+            .map(|s| s.session)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(sessions(None, None).len(), 2);
+    assert_eq!(sessions(Some("2026-08-01"), None), vec!["sess-august"]);
+    assert_eq!(sessions(None, Some("2026-08-01")), vec!["sess-june"]);
+
+    // Overlap, not containment: a window opening mid-session still finds the
+    // session that was running through it.
+    assert_eq!(
+        sessions(Some("2026-06-10T00:30:00Z"), Some("2026-06-10T00:45:00Z")),
+        vec!["sess-june"],
+        "a session running through the window is inside it"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn recent_ordering_folds_restatements_without_ever_cutting_one() {
+    use crate::history::MESSAGE_TYPE;
+    let dir = std::env::temp_dir().join(format!("engram-collapse-{}", id::new_id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("graph.tepin");
+    let mut e = Engine::new(
+        TepinStore::open(&db).unwrap(),
+        Box::new(FakeEmbedder::default()),
+    );
+    e.set_history_path(crate::history::history_store_path(&db));
+    enable_history(&e);
+
+    let msg = |text: &str, ts: i64| {
+        let mut props = serde_json::Map::new();
+        props.insert("role".into(), "assistant".into());
+        props.insert("turn".into(), 1.into());
+        e.add_history_node(NewNode {
+            node_type: NodeType::parse(MESSAGE_TYPE).unwrap(),
+            title: text.chars().take(40).collect(),
+            body: Some(text.into()),
+            created_at: Some(ts),
+            durability: Durability::Stable,
+            source: Source::Claude,
+            session_id: Some(format!("sess-{ts}")),
+            status: None,
+            code_refs: vec![],
+            tags: vec![],
+            version: None,
+            props: Some(props),
+        })
+        .unwrap()
+        .unwrap()
+    };
+
+    // The same fact restated across three sessions, plus one unrelated
+    // message that must NOT be folded into it.
+    let base = day("2026-08-01");
+    msg("the daemon listens on port 8787", base);
+    msg("the daemon listens on port 8787", base + 86_400);
+    let newest = msg("the daemon listens on port 8787", base + 2 * 86_400);
+    msg("the reranker is a cross encoder", base + 3 * 86_400);
+
+    let recent = SearchFilter {
+        order: crate::timespec::SearchOrder::Recent,
+        ..Default::default()
+    };
+    let folded = e
+        .search_history_filtered("the daemon listens on port 8787", 10, &recent)
+        .unwrap();
+
+    // The three restatements collapsed to one head — the newest — carrying the
+    // older two as prior generations.
+    let head = folded
+        .iter()
+        .find(|h| h.message_id == newest.id)
+        .expect("the newest statement is the head");
+    assert_eq!(head.prior.len(), 2, "both older forms folded under it");
+    assert!(
+        head.prior.iter().all(|p| p.timestamp < head.timestamp),
+        "a prior generation is strictly older"
+    );
+    assert!(
+        head.prior
+            .windows(2)
+            .all(|w| w[0].timestamp >= w[1].timestamp),
+        "priors read newest-first"
+    );
+
+    // Nothing was cut: folding is presentation, so the same messages come back
+    // either way — that invariant is what makes the threshold safe to ship
+    // before it is measured.
+    let flat = |hits: &[crate::history::HistoryHit]| {
+        let mut ids: Vec<String> = hits
+            .iter()
+            .flat_map(|h| {
+                std::iter::once(h.message_id.clone())
+                    .chain(h.prior.iter().map(|p| p.message_id.clone()))
+            })
+            .collect();
+        ids.sort();
+        ids
+    };
+    let unfolded = e
+        .search_history("the daemon listens on port 8787", 10)
+        .unwrap();
+    assert_eq!(flat(&folded), flat(&unfolded), "same set, different shape");
+    assert!(folded.len() < unfolded.len(), "the shape really did change");
+
+    // Relevance and chronological reads never fold.
+    for order in [
+        crate::timespec::SearchOrder::Relevance,
+        crate::timespec::SearchOrder::Chronological,
+    ] {
+        let hits = e
+            .search_history_filtered(
+                "the daemon listens on port 8787",
+                10,
+                &SearchFilter {
+                    order,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(
+            hits.iter().all(|h| h.prior.is_empty()),
+            "only the recency ordering folds"
+        );
+    }
+
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]

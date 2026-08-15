@@ -209,6 +209,33 @@ pub const SEARCH_RELATIVE_CUT: f64 = 0.25;
 pub const SEARCH_RECENCY_BOOST: f64 = 0.15;
 /// Age at which the newness bonus has halved.
 pub const SEARCH_RECENCY_HALF_LIFE_SECS: i64 = 30 * 24 * 60 * 60; // 30 days
+/// Candidate-pool multiplier when a search carries a time window (0.8.7).
+/// Neither retrieval channel is date-ordered, so an in-window match can sit
+/// arbitrarily deep in a date-blind ranking; the only lever is to look at more
+/// candidates before filtering.
+///
+/// TWO, measured (`engram-eval --window`, three seeds, receipts in
+/// `eval/results/window-100x20*.json`).
+///
+/// The firm result is that DEPTH PAST 2 IS DEAD WEIGHT: on a 2100-note graph
+/// the mean recall@5 at 2, 4, 8 and 16 is identical to three decimals at both
+/// window widths (0.943 at 30 days, 0.848 at 180), while wall-clock grows with
+/// the pool. Rank-1 recall drifts slightly DOWN as the pool deepens (0.805 →
+/// 0.799), which is the cross-encoder mis-promoting out of a larger candidate
+/// set — the same effect recorded in the oblique-recall work.
+///
+/// The gain from 1 to 2 is real but modest, and honestly stated: +0.021
+/// recall@5 and +0.064 oblique at a 30-day window (all three seeds agree in
+/// direction), but only +0.004 at 180 days, where one seed of three moved the
+/// other way. Two is chosen as the cheapest depth that is never worse.
+///
+/// The bench also settled the question the multiplier was invented for: a time
+/// window does not COST recall, it BUYS it — mean recall@5 goes 0.74 unscoped
+/// to 0.94 inside a 30-day window, and oblique recall 0.26 → 0.83, because the
+/// window deletes distractors the query could not discriminate. That result is
+/// large and unanimous across seeds, and it is why the pool never needed to be
+/// deep in the first place.
+pub const SEARCH_WINDOW_OVERFETCH: usize = 2;
 /// How much trust modulates a reranked hit's score (mirrors the trust weight
 /// inside the hybrid blend): relevance dominates, trust breaks near-ties.
 pub const RERANK_TRUST_WEIGHT: f64 = 0.15;

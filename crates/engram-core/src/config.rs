@@ -62,6 +62,22 @@ pub struct HistoryConfig {
     /// is ingested and browsable but never surfaces in `search`.
     #[serde(default = "default_true")]
     pub search_fallthrough: bool,
+    /// Cosine similarity at which `order: "recent"` folds an older history hit
+    /// under a newer one as a prior generation (0.8.7). Only the recency
+    /// ordering collapses; relevance and chronological reads are untouched.
+    ///
+    /// Nothing is ever dropped by the fold — the older statements come back
+    /// nested rather than cut — so a mistuned value costs presentation
+    /// quality, never recall. That is what makes shipping a starting value
+    /// honest; it is not a measured one, and the register lesson
+    /// (00b22705tdob) says absolute thresholds do not transfer between
+    /// graphs, which is exactly why this is a per-graph knob.
+    #[serde(default = "default_recency_collapse")]
+    pub recency_collapse: f64,
+}
+
+fn default_recency_collapse() -> f64 {
+    0.9
 }
 
 impl Default for HistoryConfig {
@@ -71,6 +87,7 @@ impl Default for HistoryConfig {
             harnesses: HarnessToggles::default(),
             exclude_paths: Vec::new(),
             search_fallthrough: true,
+            recency_collapse: default_recency_collapse(),
         }
     }
 }
@@ -267,6 +284,19 @@ pub struct PolicyConfig {
     /// Fraction of the top hit's score below which a hit is dropped.
     #[serde(default = "default_search_relative_cut")]
     pub search_relative_cut: f64,
+    /// Candidate-pool multiplier when a search carries a time window (0.8.7).
+    /// Neither retrieval channel is date-ordered, so an in-window match can
+    /// sit arbitrarily deep in a date-blind ranking; the only lever is to look
+    /// at more candidates before filtering. 1 disables the deepening.
+    ///
+    /// The shipped default is 2, measured — see
+    /// [`crate::policy::SEARCH_WINDOW_OVERFETCH`]. A knob rather than a bare
+    /// constant because the depth a graph needs depends on its own date
+    /// distribution, and a graph whose notes cluster into a few dense periods
+    /// may want more; raising it is cheap and bounded (the vector index clamps
+    /// the resulting k, see `VEC_MAX_K`).
+    #[serde(default = "default_window_overfetch")]
+    pub window_overfetch: usize,
     /// How much trust tilts the reranker's ordering.
     #[serde(default = "default_rerank_trust_weight")]
     pub rerank_trust_weight: f64,
@@ -360,6 +390,9 @@ fn default_search_min_score() -> f64 {
 fn default_search_relative_cut() -> f64 {
     crate::policy::SEARCH_RELATIVE_CUT
 }
+fn default_window_overfetch() -> usize {
+    crate::policy::SEARCH_WINDOW_OVERFETCH
+}
 fn default_rerank_trust_weight() -> f64 {
     crate::policy::RERANK_TRUST_WEIGHT
 }
@@ -392,6 +425,7 @@ impl Default for PolicyConfig {
             semantic_floor: SEARCH_SEMANTIC_FLOOR,
             search_min_score: SEARCH_MIN_SCORE,
             search_relative_cut: SEARCH_RELATIVE_CUT,
+            window_overfetch: SEARCH_WINDOW_OVERFETCH,
             rerank_trust_weight: RERANK_TRUST_WEIGHT,
             claim_contradiction_min_confidence: CLAIM_CONTRADICTION_MIN_CONFIDENCE,
             rerank_vote_k: RERANK_VOTE_K,

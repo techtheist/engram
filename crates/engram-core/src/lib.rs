@@ -20,12 +20,13 @@ mod schema;
 mod store;
 mod store_sqlite;
 mod store_tepin;
+pub mod timespec;
 mod types;
 
 pub use config::GraphConfig;
 #[cfg(test)]
 pub(crate) use engine::claim_texts as engine_claims_for_tests;
-pub use engine::{AuditOrigin, ChangeEvent, EMBED_COMPOSITION, Engine, Listener};
+pub use engine::{AuditOrigin, ChangeEvent, EMBED_COMPOSITION, Engine, Listener, SearchFilter};
 pub use error::{Error, Result};
 pub use hub::{ConflictAlert, ConflictFeed, EngineFactory, Hub, ListenerFactory, ProjectHandle};
 pub use migrate::{MigrationSummary, migrate_to_tepin};
@@ -40,6 +41,7 @@ pub use store::{
 };
 pub use store_sqlite::SqliteStore;
 pub use store_tepin::{TepinStore, is_tepin_path};
+pub use timespec::{SearchOrder, TimeWindow};
 pub use types::*;
 
 #[cfg(test)]

@@ -868,9 +868,10 @@ impl Store for SqliteStore {
             let status = status_s
                 .map(|s| conv(5, &s, NodeStatus::parse))
                 .transpose()?;
+            let created_at: i64 = row.get(7)?;
             let trust = crate::policy::trust(
                 &crate::policy::TrustInputs {
-                    created_at: row.get(7)?,
+                    created_at,
                     confirmed_at: row.get(8)?,
                     approved_at: row.get(9)?,
                     demoted_at: row.get(10)?,
@@ -890,6 +891,7 @@ impl Store for SqliteStore {
                 score: -rank,
                 durability,
                 status,
+                created_at,
                 trust,
                 stale: crate::policy::is_stale(trust, &policy),
                 neighbors: Vec::new(),
@@ -907,7 +909,15 @@ impl Store for SqliteStore {
             "SELECT node_id, distance FROM vec_nodes \
              WHERE embedding MATCH ?1 AND k = ?2 ORDER BY distance",
         )?;
-        let over = (k * 4).max(k + 8) as i64;
+        // sqlite-vec REFUSES a k above its own ceiling rather than capping it,
+        // so an un-clamped request is an error, not a slow query — and an
+        // error here empties the whole search. Found by the 0.8.7 window
+        // bench: the windowed candidate pool multiplies this k, and a caller
+        // asking for a large `limit` alongside a time window sailed past the
+        // ceiling and got nothing back. Clamping is always safe: k is an
+        // over-fetch depth, and asking for more rows than the index will serve
+        // was never going to return more knowledge.
+        let over = ((k * 4).max(k + 8) as i64).min(VEC_MAX_K);
         let rows = stmt.query_map(params![json, over], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
         })?;
@@ -1261,6 +1271,11 @@ fn meta_set(conn: &Connection, key: &str, value: &str) -> Result<()> {
     )?;
     Ok(())
 }
+
+/// sqlite-vec's hard ceiling on a KNN `k` ("k value in knn query too large,
+/// provided N and the limit is 4096"). It is a refusal, not a clamp, so every
+/// caller path that can grow k has to respect it.
+const VEC_MAX_K: i64 = 4096;
 
 const NODE_SELECT: &str = "SELECT id, type, title, body, durability, source, session_id, \
      created_at, valid_from, valid_until, status, code_refs, last_seen, approved_at, tags, \

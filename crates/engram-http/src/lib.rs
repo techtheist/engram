@@ -840,11 +840,20 @@ async fn search(
         return Ok(Json(json!({ "hits": hits, "skipped": skipped })));
     }
     let engine = state.engine_arc(&scope)?;
+    let filter = engine.lock().unwrap().time_filter(
+        p.after.as_deref(),
+        p.before.as_deref(),
+        p.during_version.as_deref(),
+        p.order.as_deref(),
+    )?;
     if p.scope.as_deref() == Some("history") {
-        let hits = engine.lock().unwrap().search_history(&p.q, limit)?;
+        let hits = engine
+            .lock()
+            .unwrap()
+            .search_history_filtered(&p.q, limit, &filter)?;
         return Ok(Json(json!(hits)));
     }
-    let hits = pane(&engine).search(&p.q, &types, limit)?;
+    let hits = pane(&engine).search_filtered(&p.q, &types, limit, &filter)?;
     Ok(Json(json!(hits)))
 }
 
@@ -1067,9 +1076,12 @@ async fn node_born_in(
 async fn history_sessions(
     State(state): State<Arc<AppState>>,
     scope: Scope,
+    Query(p): Query<WindowParams>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let engine = state.engine_arc(&scope)?;
-    let sessions = engine.lock().unwrap().list_history_sessions()?;
+    let window =
+        engram_core::timespec::window(p.after.as_deref(), p.before.as_deref(), engram_core::now())?;
+    let sessions = engine.lock().unwrap().list_history_sessions_in(window)?;
     Ok(Json(json!({ "sessions": sessions })))
 }
 
@@ -1483,6 +1495,21 @@ struct SearchParams {
     /// "history" = search the recorded-session layer instead of curated
     /// memory (the pane's history view routes its search box here).
     scope: Option<String>,
+    /// The temporal grammar (0.8.7), same shapes the MCP surface takes: a day,
+    /// an ISO instant, or a relative expression the daemon resolves.
+    after: Option<String>,
+    before: Option<String>,
+    during_version: Option<String>,
+    /// "relevance" (default) | "chronological" | "recent".
+    order: Option<String>,
+}
+
+/// A bare time window for the browsing endpoints (0.8.7) — same grammar as
+/// search's `after`/`before`.
+#[derive(Deserialize)]
+struct WindowParams {
+    after: Option<String>,
+    before: Option<String>,
 }
 
 #[derive(Deserialize)]

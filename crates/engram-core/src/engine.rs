@@ -498,13 +498,34 @@ impl Engine {
         query: &str,
         limit: usize,
     ) -> Result<Vec<crate::history::HistoryHit>> {
+        self.search_history_filtered(query, limit, &SearchFilter::default())
+    }
+
+    /// [`Engine::search_history`] scoped to a time window and ordering
+    /// (0.8.7) — the same grammar the curated layer reads, against message
+    /// timestamps. Recorded dialogue is the layer where "when" is most often
+    /// the whole question ("what did we try on Tuesday"), so the window
+    /// filters candidates before the cross-encoder re-scores them and before
+    /// the section gate decides whether the section exists at all.
+    pub fn search_history_filtered(
+        &self,
+        query: &str,
+        limit: usize,
+        filter: &SearchFilter,
+    ) -> Result<Vec<crate::history::HistoryHit>> {
         if limit == 0 {
             return Ok(vec![]);
         }
+        let window = filter.window;
         let qv = self.embedder.embed_one(query)?;
         let mut hits = self
             .with_history(|s| -> Result<Vec<crate::history::HistoryHit>> {
-                let k = (limit * 8).clamp(16, 64);
+                let k = (limit * 8).clamp(16, 64)
+                    * if window.is_open() {
+                        1
+                    } else {
+                        self.store.config().policy.window_overfetch.max(1)
+                    };
                 let mut session_titles = std::collections::HashMap::new();
                 for n in s.nodes_by_type_active(
                     &crate::types::NodeType::parse(crate::history::SESSION_TYPE)?,
@@ -523,6 +544,12 @@ impl Engine {
                     }
                     let Some(n) = s.get_node(&id)? else { continue };
                     if n.node_type.as_str() != crate::history::MESSAGE_TYPE {
+                        continue;
+                    }
+                    // A message's created_at IS when it was said — the one
+                    // place in this system where the capture clock and the
+                    // event clock are the same clock.
+                    if !window.contains(n.created_at) {
                         continue;
                     }
                     let p = |k: &str| n.props.as_ref().and_then(|m| m.get(k).cloned());
@@ -545,6 +572,7 @@ impl Engine {
                             240,
                         ),
                         score: (1.0 - dist).clamp(0.0, 1.0),
+                        prior: Vec::new(),
                     });
                 }
                 Ok(out)
@@ -593,7 +621,55 @@ impl Engine {
         {
             hits.clear();
         }
+        // Ordering is the last word, after the gate — so a time-ordered read
+        // is the same SET the relevance-ordered read would have delivered.
+        order_history_hits(&mut hits, filter.order);
+        if filter.order == crate::timespec::SearchOrder::Recent {
+            hits = self.collapse_restatements(hits)?;
+        }
         Ok(hits)
+    }
+
+    /// Fold restatements under their newest form (0.8.7), for `order:
+    /// "recent"` only.
+    ///
+    /// A transcript has no `replaces` edges — nobody curates dialogue — so the
+    /// supersession chain the curated graph gets from judgment has to be
+    /// inferred here from the text itself. Hits arrive newest-first, so the
+    /// first statement of a thing IS its latest statement; every later
+    /// near-duplicate becomes one of its `prior` generations.
+    ///
+    /// Three things keep this honest. It runs ONLY under the recency ordering,
+    /// so the default path is untouched and owes no receipt. It never removes
+    /// a hit — folding is nesting, so recall is unchanged BY CONSTRUCTION and
+    /// a mistuned threshold costs shape, not answers. And the threshold is a
+    /// per-graph knob (`history.recency_collapse`), because this project has
+    /// already learned once that absolute score thresholds don't transfer
+    /// between registers.
+    fn collapse_restatements(
+        &self,
+        hits: Vec<crate::history::HistoryHit>,
+    ) -> Result<Vec<crate::history::HistoryHit>> {
+        let threshold = self.store.config().history.recency_collapse;
+        if hits.len() < 2 || !(0.0..1.0).contains(&threshold) {
+            return Ok(hits);
+        }
+        let texts: Vec<String> = hits.iter().map(|h| h.snippet.clone()).collect();
+        let vecs = self.embedder.embed(&texts)?;
+        if vecs.len() != hits.len() {
+            return Ok(hits);
+        }
+        let mut heads: Vec<(usize, crate::history::HistoryHit)> = Vec::new();
+        for (i, hit) in hits.into_iter().enumerate() {
+            let head = heads
+                .iter_mut()
+                .find(|(j, _)| cosine(&vecs[*j], &vecs[i]) >= threshold);
+            match head {
+                Some((_, head)) => head.prior.push(hit),
+                None => heads.push((i, hit)),
+            }
+        }
+        Ok(heads.into_iter().map(|(_, h)| h).collect())
     }
 
     /// Every message of one session, decrypted in memory and in
@@ -666,6 +742,28 @@ impl Engine {
 
     /// Every recorded session, newest lane first — the history browser's
     /// spine.
+    /// Sessions overlapping a time window, newest lane first (0.8.7) — the
+    /// "what was I doing last Tuesday" entry point, and the surface that makes
+    /// a temporal question answerable WITHOUT a search hit to start from.
+    ///
+    /// A session counts as inside the window when any part of it is: a session
+    /// that began before the window and ran into it is exactly the one a
+    /// person asking about that window means.
+    pub fn list_history_sessions_in(
+        &self,
+        window: crate::timespec::TimeWindow,
+    ) -> Result<Vec<crate::history::HistorySessionView>> {
+        let mut out = self.list_history_sessions()?;
+        if !window.is_open() {
+            out.retain(|s| {
+                let ended = s.ended.unwrap_or(s.started);
+                window.after.is_none_or(|a| ended >= a)
+                    && window.before.is_none_or(|b| s.started < b)
+            });
+        }
+        Ok(out)
+    }
+
     pub fn list_history_sessions(&self) -> Result<Vec<crate::history::HistorySessionView>> {
         let mut out: Vec<crate::history::HistorySessionView> = self
             .with_history(|s| {
@@ -1191,7 +1289,11 @@ impl Engine {
         let total = cfg.policy.weak_line_probes;
         let top_of = |probe: &str| -> Result<f64> {
             let qv = self.embedder.embed_one(probe)?;
-            let mut hits = self.store.search_hybrid(probe, Some(&qv), &[], 12)?;
+            // Probes calibrate against the WHOLE graph — a windowed noise
+            // sample would fit a line to a slice of history.
+            let mut hits =
+                self.store
+                    .search_hybrid(probe, Some(&qv), &[], 12, Default::default())?;
             if hits.is_empty() {
                 return Ok(0.0);
             }
@@ -2030,6 +2132,27 @@ impl Engine {
     /// (conflicts/supersessions first) so contradictions surface passively
     /// with the match (PLAN §6A / §7A).
     pub fn search(&self, query: &str, types: &[NodeType], limit: usize) -> Result<Vec<SearchHit>> {
+        self.search_filtered(query, types, limit, &SearchFilter::default())
+    }
+
+    /// [`Engine::search`] with a time window and an explicit ordering (0.8.7).
+    ///
+    /// The window prunes candidates BEFORE the reranker and before both
+    /// calibrated cuts, so the delivery floor, the knee trim and the verdict
+    /// all describe the scoped set — a "strong" verdict means the best answer
+    /// *inside the window* cleared the line, not that something outside it
+    /// did.
+    ///
+    /// The ordering is applied LAST, after every cut. Re-sorting a delivered
+    /// set cannot change what cleared the line, so a chronological read still
+    /// carries the same verdict its relevance-ordered twin would.
+    pub fn search_filtered(
+        &self,
+        query: &str,
+        types: &[NodeType],
+        limit: usize,
+        filter: &SearchFilter,
+    ) -> Result<Vec<SearchHit>> {
         for t in types {
             self.check_node_type(t)?;
         }
@@ -2038,7 +2161,9 @@ impl Engine {
             Some(_) => (limit * 3).clamp(12, 50),
             None => limit,
         };
-        let mut hits = self.store.search_hybrid(query, Some(&qv), types, fetch)?;
+        let mut hits = self
+            .store
+            .search_hybrid(query, Some(&qv), types, fetch, filter.window)?;
         if let Some(reranker) = &self.reranker
             && !hits.is_empty()
         {
@@ -2073,12 +2198,99 @@ impl Engine {
         for hit in &mut hits {
             hit.neighbors = self.store.neighbors(&hit.id, NEIGHBOR_CAP)?;
         }
+        order_hits(&mut hits, filter.order);
         // Observability stamp on what was actually returned — never the
         // over-fetched candidates the reranker discarded. (Trust doesn't
         // read this either way; see policy.)
         let ids: Vec<String> = hits.iter().map(|h| h.id.clone()).collect();
         self.store.touch(&ids)?;
         Ok(hits)
+    }
+
+    /// The half-open window a named working version was current for, read from
+    /// the audit journal's `version_switched` rows (`set_current_version`
+    /// journals every switch under entity_id "version").
+    ///
+    /// The window OPENS when the version was switched to and CLOSES when it
+    /// was switched away from — the still-current version has no end. A
+    /// version that was set more than once (a cycle reopened, a bump reverted)
+    /// spans from its first switch-in to the last switch-away, which is the
+    /// reading that keeps "during 0.8.4" meaning the same thing as the
+    /// release's story.
+    ///
+    /// `None` when the journal never mentions the version: the caller must
+    /// say so rather than silently searching all of time.
+    pub fn version_window(&self, version: &str) -> Result<Option<crate::timespec::TimeWindow>> {
+        let version = version.trim();
+        if version.is_empty() {
+            return Ok(None);
+        }
+        // The journal is paged newest-first; version switches are rare enough
+        // that one deep page holds a project's whole history.
+        let page = self.store.audit_page(None, Some("version"), 4096)?;
+        let (mut after, mut before) = (None::<i64>, None::<i64>);
+        for row in &page.entries {
+            if row.action != "version_switched" {
+                continue;
+            }
+            // The row's title is "<previous> → <next>".
+            let Some((prev, next)) = row.title.as_deref().and_then(|t| t.split_once('→')) else {
+                continue;
+            };
+            let (prev, next) = (prev.trim(), next.trim());
+            if next == version {
+                after = Some(after.map_or(row.ts, |a: i64| a.min(row.ts)));
+            }
+            if prev == version {
+                before = Some(before.map_or(row.ts, |b: i64| b.max(row.ts)));
+            }
+        }
+        // Switched away from but never switched to: the graph was already on
+        // that version before journaling began. Everything up to the switch
+        // away is the honest window.
+        if after.is_none() && before.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(crate::timespec::TimeWindow { after, before }))
+    }
+
+    /// Resolve the temporal arguments a caller passed into one filter,
+    /// anchored at the current clock. `during_version` contributes the
+    /// release's window; explicit `after`/`before` INTERSECT it rather than
+    /// replacing it, so "during 0.8.4, after the 10th" narrows as it reads.
+    pub fn time_filter(
+        &self,
+        after: Option<&str>,
+        before: Option<&str>,
+        during_version: Option<&str>,
+        order: Option<&str>,
+    ) -> Result<SearchFilter> {
+        let mut window = crate::timespec::window(after, before, crate::store::now())?;
+        if let Some(v) = during_version.map(str::trim).filter(|v| !v.is_empty()) {
+            let Some(release) = self.version_window(v)? else {
+                return Err(crate::Error::Config(format!(
+                    "no recorded switch to or from version {v:?} — `set_version` \
+                     journals each switch, so only versions this graph was \
+                     actually worked under can be searched by name"
+                )));
+            };
+            window = window.intersect(release);
+            if window.is_empty() {
+                return Err(crate::Error::Config(format!(
+                    "the window is empty: the given after/before falls outside \
+                     the time version {v:?} was current"
+                )));
+            }
+        }
+        let order = match order.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(s) => crate::timespec::SearchOrder::parse(s).ok_or_else(|| {
+                crate::Error::Config(format!(
+                    "order {s:?} must be relevance, chronological or recent"
+                ))
+            })?,
+            None => crate::timespec::SearchOrder::default(),
+        };
+        Ok(SearchFilter { window, order })
     }
 
     /// Calibrated delivery, verdict face: how the assistant should hold a
@@ -3007,9 +3219,16 @@ impl Engine {
             ));
         };
         let qv = self.embedder.embed_one(text)?;
-        let hits = self
-            .store
-            .search_hybrid(text, Some(&qv), &[], limit.clamp(4, 16))?;
+        // Unwindowed on purpose: a claim is checked against the whole canon,
+        // because knowledge that contradicts it does not stop counting for
+        // being old.
+        let hits = self.store.search_hybrid(
+            text,
+            Some(&qv),
+            &[],
+            limit.clamp(4, 16),
+            Default::default(),
+        )?;
         let mut nodes = Vec::new();
         for h in &hits {
             if let Some(n) = self.store.get_node(&h.id)? {
@@ -3918,6 +4137,75 @@ fn excerpt_words(text: &str, max: usize) -> String {
         _ => cut.as_str(),
     };
     format!("{}…", trimmed.trim_end())
+}
+
+/// The temporal arguments of one search, resolved (0.8.7). Default is the
+/// whole timeline in relevance order — which is exactly what every caller
+/// before this existed asked for, so [`Engine::search`] stays a thin wrapper
+/// and no existing behavior moves.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SearchFilter {
+    pub window: crate::timespec::TimeWindow,
+    pub order: crate::timespec::SearchOrder,
+}
+
+impl SearchFilter {
+    /// Does this filter change anything? Used to keep the unfiltered path
+    /// identical rather than merely equivalent.
+    pub fn is_default(&self) -> bool {
+        self.window.is_open() && !self.order.is_temporal()
+    }
+}
+
+/// Re-order a delivered result set. Ties break by id, which is time-sortable,
+/// so two notes captured in the same second still come out in a stable and
+/// truthful order rather than whatever the hash iteration produced.
+fn order_hits(hits: &mut [SearchHit], order: crate::timespec::SearchOrder) {
+    use crate::timespec::SearchOrder;
+    match order {
+        SearchOrder::Relevance => {}
+        SearchOrder::Chronological => {
+            hits.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+        }
+        SearchOrder::Recent => {
+            hits.sort_by(|a, b| (b.created_at, &b.id).cmp(&(a.created_at, &a.id)));
+        }
+    }
+}
+
+/// Cosine similarity, computed with magnitudes rather than assuming unit
+/// vectors — the embedder is swappable (models.json), and a normalization
+/// assumption that holds for today's default would fail silently on the next.
+fn cosine(a: &[f32], b: &[f32]) -> f64 {
+    let (mut dot, mut na, mut nb) = (0.0f64, 0.0f64, 0.0f64);
+    for (x, y) in a.iter().zip(b) {
+        dot += f64::from(*x) * f64::from(*y);
+        na += f64::from(*x) * f64::from(*x);
+        nb += f64::from(*y) * f64::from(*y);
+    }
+    if na == 0.0 || nb == 0.0 {
+        return 0.0;
+    }
+    dot / (na.sqrt() * nb.sqrt())
+}
+
+/// Re-order history hits — the episodic twin of [`order_hits`]. Ties break by
+/// message id (time-sortable), so messages sharing a second keep the order
+/// they were said in.
+fn order_history_hits(
+    hits: &mut [crate::history::HistoryHit],
+    order: crate::timespec::SearchOrder,
+) {
+    use crate::timespec::SearchOrder;
+    match order {
+        SearchOrder::Relevance => {}
+        SearchOrder::Chronological => {
+            hits.sort_by(|a, b| (a.timestamp, &a.message_id).cmp(&(b.timestamp, &b.message_id)));
+        }
+        SearchOrder::Recent => {
+            hits.sort_by(|a, b| (b.timestamp, &b.message_id).cmp(&(a.timestamp, &a.message_id)));
+        }
+    }
 }
 
 /// The knee of a DESC-sorted score curve: the largest relative drop, when it

@@ -470,11 +470,22 @@ pub trait Store: Send {
         query_vec: Option<&[f32]>,
         types: &[NodeType],
         limit: usize,
+        window: crate::timespec::TimeWindow,
     ) -> Result<Vec<SearchHit>> {
         use std::collections::HashMap;
 
         let cfg = self.config();
-        let over = (limit * 4).max(20);
+        // A time window prunes candidates AFTER both channels have ranked
+        // them — neither FTS nor the vector index is ordered by date, so the
+        // only way to keep in-window recall is to look at more of them. The
+        // multiplier is a candidate-pool depth, not a ranking change: what
+        // survives is still ordered by the same fused score.
+        let over = (limit * 4).max(20)
+            * if window.is_open() {
+                1
+            } else {
+                cfg.policy.window_overfetch.max(1)
+            };
         let fts = self.search_fts(query, types, over)?;
         let vec_hits = match query_vec {
             Some(v) => self.search_vec(v, over)?,
@@ -510,6 +521,13 @@ pub trait Store: Send {
             if !types.is_empty() && !types.contains(&node.node_type) {
                 continue;
             }
+            // The window reads created_at — when the knowledge was CAPTURED.
+            // Not confirmed_at: "what did we decide in July" asks when the
+            // decision was made, and a node reconfirmed last week is still
+            // July's decision.
+            if !window.contains(node.created_at) {
+                continue;
+            }
             let kw = keyword.get(&id).copied().unwrap_or(0.0);
             let sem_raw = semantic.get(&id).copied().unwrap_or(0.0);
             let floor = cfg.policy.semantic_floor;
@@ -532,6 +550,7 @@ pub trait Store: Send {
                 score,
                 durability: node.durability,
                 status: node.status,
+                created_at: node.created_at,
                 trust: node.trust,
                 stale: node.stale,
                 neighbors: Vec::new(),

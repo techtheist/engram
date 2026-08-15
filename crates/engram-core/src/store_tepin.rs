@@ -697,6 +697,7 @@ impl Store for TepinStore {
                 score: hit.score as f64,
                 durability: node.durability,
                 status: node.status,
+                created_at: node.created_at,
                 trust: node.trust,
                 stale: node.stale,
                 neighbors: Vec::new(),

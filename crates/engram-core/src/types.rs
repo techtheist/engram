@@ -345,6 +345,10 @@ pub struct SearchHit {
     pub score: f64,
     pub durability: Durability,
     pub status: Option<NodeStatus>,
+    /// When the node was captured. Carried on the hit so a time-ordered
+    /// result can be sorted without a second read, and so a caller that asked
+    /// a scoped question can see the dates it scoped to (0.8.7).
+    pub created_at: i64,
     /// Computed trust at query time (policy::trust).
     pub trust: f64,
     /// Trust fell below the stale threshold — treat with suspicion and
