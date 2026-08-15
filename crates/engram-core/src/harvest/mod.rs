@@ -257,6 +257,32 @@ impl Harvester {
         ])
     }
 
+    /// Directories worth watching for change, deduped — the parents of every
+    /// transcript the adapters can currently see (0.8.7).
+    ///
+    /// Directories, not files: a new session is a NEW file, and a watch on a
+    /// file that does not exist yet watches nothing. Watching the parent
+    /// catches both the append to an existing transcript and the creation of
+    /// the next one.
+    ///
+    /// This is a hint for a freshness accelerator, never a guarantee. A
+    /// harness that writes its first transcript into a directory tree none of
+    /// these roots cover is invisible to the watcher and picked up by the next
+    /// timed sweep — which is why the sweep stays the contract.
+    pub fn watch_roots(&self) -> Vec<PathBuf> {
+        let mut roots: Vec<PathBuf> = Vec::new();
+        for a in &self.adapters {
+            for file in a.discover() {
+                if let Some(dir) = file.parent()
+                    && !roots.iter().any(|r| r == dir)
+                {
+                    roots.push(dir.to_path_buf());
+                }
+            }
+        }
+        roots
+    }
+
     /// One full pass over every adapter's transcripts. Never fails the loop:
     /// per-file errors are logged and skipped, the sweep continues.
     pub fn sweep(&mut self, hub: &Hub) -> SweepStats {

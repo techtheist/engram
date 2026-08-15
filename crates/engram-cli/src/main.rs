@@ -1458,9 +1458,33 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         let mut harvester = engram_core::harvest::Harvester::first_wave();
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(interval));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Filesystem wake-ups (0.8.7): a transcript write pulls the next sweep
+        // forward instead of waiting out the interval, so a note captured
+        // seconds ago can already find the exchange it was born in. The TIMED
+        // SWEEP REMAINS THE GUARANTEE — the watcher is an accelerator that is
+        // allowed to fail, miss events, or not start at all.
+        let wake = std::sync::Arc::new(tokio::sync::Notify::new());
+        // Held, not just created: dropping a watcher unregisters its watches,
+        // so this binding IS the subscription.
+        let mut watcher = spawn_transcript_watcher(&harvester, wake.clone());
+        if watcher.is_none() {
+            tracing::debug!("history watcher not armed — the timed sweep is the only path");
+        }
         let mut announced_backfill = false;
         loop {
-            tick.tick().await;
+            tokio::select! {
+                _ = tick.tick() => {}
+                _ = wake.notified() => {
+                    // Coalesce the burst a single transcript write produces —
+                    // editors and harnesses append in several syscalls, and
+                    // one sweep answers all of them.
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        WATCH_DEBOUNCE_MS,
+                    ))
+                    .await;
+                    tick.reset();
+                }
+            }
             let hub = harvest_hub.clone();
             let (h, stats) = tokio::task::spawn_blocking(move || {
                 let mut h = harvester;
@@ -1491,6 +1515,13 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                         stats.sessions
                     );
                 }
+                // New sessions can mean new transcript directories. Re-arming
+                // is how the watcher learns about them; until it does, the
+                // timed sweep is what covers them.
+                if stats.sessions > 0 {
+                    watcher = spawn_transcript_watcher(&harvester, wake.clone());
+                    tracing::trace!("history watcher re-armed: {}", watcher.is_some());
+                }
             }
         }
     });
@@ -1516,6 +1547,61 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     }
     remove_machine_daemon_file();
     result
+}
+
+/// How long a filesystem wake-up waits before sweeping, so one transcript
+/// write — which arrives as several syscalls — costs one sweep, not several.
+const WATCH_DEBOUNCE_MS: u64 = 400;
+
+/// Watch the directories the adapters are reading transcripts from, and poke
+/// `wake` when anything in them changes (0.8.7).
+///
+/// Every failure here is soft, and deliberately so: no watcher, an
+/// unwatchable directory, a platform without a backend, an event storm that
+/// drops events — all of it degrades to exactly the behavior 0.8.4 shipped,
+/// because the timed sweep still runs on its own interval. A freshness
+/// accelerator that could break ingestion would be a bad trade; this one
+/// cannot.
+///
+/// Directories are watched NON-recursively: the roots are already the exact
+/// parents of discovered transcripts, so a new file lands in a watched
+/// directory, while a whole new directory tree is picked up by the next timed
+/// sweep and folded in when the watcher re-arms.
+fn spawn_transcript_watcher(
+    harvester: &engram_core::harvest::Harvester,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+) -> Option<notify::RecommendedWatcher> {
+    use notify::{EventKind, RecursiveMode, Watcher};
+
+    let roots = harvester.watch_roots();
+    if roots.is_empty() {
+        return None;
+    }
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        // `notify_one` stores a permit when nobody is waiting, so a write that
+        // lands mid-sweep still earns the next one — no event is dropped for
+        // arriving at a busy moment.
+        if let Ok(event) = res
+            && matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_))
+        {
+            wake.notify_one();
+        }
+    })
+    .inspect_err(|e| tracing::debug!("history watcher unavailable: {e}"))
+    .ok()?;
+
+    let mut watched = 0usize;
+    for root in &roots {
+        match watcher.watch(root, RecursiveMode::NonRecursive) {
+            Ok(()) => watched += 1,
+            Err(e) => tracing::debug!("history watcher skipped {}: {e}", root.display()),
+        }
+    }
+    if watched == 0 {
+        return None;
+    }
+    tracing::debug!("history watcher armed on {watched} transcript directories");
+    Some(watcher)
 }
 
 enum Bound {
