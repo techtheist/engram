@@ -3,6 +3,88 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
+## v0.8.7
+
+### Search learns time
+
+- **`search` is now time-scoped, in one grammar across both memory layers.**
+  `after` / `before` take a day (`2026-08-14`), an ISO instant, or a relative
+  expression the daemon resolves for you — `today`, `yesterday`, `last week`,
+  `last 3 days`, `2 hours ago`, `a month ago`, `this year`. `during_version`
+  ("0.8.4") scopes to when that working version was current, resolved from the
+  version switches your graph already recorded, and combines with explicit
+  bounds by narrowing. The assistant never does date arithmetic: it passes the
+  phrase, one clock resolves it. Month and year shifts are calendar-correct,
+  so "3 months ago" lands on a real date rather than 90 fixed days. The same
+  arguments work on `scope: "memory"` and `scope: "history"`, on the HTTP API
+  (`GET /search`), and `list_sessions` takes `after`/`before` too — which
+  answers "what was I working on last Tuesday" with no search hit at all.
+- **`order` reads results by time instead of by score.** `chronological`
+  (oldest first) for how something developed; `recent` (newest first) for the
+  current value of something that changed. Ordering is applied after every
+  cut, so a time-ordered read returns exactly the set — and carries exactly
+  the confidence verdict — its relevance-ordered twin would.
+- **Under `order: "recent"`, repeated statements fold under their newest
+  form.** History has no supersession chain to follow (nobody curates a
+  transcript), so restatements of the same thing collapse into one hit with
+  the older ones nested as `prior`. Nothing is dropped — folding is shape, not
+  a cut — and the similarity it folds on is a per-graph setting.
+- **A scoped question gets a scoped answer, or an error.** The window filters
+  before the reranker and both calibrated cuts, so a "strong" verdict means
+  the best answer *inside* the window cleared the line. An unreadable date, an
+  unknown version or a backwards window is an error that names the problem and
+  teaches the grammar — never a silently dropped filter, which would answer an
+  unscoped question while looking scoped.
+- **Scoping in time makes search *better*, measured.** A new bench
+  (`engram-eval --window`, three seeds, receipts in `eval/results/`) asks every
+  question twice — once unscoped, once inside a window containing its answer.
+  On a 2100-note graph a 30-day window lifts mean recall@5 from 0.74 to 0.94,
+  and **oblique recall — questions that never name their subject — from 0.26 to
+  0.83**: the window deletes distractors such a query has no way to
+  discriminate. Time is a precise, model-free filter the retrieval stack
+  otherwise has no access to. The same run retuned the windowed candidate pool
+  (`policy.window_overfetch` 8 → 2): depth past 2 was identical on recall at
+  both window widths while costing wall-clock, so the deepening that shipped
+  earlier in this cycle was mostly waste.
+- **The skill teaches reformulation.** On a `weak` or `none` verdict the
+  assistant now tries two or three angles — entity-first, paraphrased into the
+  graph's vocabulary, date-anchored — before concluding a memory isn't there.
+  One phrasing is one probe.
+
+### Fixed
+
+- **A large `limit` beside a time window returned nothing at all.** sqlite-vec
+  refuses a KNN `k` above 4096 rather than capping it, and the vector search
+  quadruples `k` internally to dedupe claim chunks — so the windowed candidate
+  pool sailed past the ceiling for any `limit` of 11 or more, and the error
+  emptied the whole search. Worse, an empty result is indistinguishable from
+  the "the graph is silent" verdict, so a backend refusal was presenting
+  itself as a statement about your graph's contents. The vector search now
+  clamps its own ask. Found by the new `--window` bench, which is also why it
+  now fails loudly on a search error instead of scoring it as a zero.
+- **The redaction backstop stopped eating technical identifiers.** Entropy is
+  now measured per separator-delimited segment instead of over a whole token,
+  so model slugs (`cross-encoder/nli-deberta-v3-small`), target triples
+  (`x86_64-unknown-linux-gnu`) and long URLs survive, while structureless
+  credential material still dies — real secrets have no dictionary-shaped
+  parts. Every named pattern (PEM, AWS, JWT, GitHub, Slack, OpenAI-style,
+  `key = value`) is untouched; those are what actually catch secrets. Notes
+  masked by the old rule are not recoverable — the original was never stored —
+  so this fixes the mechanism, not the past. SECURITY.md now spells out the
+  two-layer split behind it: the curated graph is redacted but deliberately
+  *not* encrypted (it exists to be inspected), while session history is
+  redacted *and* encrypted (nobody reviews a transcript).
+
+### Changed
+
+- **History ingestion reacts to the filesystem.** A transcript write now pulls
+  the next harvest forward instead of waiting out the 60-second interval, so a
+  note captured seconds ago can already find the exchange it was born in. The
+  timed sweep remains the guarantee: no watcher, an unwatchable directory or a
+  missed event all degrade to exactly the previous behaviour.
+- Search hits carry `created_at`, so a result can be dated or time-ordered
+  without a second read.
+
 ## v0.8.6
 
 - **JetBrains plugin works on 2026.1 again** (#1). Installing on IDEA 2026.1.x
