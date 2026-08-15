@@ -689,6 +689,71 @@ supersession does, and no flat stack can.
 
 ---
 
+## Time-scoped search — the 0.8.7 addition
+
+`--window` exists because 0.8.7 shipped a knob nobody had measured: when a
+search carries an `after`/`before` window, the candidate pool is deepened by
+`policy.window_overfetch`, on the theory that a date-blind index would
+otherwise bury the in-window answer. The theory needed pricing.
+
+Every tested question is asked **twice** — once unscoped, once inside the
+aligned calendar block that contains its gold — over a corpus whose capture
+dates are spread deterministically across 720 days. The unscoped row is the
+reference; what matters is the *gap*.
+
+At 2100 notes (100 tested + 2000 distractors — density varied, question set
+held byte-identical), **mean of three seeds**:
+
+| `window_overfetch` | pool | R@5 30d | oblique 30d | R@5 180d | oblique 180d |
+|---|---|---|---|---|---|
+| reference — no window | 120 | 0.743 | 0.263 | 0.743 | 0.263 |
+| 1 | 120 | 0.922 | 0.766 | 0.844 | 0.550 |
+| **2** | 240 | **0.943** | **0.830** | **0.848** | **0.561** |
+| 4 | 480 | 0.943 | 0.830 | 0.848 | 0.561 |
+| 8 *(was shipped)* | 960 | 0.943 | 0.830 | 0.848 | 0.561 |
+| 16 | 1920 | 0.943 | 0.830 | 0.848 | 0.561 |
+
+**The window is not a tax, it is a filter.** The premise the over-fetch was
+built on was backwards: scoping in time *buys* recall. Oblique recall —
+questions that never name their subject — goes **0.26 → 0.83**, because the
+window deletes distractors the query had no way to discriminate. This is the
+largest single oblique gain this harness has measured, it is unanimous across
+seeds and both widths, and it is not a ranking change at all: time is a second
+axis of evidence the stack otherwise has no access to. Three research cycles of
+ranking knobs (see *Mechanisms that were tried and rejected*) moved oblique
+recall far less than this.
+
+**Depth past 2 is dead weight — the firm half of the result.** At 2, 4, 8 and
+16 the mean recall is identical to three decimals at both widths, while
+wall-clock grows with the pool. Rank-1 recall drifts slightly *down* as the
+pool deepens (0.805 → 0.799 at 30 days): the cross-encoder mis-promotes out of
+a larger candidate set, the same effect the oblique work found. The default
+moved 8 → 2 on this.
+
+**The 1 → 2 step is the soft half, and is reported as such.** At 30 days all
+three seeds agree (+0.021 R@5, +0.064 oblique); at 180 days the mean gain is
++0.004 and one seed of three moves the other way (−0.023). Two is chosen as the
+cheapest depth that is never worse, not as a peak.
+
+At 300 notes the multiplier is invisible entirely — 1 and 16 agree to three
+decimals — because the pool is already 40% of the graph. That is the reason
+this bench varies `--distractors` rather than `--sizes`.
+
+The run also found a live bug, which is the better argument for the mode than
+either number above: at the deepest setting recall was *exactly* 0.000. sqlite-vec
+refuses a KNN `k` over 4096 instead of capping it, the vector search quadruples
+`k` internally, and the deepened pool sailed past the ceiling — so search
+returned an error, and the harness was scoring that error as a zero.
+Both were fixed: the store clamps its ask, and **the bench now panics on a
+search error instead of recording it as a miss**. A failed search and a search
+that found nothing produce identical numbers and opposite conclusions.
+
+```sh
+cargo run -p engram-eval --features fastembed -- --window --sizes 100 --distractors 20
+```
+
+---
+
 ## The online half — not yet run
 
 `src/online.rs` is the contract for the part that needs a live model. It
@@ -737,6 +802,7 @@ Results will be added here once they are measured.
 | `nli_eval.rs` | confusion matrix and per-label precision/recall |
 | `run.rs` | the suite, the fusion sweep, the strategy grid, the contradiction bench |
 | `chains.rs` | supersession chains: current-state recall, pollution, the flat ablation |
+| `window.rs` | time-scoped search: what a window costs against the same question unscoped, swept over candidate-pool depth |
 | `longmem.rs` | the LongMemEval adapter: pinned download, as-is ingestion, retrieval grading |
 | `CONTRADICTIONS.md` | the logic layer's own metric — the model swap, the gate, the real-graph check |
 | `online.rs` | the online half's contract |

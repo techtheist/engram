@@ -69,6 +69,11 @@ OPTIONS:
                           questions costs in recall, and what trimming the
                           weak tail buys in focus/noise. The calibrated-
                           delivery default comes from this table
+    --window              0.8.7 time-window bench: what a time-scoped search
+                          costs against the same question asked unscoped, swept
+                          over the candidate-pool depth (policy.window_overfetch)
+                          at two window widths. The row whose pool covers the
+                          whole graph is the date-aware-index ceiling.
     --chains              the supersession-chain bench: ADR-shaped history
                           (N generations of one decision, each replacing the
                           last). Scores current-state recall and retired-
@@ -149,6 +154,7 @@ fn cli() -> anyhow::Result<()> {
     let mut tasks_out: Option<String> = None;
     let mut sample = false;
     let mut chains_mode = false;
+    let mut window_mode = false;
     let mut chain_count: Option<usize> = None;
     let mut chain_len: usize = 3;
     let mut longmemeval: Option<String> = None;
@@ -200,6 +206,7 @@ fn cli() -> anyhow::Result<()> {
                 apply_ladder(&mut cfg);
             }
             "--chains" => chains_mode = true,
+            "--window" => window_mode = true,
             "--chain-count" => chain_count = Some(value()?.parse()?),
             "--chain-len" => chain_len = value()?.parse()?,
             "--longmemeval" => longmemeval = Some(value()?),
@@ -243,6 +250,15 @@ fn cli() -> anyhow::Result<()> {
 
     if sample {
         print_sample(&cfg);
+        return Ok(());
+    }
+    if window_mode {
+        let report = engram_eval::window::run(&cfg)?;
+        engram_eval::window::print(&report);
+        if let Some(path) = json_out {
+            std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
+            println!("\nwrote {path}");
+        }
         return Ok(());
     }
     if chains_mode {

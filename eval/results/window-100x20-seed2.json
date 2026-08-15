@@ -1,0 +1,162 @@
+{
+  "embedder": "bge-small-en-v1.5",
+  "reranker": "jina-reranker-v1-turbo-en",
+  "embeddings_are_fake": false,
+  "seed": 2,
+  "limit": 10,
+  "sizes": [
+    {
+      "tested": 100,
+      "distractors": 2000,
+      "graph_nodes": 2100,
+      "questions": 171,
+      "spread_days": 720,
+      "reference": {
+        "overfetch": null,
+        "pool": 120,
+        "pool_covers_graph": false,
+        "recall_at_1": 0.6666666666666666,
+        "recall_at_5": 0.7309941520467836,
+        "recall_at_5_lexical": 1.0,
+        "recall_at_5_paraphrase": 0.9473684210526315,
+        "recall_at_5_oblique": 0.24561403508771928,
+        "delivered_mean": 5.292397660818714,
+        "millis_per_query": 246.51643664327483
+      },
+      "widths": [
+        {
+          "width_days": 30,
+          "in_window_mean": 84.0,
+          "rows": [
+            {
+              "overfetch": 1,
+              "pool": 120,
+              "pool_covers_graph": false,
+              "recall_at_1": 0.8011695906432749,
+              "recall_at_5": 0.9122807017543859,
+              "recall_at_5_lexical": 1.0,
+              "recall_at_5_paraphrase": 1.0,
+              "recall_at_5_oblique": 0.7368421052631579,
+              "delivered_mean": 2.807017543859649,
+              "millis_per_query": 81.19317007602339
+            },
+            {
+              "overfetch": 2,
+              "pool": 240,
+              "pool_covers_graph": false,
+              "recall_at_1": 0.8187134502923976,
+              "recall_at_5": 0.9415204678362573,
+              "recall_at_5_lexical": 1.0,
+              "recall_at_5_paraphrase": 1.0,
+              "recall_at_5_oblique": 0.8245614035087719,
+              "delivered_mean": 3.2046783625730995,
+              "millis_per_query": 114.30503167836257
+            },
+            {
+              "overfetch": 4,
+              "pool": 480,
+              "pool_covers_graph": false,
+              "recall_at_1": 0.8187134502923976,
+              "recall_at_5": 0.9415204678362573,
+              "recall_at_5_lexical": 1.0,
+              "recall_at_5_paraphrase": 1.0,
+              "recall_at_5_oblique": 0.8245614035087719,
+              "delivered_mean": 3.2982456140350878,
+              "millis_per_query": 149.42189083625732
+            },
+            {
+              "overfetch": 8,
+              "pool": 960,
+              "pool_covers_graph": false,
+              "recall_at_1": 0.8187134502923976,
+              "recall_at_5": 0.9415204678362573,
+              "recall_at_5_lexical": 1.0,
+              "recall_at_5_paraphrase": 1.0,
+              "recall_at_5_oblique": 0.8245614035087719,
+              "delivered_mean": 3.3625730994152048,
+              "millis_per_query": 176.80550316374269
+            },
+            {
+              "overfetch": 16,
+              "pool": 1920,
+              "pool_covers_graph": false,
+              "recall_at_1": 0.8187134502923976,
+              "recall_at_5": 0.9415204678362573,
+              "recall_at_5_lexical": 1.0,
+              "recall_at_5_paraphrase": 1.0,
+              "recall_at_5_oblique": 0.8245614035087719,
+              "delivered_mean": 3.3801169590643276,
+              "millis_per_query": 294.9765984385965
+            }
+          ]
+        },
+        {
+          "width_days": 180,
+          "in_window_mean": 420.0,
+          "rows": [
+            {
+              "overfetch": 1,
+              "pool": 120,
+              "pool_covers_graph": false,
+              "recall_at_1": 0.7309941520467836,
+              "recall_at_5": 0.8421052631578947,
+              "recall_at_5_lexical": 1.0,
+              "recall_at_5_paraphrase": 0.9824561403508771,
+              "recall_at_5_oblique": 0.543859649122807,
+              "delivered_mean": 4.216374269005848,
+              "millis_per_query": 527.7056410818712
+            },
+            {
+              "overfetch": 2,
+              "pool": 240,
+              "pool_covers_graph": false,
+              "recall_at_1": 0.7426900584795322,
+              "recall_at_5": 0.8538011695906432,
+              "recall_at_5_lexical": 1.0,
+              "recall_at_5_paraphrase": 0.9824561403508771,
+              "recall_at_5_oblique": 0.5789473684210527,
+              "delivered_mean": 4.175438596491228,
+              "millis_per_query": 522.461360625731
+            },
+            {
+              "overfetch": 4,
+              "pool": 480,
+              "pool_covers_graph": false,
+              "recall_at_1": 0.7426900584795322,
+              "recall_at_5": 0.8538011695906432,
+              "recall_at_5_lexical": 1.0,
+              "recall_at_5_paraphrase": 0.9824561403508771,
+              "recall_at_5_oblique": 0.5789473684210527,
+              "delivered_mean": 4.192982456140351,
+              "millis_per_query": 434.39048464912275
+            },
+            {
+              "overfetch": 8,
+              "pool": 960,
+              "pool_covers_graph": false,
+              "recall_at_1": 0.7426900584795322,
+              "recall_at_5": 0.8538011695906432,
+              "recall_at_5_lexical": 1.0,
+              "recall_at_5_paraphrase": 0.9824561403508771,
+              "recall_at_5_oblique": 0.5789473684210527,
+              "delivered_mean": 4.1988304093567255,
+              "millis_per_query": 512.8558881578947
+            },
+            {
+              "overfetch": 16,
+              "pool": 1920,
+              "pool_covers_graph": false,
+              "recall_at_1": 0.7426900584795322,
+              "recall_at_5": 0.8538011695906432,
+              "recall_at_5_lexical": 1.0,
+              "recall_at_5_paraphrase": 0.9824561403508771,
+              "recall_at_5_oblique": 0.5789473684210527,
+              "delivered_mean": 4.187134502923977,
+              "millis_per_query": 546.396047754386
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
