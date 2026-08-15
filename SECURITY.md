@@ -15,12 +15,57 @@ against loopback (rmcp's default), which blocks DNS-rebinding attacks against
 it. The `engram-alpha mcp` bridge and the brief hook talk only to a daemon
 they have verified over `/health` as serving *their* repo's store.
 
-**Secrets in memory.** Every write — titles, bodies, imports included — runs
-a server-side redaction pass (`engram-core/src/redact.rs`) that scrubs
-credential-shaped content (cloud keys, tokens, private-key blocks), and the
-capture skill instructs assistants never to store secrets in the first place.
-Redaction is defense in depth, not a guarantee: review the pane, and treat
-the graph file like you treat your shell history.
+**Two layers, two protections.** Engram stores your knowledge in two places,
+and they are protected differently on purpose:
+
+| | curated graph (`graph.tepin`) | session history (`history.tepin`) |
+|---|---|---|
+| **Redacted on write** | yes — its *only* content protection | yes, before sealing |
+| **Encrypted at rest** | **no** | **yes** (XChaCha20-Poly1305) |
+| **You can read it** | yes — that is the point | only through the pane/tools |
+
+The curated graph is **redacted but not encrypted**, because it exists to be
+inspected: you read it in the pane, you edit it, you delete from it, and
+`npx tepindb` can open it. Encrypting it would buy at-rest protection at the
+cost of the inspectability the whole product is built on. Its content
+protection is therefore redaction plus OS file permissions plus your disk
+encryption — and, more than either, the fact that a human curates it.
+
+The history layer is **redacted *and* encrypted**, because nobody curates a
+transcript. It records raw conversation you never reviewed, in bulk, so it
+cannot rely on your judgment the way the graph does and gets a cipher instead
+(details below). Recording is opt-in for exactly this reason.
+
+**Secrets in memory.** Every write — titles, bodies, imports, and history
+plaintext before it is sealed — runs a server-side redaction pass
+(`engram-core/src/redact.rs`). It has two layers:
+
+1. **Named patterns**, which are what actually catch secrets: PEM private-key
+   blocks, AWS access key ids, JWTs, GitHub / Slack / OpenAI-style tokens,
+   credentials embedded in URLs, and `key = value` assignments for
+   password/token/secret-shaped keys (the value is masked, the key kept so the
+   note still reads).
+2. **A high-entropy backstop** for opaque tokens with no recognisable shape.
+
+The backstop deliberately does **not** try to be clever. Since 0.8.7 it judges
+entropy per separator-delimited *segment* rather than over a whole token,
+because the previous whole-token rule masked compound technical identifiers —
+model slugs like `cross-encoder/nli-deberta-v3-small`, target triples like
+`x86_64-unknown-linux-gnu`, long URLs — and those losses were **permanent and
+silent**: the original is never stored anywhere, so a memory system quietly
+lost the name of its own model. Real credential material has no
+dictionary-shaped parts, so segment-level entropy separates the two cleanly. A
+token that carries no separators is judged exactly as before.
+
+That relaxation is affordable precisely because of the split above: the
+curated graph is user-visible and user-curated by design, so an
+over-aggressive backstop costs real knowledge while buying little, and history
+— where content arrives unreviewed and in volume — has encryption underneath
+it rather than resting on redaction alone.
+
+Redaction is defense in depth, not a guarantee. The capture skill instructs
+assistants never to store secrets in the first place; review the pane, and
+treat the graph file like you treat your shell history.
 
 **Data at rest.** Graph stores (`.engram/graph.db` / `graph.tepin`) stay
 inside the repo, are git-ignored by `setup` (and checked by `doctor`), and

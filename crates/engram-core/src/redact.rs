@@ -77,16 +77,62 @@ pub fn scrub(text: &str) -> String {
     out
 }
 
-/// A long token is treated as a secret when it has high Shannon entropy and
-/// mixes letters with digits — the signature of random credential material,
-/// not prose or a dotted identifier.
+/// A segment shorter than this carries no usable entropy signal: Shannon
+/// bits/char is bounded by log2(len), so an 8-character segment cannot reach
+/// the threshold even when every character differs. Short segments therefore
+/// abstain rather than vote — they are exactly the `v3`/`en`/`gnu` fragments
+/// that compound identifiers are made of.
+const MIN_SEGMENT: usize = 12;
+
+/// Is this token credential material?
+///
+/// STRUCTURE IS THE TELL (0.8.7, fixing 00apzse1dkm5). Entropy used to be
+/// measured over the WHOLE token, which meant hyphen-joined dictionary words
+/// looked random at the character level: `nli-deberta-v3-small` with an org
+/// prefix, `x86_64-unknown-linux-gnu`, a reranker slug, any reddit permalink —
+/// all masked, permanently, in the one system that exists to remember them.
+/// Fifteen nodes lost facts that way before anyone noticed.
+///
+/// So entropy is now judged PER SEPARATOR-DELIMITED SEGMENT. Real credential
+/// material has no dictionary-shaped parts: either it carries no separators at
+/// all (one segment, and the old whole-token judgment applies unchanged), or
+/// its segments are themselves random. A compound identifier fails that test
+/// on every segment, which is the point.
+///
+/// This relaxes only the unnamed-token backstop. Every NAMED pattern above —
+/// PEM, AWS, JWT, GitHub, Slack, OpenAI-style, `key = value` — is untouched,
+/// and those are what actually catch secrets in practice.
 fn looks_secret(tok: &str) -> bool {
     if tok == MASK.trim_matches(['[', ']']) {
         return false;
     }
-    let has_alpha = tok.bytes().any(|b| b.is_ascii_alphabetic());
-    let has_digit = tok.bytes().any(|b| b.is_ascii_digit());
-    has_alpha && has_digit && shannon_bits_per_char(tok) >= 3.5
+    let segments: Vec<&str> = tok
+        .split(['-', '_', '/', '+', '='])
+        .filter(|s| !s.is_empty())
+        .collect();
+    if segments.len() > 1 {
+        // Structured token: only segments long enough to carry a signal vote,
+        // and the token is a secret only if every one of them looks random. A
+        // mostly-random blob with a short suffix (`<32 random chars>-v2`) is
+        // still caught, because its one long segment votes alone.
+        let mut voted = false;
+        for seg in segments.iter().filter(|s| s.len() >= MIN_SEGMENT) {
+            if !segment_is_random(seg) {
+                return false;
+            }
+            voted = true;
+        }
+        return voted;
+    }
+    segment_is_random(tok)
+}
+
+/// The original signature, now applied to one segment: high Shannon entropy
+/// AND a letters/digits mix — random credential material, not prose.
+fn segment_is_random(seg: &str) -> bool {
+    let has_alpha = seg.bytes().any(|b| b.is_ascii_alphabetic());
+    let has_digit = seg.bytes().any(|b| b.is_ascii_digit());
+    has_alpha && has_digit && shannon_bits_per_char(seg) >= 3.5
 }
 
 fn shannon_bits_per_char(s: &str) -> f64 {
@@ -165,5 +211,58 @@ mod tests {
     fn is_idempotent() {
         let once = scrub("password=abc123secretvalue99 AKIAIOSFODNN7EXAMPLE");
         assert_eq!(scrub(&once), once);
+    }
+
+    /// The regression for 00apzse1dkm5, written from the exact identifiers the
+    /// old whole-token entropy rule ate. Every string here is one this graph
+    /// lost at least once, and the Problem node had to describe them in pieces
+    /// because it could not store them intact.
+    #[test]
+    fn compound_identifiers_survive_the_entropy_backstop() {
+        for kept in [
+            "cross-encoder/nli-deberta-v3-small",
+            "sentence-transformers/all-MiniLM-L6-v2",
+            "jinaai/jina-reranker-v2-base-multilingual",
+            "MoritzLaurer/deberta-v3-base-zeroshot-v1.1-all-33",
+            "x86_64-unknown-linux-gnu",
+            "aarch64-apple-darwin",
+            "x86_64-pc-windows-msvc",
+            "tasksource/deberta-small-long-nli",
+            "https://www.reddit.com/r/LocalLLaMA/comments/1n2x3y4/engram_local_memory/",
+            "crates/engram-core/src/store_sqlite.rs",
+            "engram-0.8.6-261-signed.zip",
+        ] {
+            assert_eq!(
+                scrub(kept),
+                kept,
+                "the graph must be able to record {kept:?}"
+            );
+        }
+    }
+
+    /// The other half of the same change: relaxing the backstop must not open
+    /// it. Structured tokens whose long segments ARE random still die.
+    #[test]
+    fn structure_does_not_excuse_randomness() {
+        for masked in [
+            // A random blob wearing a version suffix — one long segment votes
+            // alone and convicts it.
+            "xQ7zP2mK9wL4vR8nT1cY6bF3hJ5dG0aS-v2",
+            // URL-safe base64 with separators between random runs.
+            "dGhpc0lzQVNlY3JldFZhbHVl-M3hLOXBRc1o0dEcyd1k1-bkYxaEo3",
+            // No separators at all: unchanged whole-token judgment.
+            "xQ7zP2mK9wL4vR8nT1cY6bF3hJ5dG0aS",
+        ] {
+            let out = scrub(masked);
+            assert!(out.contains("[REDACTED]"), "{masked:?} must not survive");
+        }
+
+        // And the named patterns are untouched by the relaxation — they are
+        // what actually catches secrets, and several of them are hyphen- or
+        // underscore-structured by design.
+        assert!(scrub("ghp_0123456789abcdefABCDEF0123456789xyz").contains("[REDACTED]"));
+        assert!(scrub("xoxb-1234567890-abcdefghijklmnop").contains("[REDACTED]"));
+        assert!(scrub("sk-abcdefghijklmnopqrstuvwxyz0123456789").contains("[REDACTED]"));
+        assert!(scrub("AKIAIOSFODNN7EXAMPLE").contains("[REDACTED]"));
     }
 }
