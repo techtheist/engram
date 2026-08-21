@@ -50,7 +50,11 @@ cargo install --path "$ROOT/crates/engram-cli" --force --quiet
 while IFS= read -r other; do
     [ -n "$other" ] || continue
     [ "$other" -ef "$BIN" ] && continue
-    cp -f "$BIN" "$other" && echo "    also replaced $other"
+    # rm before cp, never cp -f in place: macOS caches a previously-executed
+    # binary's code signature by inode, and overwriting the same inode leaves
+    # every later exec SIGKILLed ("zsh: killed") even though codesign -v
+    # passes. A fresh inode gets a fresh cache entry.
+    rm -f "$other" && cp "$BIN" "$other" && echo "    also replaced $other"
 done < <(type -ap engram-alpha 2>/dev/null | awk '{print $NF}' | sort -u)
 
 echo "==> restarting daemon"
