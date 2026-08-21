@@ -1943,8 +1943,17 @@ struct RootsBinding {
 
 /// How long the bridge waits for a roots/list answer before falling back to
 /// cwd — a client that advertises roots but never answers must not hang the
-/// session.
-const ROOTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// session. `ENGRAM_ROOTS_TIMEOUT_SECS` overrides the 5s default; sandboxed
+/// tests raise it so a starved CI runner can't turn a promptly-answered
+/// request into a timeout, and pin it back down when the never-answering
+/// client shape is the thing under test.
+fn roots_timeout() -> std::time::Duration {
+    std::env::var("ENGRAM_ROOTS_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(std::time::Duration::from_secs(5))
+}
 
 impl RootsBinding {
     /// Ask the client for its roots; the first `file://` root wins. None on
@@ -1953,8 +1962,9 @@ impl RootsBinding {
         &self,
         peer: &rmcp::service::Peer<rmcp::RoleServer>,
     ) -> Option<std::path::PathBuf> {
+        let window = roots_timeout();
         #[allow(deprecated)] // SEP-2577 deprecates roots; clients still speak it
-        match tokio::time::timeout(ROOTS_TIMEOUT, peer.list_roots()).await {
+        match tokio::time::timeout(window, peer.list_roots()).await {
             Ok(Ok(listed)) => {
                 let root = listed.roots.iter().find_map(|r| file_uri_to_path(&r.uri));
                 if root.is_none() {
@@ -1967,9 +1977,7 @@ impl RootsBinding {
                 None
             }
             Err(_) => {
-                tracing::warn!(
-                    "roots/list unanswered after {ROOTS_TIMEOUT:?} — falling back to cwd"
-                );
+                tracing::warn!("roots/list unanswered after {window:?} — falling back to cwd");
                 None
             }
         }

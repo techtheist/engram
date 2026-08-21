@@ -42,7 +42,13 @@ impl Sandbox {
             .env("ENGRAM_HTTP_PORT", self.port.to_string())
             .env("ENGRAM_UPDATE_CHECK", "0")
             .env("ENGRAM_LEASE_TTL_SECS", "3")
-            .env("ENGRAM_BRIDGE_HEARTBEAT_SECS", "1");
+            .env("ENGRAM_BRIDGE_HEARTBEAT_SECS", "1")
+            // A starved CI runner can stall the bridge past the real 5s
+            // roots window AFTER the client already answered — these tests
+            // assert binding semantics, not timeout UX, so give answered
+            // requests all the time in the world. spawn_opts pins it back
+            // down for the never-answering client shape.
+            .env("ENGRAM_ROOTS_TIMEOUT_SECS", "120");
         c
     }
 
@@ -186,8 +192,13 @@ impl Bridge {
         answer_roots: bool,
     ) -> Self {
         let stderr = std::fs::File::create(sb.root.join("bridge-stderr.log")).unwrap();
-        let mut child = sb
-            .cmd(args, cwd)
+        let mut cmd = sb.cmd(args, cwd);
+        if !answer_roots {
+            // The timeout fallback IS the behavior under test here — keep
+            // the real window (the tests time their assertions against it).
+            cmd.env("ENGRAM_ROOTS_TIMEOUT_SECS", "5");
+        }
+        let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(stderr)
