@@ -3,6 +3,150 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
+## v0.8.8 (unreleased)
+
+### One heavy core, everything else light
+
+- **The process model is now deliberate: one machine core, N light access
+  points.** The core (an internal `engram-alpha core` process, spawned
+  detached for you) holds everything heavy — every store lock, the three
+  local models, the pane, and every MCP session — and never exits on its
+  own. `serve` became a launcher: it ensures the core is running, registers
+  your repo with it, prints the pane URL, and exits; plugins and scripts that
+  call it keep working unchanged. `engram-alpha mcp` is now *always* a light
+  bridge: the last direct-open fallback (which could silently turn one
+  assistant session into a second 600 MB process holding your store) is
+  removed on every backend — if no core can be reached or started, the
+  session fails with a clear error in `.engram/mcp.log` instead of going
+  heavy. The new [Runtime architecture](docs/runtime.md) page documents the
+  whole model — processes, discovery, transport, lifecycle (#3).
+- **`engram-alpha status` shows what's running** (#5): core pid, version,
+  uptime, and port; model residency (loaded, or unloaded-idle and since
+  when); every registered project with whether the core holds its store
+  open; and every connected MCP client with pid, project folder, and
+  connection age — all read live from the core's API, `--json` for scripts.
+  Underneath it is a client census: every bridge holds a lease it renews on
+  its existing 15-second heartbeat, so a crashed client disappears from the
+  list within 45 seconds and a clean exit removes it immediately. The pane
+  shows the same census in **Settings → System → Processes** — hidden
+  automatically against an older core.
+- **`engram-alpha stop` is an orchestrated shutdown, not a kill.** It asks
+  the core over a loopback-only `POST /shutdown`: MCP sessions close
+  (bridges exit right away instead of waiting out a heartbeat), in-flight
+  store operations commit, every store lock is released, and the daemon
+  files are removed — then reports how many clients were released. SIGTERM
+  and ctrl-c run the same exit; the health-verified PID kill remains as the
+  fallback for an unresponsive or older core.
+- **An idle core gives its memory back.** After 15 minutes with zero
+  connected bridges, no HTTP activity, and no model use, the core drops all
+  three ONNX sessions — measured: ~845 MB resident down to ~150 MB (the OS
+  reclaims in stages), with the core itself staying resident and instantly
+  reachable. The next demand from any path reloads lazily, exactly once:
+  0.1–0.5 s measured, not seconds. A connected-but-idle assistant keeps
+  models resident by design; health polls, `status` reads, and lease pings
+  are exempt from the activity clock, so watching the core never keeps it
+  warm — and a background sweep in flight is never cut mid-work.
+  `ENGRAM_IDLE_UNLOAD_SECS` tunes the window, `0` disables.
+- **`mcp` binds its project by the client's MCP roots — `--db` is now
+  optional** (#4). Without it, the bridge binds the session to the first
+  `file://` root the client advertises (falling back to its working
+  directory) and rebinds on `roots/list_changed`, so one global, db-less
+  config entry follows the client across project switches. That unlocks
+  **Windsurf**: `setup --cli windsurf` writes the machine-wide entry into
+  BOTH global configs — `${XDG_CONFIG_HOME:-~/.config}/devin/mcp_config.json`
+  (what the JetBrains plugin generation reads) and
+  `~/.devin/mcp_config.json` (the older generation) — inserting into an
+  existing config without touching other servers, plus the `AGENTS.md`
+  capture block. `claude` setups now write db-less entries too, making
+  `.mcp.json` portable across checkouts; an explicit `--db` still pins the
+  project exactly as before.
+- **A roots bridge survives hostile launches** (field-tested against the
+  Windsurf JetBrains plugin). A client that advertises MCP roots but never
+  answers `roots/list` no longer strands the session — the 5s timeout falls
+  back to the launch directory and held requests are answered. A launch cwd
+  that can't host a project (the plugin spawns the server from `/`) binds
+  the session to the machine core's **home graph** instead of dying, with
+  the census lease on the home root; a later `roots/list_changed` naming a
+  real workspace rebinds away from home. And when binding fails for good,
+  the bridge answers outstanding requests with the real error and exits
+  immediately — previously tokio's stdin read kept the exiting process
+  alive as a silent zombie until the client killed it (~60s of nothing).
+  When the launch cwd is unwritable, `mcp.log` tees into `~/.engram/`
+  instead of vanishing.
+- **A "default agent project" for sessions with no folder signal at all.**
+  Some clients can't say where they're working — Windsurf's JetBrains plugin
+  spawns its bridges from `/` and never answers the roots request — and
+  "correctly degraded to the home graph" is still the wrong graph when the
+  agent is plainly working on one specific project. The new machine-level
+  setting slots in as the pre-home rung of the binding ladder: explicit
+  `--db` → client roots → usable cwd → **default agent project** → home.
+  Set it in the pane (**Settings → System info → Default agent project**, a
+  dropdown of home + your registered projects), or over the core's
+  loopback-only `GET/POST /settings`; it lives in `~/.engram/settings.json`,
+  survives restarts, validates on write (the project must exist), and is
+  read at bind time — changing it points *future* sessions, never rebinds
+  connected ones. Each session logs which rung bound it.
+- **The census now says which MCP client bound where.** Every lease carries
+  the client's own name from its `initialize` handshake (`claude-code`,
+  `mcp-go`, …), shown in `engram-alpha status`, `/system`, and the pane's
+  Processes list — so "which client is writing into which graph, and via
+  what" is one glance, not an archaeology session. Purely additive: older
+  bridges simply show without a name.
+
+- **A project's folder is a selector.** Anywhere a `project` argument is
+  accepted — every MCP tool, and now `GET /brief?project=…` over HTTP — you
+  can pass the project's directory instead of its name or id, and any path
+  *inside* the repo resolves to it (the longest registered root wins, so a
+  project nested in another still picks itself). Callers that hold a folder
+  and not a name — a SessionStart hook with `$CLAUDE_PROJECT_DIR`, a bridge
+  with its working directory — ask directly instead of mapping it first.
+  `GET /brief?project=…` renders the brief a session bound there receives
+  (that project, plus the home-graph section and the roster), while
+  `/projects/{id}/brief` keeps its existing meaning: that graph alone.
+
+### Fixed
+
+- **The session brief follows the session's project again.** `brief` with no
+  `project` argument, and the `current` flag in `list_projects`, were read
+  from the *hub's* current project rather than the one the session is bound
+  to. While the daemon launched inside the repo it served, those were the
+  same graph; once the machine core became a dedicated home-rooted process,
+  every bound session was briefed on the **home** graph — usually the
+  "cold start, the graph is empty" text — and told it was sitting in
+  `home`, no matter which project its bridge had correctly bound. Both now
+  render the session's own project (an explicit `project` argument behaves
+  exactly as before), and the brief's home section and "other project
+  graphs" roster are computed relative to it.
+- **The SessionStart brief hook stopped injecting nothing.** Its daemon
+  check only accepted a daemon whose `/health` advertised *this repo's*
+  store, which the home-rooted core never does, and its fallback gave up
+  silently when `engram-alpha` wasn't on the hook's login-less `PATH` — so
+  sessions started unbriefed, indistinguishable from an empty graph. The
+  hook now resolves the repo to a project id and asks the core for the
+  scoped brief (a read — it never registers anything), and the fallback
+  probes `~/.cargo/bin`, `~/.local/bin`, `/usr/local/bin` and
+  `/opt/homebrew/bin` before giving up.
+- **`doctor` no longer mis-reports a healthy setup** (#6). It finds the
+  machine core via `~/.engram/daemon.json` regardless of the directory it
+  runs from (the old check only read the repo-local file, so an auto-spawned
+  core looked like "a daemon serving a different db"), and it asks the core
+  whether it holds this repo's store *before* touching the file — a store
+  held open by a healthy core is reported as exactly that, instead of a
+  failed direct open. The comparison is by the store a path resolves to, not
+  the string: a registry that says `graph.db` matches the `graph.tepin` the
+  core actually holds.
+- **A core starting on a busy port only converges with its own daemon.** The
+  old check treated any engram `/health` answer as "another serve won the
+  race"; a foreign daemon — another user on the machine, a test sandbox —
+  could absorb the start and leave it coreless. The probe now compares the
+  advertised store against this user's home graph; anything else is just a
+  taken port to walk past.
+- **A freshly spawned core answering its first requests slowly no longer
+  fails the session.** Early boot can block the core for a few seconds, so
+  one unlucky single-shot probe used to kill an MCP bind that would have
+  succeeded moments later. Both bridge resolution paths now retry for up to
+  20 seconds after a spawn.
+
 ## v0.8.7
 
 ### Search learns time

@@ -10,10 +10,11 @@ it is treated as data worth protecting, not as a cache.
 ## Threat model & measures
 
 **Network surface.** The daemon binds `127.0.0.1` only — nothing listens on
-external interfaces. The MCP endpoint (`/mcp`) validates the `Host` header
-against loopback (rmcp's default), which blocks DNS-rebinding attacks against
-it. The `engram-alpha mcp` bridge and the brief hook talk only to a daemon
-they have verified over `/health` as serving *their* repo's store.
+external interfaces. The MCP endpoints (`/mcp`, `/projects/{id}/mcp`)
+validate the `Host` header against loopback (rmcp's default), which blocks
+DNS-rebinding attacks against them. The `engram-alpha mcp` bridge and the
+brief hook talk only to a core they have discovered through engram's own
+daemon files and verified over `/health` — never to an arbitrary port.
 
 **Two layers, two protections.** Engram stores your knowledge in two places,
 and they are protected differently on purpose:

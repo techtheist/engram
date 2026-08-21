@@ -5,7 +5,7 @@ import SidePanel from '@/components/common/SidePanel.vue'
 import { api } from '@/services/api'
 import { useSystemInfo } from '@/composables/useSystemInfo'
 import { useProjectsStore } from '@/stores/projects'
-import type { ModelRoleInfo, ModelSelection, ProjectInfo, SystemInfo } from '@/types/graph'
+import type { AgentSettings, ModelRoleInfo, ModelSelection, ProjectInfo, SystemInfo } from '@/types/graph'
 
 /**
  * Settings → System info: the daemon-side half of `engram-alpha doctor`,
@@ -45,11 +45,40 @@ async function reload(): Promise<void> {
         info.value = await api.system()
         selection.value = await api.models().catch(() => null)
         syncPicks()
+        // Machine-level settings: a 404 (older or non-core daemon) hides the
+        // control instead of breaking the panel.
+        agentSettings.value = await api.settings().catch(() => null)
+        agentPick.value = agentSettings.value?.default_agent_project ?? ''
     } catch (e) {
         error.value = e instanceof Error ? e.message : String(e)
         info.value = null
     } finally {
         loading.value = false
+    }
+}
+
+// ---- default agent project (machine-level, GET/POST /settings) -------------
+
+const agentSettings = ref<AgentSettings | null>(null)
+/** The dropdown's value: a project id, or '' for the home graph. */
+const agentPick = ref('')
+const agentSaving = ref(false)
+const agentNote = ref('')
+
+async function applyAgentDefault(): Promise<void> {
+    agentSaving.value = true
+    agentNote.value = ''
+    try {
+        agentSettings.value = await api.saveSettings(agentPick.value || null)
+        agentPick.value = agentSettings.value.default_agent_project ?? ''
+        agentNote.value = agentSettings.value.default_agent_project_name
+            ? `saved — new agent sessions without a folder bind ${agentSettings.value.default_agent_project_name}`
+            : 'saved — new agent sessions without a folder bind the home graph'
+    } catch (e) {
+        agentNote.value = e instanceof Error ? e.message : String(e)
+        agentPick.value = agentSettings.value?.default_agent_project ?? ''
+    } finally {
+        agentSaving.value = false
     }
 }
 
@@ -146,6 +175,35 @@ function fmtUptime(secs: number): string {
     return `${Math.floor(h / 24)}d ${h % 24}h`
 }
 
+/** Humane relative time for the process census — "3m ago", never raw unix. */
+function relTime(ts: number): string {
+    const secs = Math.max(0, Math.floor(Date.now() / 1000 - ts))
+    if (secs < 60) return 'just now'
+    const m = Math.floor(secs / 60)
+    if (m < 60) return `${m}m ago`
+    const h = Math.floor(m / 60)
+    if (h < 24) return `${h}h ago`
+    return `${Math.floor(h / 24)}d ago`
+}
+
+/** Uptime since a unix start instant, in the panel's duration style. */
+function upSince(startedAt: number): string {
+    return fmtUptime(Math.max(0, Math.floor(Date.now() / 1000 - startedAt)))
+}
+
+/** The folder is a client's primary identity — its basename is the headline. */
+function basename(path: string): string {
+    const parts = path.replace(/\/+$/, '').split('/')
+    return parts[parts.length - 1] || path
+}
+
+/** The cortex residency badge (0.8.8 idle ONNX unload). */
+function modelStateBadge(s: { state: string }): { status: Status; text: string } {
+    if (s.state === 'loaded') return { status: 'ok', text: 'active' }
+    if (s.state === 'unloaded_idle') return { status: 'warn', text: 'idle (models unloaded)' }
+    return { status: 'warn', text: s.state }
+}
+
 function embeddingStatus(s: SystemInfo): { status: Status; text: string } {
     const missing = s.store.nodes - s.store.embedded
     if (missing > 0) return { status: 'warn', text: `${missing} node(s) not embedded` }
@@ -186,6 +244,50 @@ function wiringStatus(w: { wired: boolean; prerename: boolean }): { status: Stat
                 <div><dt>Process</dt><dd>pid {{ info.daemon.pid }}</dd></div>
                 <div><dt>Repository</dt><dd class="mono">{{ info.daemon.repo_root }}</dd></div>
             </dl>
+        </section>
+
+        <!-- The process census (0.8.8+): the core plus every connected light
+             client. Older daemons don't send `processes` — the section simply
+             doesn't exist against a 0.8.7 core. -->
+        <section v-if="info.processes" class="block">
+            <h3 class="block-title">Processes</h3>
+
+            <div class="proc">
+                <div class="proc-head">
+                    <span class="proc-name">core</span>
+                    <span class="proc-tag">pid {{ info.processes.core.pid }}</span>
+                    <span class="proc-tag">v{{ info.processes.core.version }}</span>
+                    <span v-if="info.models_state" class="proc-tag badge">
+                        <span class="dot" :data-status="modelStateBadge(info.models_state).status" />
+                        {{ modelStateBadge(info.models_state).text }}
+                    </span>
+                </div>
+                <span class="mono proc-path" :title="info.processes.core.home">
+                    {{ info.processes.core.home }}
+                </span>
+                <span class="proc-times">up {{ upSince(info.processes.core.started_at) }}</span>
+            </div>
+
+            <div v-for="c in info.processes.clients" :key="c.lease_id" class="proc">
+                <div class="proc-head">
+                    <span class="proc-name">{{ basename(c.root) }}</span>
+                    <span class="proc-tag">{{ c.kind }}</span>
+                    <!-- Which MCP client bound here (clientInfo.name) —
+                         older bridges never sent one, the tag just hides. -->
+                    <span v-if="c.client" class="proc-tag" :title="'MCP client: ' + c.client">
+                        {{ c.client }}
+                    </span>
+                    <span class="proc-tag">pid {{ c.pid }}</span>
+                </div>
+                <span class="mono proc-path" :title="c.root">{{ c.root }}</span>
+                <span class="proc-times">
+                    connected {{ relTime(c.connected_at) }} · seen {{ relTime(c.last_seen) }}
+                </span>
+            </div>
+
+            <p v-if="!info.processes.clients.length" class="state">
+                No light processes connected.
+            </p>
         </section>
 
         <section class="block">
@@ -329,6 +431,36 @@ function wiringStatus(w: { wired: boolean; prerename: boolean }): { status: Stat
                 >
                     forget
                 </button>
+            </div>
+        </section>
+
+        <!-- Machine-level default for agent sessions that can't name their
+             project (no --db, no usable MCP root, no usable launch cwd —
+             e.g. Windsurf's JetBrains plugin spawning bridges from `/`).
+             Hidden against an older core: /settings 404s there. -->
+        <section v-if="agentSettings" class="block">
+            <h3 class="block-title">Default agent project</h3>
+            <div class="pick">
+                <label class="pick-role" for="agent-default-pick">binds to</label>
+                <div class="pick-body">
+                    <select
+                        id="agent-default-pick"
+                        v-model="agentPick"
+                        class="pick-select"
+                        :disabled="agentSaving"
+                        @change="applyAgentDefault"
+                    >
+                        <option value="">home graph (default)</option>
+                        <option v-for="p in projects.filter((p) => !p.home)" :key="p.id" :value="p.id">
+                            {{ p.name }}
+                        </option>
+                    </select>
+                    <p class="pick-hint">
+                        Agents that can't reveal their folder connect here. Applies to new
+                        sessions — already-connected ones keep their project.
+                    </p>
+                    <p v-if="agentNote" class="pick-note">{{ agentNote }}</p>
+                </div>
             </div>
         </section>
 
@@ -568,6 +700,11 @@ function wiringStatus(w: { wired: boolean; prerename: boolean }): { status: Stat
     color: var(--node-caution);
 }
 
+.pick-hint {
+    font-size: var(--text-caption);
+    color: var(--text-tertiary);
+}
+
 .pick-actions {
     display: flex;
     align-items: center;
@@ -614,6 +751,66 @@ function wiringStatus(w: { wired: boolean; prerename: boolean }): { status: Stat
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+/* Process census — one stacked card per process; the column layout is what
+   keeps it readable at the pane's ~500px bare-minimum width. */
+.proc {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    min-width: 0;
+    padding: 0.3rem 0;
+}
+
+.proc-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    min-width: 0;
+}
+
+.proc-name {
+    color: var(--text-primary);
+    font-size: var(--text-body-sm);
+    font-weight: 600;
+}
+
+.proc-tag {
+    padding: 0.05rem 0.5rem;
+    border-radius: var(--radius-full);
+    font-size: var(--text-caption);
+    font-weight: 600;
+    color: var(--text-tertiary);
+    background-color: var(--surface-muted);
+    white-space: nowrap;
+}
+
+.proc-tag.badge {
+    display: inline-flex;
+    align-items: center;
+}
+
+.proc-tag.badge .dot {
+    width: 0.6rem;
+    height: 0.6rem;
+    margin-right: 0.4rem;
+}
+
+.proc-path {
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: var(--text-caption);
+    color: var(--text-tertiary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.proc-times {
+    font-size: var(--text-caption);
+    color: var(--text-secondary);
 }
 
 .forget {

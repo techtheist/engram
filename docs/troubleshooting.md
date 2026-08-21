@@ -1,21 +1,32 @@
 # Troubleshooting
 
-Two commands solve most situations:
+Three commands solve most situations:
 
 ```sh
-engram-alpha doctor   # diagnose: store, models, daemon, assistant wiring
+engram-alpha status   # what's running: core, models, projects, clients
+engram-alpha doctor   # diagnose: store, models, core health, assistant wiring
 engram-alpha stop     # stop the core and every engram process, cleanly
 ```
 
-`doctor` checks the whole chain from your repository's root — store
-integrity, cached models, whether the running daemon actually serves *this*
-repo, and every detected assistant's wiring — and says exactly what to fix.
-It exits non-zero on real failures, so it works as a pre-flight in scripts.
+`status` reads the [machine core](./runtime.md) live: its pid, version, and
+uptime, whether the models are loaded or idle-unloaded, every registered
+project with whether the core holds its store open, and every connected MCP
+client with its pid and project folder. `--json` emits the same for scripts.
 
-`stop` discovers every advertised engram daemon from their daemon files,
-health-checks each before terminating it, and cleans up stale files. Bridge
-processes exit on their own when the core goes. Use it before updates and
-whenever a repair needs exclusive access to a store.
+`doctor` checks the whole chain from your repository's root — store
+integrity, cached models, core health, and every detected assistant's wiring
+— and says exactly what to fix. It finds the machine core through
+`~/.engram/daemon.json` regardless of where you run it, and when the core
+holds this repo's store open it asks the core instead of touching the file —
+a store held by a healthy core is reported as exactly that, never as a lock
+failure. It exits non-zero on real failures, so it works as a pre-flight in
+scripts.
+
+`stop` runs an orchestrated shutdown over the core's API: MCP sessions
+close (bridges exit immediately), in-flight store operations commit, every
+store lock is released, and the daemon files are cleaned up — with a
+health-verified PID kill as the fallback when the core doesn't answer. Use
+it before updates and whenever a repair needs exclusive access to a store.
 
 ## Common situations
 
@@ -60,11 +71,13 @@ if the knowledge still holds, supersede the node if the refactor invalidated
 it — the pane badges drifted nodes and the assistant sees them in its
 `list_drift` worklist. Drift never lowers trust on its own.
 
-**The graph in the pane looks empty in a repo that has memory.** Almost
-always a daemon serving a different database than the repo expects — a
-classic cause is starting `serve` with a relative `--db` from the wrong
-directory. `doctor` catches exactly this mismatch; plain `serve` from the
-repository root is always safe.
+**The graph in the pane looks empty in a repo that has memory.** Usually the
+pane is on a different project — one core serves all of them; check the
+top-bar switcher — or the repo was never registered with the core (a classic
+cause is `serve` with a relative `--db` from the wrong directory, which
+registers the wrong path). `engram-alpha status` lists what the core
+actually has; plain `serve` from the repository root registers the right
+graph and is always safe.
 
 **Two graphs after switching between WSL and native Windows.** A Windows
 `engram-alpha.exe` and WSL-side agents see different filesystems. Pick one
@@ -81,12 +94,12 @@ wrote what, with before/after values.
 | Path | What it is |
 |---|---|
 | `<repo>/.engram/graph.db` / `graph.tepin` | The repository's graph (git-ignored) |
-| `<repo>/.engram/daemon.json` | A repo-launched daemon's advertisement (port, pid) |
-| `<repo>/.engram/mcp.log` | The stdio MCP server's log (append; `ENGRAM_MCP_LOG=0` disables) |
-| `<repo>/.engram/serve.log` | Output of a core auto-started by `mcp` |
+| `<repo>/.engram/daemon.json` | The repo's pointer at the machine core (port, pid) — written by `serve`, scraped by the plugins |
+| `<repo>/.engram/mcp.log` | The stdio MCP bridge's log (append; `ENGRAM_MCP_LOG=0` disables) |
+| `~/.engram/core.log` | Output of the auto-spawned machine core — the first place to look when a core won't come up |
 | `~/.engram/registry.json` | The machine's project registry |
 | `~/.engram/daemon.json` | The machine core's advertisement |
-| `~/.engram/home.db` | The shared home graph |
+| `~/.engram/home.db` / `home.tepin` | The shared home graph |
 | `~/.engram/models.json` | Your model selection (absent = defaults) |
 | `~/.engram/update-check.json` | The daemon's once-a-day update-check stamp (`ENGRAM_UPDATE_CHECK=0` disables the check) |
 | `~/.cache/engram/<model>/` | Downloaded model files |

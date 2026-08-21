@@ -101,15 +101,16 @@ fn check_store(r: &mut Report, db: &Path) {
     if daemon_store_report(r, db) {
         return;
     }
+    // Ask the core BEFORE touching the file (issue #6): a store the core
+    // holds open must never be direct-opened underneath it — on tepin the
+    // open would fail on the core's lock and mis-report health as failure.
+    if core_owns(db) {
+        return r.ok(
+            "store is held open by the machine core (healthy) — it serves this repo's pane and MCP",
+        );
+    }
     let store = match engram_core::open_store(db) {
         Ok(s) => s,
-        // A tepin store lazily opened by the MACHINE core (no repo-local
-        // daemon.json to find it by) is legitimately locked — the core owns
-        // it and serves it to the pane and every bridge; that's health, not
-        // failure. Anything else holding the lock is still a FAIL.
-        Err(e) if format!("{e}").contains("database_locked") && core_owns(db) => {
-            return r.ok("store is open in the machine core — it owns the lock and serves this repo's pane and MCP");
-        }
         Err(e) => return r.fail(&format!("cannot open {}: {e}", db.display())),
     };
     match store.health() {
@@ -159,6 +160,9 @@ fn check_store(r: &mut Report, db: &Path) {
 /// Does the machine core have this store registered and open right now?
 /// (`/projects` reports `db` + `open` per project — `open:true` means the
 /// core's hub holds the engine, and with it a tepin store's exclusive lock.)
+/// Compare the stores the paths OPEN, not the strings (the 0.8.5 lesson):
+/// the registry may say `graph.db` while both processes resolve and hold
+/// `graph.tepin`.
 fn core_owns(db: &Path) -> bool {
     let Some(port) = crate::machine_core() else {
         return false;
@@ -168,13 +172,18 @@ fn core_owns(db: &Path) -> bool {
     else {
         return false;
     };
-    let canon = std::fs::canonicalize(db)
-        .unwrap_or_else(|_| db.to_path_buf())
-        .display()
-        .to_string();
+    let canon = |p: &Path| {
+        let r = engram_core::resolve_db_path(p);
+        std::fs::canonicalize(&r).unwrap_or(r)
+    };
+    let target = canon(db);
     projects.as_array().is_some_and(|list| {
-        list.iter()
-            .any(|p| p["db"].as_str() == Some(canon.as_str()) && p["open"].as_bool() == Some(true))
+        list.iter().any(|p| {
+            p["open"].as_bool() == Some(true)
+                && p["db"]
+                    .as_str()
+                    .is_some_and(|d| canon(Path::new(d)) == target)
+        })
     })
 }
 
@@ -233,37 +242,34 @@ fn check_model(r: &mut Report) {
     }
 }
 
+/// The daemon is the MACHINE CORE (0.8.8 process model): find it via
+/// `~/.engram/daemon.json` + /health, regardless of the cwd this doctor runs
+/// from and regardless of how the core was started (issue #6 — the old check
+/// read only the repo-local file and mis-called an auto-spawned core "a
+/// daemon serving a different db"). A repo-local daemon.json is only an
+/// advertisement pointer now; a legacy per-repo daemon still counts.
 fn check_daemon(r: &mut Report, db: &Path) {
-    let Some(dir) = db.parent() else { return };
-    let file = dir.join("daemon.json");
-    let Ok(raw) = std::fs::read_to_string(&file) else {
-        r.note("daemon not running (no daemon.json) — `engram-alpha serve` starts the pane");
+    if let Some(port) = crate::machine_core() {
+        r.ok(&format!(
+            "machine core healthy on port {port} — pane: http://127.0.0.1:{port}"
+        ));
         return;
-    };
-    let port = serde_json::from_str::<serde_json::Value>(&raw)
-        .ok()
-        .and_then(|v| v["port"].as_u64());
-    let Some(port) = port else {
-        return r.fail("daemon.json is unreadable — remove it and restart `engram-alpha serve`");
-    };
-    match http_get(port as u16, "/health") {
-        Some(body) if body.contains(&db.display().to_string()) => {
-            r.ok(&format!(
-                "daemon healthy on port {port}, serving this repo's DB"
-            ));
-        }
-        Some(body) => {
-            let served = serde_json::from_str::<serde_json::Value>(&body)
-                .ok()
-                .and_then(|v| v["db"].as_str().map(str::to_string))
-                .unwrap_or_else(|| body.trim().to_string());
-            r.fail(&format!(
-                "daemon on port {port} serves a DIFFERENT db ({served}) — restart `engram-alpha serve` from this repo's root"
-            ));
-        }
-        None => r.warn(&format!(
-            "stale daemon.json (nothing healthy on port {port}) — restart `engram-alpha serve`"
-        )),
+    }
+    // Transitional: a pre-0.8.8 per-repo daemon owning this store.
+    if let Some(port) = crate::daemon_for(db) {
+        r.ok(&format!(
+            "daemon healthy on port {port}, serving this repo's DB"
+        ));
+        return;
+    }
+    // Nothing healthy anywhere: name a stale advertisement when one exists.
+    let stale_repo_file = db
+        .parent()
+        .is_some_and(|dir| dir.join("daemon.json").exists());
+    if stale_repo_file {
+        r.warn("stale .engram/daemon.json (nothing healthy advertised) — `engram-alpha serve` restarts the core and refreshes it");
+    } else {
+        r.note("core not running — `engram-alpha serve` starts it (and the pane)");
     }
 }
 

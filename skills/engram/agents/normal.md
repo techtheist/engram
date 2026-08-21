@@ -46,8 +46,9 @@ fix the paths via `update_node` and re-check the claim itself.
 or after verifying a node's content word-by-word. Routine "still relevant"
 signals are `update_node`, never approval.
 
-The user sees and curates the graph at http://127.0.0.1:8787 — started with
-`engram-alpha serve` in the repo root (one daemon per repo; the real port lives in
+The user sees and curates the graph at http://127.0.0.1:8787 — one machine
+core serves every project; `engram-alpha serve` in the repo root ensures it
+is up, registers the repo, and exits on its own (the real port lives in
 `.engram/daemon.json`). If the engram tools disconnect mid-session, don't
-drop captures — the daemon serves the same operations over HTTP (`POST
+drop captures — the core serves the same operations over HTTP (`POST
 /nodes` etc. with `"source": "claude"`), or tell the user to reconnect.

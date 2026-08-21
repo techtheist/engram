@@ -52,9 +52,9 @@ prevented it.
   every scan run on your machine: no cloud, no keys, fully offline. Portable
   via JSON export/import, not a binary blob.
 - **Portable across agents** — one local backend serves **Claude Code, Codex
-  (CLI and desktop app), Gemini CLI, OpenCode, Kilo, and Google Antigravity**
-  over MCP, plus a browser UI. Your agents share one memory: a decision
-  captured by Claude is recalled by Codex.
+  (CLI and desktop app), Gemini CLI, OpenCode, Kilo, Google Antigravity, and
+  Windsurf** over MCP, plus a browser UI. Your agents share one memory: a
+  decision captured by Claude is recalled by Codex.
 - **Graph-first** — the graph is the product surface, not hidden plumbing.
   Reviewing, judging, and repairing memory all happen in the pane.
 
@@ -205,8 +205,10 @@ keep — but every part of it is [yours to reshape](./docs/customization.md).
 
 All user documentation lives in [`docs/`](./docs/README.md) — install and
 wiring, the memory model, trust, the pane, conflicts, multi-project memory,
-storage, local models, and troubleshooting (`engram-alpha doctor` diagnoses
-the whole chain; `engram-alpha stop` halts everything cleanly).
+the [runtime architecture](./docs/runtime.md), storage, local models, and
+troubleshooting (`engram-alpha doctor` diagnoses the whole chain;
+`engram-alpha status` shows what's running; `engram-alpha stop` halts
+everything cleanly).
 
 Security posture: [`SECURITY.md`](./SECURITY.md). The roadmap lives in the
 project's own memory graph — dogfooding is the spec. **Status:** early

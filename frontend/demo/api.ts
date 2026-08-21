@@ -18,6 +18,7 @@
  */
 import type { EngramApi, StreamHandlers } from '@/types/api'
 import type {
+    AgentSettings,
     AuditPage,
     ConfigPreset,
     ExportGraph,
@@ -45,6 +46,10 @@ import {
 
 export const API_BASE = ''
 
+/** The demo build's half of the flag in services/http.ts — the topbar's
+ *  connection chip reads it to say "demo" instead of the live dot. */
+export const isDemo = true
+
 /** Which graph the pane is looking at — the demo's `/projects/{id}` prefix. */
 export function setApiProject(id: string | null): void {
     engine.setActiveProject(id === 'home' ? HOME : LAUNCH)
@@ -64,6 +69,18 @@ function unavailable(what: string): never {
 const LATENCY_MS = 40
 const ok = <T>(value: T): Promise<T> =>
     new Promise((resolve) => setTimeout(() => resolve(value), LATENCY_MS))
+
+/** The demo's `~/.engram/settings.json`: one tab-local variable. */
+let demoDefaultAgentProject: string | null = null
+
+function agentSettingsView(): AgentSettings {
+    const entry = PROJECTS.find((p) => p.id === demoDefaultAgentProject) ?? null
+    return {
+        default_agent_project: demoDefaultAgentProject,
+        default_agent_project_name: entry?.name ?? null,
+        default_agent_project_root: entry?.root ?? null,
+    }
+}
 
 export const api: EngramApi = {
     graph: () => ok({ nodes: engine.readNodes(), edges: [...engine.state().edges.values()] }),
@@ -188,6 +205,37 @@ export const api: EngramApi = {
                 { agent: 'codex', wired: true, prerename: false },
                 { agent: 'gemini', wired: false, prerename: false },
             ],
+            // The 0.8.8 process census — the core plus two light MCP bridges,
+            // so the demo shows the Processes section populated.
+            processes: {
+                core: {
+                    pid: 4821,
+                    version: '0.8.8',
+                    started_at: Math.floor(Date.now() / 1000) - 7326,
+                    home: '/Users/you/.engram',
+                },
+                clients: [
+                    {
+                        lease_id: 'lease-lantern',
+                        pid: 5140,
+                        kind: 'mcp-bridge',
+                        project: 'lantern',
+                        root: '/Users/you/code/lantern',
+                        connected_at: Math.floor(Date.now() / 1000) - 3540,
+                        last_seen: Math.floor(Date.now() / 1000) - 12,
+                    },
+                    {
+                        lease_id: 'lease-fieldnotes',
+                        pid: 6022,
+                        kind: 'mcp-bridge',
+                        project: 'fieldnotes',
+                        root: '/Users/you/code/fieldnotes',
+                        connected_at: Math.floor(Date.now() / 1000) - 190,
+                        last_seen: Math.floor(Date.now() / 1000) - 65,
+                    },
+                ],
+            },
+            models_state: { state: 'loaded', since: Math.floor(Date.now() / 1000) - 7326 },
         }
         return ok(info)
     },
@@ -272,6 +320,22 @@ export const api: EngramApi = {
 
     models: () => ok(models as unknown as ModelSelection),
     applyModel: () => unavailable('Downloading and swapping a model'),
+
+    // Machine-level settings, served from a tab-local variable: the control
+    // works in the demo, nothing persists past the tab.
+    settings: () => ok(agentSettingsView()),
+    saveSettings: (defaultAgentProject) => {
+        if (defaultAgentProject == null || defaultAgentProject === '' || defaultAgentProject === 'home') {
+            demoDefaultAgentProject = null
+        } else {
+            const entry = PROJECTS.find(
+                (p) => !p.home && (p.id === defaultAgentProject || p.name === defaultAgentProject),
+            )
+            if (!entry) throw new Error(`unknown project '${defaultAgentProject}'`)
+            demoDefaultAgentProject = entry.id
+        }
+        return ok(agentSettingsView())
+    },
 
     projects: () => ok(PROJECTS),
     registerProject: () => unavailable('Registering a project'),

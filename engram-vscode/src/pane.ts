@@ -25,6 +25,9 @@ export function paneOptions(
  * the extension (not the daemon), so we:
  *   - point a <base> at the webview-served pane folder (assets are relative),
  *   - inject the daemon URL as `window.__ENGRAM_API__` for the SPA's API calls,
+ *   - inject the workspace folder name as `window.__ENGRAM_PROJECT__` — the
+ *     webview document has no real URL to carry the `?project=` deep link,
+ *     so the pane reads the global instead and opens on this repo's graph,
  *   - set a CSP that allows the bundled assets + the daemon connection + fonts.
  * The daemon-down state is handled by the SPA itself (its own retry overlay).
  */
@@ -33,6 +36,7 @@ export function buildPaneHtml(webview: vscode.Webview, extensionUri: vscode.Uri)
     const baseHref = webview.asWebviewUri(paneRoot).toString().replace(/\/?$/, '/')
     const api = daemonUrl()
     const apiAlt = api.replace('127.0.0.1', 'localhost')
+    const project = vscode.workspace.workspaceFolders?.[0]?.name
     const n = nonce()
 
     const csp = [
@@ -47,7 +51,9 @@ export function buildPaneHtml(webview: vscode.Webview, extensionUri: vscode.Uri)
     const injected = `
     <base href="${baseHref}">
     <meta http-equiv="Content-Security-Policy" content="${csp}">
-    <script nonce="${n}">window.__ENGRAM_API__ = ${JSON.stringify(api)};</script>`
+    <script nonce="${n}">window.__ENGRAM_API__ = ${JSON.stringify(api)};${
+        project ? ` window.__ENGRAM_PROJECT__ = ${JSON.stringify(project)};` : ''
+    }</script>`
 
     let html: string
     try {

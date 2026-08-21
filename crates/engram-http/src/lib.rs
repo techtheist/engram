@@ -82,9 +82,300 @@ pub struct AppState {
     model_admin: Option<Arc<dyn ModelAdmin>>,
     /// Skill installation hands, when a daemon provides them.
     skill_admin: Option<Arc<dyn SkillAdmin>>,
+    /// The machine core's process identity + client census + shutdown
+    /// trigger. Only the core daemon sets this; without it the census and
+    /// `/shutdown` routes answer 404.
+    runtime: Option<Arc<CoreRuntime>>,
     /// Per-session already-injected node ids for /refs/match — the ambient
     /// hook's dedupe memory (bounded; evicted wholesale when it grows).
     refs_seen: Mutex<HashMap<String, std::collections::HashSet<String>>>,
+}
+
+// ---- process census (process-model refactor) -----------------------------
+
+/// One connected client's lease. Bridges register on connect, renew alongside
+/// their heartbeat, and deregister on clean exit; a lease that stops renewing
+/// expires (crashed client) and is pruned lazily on read.
+#[derive(Clone, Serialize)]
+pub struct ClientLease {
+    pub lease_id: String,
+    pub pid: u32,
+    pub kind: String,
+    /// The MCP client behind the bridge (`clientInfo.name` from its stdio
+    /// initialize, e.g. "claude-code", "mcp-go"). Additive since the
+    /// default-agent-project work: bridges send it once they know it (a
+    /// fixed-target bridge registers before its client's initialize, so the
+    /// name arrives on the first renewal); absent rows stay valid.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
+    /// Registered project id owning `root`, when the registry knows it.
+    pub project: Option<String>,
+    pub root: String,
+    pub connected_at: i64,
+    pub last_seen: i64,
+}
+
+/// A lease this old without a renewal belongs to a dead client. Renewals ride
+/// the bridges' 15s heartbeat, so 45s means three missed beats.
+/// (`ENGRAM_LEASE_TTL_SECS` overrides for tests.)
+fn lease_ttl_secs() -> i64 {
+    std::env::var("ENGRAM_LEASE_TTL_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(45)
+}
+
+/// Idle-unload bookkeeping (the strict-spec Decision): the three clocks the
+/// core's idle checker compares against `ENGRAM_IDLE_UNLOAD_SECS`, plus the
+/// residency state `/system.models_state` reports. Lives here because two of
+/// the clocks are stamped from HTTP-side code (the activity layer, the lease
+/// handlers) while the third is stamped by the CLI's reload-capable model
+/// slots — one shared tracker keeps them coherent.
+///
+/// What counts as HTTP activity is decided by [`IdleTracker::stamp_http_request`]:
+/// every request EXCEPT observability and process-management endpoints —
+/// `/health` (plugins poll it every 10s), `/system` (status/pane must be able
+/// to watch the idle badge without defeating it), `/clients*` (lease
+/// register/ping/delete govern idleness through the lease clock instead),
+/// `/shutdown`, and the `/projects` registry meta ops (`engram-alpha status`
+/// reads the list). Scoped forms (`/projects/{id}/health`) are normalized
+/// first. Everything that reads or writes graph data stamps.
+pub struct IdleTracker {
+    /// Unix seconds of the last HTTP request that counts as activity.
+    last_http: std::sync::atomic::AtomicI64,
+    /// Unix seconds of the last model use (stamped by the CLI's lazy slots on
+    /// every embed/rank/judge — background sweeps extend this without being
+    /// HTTP activity, so an in-flight sweep is never cut mid-work).
+    last_model_use: std::sync::atomic::AtomicI64,
+    /// Unix seconds a live bridge lease was last seen (register, ping renewal,
+    /// or the idle checker observing a non-empty census).
+    last_lease_seen: std::sync::atomic::AtomicI64,
+    /// Unix seconds the models were idle-unloaded; 0 = loaded.
+    unloaded_since: std::sync::atomic::AtomicI64,
+    /// Unix seconds the current residency began (start, or last reload).
+    loaded_since: std::sync::atomic::AtomicI64,
+    /// Monotonic count of graph mutations (curated ChangeEvents + harvester
+    /// writes) — the librarian's dirty flag: when models are unloaded and
+    /// this hasn't moved since its last completed pass, the 6h tick skips
+    /// instead of silently reloading models to sweep an unchanged graph.
+    graph_writes: std::sync::atomic::AtomicU64,
+}
+
+impl Default for IdleTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl IdleTracker {
+    pub fn new() -> Self {
+        use std::sync::atomic::{AtomicI64, AtomicU64};
+        let now = engram_core::now();
+        Self {
+            last_http: AtomicI64::new(now),
+            last_model_use: AtomicI64::new(now),
+            last_lease_seen: AtomicI64::new(now),
+            unloaded_since: AtomicI64::new(0),
+            loaded_since: AtomicI64::new(now),
+            graph_writes: AtomicU64::new(0),
+        }
+    }
+
+    /// Stamp `last_http_activity` for a request path, unless the path is one
+    /// of the exempt observability/process endpoints (see the type docs).
+    pub fn stamp_http_request(&self, path: &str) {
+        if Self::counts_as_http_activity(path) {
+            self.last_http.store(engram_core::now(), ORD);
+        }
+    }
+
+    /// The exemption rule, split out so it is testable and documented in one
+    /// place. `path` is the raw request path (pre scope-rewrite).
+    pub fn counts_as_http_activity(path: &str) -> bool {
+        let core = if let Some(rest) = path.strip_prefix("/projects/") {
+            match rest.split_once('/') {
+                // Scoped graph route: /projects/x/search → "search".
+                Some((_, tail)) if !tail.is_empty() => tail,
+                // /projects/{id} registry meta op.
+                _ => return false,
+            }
+        } else if path == "/projects" {
+            return false;
+        } else {
+            path.trim_start_matches('/')
+        };
+        let head = core.split('/').next().unwrap_or("");
+        !matches!(head, "health" | "system" | "shutdown" | "clients")
+    }
+
+    pub fn touch_model_use(&self) {
+        self.last_model_use.store(engram_core::now(), ORD);
+    }
+
+    pub fn touch_lease(&self) {
+        self.last_lease_seen.store(engram_core::now(), ORD);
+    }
+
+    pub fn note_graph_write(&self) {
+        self.graph_writes.fetch_add(1, ORD);
+    }
+
+    pub fn graph_writes(&self) -> u64 {
+        self.graph_writes.load(ORD)
+    }
+
+    pub fn last_http_activity(&self) -> i64 {
+        self.last_http.load(ORD)
+    }
+
+    pub fn last_model_use(&self) -> i64 {
+        self.last_model_use.load(ORD)
+    }
+
+    pub fn last_lease_seen(&self) -> i64 {
+        self.last_lease_seen.load(ORD)
+    }
+
+    pub fn is_unloaded(&self) -> bool {
+        self.unloaded_since.load(ORD) > 0
+    }
+
+    pub fn mark_unloaded(&self, now: i64) {
+        self.unloaded_since.store(now, ORD);
+    }
+
+    /// Back to resident (startup completion, lazy reload, hot-swap). The
+    /// state is an aggregate over the three sessions: ANY demand ends the
+    /// idle-unloaded state, and the remaining slots reload on their own
+    /// first use.
+    pub fn mark_loaded(&self, now: i64) {
+        self.unloaded_since.store(0, ORD);
+        self.loaded_since.store(now, ORD);
+    }
+
+    /// The `/system.models_state` contract: `{"state":"loaded"|"unloaded_idle",
+    /// "since":<unix>}` — `unloaded_idle` is the exact string the pane's idle
+    /// badge matches on.
+    pub fn models_state(&self) -> serde_json::Value {
+        let unloaded = self.unloaded_since.load(ORD);
+        if unloaded > 0 {
+            json!({ "state": "unloaded_idle", "since": unloaded })
+        } else {
+            json!({ "state": "loaded", "since": self.loaded_since.load(ORD) })
+        }
+    }
+}
+
+/// All tracker stamps are independent wall-clock scalars — relaxed is enough.
+const ORD: std::sync::atomic::Ordering = std::sync::atomic::Ordering::Relaxed;
+
+/// The machine core's identity and client census — what `/system` reports
+/// under `processes`, what `engram-alpha status` renders, and the shutdown
+/// trigger `POST /shutdown` fires. Constructed by the core daemon only.
+pub struct CoreRuntime {
+    pub pid: u32,
+    pub version: String,
+    /// Unix seconds the core came up.
+    pub started_at: i64,
+    /// The engram home dir this core serves (`~/.engram`).
+    pub home: String,
+    /// Idle-unload clocks + model residency state (see [`IdleTracker`]).
+    pub idle: Arc<IdleTracker>,
+    clients: Mutex<HashMap<String, ClientLease>>,
+    shutdown: tokio::sync::watch::Sender<bool>,
+}
+
+impl CoreRuntime {
+    /// Build the runtime plus the receiver the core's main loop selects on:
+    /// `/shutdown` flips the watch, the core runs its orchestrated exit.
+    pub fn new(home: String) -> (Arc<Self>, tokio::sync::watch::Receiver<bool>) {
+        let (shutdown, rx) = tokio::sync::watch::channel(false);
+        (
+            Arc::new(Self {
+                pid: std::process::id(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                started_at: engram_core::now(),
+                home,
+                idle: Arc::new(IdleTracker::new()),
+                clients: Mutex::new(HashMap::new()),
+                shutdown,
+            }),
+            rx,
+        )
+    }
+
+    fn register(
+        &self,
+        pid: u32,
+        kind: String,
+        root: String,
+        client: Option<String>,
+    ) -> ClientLease {
+        let now = engram_core::now();
+        self.idle.touch_lease();
+        let project = registry::load()
+            .resolve_root(std::path::Path::new(&root))
+            .map(|e| e.id.clone());
+        let lease = ClientLease {
+            lease_id: engram_core::id::new_id(),
+            pid,
+            kind,
+            client,
+            project,
+            root,
+            connected_at: now,
+            last_seen: now,
+        };
+        self.clients
+            .lock()
+            .unwrap()
+            .insert(lease.lease_id.clone(), lease.clone());
+        lease
+    }
+
+    fn renew(&self, lease_id: &str, root: Option<String>, client: Option<String>) -> bool {
+        match self.clients.lock().unwrap().get_mut(lease_id) {
+            Some(lease) => {
+                lease.last_seen = engram_core::now();
+                // A roots rebind moves the row instead of minting a second
+                // lease — the census (and the pane) key on lease_id.
+                if let Some(root) = root.filter(|r| *r != lease.root) {
+                    lease.project = registry::load()
+                        .resolve_root(std::path::Path::new(&root))
+                        .map(|e| e.id.clone());
+                    lease.root = root;
+                }
+                // The client name rides renewals too: a fixed-target bridge
+                // registers before its stdio client's initialize named one.
+                if client.is_some() {
+                    lease.client = client;
+                }
+                // A renewing lease is a connected client: it keeps models
+                // resident through the lease clock — deliberately NOT the
+                // HTTP-activity clock (pings are exempt there).
+                self.idle.touch_lease();
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn remove(&self, lease_id: &str) -> bool {
+        self.clients.lock().unwrap().remove(lease_id).is_some()
+    }
+
+    /// Live leases, expired ones pruned on the way out (lazy expiry — no
+    /// timer needed, every reader sees a fresh census).
+    pub fn clients(&self) -> Vec<ClientLease> {
+        let now = engram_core::now();
+        let ttl = lease_ttl_secs();
+        let mut clients = self.clients.lock().unwrap();
+        clients.retain(|_, l| now - l.last_seen <= ttl);
+        let mut out: Vec<ClientLease> = clients.values().cloned().collect();
+        out.sort_by_key(|l| l.connected_at);
+        out
+    }
 }
 
 impl AppState {
@@ -106,11 +397,27 @@ impl AppState {
     /// The full multi-project form: every engine the hub opens (now or later)
     /// gets a listener feeding that project's SSE channel.
     pub fn from_hub(hub: Arc<Hub>, db_path: Option<String>) -> Self {
+        Self::from_hub_observed(hub, db_path, None)
+    }
+
+    /// [`AppState::from_hub`] with an optional idle tracker whose graph-write
+    /// counter the change listener bumps — the librarian's dirty flag rides
+    /// the same chokepoint every curated mutation (pane, MCP, imports, the
+    /// librarian's own archives) already flows through.
+    fn from_hub_observed(
+        hub: Arc<Hub>,
+        db_path: Option<String>,
+        idle: Option<Arc<IdleTracker>>,
+    ) -> Self {
         let events: EventMap = Arc::default();
         let ev = events.clone();
         hub.set_listener_factory(Box::new(move |project_id: &str| {
             let tx = channel(&ev, project_id);
+            let idle = idle.clone();
             Box::new(move |change| {
+                if let Some(idle) = &idle {
+                    idle.note_graph_write();
+                }
                 let _ = tx.send(encode_event(&change));
             })
         }));
@@ -121,6 +428,7 @@ impl AppState {
             started: std::time::Instant::now(),
             model_admin: None,
             skill_admin: None,
+            runtime: None,
             refs_seen: Mutex::new(HashMap::new()),
         }
     }
@@ -292,10 +600,34 @@ pub fn router_hub_with_admins(
     router(Arc::new(state))
 }
 
+/// The machine core's router: [`router_hub_with_admins`] plus the process
+/// census (`/clients`, `/system.processes`) and the orchestrated `/shutdown`.
+pub fn router_hub_core(
+    hub: Arc<Hub>,
+    db_path: Option<String>,
+    models: Arc<dyn ModelAdmin>,
+    skills: Arc<dyn SkillAdmin>,
+    runtime: Arc<CoreRuntime>,
+) -> Router {
+    let mut state = AppState::from_hub_observed(hub, db_path, Some(runtime.idle.clone()));
+    state.model_admin = Some(models);
+    state.skill_admin = Some(skills);
+    state.runtime = Some(runtime);
+    router(Arc::new(state))
+}
+
 fn api_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/system", get(system))
+        .route("/clients", post(clients_register))
+        .route("/clients/{lease_id}/ping", post(clients_ping))
+        .route(
+            "/clients/{lease_id}",
+            axum::routing::delete(clients_unregister),
+        )
+        .route("/shutdown", post(shutdown_core))
+        .route("/settings", get(get_settings).post(post_settings))
         .route("/models", get(models_describe).post(models_apply))
         .route("/projects", get(list_projects).post(register_project))
         .route("/projects/{id}", axum::routing::delete(unregister_project))
@@ -532,7 +864,26 @@ async fn system(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let health = store.health().ok();
     let embed_version = store.embed_version().unwrap_or(0);
 
-    Json(json!({
+    // The process census (core daemons only): who the core is and which
+    // clients hold a live lease. `models_state` reports ONNX residency —
+    // `loaded` or `unloaded_idle` (idle-unload) — with `since` marking when
+    // the current residency began.
+    let processes = state.runtime.as_ref().map(|rt| {
+        (
+            json!({
+                "core": {
+                    "pid": rt.pid,
+                    "version": rt.version,
+                    "started_at": rt.started_at,
+                    "home": rt.home,
+                },
+                "clients": rt.clients(),
+            }),
+            rt.idle.models_state(),
+        )
+    });
+
+    let mut out = json!({
         "version": env!("CARGO_PKG_VERSION"),
         "daemon": {
             "pid": std::process::id(),
@@ -580,7 +931,158 @@ async fn system(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
         ],
         "model_selection": state.model_admin.is_some(),
         "wiring": wiring,
-    }))
+    });
+    if let Some((processes, models_state)) = processes {
+        out["processes"] = processes;
+        out["models_state"] = models_state;
+    }
+    Json(out)
+}
+
+// ---- client leases + shutdown (core daemons only) ------------------------
+
+#[derive(Deserialize)]
+struct RegisterClientBody {
+    pid: u32,
+    kind: String,
+    /// Absolute project root the client is bound to.
+    root: String,
+    /// The MCP client's name (`clientInfo.name` from the stdio initialize).
+    /// Optional: pre-0.8.8 bridges (and registrations racing the handshake)
+    /// omit it.
+    #[serde(default)]
+    client: Option<String>,
+}
+
+fn core_runtime(state: &AppState) -> Result<&Arc<CoreRuntime>, AppError> {
+    state.runtime.as_ref().ok_or(AppError::NotFound)
+}
+
+/// A client (MCP bridge) announces itself: `{pid, kind, root}` → a lease it
+/// must renew (`/clients/{lease}/ping`) to stay in the census.
+async fn clients_register(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<RegisterClientBody>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let lease = core_runtime(&state)?.register(body.pid, body.kind, body.root, body.client);
+    Ok(Json(json!({ "lease_id": lease.lease_id })))
+}
+
+#[derive(Deserialize)]
+struct PingClientBody {
+    /// The bridge's current project root — carried on every renewal so a
+    /// roots rebind moves the census row (same lease_id) instead of adding
+    /// one. Optional: pre-0.8.8 bridges ping with no body.
+    root: Option<String>,
+    /// The MCP client's name, once the bridge learned it from the stdio
+    /// initialize (a fixed-target bridge registers before that handshake).
+    #[serde(default)]
+    client: Option<String>,
+}
+
+/// Renew a lease. 404 = the lease expired (or the core restarted) — the
+/// client should register again.
+async fn clients_ping(
+    State(state): State<Arc<AppState>>,
+    Path(lease_id): Path<String>,
+    body: Option<Json<PingClientBody>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let (root, client) = body.map(|Json(b)| (b.root, b.client)).unwrap_or_default();
+    if core_runtime(&state)?.renew(&lease_id, root, client) {
+        Ok(Json(json!({ "ok": true })))
+    } else {
+        Err(AppError::NotFound)
+    }
+}
+
+/// Clean exit: the client withdraws its lease instead of letting it lapse.
+async fn clients_unregister(
+    State(state): State<Arc<AppState>>,
+    Path(lease_id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let removed = core_runtime(&state)?.remove(&lease_id);
+    Ok(Json(json!({ "removed": removed })))
+}
+
+/// The orchestrated stop (loopback-only like the whole API): reply with what
+/// is about to stop, then flip the core's shutdown watch — the core's main
+/// loop runs the exit sequence (close sessions, drop engines, remove daemon
+/// files, exit 0). The trigger is delayed a beat so this reply reaches the
+/// stopper before the process starts dying.
+async fn shutdown_core(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let rt = core_runtime(&state)?;
+    let clients = rt.clients().len();
+    let tx = rt.shutdown.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let _ = tx.send(true);
+    });
+    Ok(Json(
+        json!({ "stopping": true, "pid": rt.pid, "clients": clients }),
+    ))
+}
+
+// ---- machine-level settings (core daemons only, like the census) ----------
+
+/// One settings reply: the stored selector plus, when it resolves, the
+/// project's current name/root so the pane can render it without a join.
+fn settings_view(s: &engram_core::settings::Settings) -> serde_json::Value {
+    let resolved = s
+        .default_agent_project
+        .as_deref()
+        .and_then(|sel| registry::load().resolve(sel).cloned());
+    json!({
+        "default_agent_project": s.default_agent_project,
+        "default_agent_project_name": resolved.as_ref().map(|e| e.name.clone()),
+        "default_agent_project_root": resolved.map(|e| e.root),
+    })
+}
+
+/// The machine-level settings (`~/.engram/settings.json`). Core daemons only
+/// — a non-core daemon 404s, which is also how an older pane knows to hide
+/// the control.
+async fn get_settings(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    core_runtime(&state)?;
+    Ok(Json(settings_view(&engram_core::settings::load())))
+}
+
+#[derive(Deserialize)]
+struct SettingsBody {
+    /// Project id or name; `null`, `""`, or `"home"` clears the setting
+    /// (sessions fall to the home graph, today's behavior).
+    default_agent_project: Option<String>,
+}
+
+/// Write the machine-level settings. The project must exist (registry id or
+/// name, or "home") — anything else is a 400 and the file is untouched.
+/// Applies to FUTURE bindings only: already-connected sessions keep the
+/// project they bound.
+async fn post_settings(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<SettingsBody>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    core_runtime(&state)?;
+    let stored = match body.default_agent_project.as_deref() {
+        None | Some("") | Some(registry::HOME_PROJECT) => None,
+        Some(sel) => {
+            let entry = registry::load().resolve(sel).cloned().ok_or_else(|| {
+                AppError::Core(Error::Project(format!(
+                    "unknown project '{sel}' — register it first (engram-alpha serve), or pass \"home\""
+                )))
+            })?;
+            // Stored as the stable id: renames of the human slug can't strand
+            // the setting, and the bridge's registry lookup takes either.
+            Some(entry.id)
+        }
+    };
+    let mut settings = engram_core::settings::load();
+    settings.default_agent_project = stored;
+    engram_core::settings::save(&settings)?;
+    Ok(Json(settings_view(&settings)))
 }
 
 // ---- project registry (PLAN §7C) ----------------------------------------
@@ -1129,19 +1631,28 @@ async fn decay(
 }
 
 /// The session-start digest, as `text/markdown` (PLAN §6A retrieval trigger).
-/// Unscoped = the launch project plus the home-graph section; a scoped
-/// project (or `home`) briefs that graph alone.
+/// Three shapes, and the difference is which project the reader IS:
+/// `/projects/{sel}/brief` is the pane's view of that graph alone;
+/// `/brief?project={name|id|dir}` is the brief a session bound there
+/// receives — that project plus the home-graph section and the roster — and
+/// is what the SessionStart hook injects, since a hook knows its folder and
+/// the machine core's own launch graph is nobody's project; plain `/brief`
+/// is the same for the launch project.
 async fn brief(
     State(state): State<Arc<AppState>>,
     scope: Scope,
     Query(p): Query<BriefParams>,
 ) -> Result<Response, AppError> {
-    // Resolve the briefed engine first (unscoped = the launch project),
-    // compute the budget once, then branch only on hub-vs-pane rendering.
-    let engine = state.engine_arc(&scope)?;
+    // Resolve the briefed engine first (so the budget is the briefed graph's
+    // own), then branch only on hub-vs-pane rendering.
+    let bound = p.project.as_deref().filter(|_| scope.0.is_none());
+    let engine = match bound {
+        Some(sel) => state.hub.get(sel)?,
+        None => state.engine_arc(&scope)?,
+    };
     let max_chars = engine.lock().unwrap().brief_chars(p.max_chars);
     let text = match &scope.0 {
-        None => state.hub.brief(max_chars)?,
+        None => state.hub.brief_for(bound, max_chars)?,
         Some(_) => pane(&engine).brief(max_chars)?,
     };
     Ok((
@@ -1526,6 +2037,10 @@ struct TraverseParams {
 #[derive(Deserialize)]
 struct BriefParams {
     max_chars: Option<usize>,
+    /// Brief AS this project — a name, an id, or the project's directory
+    /// (any path inside it). The session-brief hook holds a folder, not a
+    /// name, and the machine core's launch graph is nobody's project.
+    project: Option<String>,
 }
 
 #[derive(Deserialize)]

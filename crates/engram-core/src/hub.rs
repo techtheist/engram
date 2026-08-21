@@ -281,6 +281,16 @@ impl Hub {
         selector == self.current.id || selector == self.current.name
     }
 
+    /// Does this path selector point inside the launch project's root?
+    fn path_selects_current(&self, selector: &str) -> bool {
+        let (Some(path), Some(root)) = (registry::selector_path(selector), &self.current.root)
+        else {
+            return false;
+        };
+        let canon = path.canonicalize().unwrap_or(path);
+        canon.starts_with(root.canonicalize().as_ref().unwrap_or(root))
+    }
+
     /// Resolve a selector to an engine: `None`-equivalent handled by callers
     /// (they pass the current engine directly), `home` opens the home graph,
     /// a name/id opens that registered project. `all` never resolves — it is
@@ -301,6 +311,12 @@ impl Hub {
         }
         let reg = registry::load();
         let Some(entry) = reg.resolve(selector).cloned() else {
+            // An unregistered path still names the launch project when it
+            // points inside it — the registry is consulted first so a nested
+            // project keeps winning its own directory.
+            if self.path_selects_current(selector) {
+                return Ok(self.current.engine.clone());
+            }
             let mut known: Vec<String> = reg.projects.iter().map(|p| p.name.clone()).collect();
             known.push(self.current.name.clone());
             known.push(HOME_PROJECT.into());
@@ -325,6 +341,10 @@ impl Hub {
         registry::load()
             .resolve(selector)
             .map(|e| e.id.clone())
+            .or_else(|| {
+                self.path_selects_current(selector)
+                    .then(|| self.current.id.clone())
+            })
             .ok_or_else(|| Error::Project(format!("unknown project '{selector}'")))
     }
 
@@ -339,6 +359,13 @@ impl Hub {
     }
 
     fn open_entry(&self, entry: &ProjectEntry) -> Result<Arc<Mutex<Engine>>> {
+        // The launch project is already open as `current`: name and id short-
+        // circuit before this, but a path selector arrives through the
+        // registry, and opening that entry would be a second handle on the
+        // same store — fatal under TepinDB's single-owner lock.
+        if self.entry_is_current(entry) {
+            return Ok(self.current.engine.clone());
+        }
         if let Some(h) = self.open.lock().unwrap().get(&entry.id) {
             return Ok(h.engine.clone());
         }
@@ -389,6 +416,26 @@ impl Hub {
 
     /// Every project this hub can reach: current, home, then the registry.
     pub fn projects(&self) -> Vec<ProjectInfo> {
+        self.projects_for(None)
+    }
+
+    /// The roster as a SESSION sees it: `bound` names the project this caller
+    /// is bound to (an MCP session on `/projects/{id}/mcp`), `None` = the
+    /// process's launch project. Only the `current` flag moves — a bound
+    /// session must never be told it is somewhere else, which since the
+    /// home-rooted core role is what every bound session was told.
+    pub fn projects_for(&self, bound: Option<&str>) -> Vec<ProjectInfo> {
+        let current_id = bound
+            .and_then(|sel| self.resolve_id(sel).ok())
+            .unwrap_or_else(|| self.current.id.clone());
+        let mut out = self.projects_inner();
+        for row in &mut out {
+            row.current = row.id == current_id;
+        }
+        out
+    }
+
+    fn projects_inner(&self) -> Vec<ProjectInfo> {
         let open = self.open.lock().unwrap();
         // A core launched outside any project has home AS its current
         // project (v0.6.2 serve-anywhere) — one row, both hats.
@@ -549,21 +596,35 @@ impl Hub {
     /// exceeds what the caller asked for; with no siblings and no home graph
     /// they cost nothing.
     pub fn brief(&self, max_chars: usize) -> Result<String> {
-        let reserve = self
-            .current
-            .engine
-            .lock()
-            .unwrap()
-            .config()
-            .brief
-            .home_reserve;
-        let home = self.home_brief_section(reserve);
-        let roster = self.projects_brief_section();
+        self.brief_for(None, max_chars)
+    }
+
+    /// The brief a SESSION sees: `bound` names the project this caller is
+    /// bound to (an MCP session on `/projects/{id}/mcp`), `None` = the
+    /// process's launch project. The digest, its budget, the home section and
+    /// the roster are all computed against THAT project — reading
+    /// `self.current` instead used to be invisibly right (the daemon launched
+    /// in the repo it served) and became always-wrong when the machine core
+    /// became a dedicated home-rooted process.
+    pub fn brief_for(&self, bound: Option<&str>, max_chars: usize) -> Result<String> {
+        let engine = match bound {
+            Some(sel) => self.get(sel)?,
+            None => self.current.engine.clone(),
+        };
+        let id = match bound {
+            Some(sel) => self.resolve_id(sel)?,
+            None => self.current.id.clone(),
+        };
+        let reserve = engine.lock().unwrap().config().brief.home_reserve;
+        // Briefing the home graph itself: the ride-along section would be the
+        // same canon twice.
+        let home = (id != HOME_PROJECT)
+            .then(|| self.home_brief_section(reserve))
+            .flatten();
+        let roster = self.projects_brief_section(&id);
         let reserve = home.as_deref().map(str::len).unwrap_or(0)
             + roster.as_deref().map(str::len).unwrap_or(0);
-        let mut out = self
-            .current
-            .engine
+        let mut out = engine
             .lock()
             .unwrap()
             .brief(max_chars.saturating_sub(reserve))?;
@@ -580,16 +641,19 @@ impl Hub {
     /// this session can reach and how. Emitted only when cross-project access
     /// actually works here (a factory is present) and something is reachable —
     /// advertising graphs a single-project instance can't open would mislead.
-    fn projects_brief_section(&self) -> Option<String> {
+    fn projects_brief_section(&self, bound_id: &str) -> Option<String> {
         self.factory.as_ref()?;
+        // "Other" is relative to the BRIEFED project, not the launch one: a
+        // session bound to X must not be offered X as somewhere else to look.
+        let bound_is_launch = bound_id == self.current.id;
         let mut names: Vec<String> = registry::load()
             .projects
             .iter()
-            .filter(|p| !self.entry_is_current(p))
+            .filter(|p| p.id != bound_id && !(bound_is_launch && self.entry_is_current(p)))
             .map(|p| p.name.clone())
             .collect();
         names.sort();
-        if registry::home_db_path().is_some_and(|p| p.is_file()) {
+        if bound_id != HOME_PROJECT && registry::home_db_path().is_some_and(|p| p.is_file()) {
             names.push(HOME_PROJECT.into());
         }
         if names.is_empty() {

@@ -2954,6 +2954,34 @@ fn hub_federation_end_to_end() {
         ))
         .unwrap();
 
+    // 0.8.8: a project's DIRECTORY is a selector too — a session-brief hook
+    // or an MCP bridge holds a folder, not a name.
+    let beta_by_dir = hub.get(&beta_root.display().to_string()).unwrap();
+    assert!(
+        std::sync::Arc::ptr_eq(&beta_by_dir, &beta_engine),
+        "a directory reaches the engine already open for that project"
+    );
+    assert_eq!(
+        hub.resolve_id(&beta_root.display().to_string()).unwrap(),
+        entry.id
+    );
+    // Any path inside the repo counts, and the launch project answers with
+    // the engine it already holds — reopening its store from the registry
+    // would be a second handle on the same file.
+    let alpha_by_dir = hub
+        .get(&alpha_root.join(".engram").display().to_string())
+        .unwrap();
+    assert!(
+        std::sync::Arc::ptr_eq(&alpha_by_dir, &hub.current_engine()),
+        "a path inside the launch project is the launch project"
+    );
+    // Only absolute paths are paths; anything unresolvable is still an error.
+    assert!(hub.get("beta/.engram").is_err());
+    assert!(
+        hub.get(&tmp.join("not-a-project").display().to_string())
+            .is_err()
+    );
+
     // Cross-project read: the foreign hit carries provenance.
     let (hits, skipped) = hub.search_all("beta redb storage engine", &[], 8).unwrap();
     assert!(skipped.is_empty(), "{skipped:?}");

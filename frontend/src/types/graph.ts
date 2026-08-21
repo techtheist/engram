@@ -139,6 +139,46 @@ export interface DriftEntry {
  * Daemon-side diagnostics (GET /system): the doctor's facts as structured
  * JSON — binary version, store health, model cache, per-assistant wiring.
  */
+/** The core daemon's own entry in the process census (0.8.8+). */
+export interface ProcessCore {
+    pid: number
+    version: string
+    /** Unix seconds the core started — uptime is now minus this. */
+    started_at: number
+    /** The machine home (`~/.engram`) this core serves. */
+    home: string
+}
+
+/** One registered light client (an MCP bridge holding a lease on the core). */
+export interface ProcessClient {
+    lease_id: string
+    pid: number
+    /** What kind of light process this is, e.g. 'mcp-bridge'. */
+    kind: string
+    /** The MCP client behind the bridge (clientInfo.name from its stdio
+     *  initialize, e.g. 'claude-code', 'mcp-go'). Absent from older bridges
+     *  — the row renders without it. */
+    client?: string
+    /** The project id the lease is bound to. */
+    project: string
+    /** Absolute project root — the folder is the client's primary identity. */
+    root: string
+    connected_at: number
+    last_seen: number
+}
+
+/** The machine-level settings (`GET/POST /settings`, core daemons only).
+ *  A 404 means an older or non-core daemon — the pane hides the control. */
+export interface AgentSettings {
+    /** Registered project id an otherwise-unbindable agent session binds;
+     *  null = the home graph (the default behavior). */
+    default_agent_project: string | null
+    /** The project's current name/root, resolved daemon-side (null when the
+     *  setting is unset or the project left the registry). */
+    default_agent_project_name?: string | null
+    default_agent_project_root?: string | null
+}
+
 export interface SystemInfo {
     version: string
     daemon: {
@@ -170,6 +210,21 @@ export interface SystemInfo {
     /** Whether this daemon exposes /models (model selection, PLAN §7A). */
     model_selection: boolean
     wiring: { agent: string; wired: boolean; prerename: boolean }[]
+    /**
+     * The process census (0.8.8 process-model refactor): the core plus every
+     * connected light client. Absent on older daemons — the pane hides the
+     * Processes section rather than breaking against a 0.8.7 core.
+     */
+    processes?: {
+        core: ProcessCore
+        clients: ProcessClient[]
+    }
+    /** Whether the cortex models are resident ('loaded') or idle-unloaded
+     *  ('unloaded_idle'), and since when. Absent on older daemons. */
+    models_state?: {
+        state: string
+        since: number
+    }
 }
 
 /** One provisionable cortex model (PLAN §7A model selection). */

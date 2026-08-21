@@ -10,16 +10,17 @@ nothing needs syncing, and one insight lives in exactly one graph.
 `engram-alpha serve` is safe to run from anywhere, as many times as you
 like:
 
-- If a core is already running, `serve` registers your current repository
-  with it, prints the pane URL, and exits. Ten concurrent `serve` runs
-  converge on exactly one core process on one port — never a second pane.
-- From a repository with a graph, `serve` becomes the core with that project
-  current.
+- `serve` is a launcher, not a server: it makes sure the machine core is
+  running (starting it detached when the machine has none), registers your
+  current repository with it, prints the pane URL, and exits — the core
+  keeps serving. Ten concurrent `serve` runs converge on exactly one core
+  process on one port — never a second pane.
 - From a git repository *without* a graph, it asks before creating one —
   nothing is initialized silently. (You can also add any folder later from
   the pane's project picker.)
-- From your home directory or any non-git folder, it runs the core over the
-  **home graph** — useful when you just want the pane.
+- From your home directory or any non-git folder, it just ensures the core —
+  which always holds the **home graph** — useful when you only want the
+  pane.
 
 The pane's top-bar switcher moves between projects; every project's live
 updates stream to the same UI.
@@ -55,8 +56,11 @@ and writes go to that project's graph by default. Most MCP tools also take
 an optional `project`:
 
 - omit it → the current repository
-- a project name → that project's graph, reads **and** writes — an insight
-  about a sibling project belongs in *that* project's memory
+- a project name (or its id, or its **folder** — any path inside the repo)
+  → that project's graph, reads **and** writes — an insight about a sibling
+  project belongs in *that* project's memory. A folder is what scripts and
+  hooks usually have: `GET /brief?project=/path/to/repo` is how the
+  session-start hook asks the core for the right brief
 - `home` → the shared home graph
 - `all` → read across everything (search and claim checks only). Foreign
   hits carry provenance and rank under a locality prior, so the local canon
@@ -70,4 +74,6 @@ through lightweight bridges that die with the core (no orphan processes),
 and the session brief and `doctor` read through it the same way. This
 matters most on the [TepinDB backend](./storage.md), whose single-file
 stores allow exactly one owning process — the core *is* that process, for
-all of them.
+all of them. The full picture — process roles, discovery, leases, idle
+unload, and the shutdown sequence — is on
+[Runtime architecture](./runtime.md); `engram-alpha status` shows it live.

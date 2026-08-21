@@ -22,10 +22,12 @@ import ProjectSwitcher from '@/components/panels/ProjectSwitcher.vue'
 import ReviewPanel from '@/components/panels/ReviewPanel.vue'
 import SettingsMenu from '@/components/panels/SettingsMenu.vue'
 import SystemInfoPanel from '@/components/panels/SystemInfoPanel.vue'
+import { isDemo } from '@/services/api'
 import { hostChrome } from '@/services/hostChrome'
 import { useConfigStore } from '@/stores/config'
 import { useGraphStore } from '@/stores/graph'
 import { useLayoutStore, type ViewMode } from '@/stores/layout'
+import { useProjectsStore } from '@/stores/projects'
 import { useThemeStore } from '@/stores/theme'
 import { useGraphSync } from '@/composables/useGraphSync'
 
@@ -33,6 +35,7 @@ useThemeStore() // applies the persisted theme on mount via its watcher
 const store = useGraphStore()
 const config = useConfigStore()
 const layout = useLayoutStore()
+const projects = useProjectsStore()
 const { loading, error, connected, nodeList } = storeToRefs(store)
 
 const VIEW_OPTIONS = [
@@ -68,6 +71,9 @@ function startCreate(): void {
 }
 
 onMounted(async () => {
+    // Which graph first: the `?project=` deep link / remembered selection
+    // must scope the API before anything project-scoped loads.
+    await projects.restore().catch(() => undefined)
     // Config first-ish: colors/labels derive from it; both load in parallel
     // and the ontology CSS lands as soon as it arrives.
     await Promise.all([config.load().catch(() => undefined), store.load()])
@@ -92,8 +98,8 @@ onBeforeUnmount(() => store.disconnect())
                 <EngramMark class="brand-mark" />
             </span>
             <ProjectSwitcher />
-            <span class="conn" :class="{ live: connected }" :title="connected ? 'Live' : 'Disconnected'">
-                {{ connected ? 'live' : 'offline' }}
+            <span class="conn" :class="{ live: connected }" :title="connected ? (isDemo ? 'Demo' : 'Live') : 'Disconnected'">
+                {{ connected ? (isDemo ? 'demo' : '●') : 'offline' }}
             </span>
         </div>
         <div class="topbar-search">
@@ -312,7 +318,7 @@ onBeforeUnmount(() => store.disconnect())
 
 /* Too narrow for a useful search pill (IDE side panels) — the grid's middle
    track goes with it, so the bar falls back to flex. */
-@media (width <= 530px) {
+@media (width <= 600px) {
     .topbar {
         display: flex;
         justify-content: space-between;

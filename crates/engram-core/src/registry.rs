@@ -46,6 +46,12 @@ impl Registry {
         self.projects
             .iter()
             .find(|p| p.id == selector || p.name == selector)
+            // A directory is a selector too: callers that hold a path and not
+            // a name — a hook with $CLAUDE_PROJECT_DIR, a bridge with its cwd
+            // — ask with it directly instead of mapping it themselves. Any
+            // path INSIDE the repo resolves, and the longest root wins, so a
+            // project nested in another still picks itself.
+            .or_else(|| selector_path(selector).and_then(|p| self.resolve_root(&p)))
     }
 
     /// Find the project whose root contains `path` — longest root wins, so a
@@ -59,6 +65,14 @@ impl Registry {
             .filter(|p| canon.starts_with(Path::new(&p.root)))
             .max_by_key(|p| p.root.len())
     }
+}
+
+/// A selector that names a place on disk rather than a project. Absolute
+/// paths only: a project name or id can then never be mistaken for one, and
+/// a relative path would resolve against whichever process is asking.
+pub fn selector_path(selector: &str) -> Option<PathBuf> {
+    let path = Path::new(selector);
+    path.is_absolute().then(|| path.to_path_buf())
 }
 
 /// The engram home dir (`ENGRAM_HOME` override for tests, else `~/.engram`).
@@ -76,9 +90,13 @@ pub fn registry_path() -> Option<PathBuf> {
     engram_home().map(|d| d.join("registry.json"))
 }
 
-/// Where the user-level home graph lives (PLAN §7C).
+/// Where the user-level home graph lives (PLAN §7C). Returns the RESOLVED
+/// store — `home.tepin` once the silent auto-migration has run (`home.db`
+/// stays behind as the backup), the same resolution every open applies.
+/// Displaying the unresolved name here was field-reported as "why is the
+/// home graph still SQLite?" when it had been on tepin all along.
 pub fn home_db_path() -> Option<PathBuf> {
-    engram_home().map(|d| d.join("home.db"))
+    engram_home().map(|d| crate::resolve_db_path(&d.join("home.db")))
 }
 
 /// Load the registry; a missing or unreadable file is an empty registry, not

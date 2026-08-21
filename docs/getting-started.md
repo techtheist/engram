@@ -73,11 +73,52 @@ engram-alpha setup --cli kilo --skill aggressive
 | `opencode` | `opencode.json` | `AGENTS.md` |
 | `kilo` | `kilo.json` | `AGENTS.md` |
 | `antigravity` | `.agents/mcp_config.json` | `AGENTS.md` |
+| `windsurf` | `${XDG_CONFIG_HOME:-~/.config}/devin/mcp_config.json` **and** `~/.devin/mcp_config.json` (global — Windsurf/Cascade reads one machine-wide config, but which file depends on the plugin generation, so setup writes the same db-less entry into both; the server follows your open workspace via MCP roots) | `AGENTS.md` |
 
-Every wired assistant reads and writes the same graph through the same MCP
-server — one shared, local memory across your AI agents: a decision captured
+Windsurf support is freshly added and still being field-tested — reports
+welcome. One Windsurf-specific note: its JetBrains plugin spawns the MCP
+server from `/` and its client never answers the roots request, so those
+sessions carry no folder signal at all. They land on the **default agent
+project** — set it in the pane under **Settings → System info → Default
+agent project** so Cascade's memory goes to the project you're actually
+working on; unset, such sessions bind the shared home graph. Every wired assistant reads and writes the same graph through the
+same MCP server — one shared, local memory across your AI agents: a decision captured
 by Claude is recalled by Codex. The `AGENTS.md`/`GEMINI.md` additions are a
 marked, idempotent section; re-running the installer never duplicates them.
+
+## Support matrix
+
+What each harness actually gets. **Memory tools** is the MCP surface
+(`brief`, `search`, capture — the same graph everywhere). **Injected brief**
+means the session starts pre-briefed without the agent asking: a
+SessionStart hook injects it (✓ auto = setup registers it; manual = the
+harness supports it and [`hooks/session-brief.sh`](../hooks/session-brief.sh)
+is portable, but you register it yourself). Harnesses without hooks still get
+briefed — their `AGENTS.md` instructions teach the agent to call `brief`
+first. **File-read recall** is the hook that surfaces matching memories when
+the agent reads a file. **History recording** is the opt-in sealed session
+transcript layer ([storage](./storage.md)) — ✓ means a harvest adapter reads
+that harness's transcripts.
+
+| Harness | Memory tools (MCP) | Injected brief | File-read recall | History recording |
+|---|---|---|---|---|
+| Claude Code | ✓ | ✓ auto (hook + plugin) | ✓ auto | ✓ |
+| Codex CLI / app | ✓ | manual | — | ✓ |
+| Gemini CLI | ✓ | manual | — | ✓ |
+| OpenCode | ✓ | — | — | ✓ |
+| Kilo Code | ✓ | — | — | ✓ * |
+| Antigravity | ✓ | — | — | ✓ |
+| Bob (IDE + Shell) | ✓ | — | — | ✓ |
+| Windsurf / Cascade | ✓ ** | — | — | — *** |
+
+\* Kilo's adapter is verified against fixture transcripts, not yet against a
+live install — reports welcome.
+\** Windsurf sessions carry no folder signal (see the note above) — set the
+default agent project so they bind the right graph.
+\*** Cascade stores its transcripts encrypted at rest with a key in the OS
+keychain; there is nothing a local harvester can responsibly read. Knowledge
+Cascade captures through the MCP tools is remembered like everyone else's —
+only the raw dialogue layer is out of reach.
 
 ## Windows
 
@@ -150,7 +191,9 @@ engram-alpha doctor
 ```
 
 checks the whole chain from your repository's root — store integrity, the
-local models, whether the running daemon actually serves *this* repo, and
-every detected assistant's wiring — and says exactly what to fix. It exits
-non-zero on real failures, so it doubles as a pre-flight in scripts. More in
-[Troubleshooting](./troubleshooting.md).
+local models, the machine core's health, and every detected assistant's
+wiring — and says exactly what to fix. It exits non-zero on real failures,
+so it doubles as a pre-flight in scripts. `engram-alpha status` shows what
+is running right now — core, models, projects, connected clients. More in
+[Troubleshooting](./troubleshooting.md); how the processes fit together is
+on [Runtime architecture](./runtime.md).

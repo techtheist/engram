@@ -145,3 +145,7 @@ store backend and integrity, the loaded
 [local models](./models.md) with their on-disk paths and the
 **Choose models** selector, the machine
 [project registry](./multi-project.md), and per-assistant wiring status.
+Since 0.8.8 it also lists the [processes](./runtime.md): the machine core
+(pid, version, uptime) and every connected MCP client with its project
+folder and connection age, from the same live census `engram-alpha status`
+reads — plus whether the models are loaded or idle-unloaded.

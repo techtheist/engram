@@ -19,9 +19,12 @@ import java.awt.CardLayout
 import java.awt.Component
 import java.awt.datatransfer.StringSelection
 import java.net.URI
+import java.net.URLEncoder
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.nio.charset.StandardCharsets
+import java.nio.file.Path
 import java.time.Duration
 import javax.swing.BoxLayout
 import javax.swing.JButton
@@ -122,7 +125,7 @@ internal class EngramPanel(
             if (disposed) return@invokeLater
             if (healthy) {
                 if (loadedUrl != paneUrl) {
-                    browser?.loadURL(paneUrl)
+                    browser?.loadURL(deepLinkUrl(paneUrl))
                     loadedUrl = paneUrl
                 }
                 cards.show(this, CARD_PANE)
@@ -132,6 +135,21 @@ internal class EngramPanel(
                 scheduleHealthCheck(immediate = false) // keep watching; auto-connect on return
             }
         }
+    }
+
+    /**
+     * The pane URL with this IDE project as a `?project=` deep link, so the
+     * pane opens on the matching graph. The daemon's registry names projects
+     * after the repo folder, so the basePath folder name is the natural key
+     * (IDE display names can diverge from it); the pane falls back to its
+     * default graph silently on an unknown value.
+     */
+    private fun deepLinkUrl(base: String): String {
+        val folder = project?.basePath?.let { Path.of(it).fileName?.toString() }
+            ?.takeIf { it.isNotEmpty() }
+            ?: project?.name
+            ?: return base
+        return "$base/?project=" + URLEncoder.encode(folder, StandardCharsets.UTF_8)
     }
 
     private fun retryNow() {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, useTemplateRef } from 'vue'
+import { computed, ref, useTemplateRef } from 'vue'
 import { onClickOutside } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import { api } from '@/services/api'
@@ -26,7 +26,8 @@ onClickOutside(root, () => {
 const busy = ref(false)
 const note = ref('')
 
-onMounted(() => store.loadProjects())
+// The project list is loaded by the boot-time restore (stores/projects.ts,
+// called from App.vue) before the first graph load — nothing to fetch here.
 
 const label = computed(() => {
     const a = active.value

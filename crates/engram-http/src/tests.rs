@@ -53,6 +53,26 @@ async fn health_ok() {
     assert_eq!(status, StatusCode::OK);
 }
 
+/// `/settings` is a machine-core surface, like the census: a daemon without
+/// a `CoreRuntime` answers 404 on both verbs — which is exactly what tells
+/// an older pane to hide the "Default agent project" control. The write path
+/// (validation, persistence, the bridge rung) is covered end-to-end in
+/// crates/engram-cli/tests/roots_binding.rs against a sandboxed core.
+#[tokio::test]
+async fn settings_hidden_without_core_runtime() {
+    let app = test_app();
+    let (status, _) = req(&app, "GET", "/settings", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = req(
+        &app,
+        "POST",
+        "/settings",
+        Some(json!({ "default_agent_project": "anything" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
 #[tokio::test]
 async fn drift_lists_nodes_with_missing_code_refs() {
     let app = test_app();
@@ -449,6 +469,51 @@ async fn brief_returns_markdown_digest() {
     assert!(text.starts_with("# Engram brief"));
     assert!(text.contains("Backend in Rust"));
     assert!(text.len() <= 2000);
+}
+
+/// `GET /brief?project=` is "brief me as a session bound there" — the shape
+/// the SessionStart hook uses, since a hook holds a folder and the machine
+/// core's own launch graph is nobody's project.
+#[tokio::test]
+async fn brief_takes_a_project_selector_and_refuses_an_unknown_one() {
+    let app = test_app();
+    req(
+        &app,
+        "POST",
+        "/nodes",
+        Some(decision("Backend in Rust", "rmcp")),
+    )
+    .await;
+
+    let get = async |uri: &str| {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    };
+
+    // A single-project app knows exactly one selector — its own identity.
+    // Names, ids and directories all land in the same resolver (covered on
+    // the hub in engram-core); what matters here is that the parameter is
+    // plumbed and that an unresolvable one fails loudly.
+    let resp = get("/brief?project=current&max_chars=2000").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(text.contains("Backend in Rust"), "{text}");
+
+    // A selector that names nothing is refused, and that refusal is load-
+    // bearing: it is how the hook tells a daemon that understands the
+    // parameter from an older one that ignores it and answers 200 with its
+    // own graph.
+    let resp = get("/brief?project=/no/such/project").await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

@@ -12,7 +12,7 @@ use anyhow::Context;
 // Machine/harness probes live in engram-core (shared with the daemon's
 // /system endpoint); re-exported so main.rs/doctor keep their `setup::` paths.
 pub use engram_core::harness::{
-    AGENTS, detect_agents, home_file, is_prerename_bin, is_wired, on_path,
+    AGENTS, detect_agents, home_file, is_prerename_bin, is_wired, on_path, windsurf_xdg_config,
 };
 
 const MARK_BEGIN: &str = "<!-- engram:begin -->";
@@ -102,6 +102,7 @@ impl Setup {
                 "kilo" => self.wire_mcp_array("kilo.json", "kilo")?,
                 "antigravity" => self.wire_antigravity()?,
                 "bob" => self.wire_bob()?,
+                "windsurf" => self.wire_windsurf()?,
                 other => anyhow::bail!("unknown agent: {other}"),
             }
         }
@@ -216,16 +217,30 @@ impl Setup {
         repaired.then(|| out.join("\n") + "\n")
     }
 
-    fn mcp_snippet(&self) -> String {
+    /// The launch arguments an adapter writes. db-less (`["mcp"]`) is the
+    /// 0.8.8 default wherever the client launches the server with the
+    /// project as its cwd — the bridge binds by MCP roots, then cwd, so the
+    /// entry is portable and one shape serves every repo. Adapters whose
+    /// launch cwd is unverified (IDEs mostly) keep the explicit --db.
+    fn mcp_args_json(&self, with_db: bool) -> String {
+        if with_db {
+            format!("[\"mcp\", \"--db\", \"{}\"]", self.db)
+        } else {
+            "[\"mcp\"]".to_string()
+        }
+    }
+
+    fn mcp_snippet(&self, with_db: bool) -> String {
         format!(
-            "\"engram\": {{ \"command\": \"{}\", \"args\": [\"mcp\", \"--db\", \"{}\"] }}",
-            self.bin, self.db
+            "\"engram\": {{ \"command\": \"{}\", \"args\": {} }}",
+            self.bin,
+            self.mcp_args_json(with_db)
         )
     }
 
     /// Write an `mcpServers`-shaped config, or print the snippet when a
     /// foreign config already exists (never rewrite user JSON blindly).
-    fn write_mcp_servers(&self, rel: &str, label: &str) -> anyhow::Result<()> {
+    fn write_mcp_servers(&self, rel: &str, label: &str, with_db: bool) -> anyhow::Result<()> {
         let path = self.repo.join(rel);
         if path.exists() {
             let current = fs::read_to_string(&path)?;
@@ -242,7 +257,7 @@ impl Setup {
                 say(&format!(
                     "{label}: {rel} exists — add this to its mcpServers manually:"
                 ));
-                println!("    {}", self.mcp_snippet());
+                println!("    {}", self.mcp_snippet(with_db));
             }
             return Ok(());
         }
@@ -252,16 +267,20 @@ impl Setup {
         fs::write(
             &path,
             format!(
-                "{{\n  \"mcpServers\": {{\n    \"engram\": {{\n      \"command\": \"{}\",\n      \"args\": [\"mcp\", \"--db\", \"{}\"]\n    }}\n  }}\n}}\n",
-                self.bin, self.db
+                "{{\n  \"mcpServers\": {{\n    \"engram\": {{\n      \"command\": \"{}\",\n      \"args\": {}\n    }}\n  }}\n}}\n",
+                self.bin,
+                self.mcp_args_json(with_db)
             ),
         )?;
         say(&format!("{label}: wrote {rel}"));
         Ok(())
     }
 
+    /// Claude Code launches .mcp.json servers with the project as cwd (and
+    /// answers MCP roots), so the entry is db-less — portable across
+    /// checkouts, and the bridge binds the right graph either way.
     fn wire_claude(&self) -> anyhow::Result<()> {
-        self.write_mcp_servers(".mcp.json", "claude")?;
+        self.write_mcp_servers(".mcp.json", "claude", false)?;
         if self.mcp_only {
             return Ok(());
         }
@@ -392,14 +411,118 @@ impl Setup {
         self.write_instructions("AGENTS.md")
     }
 
+    /// Gemini keeps --db: the CLI is often launched from a subdirectory (its
+    /// project config resolves upward), which would make a cwd-bound bridge
+    /// bind the subdirectory as a project.
     fn wire_gemini(&self) -> anyhow::Result<()> {
-        self.write_mcp_servers(".gemini/settings.json", "gemini")?;
+        self.write_mcp_servers(".gemini/settings.json", "gemini", true)?;
         self.write_instructions("GEMINI.md")
     }
 
+    /// Antigravity keeps --db: an IDE's MCP launch cwd is not verified to be
+    /// the project root.
     fn wire_antigravity(&self) -> anyhow::Result<()> {
-        self.write_mcp_servers(".agents/mcp_config.json", "antigravity")?;
+        self.write_mcp_servers(".agents/mcp_config.json", "antigravity", true)?;
         self.write_instructions("AGENTS.md")
+    }
+
+    /// Windsurf's Cascade agent reads ONE global MCP config with no
+    /// per-project entries, which is exactly why the db-less bridge exists
+    /// (issue #4): one global entry, and the bridge follows the editor's
+    /// workspace via MCP roots (cwd as the fallback). But WHICH global file
+    /// depends on the plugin generation: the JetBrains plugin (mcp-go) reads
+    /// `${XDG_CONFIG_HOME:-~/.config}/devin/mcp_config.json` — its own
+    /// "edit config" opens that file — while the older generation reads
+    /// `~/.devin/mcp_config.json`. Write BOTH with the same merge semantics
+    /// (the 0.8.6 dual-artifact lesson in config form) so whichever
+    /// generation is installed finds the entry.
+    fn wire_windsurf(&self) -> anyhow::Result<()> {
+        let xdg_shown = if std::env::var("XDG_CONFIG_HOME").is_ok_and(|v| !v.is_empty()) {
+            "$XDG_CONFIG_HOME/devin/mcp_config.json"
+        } else {
+            "~/.config/devin/mcp_config.json"
+        };
+        if let Some(path) = windsurf_xdg_config() {
+            self.wire_windsurf_file(&path, xdg_shown)?;
+        }
+        let legacy = home_file(".devin/mcp_config.json").context("no home directory")?;
+        self.wire_windsurf_file(&legacy, "~/.devin/mcp_config.json")?;
+        say("windsurf: reload Windsurf so Cascade picks up the server");
+        // Cascade reads AGENTS.md, so the capture discipline travels the
+        // same shared file the other harnesses use.
+        self.write_instructions("AGENTS.md")
+    }
+
+    /// One Windsurf global config file: merge the db-less engram entry in.
+    /// Merging into an existing parseable config is the useful gesture (a
+    /// global file usually already lists other servers — same treatment
+    /// codex's global TOML gets); other keys survive the serde round-trip
+    /// untouched. Unparseable JSON is never rewritten — the snippet is
+    /// printed instead.
+    fn wire_windsurf_file(&self, path: &Path, shown: &str) -> anyhow::Result<()> {
+        let entry = serde_json::json!({ "command": self.bin, "args": ["mcp"] });
+        match fs::read_to_string(path) {
+            Ok(current) => match serde_json::from_str::<serde_json::Value>(&current) {
+                Ok(mut v) if v.is_object() => {
+                    if let Some(engram) = v.pointer_mut("/mcpServers/engram") {
+                        let cmd = engram.get("command").and_then(|c| c.as_str());
+                        if cmd.is_some_and(is_prerename_bin) {
+                            // The global repair is db-less on purpose — a
+                            // --db here would pin every project to one repo.
+                            engram["command"] = serde_json::json!(self.bin);
+                            engram["args"] = serde_json::json!(["mcp"]);
+                            fs::write(path, serde_json::to_string_pretty(&v)? + "\n")?;
+                            say(&format!(
+                                "windsurf: re-pointed {shown}'s engram entry at this binary (was the pre-rename `engram`)"
+                            ));
+                        } else {
+                            say(&format!(
+                                "windsurf: {shown} already has engram — leaving it"
+                            ));
+                        }
+                    } else {
+                        v.as_object_mut()
+                            .expect("checked is_object")
+                            .entry("mcpServers")
+                            .or_insert_with(|| serde_json::json!({}));
+                        match v["mcpServers"].as_object_mut() {
+                            Some(servers) => {
+                                servers.insert("engram".into(), entry);
+                                fs::write(path, serde_json::to_string_pretty(&v)? + "\n")?;
+                                say(&format!("windsurf: added engram to {shown}"));
+                            }
+                            None => {
+                                say(&format!(
+                                    "windsurf: {shown} has a non-object mcpServers — add this to it manually:"
+                                ));
+                                println!("    {}", self.mcp_snippet(false));
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    say(&format!(
+                        "windsurf: {shown} isn't valid JSON — add this to its mcpServers manually:"
+                    ));
+                    println!("    {}", self.mcp_snippet(false));
+                }
+            },
+            Err(_) => {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(
+                    path,
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "mcpServers": { "engram": entry }
+                    }))? + "\n",
+                )?;
+                say(&format!(
+                    "windsurf: wrote {shown} (global — one db-less entry serves every project via MCP roots)"
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// IBM Bob IDE and BobShell share the `~/.bob/` home directory.
@@ -413,7 +536,9 @@ impl Setup {
     /// Bob has no agent-harness hooks, so the AGENTS.md instruction block
     /// (which Bob's /init flow reads) carries the recall discipline.
     fn wire_bob(&self) -> anyhow::Result<()> {
-        self.write_mcp_servers(".bob/mcp.json", "bob")?;
+        // Bob keeps --db: the IDE's MCP launch cwd is not verified to be the
+        // project root (and BobShell is unverified live altogether).
+        self.write_mcp_servers(".bob/mcp.json", "bob", true)?;
         self.write_instructions("AGENTS.md")
     }
 

@@ -66,10 +66,10 @@ For whole-graph work, use the bulk tools: `list_nodes` pages complete nodes \
 (full bodies — the lossless read behind \"export every Decision to a \
 decisions.md\"), `update_nodes` applies many patches in one call (curation \
 sweeps), `add_notes` batch-creates with the same dupe checks as add_note. \
-Most tools take an optional `project`: omit it for this project; a name/id \
-(see `list_projects`) reads or writes THAT project's graph — capturing an \
-insight about a sibling project into its own graph is deliberate and \
-encouraged; `home` is the user-level graph for knowledge that transcends \
+Most tools take an optional `project`: omit it for this project; a name, an \
+id, or a project's directory (see `list_projects`) reads or writes THAT \
+project's graph — capturing an insight about a sibling project into its own \
+graph is deliberate and encouraged; `home` is the user-level graph for knowledge that transcends \
 projects (global principles, preferences — write there on \"remember this \
 globally\"); `search`/`check_claim` accept `project: \"all\"` to read across \
 every graph (foreign hits carry provenance and a locality prior). Writes to \
@@ -166,9 +166,16 @@ pub struct Engram {
     /// The multi-project hub (PLAN §7C). Single-project constructions get a
     /// factory-less hub, so cross-project selectors fail with a clear message.
     hub: Arc<Hub>,
-    /// The launch project's engine (== `hub.current()`), cached for the
-    /// unscoped fast path.
+    /// This session's project engine — `hub.current()` for a launch-bound
+    /// session, the bound project's for one minted by [`Engram::for_project`]
+    /// — cached for the unscoped fast path.
     engine: Arc<Mutex<Engine>>,
+    /// The selector this session is bound to, when it is bound to one project
+    /// of a multi-project hub (`/projects/{id}/mcp`). `None` = the launch
+    /// project. Every hub-level call that reports or renders "the current
+    /// project" must pass this — the engine alone can't tell the hub which
+    /// project it is looking at.
+    bound: Option<Arc<str>>,
     /// Fallback session id when the client omits one: minted once per server
     /// process, which over stdio is one Claude session. Superseded by the
     /// transport session id after the streamable-HTTP migration (PLAN §0).
@@ -197,6 +204,7 @@ impl Engram {
         Self {
             _trace: SessionTrace::start(&engine, &session_id, None),
             engine,
+            bound: None,
             conflicts: Arc::new(Mutex::new(hub.subscribe_conflicts())),
             hub,
             session_id,
@@ -212,6 +220,7 @@ impl Engram {
         Ok(Self {
             _trace: SessionTrace::start(&engine, &session_id, Some(format!("project {selector}"))),
             engine,
+            bound: Some(selector.into()),
             conflicts: Arc::new(Mutex::new(hub.subscribe_conflicts())),
             hub,
             session_id,
@@ -809,10 +818,15 @@ impl Engram {
             .lock()
             .unwrap()
             .brief_chars(a.max_chars);
-        // Unscoped = the current project plus the home-graph section; a
-        // scoped project (or `home`) briefs that graph alone.
+        // Unscoped = THIS SESSION's project plus the home-graph section; a
+        // scoped project (or `home`) briefs that graph alone. The session's
+        // binding is the whole point: the hub's own current project is the
+        // core's launch graph (home), which is nobody's answer.
         let text = match &a.project {
-            None => self.hub.brief(max_chars).map_err(map_err)?,
+            None => self
+                .hub
+                .brief_for(self.bound.as_deref(), max_chars)
+                .map_err(map_err)?,
             Some(_) => {
                 let engine = self.engine_for(&a.project)?;
                 self.mcp(&engine).brief(max_chars).map_err(map_err)?
@@ -1323,7 +1337,10 @@ impl Engram {
         the shared user-level graph, 'all' = fan a search/check_claim out \
         across everything (reads only).")]
     async fn list_projects(&self) -> Result<CallToolResult, ErrorData> {
-        self.reply(&json!({ "projects": self.hub.projects() }))
+        // `current` is THIS SESSION's project, not the core's launch graph —
+        // a bound session told it is in `home` reads as the wrong graph
+        // being open and sends the assistant looking for its memory elsewhere.
+        self.reply(&json!({ "projects": self.hub.projects_for(self.bound.as_deref()) }))
     }
 }
 
@@ -1331,17 +1348,24 @@ impl Engram {
 /// first); the full graph stays reachable through the uri template.
 const RESOURCE_LIST_CAP: usize = 25;
 
+/// The identity every engram MCP endpoint advertises. Shared by the real
+/// server and the roots-mode bridge, which must answer the stdio initialize
+/// before its upstream exists — same crate, same contract.
+fn engram_server_info() -> ServerInfo {
+    ServerInfo::new(
+        ServerCapabilities::builder()
+            .enable_tools()
+            .enable_resources()
+            .build(),
+    )
+    .with_server_info(Implementation::new("engram", env!("CARGO_PKG_VERSION")))
+    .with_instructions(INSTRUCTIONS.to_string())
+}
+
 #[tool_handler]
 impl ServerHandler for Engram {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
-            ServerCapabilities::builder()
-                .enable_tools()
-                .enable_resources()
-                .build(),
-        )
-        .with_server_info(Implementation::new("engram", env!("CARGO_PKG_VERSION")))
-        .with_instructions(INSTRUCTIONS.to_string())
+        engram_server_info()
     }
 
     /// Appendix A: `engram://node/{id}` so a user can @-mention a node in a
@@ -1455,12 +1479,6 @@ pub async fn serve_stdio_shared(engine: Arc<Mutex<Engine>>) -> anyhow::Result<()
     serve(Engram::with_shared(engine)).await
 }
 
-/// Serve over stdio with the full multi-project hub (PLAN §7C) — the hub the
-/// daemon's HTTP server shares, or a standalone one for `engram-alpha mcp`.
-pub async fn serve_stdio_hub(hub: Arc<Hub>) -> anyhow::Result<()> {
-    serve(Engram::with_hub(hub)).await
-}
-
 async fn serve(server: Engram) -> anyhow::Result<()> {
     let service = server.serve(rmcp::transport::io::stdio()).await?;
     service.waiting().await?;
@@ -1503,13 +1521,22 @@ pub fn streamable_http_service_for(hub: Arc<Hub>, selector: String) -> McpHttpSe
     )
 }
 
-/// The stdio side of the thin client: a verbatim MCP passthrough from a stdio
-/// client (Claude Code and friends launch us this way) to the daemon's `/mcp`
-/// endpoint. Exists because redb allows one process per store — the daemon
+/// The stdio side of the thin client: an MCP passthrough from a stdio client
+/// (Claude Code and friends launch us this way) to a core's per-project MCP
+/// endpoint. Exists because redb allows one process per store — the core
 /// holds the file; everything else, including this bridge, talks HTTP.
+///
+/// Since the roots Decision (0.8.8) the bridge has exactly ONE bounded brain:
+/// deciding WHICH project a session binds to. With an explicit `--db` the
+/// upstream is fixed and the proxy stays verbatim (the pre-roots doctrine);
+/// without one, `roots` is set and the binding resolves from the client's MCP
+/// roots (first `file://` root, falling back to the bridge's cwd) and follows
+/// `notifications/roots/list_changed` across project switches — one global
+/// config entry serves every project (the Windsurf case, issue #4).
 struct Passthrough {
-    upstream: rmcp::service::Peer<rmcp::RoleClient>,
+    state: Arc<BridgeState>,
     info: rmcp::model::ServerInfo,
+    roots: Option<Arc<RootsBinding>>,
 }
 
 fn proxy_err(e: rmcp::ServiceError) -> ErrorData {
@@ -1525,70 +1552,327 @@ impl rmcp::Service<rmcp::RoleServer> for Passthrough {
         request: rmcp::model::ClientRequest,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::ServerResult, ErrorData> {
-        self.upstream.send_request(request).await.map_err(proxy_err)
+        // The initialize is answered from `info` directly — the upstream
+        // doesn't exist yet in either mode (handshake-first): Fixed is
+        // still resolving its core in the background, and Roots binding
+        // starts only after this handshake tells us whether the client
+        // speaks roots.
+        if let rmcp::model::ClientRequest::InitializeRequest(init) = &request {
+            // Census legibility: remember WHO this client is
+            // (clientInfo.name — "claude-code", "mcp-go", …) so the lease
+            // can say which client bound where. Roots-mode leases register
+            // after this handshake and carry it immediately; Fixed-mode
+            // leases registered before it pick it up on the next renewal.
+            let name = init.params.client_info.name.trim().to_string();
+            if !name.is_empty() {
+                *self.state.client_name.lock().unwrap() = Some(name);
+            }
+            return Ok(rmcp::model::ServerResult::InitializeResult(
+                self.info.clone(),
+            ));
+        }
+        // Every other early request (a tools/list right after initialize)
+        // holds until the session is bound to a project, so nothing lands in
+        // the wrong graph while roots are still being resolved.
+        let peer = self.state.peer_when_bound().await?;
+        peer.send_request(request).await.map_err(proxy_err)
     }
 
     async fn handle_notification(
         &self,
         notification: rmcp::model::ClientNotification,
-        _context: rmcp::service::NotificationContext<rmcp::RoleServer>,
+        context: rmcp::service::NotificationContext<rmcp::RoleServer>,
     ) -> Result<(), ErrorData> {
-        self.upstream
-            .send_notification(notification)
+        if let Some(roots) = &self.roots {
+            match &notification {
+                rmcp::model::ClientNotification::InitializedNotification(_) => {
+                    // The binding trigger: roots/list is only spec-legal
+                    // after this. Not replayed upstream — the upstream
+                    // session runs its own handshake.
+                    let _ = roots.initialized.send(true);
+                    return Ok(());
+                }
+                rmcp::model::ClientNotification::RootsListChangedNotification(_) => {
+                    // Re-ask and rebind off-thread; the notification itself
+                    // has no reply to hold up.
+                    let binding = roots.clone();
+                    let peer = context.peer.clone();
+                    tokio::spawn(async move { binding.rebind_from(&peer).await });
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+        let peer = self.state.peer_when_bound().await?;
+        peer.send_notification(notification)
             .await
             .map_err(proxy_err)
     }
 
     fn get_info(&self) -> rmcp::model::ServerInfo {
-        // Mirror what the daemon negotiated, so the stdio client sees the
-        // real server — same name, version, instructions, capabilities.
         self.info.clone()
     }
 }
 
-/// Serve stdio by bridging every message to the daemon's MCP endpoint
-/// (`http://127.0.0.1:<port>/mcp`) until the stdio client disconnects.
-pub async fn serve_stdio_proxy(url: &str) -> anyhow::Result<()> {
-    // The daemon is always on 127.0.0.1, but reqwest honors HTTP(S)_PROXY env
-    // vars by default — under a corporate proxy the loopback connection gets
-    // routed through it and dies with the proxy's HTML error page (issue #2).
-    // No proxy ever makes sense here, so opt out instead of asking users to
-    // set NO_PROXY.
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .build()
-        .map_err(|e| anyhow::anyhow!("building the bridge HTTP client: {e}"))?;
-    let transport = rmcp::transport::StreamableHttpClientTransport::with_client(
-        client,
-        rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig::with_uri(
-            url.to_string(),
-        ),
-    );
-    let client = ().serve(transport).await?;
-    let info = client
-        .peer()
-        .peer_info()
-        .map(|i| (*i).clone())
-        .ok_or_else(|| anyhow::anyhow!("daemon MCP handshake returned no server info"))?;
-    let proxy = Passthrough {
-        upstream: client.peer().clone(),
-        info,
-    };
-    let service = proxy.serve(rmcp::transport::io::stdio()).await?;
-    // Satellites die with the core (v0.6.2): whichever side ends first ends
-    // the bridge — stdio closing is a normal disconnect, the upstream dying
-    // means the core is gone and lingering would only strand the client.
-    // Satellites die with the core (v0.6.2). The HTTP client transport
-    // auto-reconnects, so a dead core never surfaces as a closed connection —
-    // liveness has to be probed: ping the core on a heartbeat and treat a
-    // timed-out or failed ping as its death. Both sides' futures own their
-    // service; the bridge process ends right after the select, which tears
-    // the loser down with it.
-    let heartbeat_peer = client.peer().clone();
-    let core_died = async move {
+/// How `serve_stdio_bridge` finds its upstream.
+pub enum BridgeTarget {
+    /// Explicit `--db`: one fixed upstream, resolved AFTER the stdio
+    /// handshake is answered (handshake-first, the 60s-client rule: a slow
+    /// or failed core boot must starve the bind step, never initialize).
+    /// Roots are ignored — an explicit db is an explicit answer — and the
+    /// proxy forwards verbatim once connected.
+    Fixed {
+        /// Maps the fixed db to its upstream MCP target — spawning the
+        /// machine core on the way when none runs. Blocking is fine — the
+        /// bridge calls it through `spawn_blocking`, after serving.
+        resolve: FixedResolver,
+    },
+    /// No `--db`: bind by the client's MCP roots, falling back to
+    /// `fallback_root` (the bridge's cwd) when the client doesn't advertise
+    /// the capability, answers with no `file://` root, or doesn't answer
+    /// within the roots timeout.
+    Roots {
+        fallback_root: std::path::PathBuf,
+        resolve: RootResolver,
+    },
+}
+
+/// Where a resolved root's session should connect, and which root the census
+/// lease should announce. `lease_root` is normally the project root itself;
+/// a resolver that decided the root can't host a project (unwritable IDE
+/// launch cwd) points `url` at the core's home-graph endpoint and
+/// `lease_root` at the engram home dir instead.
+pub struct ResolvedTarget {
+    pub url: String,
+    pub lease_root: String,
+}
+
+/// Maps a project root to the upstream MCP target serving it (registering
+/// the project with the machine core on the way). Blocking is fine — the
+/// bridge calls it through `spawn_blocking`.
+pub type RootResolver =
+    Arc<dyn Fn(std::path::PathBuf) -> anyhow::Result<ResolvedTarget> + Send + Sync>;
+
+/// Maps an explicit `--db` to the upstream MCP target serving it (spawning
+/// the machine core on the way when none runs). Blocking is fine — the
+/// bridge calls it through `spawn_blocking`, after the stdio transport is
+/// already answering the handshake.
+pub type FixedResolver = Arc<dyn Fn() -> anyhow::Result<ResolvedTarget> + Send + Sync>;
+
+/// One live upstream MCP session. Generations order rebinds: a watcher or
+/// heartbeat that saw generation N stays quiet when the current one moved on.
+struct Upstream {
+    peer: rmcp::service::Peer<rmcp::RoleClient>,
+    generation: u64,
+    cancel: Option<rmcp::service::RunningServiceCancellationToken>,
+}
+
+/// The bridge's census identity: where the core's lease API lives and which
+/// project root this bridge currently serves. Registration is best-effort
+/// observability — an older core without `/clients` (or a failed POST) never
+/// blocks bridging.
+#[derive(Clone)]
+struct LeaseState {
+    /// The core's origin, e.g. `http://127.0.0.1:8787`.
+    base_url: String,
+    /// Absolute project root the bridge is bound to.
+    root: String,
+    lease_id: Option<String>,
+}
+
+/// Everything the proxy, the heartbeat, and the binder share.
+struct BridgeState {
+    http: reqwest::Client,
+    slot: std::sync::Mutex<Option<Upstream>>,
+    /// Latest bound generation (0 = not bound yet); `peer_when_bound` waits
+    /// on it so early requests can't race the first binding.
+    bound: tokio::sync::watch::Sender<u64>,
+    lease: std::sync::Mutex<Option<LeaseState>>,
+    /// `clientInfo.name` from the stdio client's initialize, once seen —
+    /// carried on census registrations and renewals so the core can say
+    /// which MCP client (Claude Code, mcp-go/Windsurf, …) holds each lease.
+    client_name: std::sync::Mutex<Option<String>>,
+    /// Fatal bridge errors (core closed the current session, binding failed)
+    /// funnel here; the main select exits on the first one.
+    exit: tokio::sync::mpsc::Sender<anyhow::Error>,
+    /// Why the binding failed for good, when it did. `peer_when_bound` stops
+    /// waiting and answers held client requests with this instead of letting
+    /// them die unanswered when the bridge exits (the Windsurf field trace:
+    /// a silent close reads as "Failed to initialize server" with zero
+    /// forensics on the client side).
+    failed: std::sync::Mutex<Option<String>>,
+}
+
+impl BridgeState {
+    fn current_peer(&self) -> Option<(rmcp::service::Peer<rmcp::RoleClient>, u64)> {
+        self.slot
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|u| (u.peer.clone(), u.generation))
+    }
+
+    fn current_generation(&self) -> u64 {
+        self.slot
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|u| u.generation)
+            .unwrap_or(0)
+    }
+
+    /// The current upstream peer, waiting out an in-flight (re)binding.
+    /// Binding is bounded — initialized grace + roots timeout + local HTTP,
+    /// plus (handshake-first) the ensure-core work: a first-run provision
+    /// can hold the spawned core's 180s health wait — so the cap is
+    /// generous slack over the worst legitimate bind, not an expected
+    /// wait. A binding that FAILS never waits it out: [`fail`] wakes every
+    /// held request immediately with the real error.
+    async fn peer_when_bound(&self) -> Result<rmcp::service::Peer<rmcp::RoleClient>, ErrorData> {
+        if let Some((peer, _)) = self.current_peer() {
+            return Ok(peer);
+        }
+        let mut rx = self.bound.subscribe();
+        let bound = async {
+            loop {
+                if *rx.borrow_and_update() > 0 {
+                    return;
+                }
+                if rx.changed().await.is_err() {
+                    return;
+                }
+            }
+        };
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(210), bound).await;
+        self.current_peer().map(|(peer, _)| peer).ok_or_else(|| {
+            let why = self.failed.lock().unwrap().clone().unwrap_or_else(|| {
+                "the engram bridge has no project binding yet — the core may be unreachable \
+                 (see .engram/mcp.log, or ~/.engram/mcp.log when the launch cwd is unwritable)"
+                    .into()
+            });
+            ErrorData::internal_error(why, None)
+        })
+    }
+
+    /// Record a fatal binding failure and wake everything waiting in
+    /// [`peer_when_bound`] — held requests answer with a JSON-RPC error
+    /// carrying `why` instead of dying unanswered when the bridge exits.
+    fn fail(&self, why: String) {
+        *self.failed.lock().unwrap() = Some(why);
+        // u64::MAX satisfies the "bound moved" wake without ever being a
+        // real generation; the woken waiter finds no peer and reads
+        // `failed` for the message.
+        let _ = self.bound.send(u64::MAX);
+    }
+
+    /// Open a new upstream session to `url` and make it current. The old
+    /// session (a rebind) is cancelled — its transport DELETEs the HTTP
+    /// session server-side on teardown, so no zombie session lingers with a
+    /// stale project binding — and the census lease is re-pointed (renewed
+    /// in place, never duplicated: the census keys on lease_id).
+    async fn connect(
+        self: &Arc<Self>,
+        url: &str,
+        lease_root: Option<&str>,
+    ) -> anyhow::Result<rmcp::model::ServerInfo> {
+        let transport = rmcp::transport::StreamableHttpClientTransport::with_client(
+            self.http.clone(),
+            rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig::with_uri(
+                url.to_string(),
+            ),
+        );
+        let client = ().serve(transport).await?;
+        let info = client
+            .peer()
+            .peer_info()
+            .map(|i| (*i).clone())
+            .ok_or_else(|| anyhow::anyhow!("daemon MCP handshake returned no server info"))?;
+        let peer = client.peer().clone();
+        let cancel = client.cancellation_token();
+        let (old, generation) = {
+            let mut slot = self.slot.lock().unwrap();
+            let generation = slot.as_ref().map(|u| u.generation).unwrap_or(0) + 1;
+            let old = slot.replace(Upstream {
+                peer,
+                generation,
+                cancel: Some(cancel),
+            });
+            (old, generation)
+        };
+        // The upstream ending while still current means the core closed the
+        // session (orchestrated shutdown) — exit right away instead of
+        // waiting out a heartbeat. A cancelled predecessor lands here too,
+        // sees its generation is history, and stays quiet.
+        let state = self.clone();
+        tokio::spawn(async move {
+            let _ = client.waiting().await;
+            if state.current_generation() == generation {
+                let _ = state
+                    .exit
+                    .send(anyhow::anyhow!(
+                        "the engram core closed the session — bridge exiting"
+                    ))
+                    .await;
+            }
+        });
+        if let Some(mut old) = old
+            && let Some(token) = old.cancel.take()
+        {
+            token.cancel();
+        }
+        if let Some(root) = lease_root
+            && let Some(base_url) = origin_of(url)
+        {
+            self.update_lease(base_url, root.to_string()).await;
+        }
+        let _ = self.bound.send(generation);
+        Ok(info)
+    }
+
+    /// Point the census lease at (base_url, root). An existing lease on the
+    /// same core is renewed with the new root — same lease_id, the census
+    /// row just moves; a lease on a different core (repo-local daemon vs
+    /// machine core) is withdrawn and re-registered there.
+    async fn update_lease(&self, base_url: String, root: String) {
+        let prev = self.lease.lock().unwrap().clone();
+        let name = self.client_name.lock().unwrap().clone();
+        let name = name.as_deref();
+        let lease_id = match prev {
+            Some(prev) if prev.base_url == base_url => match prev.lease_id {
+                Some(id) if ping_lease(&self.http, &base_url, &id, Some(&root), name).await => {
+                    Some(id)
+                }
+                _ => register_lease(&self.http, &base_url, &root, name).await,
+            },
+            Some(prev) => {
+                if let Some(id) = prev.lease_id {
+                    delete_lease(&self.http, &prev.base_url, &id).await;
+                }
+                register_lease(&self.http, &base_url, &root, name).await
+            }
+            None => register_lease(&self.http, &base_url, &root, name).await,
+        };
+        *self.lease.lock().unwrap() = Some(LeaseState {
+            base_url,
+            root,
+            lease_id,
+        });
+    }
+
+    /// Satellites die with the core (v0.6.2). The HTTP client transport
+    /// auto-reconnects, so a dead core never surfaces as a closed connection
+    /// — liveness has to be probed: ping the core on a heartbeat and treat a
+    /// timed-out or failed ping as its death, unless a rebind swapped the
+    /// session out from under the ping. Census lease renewals ride the same
+    /// beat. Returns the fatal error when the core is gone.
+    async fn heartbeat(self: Arc<Self>) -> anyhow::Error {
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-            let ping = heartbeat_peer.send_request(rmcp::model::ClientRequest::PingRequest(
+            tokio::time::sleep(std::time::Duration::from_secs(heartbeat_secs())).await;
+            let Some((peer, generation)) = self.current_peer() else {
+                // Not bound yet — the initial binding is still in flight.
+                continue;
+            };
+            let ping = peer.send_request(rmcp::model::ClientRequest::PingRequest(
                 rmcp::model::PingRequest {
                     method: Default::default(),
                     extensions: Default::default(),
@@ -1596,26 +1880,437 @@ pub async fn serve_stdio_proxy(url: &str) -> anyhow::Result<()> {
             ));
             match tokio::time::timeout(std::time::Duration::from_secs(10), ping).await {
                 Ok(Ok(_)) => {}
-                _ => return,
+                _ => {
+                    if self.current_generation() == generation {
+                        return anyhow::anyhow!("the engram core went away — bridge exiting");
+                    }
+                    continue; // a rebind cut this ping mid-flight — not a death
+                }
+            }
+            // Renew the census lease. Best-effort: a 404 means the lease
+            // expired (or the core restarted its table) — re-register
+            // instead of silently vanishing from the census.
+            let lease = self.lease.lock().unwrap().clone();
+            if let Some(l) = lease {
+                let name = self.client_name.lock().unwrap().clone();
+                let renewed = match &l.lease_id {
+                    Some(id) => {
+                        ping_lease(&self.http, &l.base_url, id, Some(&l.root), name.as_deref())
+                            .await
+                    }
+                    None => false,
+                };
+                if !renewed {
+                    let id =
+                        register_lease(&self.http, &l.base_url, &l.root, name.as_deref()).await;
+                    let mut slot = self.lease.lock().unwrap();
+                    match slot.as_mut() {
+                        // Only fill the row we renewed for — a rebind that
+                        // raced this re-register owns the slot now.
+                        Some(cur) if cur.base_url == l.base_url && cur.root == l.root => {
+                            cur.lease_id = id;
+                        }
+                        _ => {
+                            if let Some(id) = id {
+                                let http = self.http.clone();
+                                let base = l.base_url.clone();
+                                tokio::spawn(async move {
+                                    delete_lease(&http, &base, &id).await;
+                                });
+                            }
+                        }
+                    }
+                }
             }
         }
-    };
-    tokio::select! {
-        served = service.waiting() => {
-            served?;
-            Ok(())
-        }
-        _ = core_died => {
-            anyhow::bail!("the engram core went away — bridge exiting")
+    }
+}
+
+/// The roots half of the bridge's one bounded brain (0.8.8): which project
+/// root the session is bound to, and how to move it.
+struct RootsBinding {
+    fallback_root: std::path::PathBuf,
+    resolve: RootResolver,
+    state: Arc<BridgeState>,
+    /// Canonicalized root of the current binding.
+    current_root: std::sync::Mutex<Option<std::path::PathBuf>>,
+    /// Serializes bind/rebind so two triggers can't interleave connects.
+    bind_gate: tokio::sync::Mutex<()>,
+    /// Flipped by the client's `notifications/initialized` — the earliest
+    /// spec-legal moment to send our roots/list request.
+    initialized: tokio::sync::watch::Sender<bool>,
+}
+
+/// How long the bridge waits for a roots/list answer before falling back to
+/// cwd — a client that advertises roots but never answers must not hang the
+/// session.
+const ROOTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+impl RootsBinding {
+    /// Ask the client for its roots; the first `file://` root wins. None on
+    /// timeout, error, or an empty/non-file answer — the caller falls back.
+    async fn query_roots(
+        &self,
+        peer: &rmcp::service::Peer<rmcp::RoleServer>,
+    ) -> Option<std::path::PathBuf> {
+        #[allow(deprecated)] // SEP-2577 deprecates roots; clients still speak it
+        match tokio::time::timeout(ROOTS_TIMEOUT, peer.list_roots()).await {
+            Ok(Ok(listed)) => {
+                let root = listed.roots.iter().find_map(|r| file_uri_to_path(&r.uri));
+                if root.is_none() {
+                    tracing::info!("client roots carry no file:// root — falling back to cwd");
+                }
+                root
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("roots/list failed ({e}) — falling back to cwd");
+                None
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "roots/list unanswered after {ROOTS_TIMEOUT:?} — falling back to cwd"
+                );
+                None
+            }
         }
     }
+
+    /// Bind the session to `root`: resolve its upstream URL (registering the
+    /// project with the core), open the new session, retire the old one.
+    /// No-op when already bound there.
+    async fn bind_to(&self, root: std::path::PathBuf) -> anyhow::Result<()> {
+        let root = std::fs::canonicalize(&root).unwrap_or(root);
+        let _gate = self.bind_gate.lock().await;
+        if self.current_root.lock().unwrap().as_deref() == Some(&root) {
+            return Ok(());
+        }
+        let resolve = self.resolve.clone();
+        let resolving = root.clone();
+        let target = tokio::task::spawn_blocking(move || resolve(resolving)).await??;
+        self.state
+            .connect(&target.url, Some(&target.lease_root))
+            .await?;
+        tracing::info!("bridge bound to {} ({})", target.lease_root, target.url);
+        *self.current_root.lock().unwrap() = Some(root);
+        Ok(())
+    }
+
+    /// The initial binding, run once the stdio handshake is done: roots when
+    /// the client advertises them (after a short grace for its initialized
+    /// notification), cwd otherwise.
+    async fn initial_bind(
+        self: Arc<Self>,
+        peer: rmcp::service::Peer<rmcp::RoleServer>,
+        client_has_roots: bool,
+    ) -> anyhow::Result<()> {
+        let root = if client_has_roots {
+            let mut rx = self.initialized.subscribe();
+            let initialized = async {
+                loop {
+                    if *rx.borrow_and_update() {
+                        return;
+                    }
+                    if rx.changed().await.is_err() {
+                        return;
+                    }
+                }
+            };
+            // A client that skips initialized still gets asked after the
+            // grace — the roots timeout bounds the total either way.
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), initialized).await;
+            match self.query_roots(&peer).await {
+                Some(root) => {
+                    tracing::info!("binding by client roots: {}", root.display());
+                    root
+                }
+                None => {
+                    tracing::info!("binding by cwd fallback: {}", self.fallback_root.display());
+                    self.fallback_root.clone()
+                }
+            }
+        } else {
+            tracing::info!(
+                "client advertises no roots — binding by cwd fallback: {}",
+                self.fallback_root.display()
+            );
+            self.fallback_root.clone()
+        };
+        self.bind_to(root).await
+    }
+
+    /// roots/list_changed: re-ask, rebind when the project changed. A failed
+    /// rebind keeps the current binding — better a stale project than a dead
+    /// session — and logs why.
+    async fn rebind_from(self: Arc<Self>, peer: &rmcp::service::Peer<rmcp::RoleServer>) {
+        let root = self
+            .query_roots(peer)
+            .await
+            .unwrap_or_else(|| self.fallback_root.clone());
+        if let Err(e) = self.bind_to(root).await {
+            tracing::warn!(
+                "rebind after roots/list_changed failed — keeping the current project: {e:#}"
+            );
+        }
+    }
+}
+
+/// `file:///Users/x/repo` → `/Users/x/repo`. Tolerates an authority
+/// (`file://localhost/…`) and percent-encoding; anything else is None.
+fn file_uri_to_path(uri: &str) -> Option<std::path::PathBuf> {
+    let rest = uri.strip_prefix("file://")?;
+    let path = match rest.find('/') {
+        Some(0) => rest,
+        Some(i) if &rest[..i] == "localhost" => &rest[i..],
+        _ => return None,
+    };
+    let decoded = percent_decode(path);
+    #[cfg(windows)]
+    let decoded = {
+        // file:///C:/dir arrives as /C:/dir — drop the leading slash.
+        let bytes = decoded.as_bytes();
+        if bytes.len() >= 3
+            && bytes[0] == b'/'
+            && bytes[1].is_ascii_alphabetic()
+            && bytes[2] == b':'
+        {
+            decoded[1..].to_string()
+        } else {
+            decoded
+        }
+    };
+    Some(std::path::PathBuf::from(decoded))
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            )
+        {
+            out.push((hi * 16 + lo) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// `http://127.0.0.1:8787/projects/x/mcp` → `http://127.0.0.1:8787`.
+fn origin_of(url: &str) -> Option<String> {
+    let after_scheme = url.find("://")? + 3;
+    let end = url[after_scheme..]
+        .find('/')
+        .map(|i| after_scheme + i)
+        .unwrap_or(url.len());
+    Some(url[..end].to_string())
+}
+
+/// The bridge's heartbeat cadence — core-liveness pings AND lease renewals
+/// ride it. 15s in production (the core's 45s lease TTL is three beats);
+/// `ENGRAM_BRIDGE_HEARTBEAT_SECS` shortens it for sandboxed tests, which
+/// also shorten the TTL and would otherwise see live leases flap.
+fn heartbeat_secs() -> u64 {
+    std::env::var("ENGRAM_BRIDGE_HEARTBEAT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(15)
+}
+
+async fn register_lease(
+    client: &reqwest::Client,
+    base_url: &str,
+    root: &str,
+    client_name: Option<&str>,
+) -> Option<String> {
+    let resp = client
+        .post(format!("{base_url}/clients"))
+        .json(&serde_json::json!({
+            "pid": std::process::id(),
+            "kind": "mcp-bridge",
+            "root": root,
+            "client": client_name,
+        }))
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?;
+    let body: serde_json::Value = resp.json().await.ok()?;
+    body["lease_id"].as_str().map(str::to_string)
+}
+
+/// Renew a lease, carrying the (possibly rebound) root — and the client name
+/// once known — so the census row follows the binding. Older cores ignore
+/// the body — the renewal still counts. False = the lease is gone (expired,
+/// core restarted).
+async fn ping_lease(
+    client: &reqwest::Client,
+    base_url: &str,
+    id: &str,
+    root: Option<&str>,
+    client_name: Option<&str>,
+) -> bool {
+    let mut req = client
+        .post(format!("{base_url}/clients/{id}/ping"))
+        .timeout(std::time::Duration::from_secs(5));
+    if root.is_some() || client_name.is_some() {
+        req = req.json(&serde_json::json!({ "root": root, "client": client_name }));
+    }
+    req.send().await.is_ok_and(|r| r.status().is_success())
+}
+
+async fn delete_lease(client: &reqwest::Client, base_url: &str, id: &str) {
+    let _ = client
+        .delete(format!("{base_url}/clients/{id}"))
+        .timeout(std::time::Duration::from_secs(2))
+        .send()
+        .await;
+}
+
+/// Serve stdio by bridging every message to a core's MCP endpoint until the
+/// stdio client disconnects (or the core goes away — satellites die with the
+/// core, v0.6.2). Both shapes serve the handshake FIRST and connect after —
+/// a core that boots slowly (first-run model provisioning) or not at all
+/// must never leave initialize unanswered (impatient clients kill a silent
+/// server at ~60s). `Fixed` resolves its one upstream in the background and
+/// forwards verbatim; `Roots` binds from the client's roots (cwd fallback)
+/// and rebinds on roots/list_changed. Either way, a failed resolution goes
+/// through [`BridgeState::fail`] so held requests answer with the real
+/// error before the bridge exits.
+pub async fn serve_stdio_bridge(target: BridgeTarget) -> anyhow::Result<()> {
+    // The core is always on 127.0.0.1, but reqwest honors HTTP(S)_PROXY env
+    // vars by default — under a corporate proxy the loopback connection gets
+    // routed through it and dies with the proxy's HTML error page (issue #2).
+    // No proxy ever makes sense here, so opt out instead of asking users to
+    // set NO_PROXY.
+    let http = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .map_err(|e| anyhow::anyhow!("building the bridge HTTP client: {e}"))?;
+    let (bound, _bound_rx) = tokio::sync::watch::channel(0u64);
+    let (exit, mut exit_rx) = tokio::sync::mpsc::channel::<anyhow::Error>(4);
+    let state = Arc::new(BridgeState {
+        http,
+        slot: std::sync::Mutex::new(None),
+        bound,
+        lease: std::sync::Mutex::new(None),
+        client_name: std::sync::Mutex::new(None),
+        exit,
+        failed: std::sync::Mutex::new(None),
+    });
+    // In both shapes the upstream doesn't exist yet when the stdio client's
+    // initialize arrives (handshake-first), so it is answered from this
+    // crate's own contract — identical to what any 0.8.x core negotiates,
+    // because both sides construct it here.
+    let (roots, fixed) = match target {
+        BridgeTarget::Fixed { resolve } => (None, Some(resolve)),
+        BridgeTarget::Roots {
+            fallback_root,
+            resolve,
+        } => {
+            let (initialized, _) = tokio::sync::watch::channel(false);
+            let binding = Arc::new(RootsBinding {
+                fallback_root,
+                resolve,
+                state: state.clone(),
+                current_root: std::sync::Mutex::new(None),
+                bind_gate: tokio::sync::Mutex::new(()),
+                initialized,
+            });
+            (Some(binding), None)
+        }
+    };
+    let info = engram_server_info();
+    let proxy = Passthrough {
+        state: state.clone(),
+        info,
+        roots: roots.clone(),
+    };
+    let service = proxy.serve(rmcp::transport::io::stdio()).await?;
+    if let Some(resolve) = fixed {
+        // The Fixed connect runs AFTER the transport is serving, so the
+        // handshake answers while the core comes up (a first-run provision
+        // can take minutes); early tool calls hold in `peer_when_bound`.
+        let fatal = state.exit.clone();
+        let fail_state = state.clone();
+        tokio::spawn(async move {
+            let resolved = tokio::task::spawn_blocking(move || resolve())
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|r| r);
+            let connected = match resolved {
+                Ok(t) => fail_state
+                    .connect(&t.url, Some(&t.lease_root))
+                    .await
+                    .map(|_| ()),
+                Err(e) => Err(e),
+            };
+            if let Err(e) = connected {
+                let e = e.context("connecting the bridge to its core");
+                // Answer every held client request with the real reason
+                // before exiting — a silent close is "Failed to initialize
+                // server" with zero forensics (the Windsurf field trace).
+                fail_state.fail(format!("engram bridge: {e:#}"));
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                let _ = fatal.send(e).await;
+            }
+        });
+    }
+    if let Some(binding) = roots {
+        let peer = service.peer().clone();
+        #[allow(deprecated)] // SEP-2577 deprecates roots; clients still speak it
+        let client_has_roots = peer
+            .peer_info()
+            .is_some_and(|i| i.capabilities.roots.is_some());
+        let fatal = state.exit.clone();
+        let fail_state = state.clone();
+        tokio::spawn(async move {
+            if let Err(e) = binding.initial_bind(peer, client_has_roots).await {
+                let e = e.context("binding the bridge to a project");
+                // Answer every held client request with the real reason
+                // before exiting — a silent close is "Failed to initialize
+                // server" with zero forensics (the Windsurf field trace).
+                fail_state.fail(format!("engram bridge: {e:#}"));
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                let _ = fatal.send(e).await;
+            }
+        });
+    }
+    // Whichever side ends first ends the bridge — stdio closing is a normal
+    // disconnect; the upstream dying (watcher) or going silent (heartbeat)
+    // means the core is gone and lingering would only strand the client.
+    let result = tokio::select! {
+        served = service.waiting() => served.map(|_| ()).map_err(anyhow::Error::from),
+        Some(err) = exit_rx.recv() => Err(err),
+        err = state.clone().heartbeat() => Err(err),
+    };
+    // Clean exit withdraws the lease instead of letting it lapse.
+    let parting = state.lease.lock().unwrap().take();
+    if let Some(l) = parting
+        && let Some(id) = l.lease_id
+    {
+        delete_lease(&state.http, &l.base_url, &id).await;
+    }
+    result
 }
 
 // ---- argument schemas ---------------------------------------------------
 //
 // Every scoped tool takes the same optional `project` selector (PLAN §7C):
-// omitted = the current project; a registered name/id = that project (reads
-// AND writes — capturing into a sibling repo's graph is deliberate); "home" =
+// omitted = the current project; a registered name, id, or project DIRECTORY
+// (any path inside the repo — what a hook or a bridge holds) = that project
+// (reads AND writes — capturing into a sibling repo's graph is deliberate,
+// and the longest matching root wins for nested projects); "home" =
 // the user-level home graph; "all" = every project, reads only (search /
 // check_claim). `list_projects` names what exists.
 
@@ -1633,8 +2328,9 @@ struct SearchArgs {
     /// depth up front.
     #[serde(default)]
     detail: Option<String>,
-    /// Omit = current project; name/id = that project; "home"; "all" =
-    /// every project + home with provenance (reads only).
+    /// Omit = current project; a name, id, or the project's directory =
+    /// that project; "home"; "all" = every project + home with provenance
+    /// (reads only).
     #[serde(default)]
     project: Option<String>,
     /// "auto" (default) = curated memory, with session history appearing as
@@ -1706,14 +2402,16 @@ struct ListSessionsArgs {
 #[derive(Deserialize, JsonSchema)]
 struct IdArg {
     id: String,
-    /// Omit = current project; name/id = that project; "home".
+    /// Omit = current project; a name, id, or the project's directory =
+    /// that project; "home".
     #[serde(default)]
     project: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 struct ProjectArg {
-    /// Omit = current project; name/id = that project; "home".
+    /// Omit = current project; a name, id, or the project's directory =
+    /// that project; "home".
     #[serde(default)]
     project: Option<String>,
 }
@@ -1730,7 +2428,8 @@ struct AuditArgs {
     /// Restrict to one node/edge id's history.
     #[serde(default)]
     entity_id: Option<String>,
-    /// Omit = current project; name/id = that project; "home".
+    /// Omit = current project; a name, id, or the project's directory =
+    /// that project; "home".
     #[serde(default)]
     project: Option<String>,
 }
@@ -1744,7 +2443,8 @@ struct GetNodeArgs {
     /// Levels of child hierarchy to include (nodes pointing at this one), 0-3.
     #[serde(default)]
     children: Option<usize>,
-    /// Omit = current project; name/id = that project; "home".
+    /// Omit = current project; a name, id, or the project's directory =
+    /// that project; "home".
     #[serde(default)]
     project: Option<String>,
 }
@@ -1756,7 +2456,8 @@ struct TraverseArgs {
     edge_types: Vec<String>,
     #[serde(default)]
     depth: Option<usize>,
-    /// Omit = current project; name/id = that project; "home".
+    /// Omit = current project; a name, id, or the project's directory =
+    /// that project; "home".
     #[serde(default)]
     project: Option<String>,
 }
@@ -1788,8 +2489,9 @@ struct AddNoteArgs {
     /// is dated now. Never use for fresh knowledge.
     #[serde(default)]
     created_at: Option<String>,
-    /// Omit = current project; a name/id writes into THAT project's graph
-    /// (deliberate cross-project capture); "home" = the user-level graph.
+    /// Omit = current project; a name, id, or directory writes into THAT
+    /// project's graph (deliberate cross-project capture); "home" = the
+    /// user-level graph.
     /// "all" is refused — a fanned-out write is replication.
     #[serde(default)]
     project: Option<String>,
@@ -1805,8 +2507,9 @@ struct LinkArgs {
     note: Option<String>,
     #[serde(default)]
     confidence: Option<f64>,
-    /// Omit = current project; name/id = that project (both endpoints must
-    /// live there — edges never cross graphs); "home".
+    /// Omit = current project; a name, id, or the project's directory =
+    /// that project (both endpoints must live there — edges never cross
+    /// graphs); "home".
     #[serde(default)]
     project: Option<String>,
 }
@@ -1833,7 +2536,8 @@ struct UpdateArgs {
     /// Set or correct the node's captured-at version (version tracking).
     #[serde(default)]
     version: Option<String>,
-    /// Omit = current project; name/id = that project; "home".
+    /// Omit = current project; a name, id, or the project's directory =
+    /// that project; "home".
     #[serde(default)]
     project: Option<String>,
 }
@@ -1852,7 +2556,8 @@ struct MergeArgs {
     /// the victims' bodies are NOT appended automatically).
     #[serde(default)]
     body: Option<String>,
-    /// Omit = current project; name/id = that project; "home".
+    /// Omit = current project; a name, id, or the project's directory =
+    /// that project; "home".
     #[serde(default)]
     project: Option<String>,
 }
@@ -1897,7 +2602,8 @@ struct ListNodesArgs {
     /// Skip this many (after filtering, newest first).
     #[serde(default)]
     offset: Option<usize>,
-    /// Omit = current project; name/id = that project; "home".
+    /// Omit = current project; a name, id, or the project's directory =
+    /// that project; "home".
     #[serde(default)]
     project: Option<String>,
 }
@@ -1905,7 +2611,8 @@ struct ListNodesArgs {
 #[derive(Deserialize, JsonSchema)]
 struct ApproveArgs {
     id: String,
-    /// Omit = current project; name/id = that project; "home".
+    /// Omit = current project; a name, id, or the project's directory =
+    /// that project; "home".
     #[serde(default)]
     project: Option<String>,
 }
@@ -1917,8 +2624,9 @@ struct CheckClaimArgs {
     /// How many nearby nodes to judge (default 8, max 16).
     #[serde(default)]
     limit: Option<usize>,
-    /// Omit = current project; name/id = that project; "home"; "all" =
-    /// judge across every project + home with provenance.
+    /// Omit = current project; a name, id, or the project's directory =
+    /// that project; "home"; "all" = judge across every project + home with
+    /// provenance.
     #[serde(default)]
     project: Option<String>,
 }
@@ -1929,7 +2637,8 @@ struct ResolveSuspectArgs {
     id: String,
     /// "conflict" | "replaces" | "dismiss"
     verdict: String,
-    /// Omit = current project; name/id = that project; "home".
+    /// Omit = current project; a name, id, or the project's directory =
+    /// that project; "home".
     #[serde(default)]
     project: Option<String>,
 }
@@ -1940,7 +2649,8 @@ struct ListOpenArgs {
     types: Vec<String>,
     #[serde(default)]
     include_conflicts: Option<bool>,
-    /// Omit = current project; name/id = that project; "home".
+    /// Omit = current project; a name, id, or the project's directory =
+    /// that project; "home".
     #[serde(default)]
     project: Option<String>,
 }
@@ -1950,8 +2660,8 @@ struct BriefArgs {
     /// Character budget for the digest (default ~16000, about 4k tokens).
     #[serde(default)]
     max_chars: Option<usize>,
-    /// Omit = current project's brief plus the home-graph section; a name/id
-    /// (or "home") briefs that graph alone.
+    /// Omit = this session's project plus the home-graph section; a name,
+    /// an id, a project directory (or "home") briefs that graph alone.
     #[serde(default)]
     project: Option<String>,
 }
@@ -1961,14 +2671,16 @@ struct SetVersionArgs {
     /// The new current version ("v0.7.0", "26.7.23", …); null/omit clears it.
     #[serde(default)]
     version: Option<String>,
-    /// Omit = current project; name/id = that project; "home".
+    /// Omit = current project; a name, id, or the project's directory =
+    /// that project; "home".
     #[serde(default)]
     project: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 struct DescribeOntologyArgs {
-    /// Omit = current project; name/id = that project; "home".
+    /// Omit = current project; a name, id, or the project's directory =
+    /// that project; "home".
     #[serde(default)]
     project: Option<String>,
 }
@@ -1982,7 +2694,8 @@ struct UpdateEdgeArgs {
     note: Option<String>,
     #[serde(default)]
     confidence: Option<f64>,
-    /// Omit = current project; name/id = that project; "home".
+    /// Omit = current project; a name, id, or the project's directory =
+    /// that project; "home".
     #[serde(default)]
     project: Option<String>,
 }
@@ -2086,6 +2799,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn file_uris_resolve_to_local_paths_or_nothing() {
+        let p = |s: &str| Some(std::path::PathBuf::from(s));
+        assert_eq!(file_uri_to_path("file:///Users/x/repo"), p("/Users/x/repo"));
+        assert_eq!(file_uri_to_path("file://localhost/x"), p("/x"));
+        assert_eq!(file_uri_to_path("file:///a%20b/c"), p("/a b/c"));
+        assert_eq!(file_uri_to_path("file://remote-host/x"), None);
+        assert_eq!(file_uri_to_path("https://example.com/x"), None);
+        assert_eq!(file_uri_to_path("file://"), None);
+    }
+
+    #[test]
     fn shipped_ontology_durability_defaults_hold() {
         let cfg = engram_core::config::GraphConfig::default();
         let durability = |name: &str| cfg.type_def(name).unwrap().durability;
@@ -2105,6 +2829,48 @@ mod tests {
         assert!(edge_types(&["because".into()]).is_ok());
         assert!(edge_types(&["relates_to".into()]).is_ok());
         assert!(edge_types(&["".into()]).is_err());
+    }
+
+    /// The silent-death fix (Windsurf field trace): a fatal binding failure
+    /// must wake every request held in `peer_when_bound` with the real
+    /// reason, immediately — not let them ride out the 30s cap and die
+    /// unanswered when the bridge exits.
+    #[tokio::test]
+    async fn failed_binding_answers_held_and_future_requests() {
+        let (bound, _bound_rx) = tokio::sync::watch::channel(0u64);
+        let (exit, _exit_rx) = tokio::sync::mpsc::channel(4);
+        let state = Arc::new(BridgeState {
+            http: reqwest::Client::new(),
+            slot: std::sync::Mutex::new(None),
+            bound,
+            lease: std::sync::Mutex::new(None),
+            client_name: std::sync::Mutex::new(None),
+            exit,
+            failed: std::sync::Mutex::new(None),
+        });
+        // A request already waiting on the binding…
+        let held = {
+            let state = state.clone();
+            tokio::spawn(async move { state.peer_when_bound().await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        state.fail("engram bridge: no core is reachable".into());
+        // …answers with the failure right away (well under the 30s cap).
+        let err = tokio::time::timeout(std::time::Duration::from_secs(2), held)
+            .await
+            .expect("the held request must wake on failure")
+            .unwrap()
+            .expect_err("no peer exists — this must be the failure error");
+        assert!(
+            err.message.contains("no core is reachable"),
+            "the held request carries the real reason: {err:?}"
+        );
+        // A request arriving after the failure errors immediately too.
+        let late = tokio::time::timeout(std::time::Duration::from_secs(2), state.peer_when_bound())
+            .await
+            .expect("a post-failure request must not wait")
+            .expect_err("still no peer");
+        assert!(late.message.contains("no core is reachable"));
     }
 
     #[tokio::test]
@@ -3377,17 +4143,24 @@ mod transport_tests {
             .unwrap();
         assert_ne!(noted.is_error, Some(true));
 
-        // The bridge: stdio-shaped duplex → Passthrough → the same endpoint.
-        let upstream = ()
-            .serve(rmcp::transport::StreamableHttpClientTransport::from_uri(
-                url,
-            ))
-            .await
-            .unwrap();
-        let info = upstream.peer().peer_info().map(|i| (*i).clone()).unwrap();
+        // The bridge: stdio-shaped duplex → Passthrough → the same endpoint,
+        // wired through the real BridgeState::connect path (Fixed shape).
+        let (bound, _bound_rx) = tokio::sync::watch::channel(0u64);
+        let (exit, _exit_rx) = tokio::sync::mpsc::channel(4);
+        let state = Arc::new(BridgeState {
+            http: reqwest::Client::new(),
+            slot: std::sync::Mutex::new(None),
+            bound,
+            lease: std::sync::Mutex::new(None),
+            client_name: std::sync::Mutex::new(None),
+            exit,
+            failed: std::sync::Mutex::new(None),
+        });
+        let info = state.connect(&url, None).await.unwrap();
         let proxy = Passthrough {
-            upstream: upstream.peer().clone(),
+            state: state.clone(),
             info,
+            roots: None,
         };
         let (bridge_io, client_io) = tokio::io::duplex(1 << 16);
         tokio::spawn(async move {
@@ -3505,6 +4278,68 @@ mod scoped_transport_tests {
         assert!(
             text.contains("beta owns this decision"),
             "scoped session searches ITS project by default: {text}"
+        );
+
+        // 0.8.8 regression guard: the SESSION's binding — not the hub's own
+        // current project — is what an unscoped `brief` renders and what
+        // `list_projects` calls current. Both used to read `hub.current`,
+        // which was invisibly right while the daemon launched inside the repo
+        // it served and became always-wrong once the machine core became a
+        // dedicated home-rooted process: every bound session was handed the
+        // home graph's cold-start brief and told it was sitting in `home`.
+        let brief = scoped
+            .peer()
+            .call_tool(CallToolRequestParams::new("brief"))
+            .await
+            .unwrap();
+        let text = format!("{:?}", brief.content);
+        assert!(
+            text.contains("beta owns this decision"),
+            "an unscoped brief on a bound session briefs THAT project: {text}"
+        );
+
+        // …and a `project` argument accepts the project's DIRECTORY, so a
+        // caller holding a folder (a hook, a bridge's cwd) never has to map
+        // it to a name first.
+        let by_dir = scoped
+            .peer()
+            .call_tool(
+                CallToolRequestParams::new("brief").with_arguments(
+                    serde_json::json!({ "project": beta_root.display().to_string() })
+                        .as_object()
+                        .cloned()
+                        .unwrap(),
+                ),
+            )
+            .await
+            .unwrap();
+        let by_dir = format!("{:?}", by_dir.content);
+        assert!(
+            by_dir.contains("beta owns this decision"),
+            "a directory names its project: {by_dir}"
+        );
+
+        let roster = scoped
+            .peer()
+            .call_tool(CallToolRequestParams::new("list_projects"))
+            .await
+            .unwrap();
+        let text = format!("{:?}", roster.content);
+        // One pretty-printed JSON object per project, so splitting on the
+        // brace puts each row's name beside its own `current` flag.
+        let row = |name: &str| {
+            text.split('{')
+                .find(|r| r.contains(&format!("\\\"name\\\": \\\"{name}\\\"")))
+                .unwrap_or_else(|| panic!("no {name} row in {text}"))
+                .to_string()
+        };
+        assert!(
+            row("beta").contains("\\\"current\\\": true"),
+            "the bound project is the current one: {text}"
+        );
+        assert!(
+            row("home").contains("\\\"current\\\": false"),
+            "the core's own launch graph is not this session's project: {text}"
         );
 
         let unscoped = ()

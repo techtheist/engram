@@ -1,5 +1,6 @@
 import type { StreamHandlers } from '@/types/api'
 import type {
+    AgentSettings,
     AnsweredHint,
     AuditPage,
     StaleTriage,
@@ -53,6 +54,11 @@ export const API_BASE: string =
     (typeof window !== 'undefined' && window.__ENGRAM_API__) ||
     import.meta.env.VITE_ENGRAM_API ||
     ''
+
+/** Which backend this build carries. The demo build's api module (aliased in
+ *  by `ENGRAM_DEMO=1`, see vite.config.ts) exports `true` — the topbar's
+ *  connection chip reads it to say "demo" instead of the live dot. */
+export const isDemo = false
 
 /**
  * `/projects/{id}` while the pane is switched to another project (PLAN §7C);
@@ -233,6 +239,20 @@ export const api = {
         }>('/skills/install', {
             method: 'POST',
             body: JSON.stringify({ variant }),
+        }),
+
+    /** Machine-level settings (core daemons only — older cores 404, the
+     *  caller hides the control). `default_agent_project` is where agents
+     *  that can't reveal their folder connect. */
+    settings: () => metaRequest<AgentSettings>('/settings'),
+
+    /** Set (a project id/name) or clear (null → home) the default agent
+     *  project. Applies to future MCP bindings only — already-connected
+     *  sessions keep the project they bound. */
+    saveSettings: (defaultAgentProject: string | null) =>
+        metaRequest<AgentSettings>('/settings', {
+            method: 'POST',
+            body: JSON.stringify({ default_agent_project: defaultAgentProject }),
         }),
 
     /** The machine-level cortex model selection (PLAN §7A). */

@@ -17,6 +17,7 @@ pub mod rag;
 pub mod redact;
 pub mod registry;
 mod schema;
+pub mod settings;
 mod store;
 mod store_sqlite;
 mod store_tepin;

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-pub const AGENTS: [&str; 7] = [
+pub const AGENTS: [&str; 8] = [
     "claude",
     "codex",
     "gemini",
@@ -15,6 +15,7 @@ pub const AGENTS: [&str; 7] = [
     "kilo",
     "antigravity",
     "bob",
+    "windsurf",
 ];
 
 /// Which assistants look installed on this machine (binary on PATH or a
@@ -47,6 +48,16 @@ pub fn detect_agents() -> Vec<&'static str> {
     // IBM Bob: the IDE (a VS Code fork) and BobShell share ~/.bob.
     if on_path("bob") || dir(".bob") || Path::new("/Applications/IBM Bob.app").exists() {
         found.push("bob");
+    }
+    // Windsurf (Cascade): the older generation keeps everything under
+    // ~/.devin, the JetBrains-plugin generation under
+    // ${XDG_CONFIG_HOME:-~/.config}/devin.
+    if on_path("windsurf")
+        || dir(".devin")
+        || windsurf_xdg_config().is_some_and(|p| p.parent().is_some_and(Path::exists))
+        || Path::new("/Applications/Windsurf.app").exists()
+    {
+        found.push("windsurf");
     }
     found
 }
@@ -97,6 +108,14 @@ pub fn is_wired(repo: &Path, agent: &str) -> bool {
                 || home_file(".bob/mcp.json").is_some_and(has_engram)
                 || home_file(".bob/mcp_settings.json").is_some_and(has_engram)
         }
+        // Windsurf is global-only: one machine-wide entry serves every repo
+        // (the bridge binds by MCP roots), so "wired" is a machine property,
+        // not a repo one. Two plugin generations read two different global
+        // files — either counts.
+        "windsurf" => {
+            home_file(".devin/mcp_config.json").is_some_and(&has_engram)
+                || windsurf_xdg_config().is_some_and(has_engram)
+        }
         _ => false,
     }
 }
@@ -106,6 +125,18 @@ pub fn home_file(rel: &str) -> Option<PathBuf> {
         .or_else(|_| std::env::var("USERPROFILE"))
         .ok()
         .map(|h| PathBuf::from(h).join(rel))
+}
+
+/// The Windsurf JetBrains-plugin generation's global MCP config:
+/// `${XDG_CONFIG_HOME:-~/.config}/devin/mcp_config.json`. (The older plugin
+/// generation reads `~/.devin/mcp_config.json` instead — setup writes both.)
+pub fn windsurf_xdg_config() -> Option<PathBuf> {
+    std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| home_file(".config"))
+        .map(|d| d.join("devin/mcp_config.json"))
 }
 
 /// Does this configured command launch the pre-rename binary? (v0.4.0 renamed

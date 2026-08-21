@@ -41,14 +41,29 @@ echo "==> building pane"
 
 echo "==> reinstalling engram-alpha binary"
 cargo install --path "$ROOT/crates/engram-cli" --force --quiet
+# One binary per machine: the release installer's ~/.local/bin copy and
+# cargo's ~/.cargo/bin copy used to coexist and silently run different
+# versions (the 0.8.5 field lesson — PATH order decided which one you got).
+# Deploy overwrites every other engram-alpha on PATH; a later release
+# install overwrites back. Last writer wins, but there is only ever one
+# version answering the name.
+while IFS= read -r other; do
+    [ -n "$other" ] || continue
+    [ "$other" -ef "$BIN" ] && continue
+    cp -f "$BIN" "$other" && echo "    also replaced $other"
+done < <(type -ap engram-alpha 2>/dev/null | awk '{print $NF}' | sort -u)
 
 echo "==> restarting daemon"
-pkill -f "engram(-alpha)? serve" 2>/dev/null || true
+"$BIN" stop 2>/dev/null || pkill -f "engram(-alpha)? (serve|core)" 2>/dev/null || true
 sleep 1
 mkdir -p "$ROOT/.engram"
+# serve is a light launcher since 0.8.8: it spawns/joins the machine core,
+# registers this repo with it, and exits — the core logs to ~/.engram/core.log.
 # shellcheck disable=SC2086  # EMBED_FLAG is intentionally word-split (may be empty)
-nohup "$BIN" serve --http-only $EMBED_FLAG --db "$DB" >"$LOG" 2>&1 &
-disown
+(cd "$ROOT" && "$BIN" serve $EMBED_FLAG --db "$DB" >"$LOG" 2>&1) || {
+    echo "serve failed — see $LOG and ~/.engram/core.log" >&2
+    exit 1
+}
 
 echo "==> waiting for health"
 PORT=8787
@@ -59,16 +74,19 @@ for _ in $(seq 1 20); do
         curl -sf "http://127.0.0.1:${PORT}/health" >/dev/null && break
 done
 
-HEALTH="$(curl -sf "http://127.0.0.1:${PORT}/health")" || {
-    echo "daemon failed to come up — see $LOG" >&2
+curl -sf "http://127.0.0.1:${PORT}/health" >/dev/null || {
+    echo "core failed to come up — see ~/.engram/core.log" >&2
     exit 1
 }
-case "$HEALTH" in
-    *"$DB"*) ;;
-    *) echo "daemon serves the WRONG db: $HEALTH" >&2; exit 1 ;;
+# The core's /health reports the HOME graph; this repo's store must instead
+# appear among the projects the core serves.
+PROJECTS="$(curl -sf "http://127.0.0.1:${PORT}/projects")"
+case "$PROJECTS" in
+    *"$DB"* | *"$ROOT"*) ;;
+    *) echo "core does not have this repo registered: $PROJECTS" >&2; exit 1 ;;
 esac
-NODES="$(curl -sf "http://127.0.0.1:${PORT}/graph" | grep -o '"id"' | wc -l | tr -d ' ')"
-echo "==> healthy on port $PORT, serving $DB (~$((NODES / 2)) nodes+edges rows)"
+NODES="$({ curl -sf "http://127.0.0.1:${PORT}/projects/engram/graph" || true; } | { grep -o '"id"' || true; } | wc -l | tr -d ' ')"
+echo "==> core healthy on port $PORT, repo registered ($DB, ~$((NODES / 2)) nodes+edges rows)"
 
 if [ "$VSIX" = 1 ]; then
     echo "==> packaging VSCode extension"

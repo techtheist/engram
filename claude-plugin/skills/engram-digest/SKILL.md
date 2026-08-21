@@ -22,7 +22,7 @@ PORT=$(sed -n 's/.*"port"[: ]*\([0-9]*\).*/\1/p' .engram/daemon.json)
 curl -s -X POST "http://127.0.0.1:${PORT}/digest/scan"
 ```
 
-(No `.engram/daemon.json` or the health check fails → start it first: `engram-alpha serve --http-only` from the repo root, backgrounded. A 404 from `/digest/scan` means an older binary — `engram-alpha update`, restart the daemon, retry once.)
+(No `.engram/daemon.json` or the health check fails → run `engram-alpha serve` from the repo root: it ensures the machine core is up, registers this repo, and exits on its own — no backgrounding. A 404 from `/digest/scan` means an older binary — `engram-alpha update`, then `engram-alpha stop` and `engram-alpha serve` to restart the core, retry once.)
 
 The response is nominations, not nodes: `candidates` with `marker`, `suggested_type` (FIXME → Problem, TODO → Intent), redacted `text`, `file`, `line`. **You are the judge.** For each candidate: skip vendored/generated/dead markers and trivial notes-to-self; when the text is too thin to write a real title, read the surrounding code first; then write the survivors — Problems get `status: "open"`, Intents stay volatile, `code_refs` = the candidate's `file` (path only, never the line number). `truncated: true` means the cap cut the walk short — digest what you have, then run the scan again.
 

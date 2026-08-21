@@ -1,6 +1,8 @@
-//! `engram-alpha serve` — one local daemon per repo exposing HTTP + SSE (for the
-//! pane) and the MCP stdio server (for Claude) over a single shared engine
-//! bound to that repo's `.engram/graph.db` (PLAN §6B).
+//! The engram-alpha CLI. Process model (0.8.8): ONE machine core per user —
+//! `engram-alpha core`, spawned detached and holding every store lock, the
+//! models, the pane, and the MCP endpoints — plus N truly-light access
+//! points: `serve` ensures the core and registers the project, `mcp` bridges
+//! a stdio client to it, `status`/`stop` observe and end it.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -14,6 +16,7 @@ use engram_core::{
 use tracing_subscriber::EnvFilter;
 
 mod doctor;
+mod lazy;
 mod setup;
 mod skillgen;
 mod update;
@@ -31,12 +34,24 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the full local daemon (HTTP + SSE + MCP over stdio).
+    /// Make sure the machine core is running (starting it detached if
+    /// needed), register this repo's graph with it, print the pane URL, and
+    /// exit. The core keeps serving after this command returns.
     Serve(ServeArgs),
-    /// Run only the MCP stdio server (no HTTP port). This is what an MCP client
-    /// like Claude Code launches; safe to run alongside a separate pane daemon
-    /// since both share the DB via SQLite WAL.
+    /// The stdio MCP bridge an MCP client (Claude Code and friends) launches:
+    /// a light proxy to the machine core's MCP endpoint. Never opens the
+    /// store itself; starts the core when the machine has none. Without
+    /// --db it binds to the project the client's MCP roots name (cwd as the
+    /// fallback) and follows the client across project switches.
     Mcp(McpArgs),
+    /// Internal: run the machine core — the one process holding every store,
+    /// the models, the pane, and the MCP endpoints. `serve` and `mcp` start
+    /// it detached; running it by hand keeps it in the foreground.
+    #[command(hide = true)]
+    Core(CoreArgs),
+    /// What's running: core process, model state, registered projects, and
+    /// connected MCP clients — read live from the core's API.
+    Status(StatusArgs),
     /// Export the whole graph as portable JSON (to a file or stdout).
     Export(ExportArgs),
     /// Import a JSON snapshot (upsert by id; idempotent).
@@ -47,9 +62,9 @@ enum Command {
     /// Self-update: download the latest release for this platform, verify its
     /// checksum, and replace this binary in place.
     Update(UpdateArgs),
-    /// Diagnose this repo's Engram installation: store integrity, embedding
-    /// model, daemon-vs-DB path match, and per-assistant wiring. Exits
-    /// non-zero when something needs fixing.
+    /// Diagnose this repo's Engram installation: store integrity (asking the
+    /// machine core when it holds the store), core health, embedding model,
+    /// and per-assistant wiring. Exits non-zero when something needs fixing.
     Doctor(DoctorArgs),
     /// Wire the current repository for AI assistants: MCP registration +
     /// capture instructions, from assets embedded in this binary. With no
@@ -61,36 +76,73 @@ enum Command {
     /// verbatim, and the old graph.db stays behind untouched as a backup.
     /// Every command picks up graph.tepin automatically afterwards.
     Migrate(MigrateArgs),
-    /// Stop every engram process on this machine in one gesture — the core
-    /// and any per-repo daemons (bridges exit on their own when the core
-    /// goes). The primitive behind updates and repairs that need exclusive
-    /// access to the stores.
+    /// Stop the machine core in one gesture: an orchestrated shutdown over
+    /// its API (sessions closed, every store lock released, daemon files
+    /// removed), with a PID-kill fallback when it doesn't answer. Bridges
+    /// exit on their own when the core goes.
     Stop,
 }
 
 #[derive(clap::Args)]
 struct ServeArgs {
-    /// Path to the graph database (created if missing).
+    /// Path to the graph database to register with the core (created on
+    /// first access).
     #[arg(long, default_value = ".engram/graph.db")]
     db: PathBuf,
-    /// Port for the HTTP API + SSE stream (bound to 127.0.0.1).
-    #[arg(long, default_value_t = 8787)]
-    http_port: u16,
+    /// Port the core should listen on when this launch has to start it
+    /// (127.0.0.1 only; walks forward when taken).
+    #[arg(long)]
+    http_port: Option<u16>,
     /// Use the deterministic fake embedder instead of downloading the local
-    /// ONNX model — for offline use and quick smoke tests.
+    /// ONNX model — for offline use and quick smoke tests. Propagated to the
+    /// core when this launch starts it.
     #[arg(long)]
     fake_embeddings: bool,
-    /// Serve only HTTP + SSE (no MCP). Use when running the pane standalone,
-    /// without Claude attached over stdio.
+    /// Deprecated (pre-0.8.8 shape): serve now always ensures the shared
+    /// machine core. With this flag it stays in the foreground while the
+    /// core is healthy — back-compat for process supervisors — and exits
+    /// when the core dies.
     #[arg(long)]
     http_only: bool,
 }
 
 #[derive(clap::Args)]
+struct CoreArgs {
+    /// Port for the HTTP API + pane (bound to 127.0.0.1; walks forward when
+    /// taken). Default: $ENGRAM_HTTP_PORT, else 8787.
+    #[arg(long)]
+    http_port: Option<u16>,
+    /// Use the deterministic fake embedder instead of the local ONNX model.
+    #[arg(long)]
+    fake_embeddings: bool,
+    /// The core always runs in the foreground of its own process — `serve`
+    /// and `mcp` detach it for you. This flag exists for humans starting a
+    /// core by hand and changes nothing.
+    #[arg(long)]
+    foreground: bool,
+}
+
+#[derive(clap::Args)]
+struct StatusArgs {
+    /// Machine-readable output for scripts.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(clap::Args)]
 struct McpArgs {
-    /// Path to the graph database (created if missing).
-    #[arg(long, default_value = ".engram/graph.db")]
-    db: PathBuf,
+    /// Path to the graph database (created if missing). Optional since
+    /// 0.8.8: without it the session binds to a project by the MCP client's
+    /// roots (first file:// root; the bridge's working directory when the
+    /// client has none) and follows roots/list_changed across project
+    /// switches — one global config entry serves every project. When neither
+    /// names a usable project (an IDE launch from `/` whose client never
+    /// answers roots/list), the session binds the machine-level "default
+    /// agent project" setting (pane Settings, GET/POST /settings), falling
+    /// to the home graph when unset. An explicit --db pins the project and
+    /// disables roots binding.
+    #[arg(long)]
+    db: Option<PathBuf>,
     /// Use the deterministic fake embedder instead of the local ONNX model.
     #[arg(long)]
     fake_embeddings: bool,
@@ -159,8 +211,11 @@ struct MigrateArgs {
 
 #[derive(clap::Args)]
 struct SetupArgs {
-    /// Assistants to wire, comma-separated: claude|codex|gemini|opencode|kilo|antigravity|bob|all.
-    /// Default: auto-detect what's installed.
+    /// Assistants to wire, comma-separated: claude|codex|gemini|opencode|kilo|antigravity|bob|windsurf|all.
+    /// Default: auto-detect what's installed. windsurf writes both global
+    /// configs — ${XDG_CONFIG_HOME:-~/.config}/devin/mcp_config.json and
+    /// ~/.devin/mcp_config.json (db-less — the bridge binds by MCP roots);
+    /// the rest wire this repository.
     #[arg(long)]
     cli: Option<String>,
     /// Capture intensity for the installed instructions/skill.
@@ -180,14 +235,29 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::Serve(args) => serve(args).await,
+        Command::Core(args) => run_core(args).await,
+        Command::Status(args) => run_status(args),
         Command::Mcp(args) => {
             let result = run_mcp(args).await;
-            if let Err(e) = &result {
-                // The bridge's fatal error must reach mcp.log — IDE clients
-                // swallow stderr, and this line is the whole diagnosis.
-                tracing::error!("mcp exiting: {e:#}");
-            }
-            result
+            let code = match &result {
+                Ok(()) => 0,
+                Err(e) => {
+                    // The bridge's fatal error must reach mcp.log — IDE
+                    // clients swallow stderr, and this line is the whole
+                    // diagnosis.
+                    tracing::error!("mcp exiting: {e:#}");
+                    1
+                }
+            };
+            // Exit WITHOUT dropping the tokio runtime: tokio's stdin driver
+            // parks a blocking-pool thread in a read() that only returns
+            // when the client writes or closes stdin, and Runtime::drop
+            // waits for that thread — an MCP client that keeps stdin open
+            // while awaiting a response deadlocks us into a zombie
+            // Nothing here needs destructors:
+            // the census lease is already withdrawn and the log writers are
+            // unbuffered.
+            std::process::exit(code);
         }
         Command::Export(args) => run_export(args),
         Command::Import(args) => run_import(args),
@@ -213,7 +283,10 @@ fn init_tracing(command: &Command) {
     let filter = || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let file_layer = match command {
         Command::Mcp(args) if std::env::var("ENGRAM_MCP_LOG").as_deref() != Ok("0") => {
-            mcp_log_file(&args.db).map(|f| {
+            // db-less bridges tee into the cwd's .engram (Roots binding may
+            // move the session later, but the log needs a home up front).
+            let db = args.db.clone().unwrap_or_else(default_db_path);
+            mcp_log_file(&db).map(|f| {
                 fmt::layer()
                     .with_writer(f)
                     .with_ansi(false)
@@ -233,32 +306,45 @@ fn init_tracing(command: &Command) {
 }
 
 fn mcp_log_file(db: &Path) -> Option<std::sync::Arc<std::fs::File>> {
+    let open = |dir: &Path| {
+        std::fs::create_dir_all(dir).ok()?;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("mcp.log"))
+            .ok()
+    };
     let dir = engram_core::resolve_db_path(db).parent()?.to_path_buf();
-    std::fs::create_dir_all(&dir).ok()?;
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join("mcp.log"))
-        .ok()?;
-    Some(std::sync::Arc::new(file))
+    open(&dir)
+        // An IDE-spawned bridge can land in an unwritable cwd (/, a vanished
+        // dir) — tee into the machine-level ~/.engram instead of losing the
+        // only forensics an IDE client leaves us (the 0.8.5 lesson: mcp.log
+        // sees what IDE clients swallow).
+        .or_else(|| open(&registry::engram_home()?))
+        .map(std::sync::Arc::new)
 }
 
-/// Cut them all at once: terminate every advertised engram daemon — the
-/// machine core plus any per-repo daemons — discovered from the daemon files
-/// we already keep (never by process-name matching), health-verified before
-/// each kill so a stale file can't take down an unrelated reused pid.
+/// Orchestrated stop: ask the machine core to shut itself down over
+/// `POST /shutdown` (sessions closed, engines dropped, every store lock
+/// released, daemon files removed), wait for it to actually exit, and only
+/// fall back to a PID kill when it doesn't answer or the file is stale.
+/// Legacy per-repo daemons (pre-0.8.8 binaries) still get the old
+/// health-verified kill.
 fn run_stop() -> anyhow::Result<()> {
-    let mut targets: Vec<(String, std::path::PathBuf)> = Vec::new();
-    if let Some(home) = registry::engram_home() {
-        targets.push(("machine core".into(), home.join("daemon.json")));
-    }
-    for entry in registry::load().projects {
-        if let Some(dir) = Path::new(&entry.db).parent() {
-            targets.push((entry.name.clone(), dir.join("daemon.json")));
-        }
-    }
     let mut stopped = 0;
-    for (label, file) in targets {
+    if let Some(home) = registry::engram_home() {
+        stopped += stop_machine_core(&home.join("daemon.json"));
+    }
+
+    // Legacy per-repo daemons, discovered from the daemon files we already
+    // keep (never by process-name matching), health-verified before each
+    // kill so a stale file can't take down an unrelated reused pid. Files
+    // that advertised the now-stopped core clean themselves up here too.
+    for entry in registry::load().projects {
+        let Some(dir) = Path::new(&entry.db).parent() else {
+            continue;
+        };
+        let file = dir.join("daemon.json");
         let Ok(raw) = std::fs::read_to_string(&file) else {
             continue;
         };
@@ -284,16 +370,90 @@ fn run_stop() -> anyhow::Result<()> {
                 }
             }
             let _ = std::fs::remove_file(&file);
-            println!("stopped {label} (pid {pid}, port {port})");
+            println!("stopped {} (pid {pid}, port {port})", entry.name);
             stopped += 1;
         } else {
-            eprintln!("couldn't stop {label} (pid {pid}) — stop it manually");
+            eprintln!(
+                "couldn't stop {} (pid {pid}) — stop it manually",
+                entry.name
+            );
         }
     }
     if stopped == 0 {
         println!("nothing to stop — no healthy engram daemons advertised");
     }
     Ok(())
+}
+
+/// Stop the machine core advertised in `file`. Returns how many processes
+/// were stopped (0 or 1).
+fn stop_machine_core(file: &Path) -> usize {
+    let Ok(raw) = std::fs::read_to_string(file) else {
+        return 0;
+    };
+    let Ok(meta) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        let _ = std::fs::remove_file(file);
+        return 0;
+    };
+    let Some(port) = meta["port"].as_u64().map(|p| p as u16) else {
+        let _ = std::fs::remove_file(file);
+        return 0;
+    };
+    if doctor::http_get(port, "/health").is_none() {
+        let _ = std::fs::remove_file(file);
+        return 0;
+    }
+    // What is about to be cut loose — reported after the stop.
+    let clients = doctor::http_get(port, "/system")
+        .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+        .and_then(|v| v["processes"]["clients"].as_array().map(|c| c.len()));
+    let pid = meta["pid"].as_u64();
+
+    // Orchestrated first: the core closes sessions, drops every engine (all
+    // store locks released), removes its daemon files, and exits 0.
+    let mut gone = false;
+    if doctor::http_post(port, "/shutdown", "{}").is_some() {
+        for _ in 0..40 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            if doctor::http_get(port, "/health").is_none() {
+                gone = true;
+                break;
+            }
+        }
+    }
+    if !gone {
+        // Unresponsive, or an older binary without /shutdown: PID kill.
+        if let Some(pid) = pid
+            && terminate_pid(pid as u32)
+        {
+            for _ in 0..20 {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                if doctor::http_get(port, "/health").is_none() {
+                    gone = true;
+                    break;
+                }
+            }
+        }
+    }
+    if !gone {
+        eprintln!(
+            "couldn't stop the machine core (pid {}, port {port}) — stop it manually",
+            pid.unwrap_or_default()
+        );
+        return 0;
+    }
+    let _ = std::fs::remove_file(file); // the core removes it itself; belt and braces
+    match clients {
+        Some(n) => println!(
+            "stopped machine core (pid {}, port {port}) — {n} connected client(s) released",
+            pid.unwrap_or_default()
+        ),
+        None => println!(
+            "stopped machine core (pid {}, port {port})",
+            pid.unwrap_or_default()
+        ),
+    }
+    1
 }
 
 fn terminate_pid(pid: u32) -> bool {
@@ -312,6 +472,146 @@ fn terminate_pid(pid: u32) -> bool {
             .status()
             .map(|s| s.success())
             .unwrap_or(false)
+    }
+}
+
+/// `engram-alpha status` (issue #5): a thin client of the core's GET /system
+/// and GET /projects — core identity, model residency, registered projects
+/// with their lock state, and every connected client, in humane terms.
+fn run_status(args: StatusArgs) -> anyhow::Result<()> {
+    let Some(port) = machine_core() else {
+        if args.json {
+            println!("{}", serde_json::json!({ "running": false }));
+        } else {
+            println!("engram core: not running");
+            println!(
+                "  start it with `engram-alpha serve` (from a repo) or let an MCP client spawn it"
+            );
+        }
+        return Ok(());
+    };
+    let system = doctor::http_get(port, "/system")
+        .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
+        .context("the core answered /health but not /system")?;
+    let projects = doctor::http_get(port, "/projects")
+        .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
+        .unwrap_or_else(|| serde_json::json!([]));
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "running": true,
+                "port": port,
+                "system": system,
+                "projects": projects,
+            })
+        );
+        return Ok(());
+    }
+
+    let now = engram_core::now();
+    let core = &system["processes"]["core"];
+    let uptime = system["daemon"]["uptime_secs"].as_i64().unwrap_or(0);
+    println!("engram core");
+    println!(
+        "  pid {} · v{} · up {} · port {port}",
+        core["pid"].as_u64().unwrap_or(0),
+        core["version"]
+            .as_str()
+            .or(system["version"].as_str())
+            .unwrap_or("?"),
+        humane_duration(uptime),
+    );
+    if let Some(home) = core["home"].as_str() {
+        println!("  home {home}");
+    }
+    let models = &system["models_state"];
+    match (models["state"].as_str(), models["since"].as_i64()) {
+        (Some("unloaded_idle"), Some(since)) => println!(
+            "  models: unloaded (idle since {})",
+            humane_ago(now.saturating_sub(since))
+        ),
+        (Some(state), Some(since)) => println!(
+            "  models: {state} (since {})",
+            humane_ago(now.saturating_sub(since))
+        ),
+        _ => println!(
+            "  models: {}",
+            if system["model_cached"].as_bool() == Some(true) {
+                "cached"
+            } else {
+                "not downloaded"
+            }
+        ),
+    }
+
+    println!("\nprojects");
+    match projects.as_array().filter(|p| !p.is_empty()) {
+        Some(list) => {
+            for p in list {
+                let name = p["name"].as_str().unwrap_or("?");
+                let place = p["root"].as_str().or(p["db"].as_str()).unwrap_or("?");
+                let state = if p["open"].as_bool() == Some(true) {
+                    "store open (held by the core)"
+                } else {
+                    "registered"
+                };
+                println!("  {name} · {place} · {state}");
+            }
+        }
+        None => println!("  (none registered)"),
+    }
+
+    println!("\nclients");
+    match system["processes"]["clients"]
+        .as_array()
+        .filter(|c| !c.is_empty())
+    {
+        Some(clients) => {
+            for c in clients {
+                // "mcp-bridge (mcp-go)" — which client bound where, and via
+                // what. Older bridges never sent a name; the bare kind stays.
+                let kind = match c["client"].as_str() {
+                    Some(name) => format!("{} ({name})", c["kind"].as_str().unwrap_or("?")),
+                    None => c["kind"].as_str().unwrap_or("?").to_string(),
+                };
+                println!(
+                    "  {kind} · pid {} · {} · connected {} · seen {}",
+                    c["pid"].as_u64().unwrap_or(0),
+                    c["root"].as_str().unwrap_or("?"),
+                    humane_ago(now.saturating_sub(c["connected_at"].as_i64().unwrap_or(now))),
+                    humane_ago(now.saturating_sub(c["last_seen"].as_i64().unwrap_or(now))),
+                );
+            }
+        }
+        None => println!("  (none connected)"),
+    }
+    Ok(())
+}
+
+/// `7381` → `"2h 3m"` — two units at most, seconds only under a minute.
+fn humane_duration(secs: i64) -> String {
+    let secs = secs.max(0);
+    let (d, h, m, s) = (
+        secs / 86_400,
+        (secs % 86_400) / 3_600,
+        (secs % 3_600) / 60,
+        secs % 60,
+    );
+    match (d, h, m) {
+        (0, 0, 0) => format!("{s}s"),
+        (0, 0, m) => format!("{m}m {s}s"),
+        (0, h, m) => format!("{h}h {m}m"),
+        (d, h, _) => format!("{d}d {h}h"),
+    }
+}
+
+fn humane_ago(secs: i64) -> String {
+    if secs <= 0 {
+        "just now".into()
+    } else {
+        format!("{} ago", humane_duration(secs))
     }
 }
 
@@ -388,7 +688,7 @@ fn run_setup(args: SetupArgs) -> anyhow::Result<()> {
             for a in list.split(',').map(str::trim).filter(|a| !a.is_empty()) {
                 let known = setup::AGENTS.iter().find(|k| **k == a).with_context(|| {
                     format!(
-                        "unknown --cli '{a}' (claude|codex|gemini|opencode|kilo|antigravity|bob|all)"
+                        "unknown --cli '{a}' (claude|codex|gemini|opencode|kilo|antigravity|bob|windsurf|all)"
                     )
                 })?;
                 v.push(*known);
@@ -564,7 +864,7 @@ fn run_brief(args: BriefArgs) -> anyhow::Result<()> {
     }
     // The hub form appends the home-graph section (PLAN §7C); a brief is a
     // read, so it deliberately does not touch the registry.
-    let (hub, _) = build_hub(&db, args.fake_embeddings, false, false, true)?;
+    let (hub, _) = build_hub(&db, args.fake_embeddings, false)?;
     let max_chars = hub
         .current_engine()
         .lock()
@@ -873,46 +1173,17 @@ fn build_engine(db: &Path, fake_embeddings: bool, cortex: bool) -> anyhow::Resul
     open_engine(db, &models).with_context(|| format!("opening {}", db.display()))
 }
 
-/// The multi-project hub (PLAN §7C): the launch project's engine plus a
-/// factory that opens any registered store against the same model runtime.
-/// `register` also upserts this repo into `~/.engram/registry.json` — that
-/// file is how every other project becomes aware of this one.
-fn build_hub(
-    db: &Path,
-    fake_embeddings: bool,
-    cortex: bool,
-    register: bool,
-    tepin_satellites: bool,
-) -> anyhow::Result<(Arc<Hub>, Models)> {
+/// A short-lived multi-project hub over one store (PLAN §7C) — the brief's
+/// direct-open fallback when no daemon owns the store. Long-lived hubs are
+/// the machine core's job ([`build_core_hub`]); nothing here registers or
+/// keeps locks past the command.
+fn build_hub(db: &Path, fake_embeddings: bool, cortex: bool) -> anyhow::Result<(Arc<Hub>, Models)> {
     let db = &engram_core::resolve_db_path(db);
     let models = load_models(fake_embeddings, cortex)?;
     let engine = open_engine(db, &models).with_context(|| format!("opening {}", db.display()))?;
-    let entry = match (register, engine.repo_root().map(Path::to_path_buf)) {
-        (true, Some(root)) => match registry::register(&root, db) {
-            Ok(entry) => Some(entry),
-            Err(e) => {
-                tracing::warn!("couldn't register this project in the registry: {e}");
-                None
-            }
-        },
-        _ => None,
-    };
     let factory_models = models.clone();
-    // tepin_satellites=false is the direct-open stdio hub (0.8.5): a tepin
-    // satellite would take a machine-wide exclusive lock (home.tepin!) that
-    // this non-daemon process must never hold — the owning core does.
-    let factory: engram_core::EngineFactory = Box::new(move |db| {
-        let resolved = engram_core::resolve_db_path(db);
-        if !tepin_satellites && engram_core::is_tepin_path(&resolved) {
-            return Err(engram_core::Error::Io(format!(
-                "{} is a tepin store owned by a core daemon — this direct stdio session \
-                 won't lock it; start/restart the core (`engram-alpha serve`) and reconnect",
-                resolved.display()
-            )));
-        }
-        open_engine(db, &factory_models)
-    });
-    let hub = Arc::new(Hub::new(Arc::new(Mutex::new(engine)), entry, Some(factory)));
+    let factory: engram_core::EngineFactory = Box::new(move |db| open_engine(db, &factory_models));
+    let hub = Arc::new(Hub::new(Arc::new(Mutex::new(engine)), None, Some(factory)));
     Ok((hub, models))
 }
 
@@ -939,6 +1210,12 @@ fn build_core_hub(fake_embeddings: bool) -> anyhow::Result<(Arc<Hub>, Models)> {
 struct CortexAdmin {
     models: Models,
     hub: Arc<Hub>,
+    /// The core's lazy model slots: a hot-swap wraps the fresh model in a
+    /// lazy handle and installs it as the slot the idle checker unloads (so
+    /// unload keeps its chokepoint after a swap), and counts as model use —
+    /// which is what makes `POST /models` while idle-unloaded just work.
+    lazy: lazy::LazyModels,
+    idle: Arc<engram_http::IdleTracker>,
 }
 
 impl engram_http::ModelAdmin for CortexAdmin {
@@ -1003,9 +1280,14 @@ impl engram_http::ModelAdmin for CortexAdmin {
         }
         let load_err = |e: anyhow::Error| engram_core::Error::Io(format!("{e:#}"));
         let mut reembedded = 0usize;
+        // Every fresh model rides in a lazy wrapper so idle unload keeps its
+        // chokepoint after a swap; loading it eagerly here is model use, so
+        // the swap also ends any idle-unloaded state (see mark_loaded below).
         match role {
             Role::Embedding => {
-                let embedder = load_embedder(&spec).map_err(load_err)?;
+                let embedder = self
+                    .lazy
+                    .swap_embedder(load_embedder(&spec).map_err(load_err)?);
                 self.models.set.write().expect("model set lock").embedder = embedder.clone();
                 for engine in self.hub.engines() {
                     let mut engine = engine.lock().expect("engine lock");
@@ -1014,8 +1296,11 @@ impl engram_http::ModelAdmin for CortexAdmin {
                 }
             }
             Role::Reranker => {
-                let reranker = load_reranker(&spec).map_err(load_err)?;
-                self.models.set.write().expect("model set lock").reranker = Some(reranker.clone());
+                let reranker = self
+                    .lazy
+                    .swap_reranker(load_reranker(&spec).map_err(load_err)?);
+                self.models.set.write().expect("model set lock").reranker =
+                    Some(reranker.clone() as Arc<dyn Reranker>);
                 for engine in self.hub.engines() {
                     engine
                         .lock()
@@ -1024,8 +1309,9 @@ impl engram_http::ModelAdmin for CortexAdmin {
                 }
             }
             Role::Nli => {
-                let nli = load_nli(&spec).map_err(load_err)?;
-                self.models.set.write().expect("model set lock").nli = Some(nli.clone());
+                let nli = self.lazy.swap_nli(load_nli(&spec).map_err(load_err)?);
+                self.models.set.write().expect("model set lock").nli =
+                    Some(nli.clone() as Arc<dyn Nli>);
                 for engine in self.hub.engines() {
                     engine
                         .lock()
@@ -1034,6 +1320,9 @@ impl engram_http::ModelAdmin for CortexAdmin {
                 }
             }
         }
+        let now = engram_core::now();
+        self.idle.mark_loaded(now);
+        self.idle.touch_model_use();
         // Persist: a default selection is the absence of config.
         let mut cfg = cortex::load();
         cfg.set(role, (!is_default_spec(role, &spec)).then(|| spec.clone()));
@@ -1105,18 +1394,23 @@ fn daemon_for(db: &Path) -> Option<u16> {
         .then_some(port)
 }
 
-/// Start the daemon detached and wait for it to own the store. The model load
-/// dominates startup, so the health wait is generous; `None` = it never came
-/// up (offline first run, port trouble) and the caller falls back.
-fn spawn_daemon_and_wait(db: &Path) -> Option<u16> {
-    let exe = std::env::current_exe().ok()?;
-    // On a brand-new repo .engram/ doesn't exist yet — a failed serve.log
-    // create must not abort the spawn (it silently did until 0.8.5, and the
-    // caller's fallback then direct-opened the tepin store: the Bob lockup).
-    let log = db.parent().and_then(|dir| {
-        std::fs::create_dir_all(dir).ok()?;
-        std::fs::File::create(dir.join("serve.log")).ok()
-    });
+/// Start the machine core detached (`engram-alpha core`, stdout/stderr →
+/// `~/.engram/core.log`) and wait for its healthy advertisement. The model
+/// load dominates a first run (provisioning downloads), so the health wait is
+/// generous: 180s. Dev flags travel: `--fake-embeddings` is passed through,
+/// env (ENGRAM_HOME, ENGRAM_* knobs) is inherited by the child.
+fn spawn_core_and_wait(http_port: Option<u16>, fake_embeddings: bool) -> anyhow::Result<u16> {
+    let exe = std::env::current_exe().context("locating this binary")?;
+    let home = registry::engram_home().context("no home directory for the engram core")?;
+    let _ = std::fs::create_dir_all(&home);
+    let log_path = home.join("core.log");
+    // A failed log create must not abort the spawn (the 0.8.5 lesson) — the
+    // core just runs with its output discarded.
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .ok();
     let (stdout, stderr) = match log {
         Some(f) => match f.try_clone() {
             Ok(c) => (c.into(), f.into()),
@@ -1124,25 +1418,75 @@ fn spawn_daemon_and_wait(db: &Path) -> Option<u16> {
         },
         None => (std::process::Stdio::null(), std::process::Stdio::null()),
     };
-    std::process::Command::new(exe)
-        .args(["serve", "--http-only", "--db"])
-        .arg(db)
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("core");
+    if let Some(port) = http_port {
+        cmd.args(["--http-port", &port.to_string()]);
+    }
+    if fake_embeddings {
+        cmd.arg("--fake-embeddings");
+    }
+    let mut child = cmd
         .stdin(std::process::Stdio::null())
         .stdout(stdout)
         .stderr(stderr)
         .spawn()
-        .ok()?;
-    // A first run may be downloading models before it can own the store —
-    // 60s wasn't enough for that; time out only well past provisioning.
+        .context("spawning the engram core")?;
     for _ in 0..360 {
         std::thread::sleep(std::time::Duration::from_millis(500));
-        // The spawned serve may have become the core — or converged with one
-        // that won a startup race; either way counts as up.
-        if let Some(port) = daemon_for(db).or_else(machine_core) {
-            return Some(port);
+        if let Some(port) = machine_core() {
+            return Ok(port);
+        }
+        // An immediately-dead child (unwritable home, broken install) must
+        // not cost the full 180s poll. Exiting isn't always dying, though —
+        // `core` exits 0 when another core won the startup race — so a core
+        // that advertises healthy right after the exit still counts.
+        if let Ok(Some(status)) = child.try_wait() {
+            if let Some(port) = machine_core() {
+                return Ok(port);
+            }
+            anyhow::bail!(
+                "the engram core exited during startup ({status}) — see {}",
+                log_path.display()
+            )
         }
     }
-    None
+    anyhow::bail!(
+        "the engram core didn't come up within 180s — see {}",
+        log_path.display()
+    )
+}
+
+/// The single-flight ensure-core: exactly one caller pays the spawn; a
+/// concurrent caller waits on the gate and finds the running core. Called
+/// from the binding paths AFTER the stdio handshake answered (handshake-
+/// first): a slow first-run provision or a failed boot must starve the bind
+/// step — where `fail()` turns it into a real JSON-RPC error — never the
+/// client's initialize (impatient clients kill a silent server at ~60s).
+fn ensure_machine_core(fake_embeddings: bool) -> anyhow::Result<u16> {
+    static GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _flight = GATE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(port) = machine_core() {
+        return Ok(port);
+    }
+    tracing::info!("no engram core on this machine — starting one");
+    spawn_core_and_wait(None, fake_embeddings)
+}
+
+/// The repo root a store path belongs to: the parent of its `.engram` dir.
+/// Path-shaped only — the store file itself need not exist yet.
+fn repo_root_of(db: &Path) -> Option<PathBuf> {
+    let abs = if db.is_absolute() {
+        db.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(db)
+    };
+    let dir = abs.parent()?;
+    if dir.file_name()? != ".engram" {
+        return None;
+    }
+    let root = dir.parent()?;
+    Some(root.canonicalize().unwrap_or_else(|_| root.to_path_buf()))
 }
 
 /// Where an MCP session for `db` should connect (thin-client resolution,
@@ -1155,10 +1499,7 @@ fn resolve_mcp_target(db: &Path) -> Option<String> {
         return Some(format!("http://127.0.0.1:{port}/mcp"));
     }
     let port = machine_core()?;
-    let root = db.canonicalize().ok().and_then(|p| {
-        let dir = p.parent()?;
-        (dir.file_name()? == ".engram").then(|| dir.parent().map(Path::to_path_buf))?
-    })?;
+    let root = repo_root_of(db)?;
     let body = serde_json::json!({ "path": root }).to_string();
     let id = doctor::http_post(port, "/projects", &body)
         .and_then(|resp| serde_json::from_str::<serde_json::Value>(&resp).ok())
@@ -1166,8 +1507,39 @@ fn resolve_mcp_target(db: &Path) -> Option<String> {
     Some(format!("http://127.0.0.1:{port}/projects/{id}/mcp"))
 }
 
+/// The path an omitted `--db` used to mean: the cwd's repo graph.
+fn default_db_path() -> PathBuf {
+    PathBuf::from(".engram/graph.db")
+}
+
+/// The bail every failed resolution shares: where to look and what to run.
+fn no_core_error(what: &std::path::Path) -> anyhow::Error {
+    anyhow::anyhow!(
+        "no engram core is reachable for {} and starting one didn't succeed — this MCP \
+         server is a light bridge and never opens the store itself. See {} for why the \
+         core didn't come up, or start it yourself: `engram-alpha serve`.",
+        what.display(),
+        registry::engram_home()
+            .map(|h| h.join("core.log").display().to_string())
+            .unwrap_or_else(|| "~/.engram/core.log".into())
+    )
+}
+
 async fn run_mcp(args: McpArgs) -> anyhow::Result<()> {
-    let db = engram_core::resolve_db_path(&args.db);
+    // This process is ALWAYS a bridge (0.8.8, generalizing the 0.8.5 tepin
+    // rule to every backend): the core owns every store; mcp never opens one.
+    match &args.db {
+        // An explicit --db is an explicit answer: fixed project, roots
+        // ignored, verbatim passthrough (the pre-roots doctrine).
+        Some(raw) => run_mcp_fixed(raw, args.fake_embeddings).await,
+        // No --db: bind by the client's MCP roots, falling back to cwd —
+        // one global config entry serves every project (issue #4).
+        None => run_mcp_roots(args.fake_embeddings).await,
+    }
+}
+
+async fn run_mcp_fixed(raw_db: &Path, fake_embeddings: bool) -> anyhow::Result<()> {
+    let db = engram_core::resolve_db_path(raw_db);
     // mcp.log is append-mode and shared by every bridge on this repo — the
     // pid is what tells concurrent sessions apart.
     tracing::info!(
@@ -1176,44 +1548,183 @@ async fn run_mcp(args: McpArgs) -> anyhow::Result<()> {
         std::process::id(),
         db.display()
     );
-    // Thin client first (PLAN §7C): when a daemon owns stores on this
-    // machine, bridge stdio to it — mandatory on a TepinDB store (redb
-    // allows one process), and it puts MCP writes on the pane's SSE feed.
-    let mut target = resolve_mcp_target(&db);
-    if target.is_none() && engram_core::is_tepin_path(&db) {
-        tracing::info!("tepin store with no core — starting one (it must own the file)");
-        spawn_daemon_and_wait(&db);
-        target = resolve_mcp_target(&db);
+    // The repo's .engram/ dir must exist for project registration to resolve
+    // — the store itself is the core's to create on first open.
+    if let Some(dir) = db.parent().filter(|d| !d.as_os_str().is_empty()) {
+        let _ = std::fs::create_dir_all(dir);
     }
-    if let Some(url) = target {
-        tracing::info!("bridging stdio MCP to {url} (db: {})", db.display());
-        return engram_mcp::serve_stdio_proxy(&url).await;
+    // Census lease: the core's /system names this bridge (pid, project root)
+    // while it lives. Pure observability — never a bridging dependency.
+    let lease_root = repo_root_of(&db)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_default()
+        .display()
+        .to_string();
+    // Handshake-first: the resolver runs AFTER the stdio transport is
+    // serving, so a core that boots slowly (first-run model provisioning
+    // can take minutes) or not at all never leaves the client's initialize
+    // unanswered — a failed resolution goes through the bridge's fail path
+    // and answers held requests with the real error instead of silence.
+    let resolve: engram_mcp::FixedResolver = Arc::new(move || {
+        let target = |url: String| engram_mcp::ResolvedTarget {
+            url,
+            lease_root: lease_root.clone(),
+        };
+        if let Some(url) = resolve_mcp_target(&db) {
+            tracing::info!("bridging stdio MCP to {url} (db: {})", db.display());
+            return Ok(target(url));
+        }
+        let patience = match ensure_machine_core(fake_embeddings) {
+            // A freshly spawned core can be slow to answer its first
+            // requests (boot-time loads block the runtime for seconds) —
+            // retry the resolution instead of failing the session on one
+            // slow probe.
+            Ok(_) => std::time::Duration::from_secs(20),
+            // A failed spawn only warns: a repo-local daemon can still
+            // resolve — the loop below gets exactly one attempt.
+            Err(e) => {
+                tracing::warn!("core spawn failed: {e:#}");
+                std::time::Duration::ZERO
+            }
+        };
+        let deadline = std::time::Instant::now() + patience;
+        loop {
+            if let Some(url) = resolve_mcp_target(&db) {
+                tracing::info!("bridging stdio MCP to {url} (db: {})", db.display());
+                return Ok(target(url));
+            }
+            if std::time::Instant::now() >= deadline {
+                // Better no tools than a stolen lock (0.8.5) — and better a
+                // clear error in mcp.log than a silently heavy in-process
+                // hub (0.8.8).
+                return Err(no_core_error(&db));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    });
+    engram_mcp::serve_stdio_bridge(engram_mcp::BridgeTarget::Fixed { resolve }).await
+}
+
+async fn run_mcp_roots(fake_embeddings: bool) -> anyhow::Result<()> {
+    tracing::info!(
+        "engram-alpha mcp v{} (pid {}, no --db — binding by client roots, then cwd, \
+         then the default agent project, then home)",
+        env!("CARGO_PKG_VERSION"),
+        std::process::id(),
+    );
+    // IDE launchers spawn MCP servers from arbitrary cwds — `/`, a vanished
+    // dir (the Windsurf JetBrains plugin does). A missing cwd must not kill
+    // the bridge before roots can name the real project; "/" stands in and
+    // the resolver's usability check decides what it can host.
+    let fallback_root =
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from(std::path::MAIN_SEPARATOR_STR));
+    let resolve: engram_mcp::RootResolver = Arc::new(move |root: PathBuf| {
+        // Handshake-first: the machine core (project-independent) is ensured
+        // HERE, in the binding that runs after the stdio handshake answered
+        // — never before serving, where a slow first-run provision or a
+        // failed boot would starve the client's initialize into a ~60s kill.
+        // Single-flight: a rebind racing the first bind waits on the gate
+        // and finds the running core instead of spawning a second one.
+        let patience = match ensure_machine_core(fake_embeddings) {
+            // A freshly spawned core can be slow to answer its first
+            // requests (boot-time loads block the runtime for seconds) —
+            // give the per-root resolution 20s of patience instead of
+            // failing the whole session on one slow health probe.
+            Ok(_) => std::time::Duration::from_secs(20),
+            // A failed spawn only warns: a repo-local daemon can still
+            // resolve — the loops below get exactly one attempt.
+            Err(e) => {
+                tracing::warn!("core spawn failed: {e:#}");
+                std::time::Duration::ZERO
+            }
+        };
+        let deadline = std::time::Instant::now() + patience;
+        // The root's .engram/ dir must exist for project registration to
+        // resolve — the store itself is the core's to create on first open.
+        let dot = root.join(".engram");
+        if std::fs::create_dir_all(&dot).is_err() && !dot.is_dir() {
+            // The root can't host a project (unwritable IDE launch cwd like
+            // `/`, a deleted dir): the machine-level default agent project
+            // is the next rung, then the machine core's home graph — never
+            // death. A later roots/list_changed naming a real project
+            // rebinds away through the normal path.
+            tracing::warn!(
+                "root {} can't host a project (mkdir .engram failed) — trying the default \
+                 agent project setting, then the home graph",
+                root.display()
+            );
+            let home = registry::engram_home()
+                .map(|h| h.display().to_string())
+                .unwrap_or_else(|| "~/.engram".into());
+            loop {
+                if let Some(port) = machine_core() {
+                    if let Some(target) = default_agent_target(port) {
+                        return Ok(target);
+                    }
+                    tracing::info!("binding the home graph (no default agent project configured)");
+                    return Ok(engram_mcp::ResolvedTarget {
+                        url: format!("http://127.0.0.1:{port}/mcp"),
+                        lease_root: home,
+                    });
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(no_core_error(&root));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }
+        let db = engram_core::resolve_db_path(&root.join(".engram/graph.db"));
+        loop {
+            if let Some(url) = resolve_mcp_target(&db) {
+                return Ok(engram_mcp::ResolvedTarget {
+                    url,
+                    lease_root: root.display().to_string(),
+                });
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(no_core_error(&root));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    });
+    engram_mcp::serve_stdio_bridge(engram_mcp::BridgeTarget::Roots {
+        fallback_root,
+        resolve,
+    })
+    .await
+}
+
+/// The pre-home rung of the db-less binding ladder: the machine-level
+/// `default_agent_project` setting (`~/.engram/settings.json`, edited from
+/// the pane's Settings surface, served by the core at GET /settings).
+/// Fetched from the core AT BIND TIME — changing the setting affects future
+/// bindings, never already-connected sessions. Returns the configured
+/// project's MCP target, or None (unset, "home", or no longer registered) —
+/// the caller falls to the home graph exactly as before the setting existed.
+fn default_agent_target(port: u16) -> Option<engram_mcp::ResolvedTarget> {
+    let raw = doctor::http_get(port, "/settings")?;
+    let parsed = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
+    let sel = parsed["default_agent_project"].as_str()?.to_string();
+    if sel.is_empty() || sel == registry::HOME_PROJECT {
+        return None;
     }
-    // A tepin store is NEVER opened from here (0.8.5). This long-lived
-    // process would take the exclusive lock — and the hub's lazy factory
-    // would take home.tepin with it — starving every core started later:
-    // an IDE-launched bridge held a repo's graph AND the home graph hostage
-    // for a whole session, while the pane showed a fresh empty graph. Better
-    // no tools than a stolen lock; the error lands in mcp.log.
-    if engram_core::is_tepin_path(&db) {
-        anyhow::bail!(
-            "no core owns {} and starting one didn't succeed — a tepin store allows one \
-             process, so this MCP server won't open it directly. See {} for why the core \
-             didn't come up, or start it yourself: `engram-alpha serve` from the repo root.",
-            db.display(),
-            db.parent()
-                .map(|d| d.join("serve.log").display().to_string())
-                .unwrap_or_else(|| "serve.log".into())
+    let Some(entry) = registry::load().resolve(&sel).cloned() else {
+        tracing::warn!(
+            "default agent project '{sel}' is not on the registry any more — falling to the \
+             home graph"
         );
-    }
-    // No daemon, SQLite store: open it directly — WAL coexists with other
-    // readers. Registering keeps the registry fresh even for repos only ever
-    // opened over MCP (PLAN §7C: serve/mcp/setup all register). Satellites
-    // stay non-tepin here too (the factory refuses them) so a direct hub can
-    // never grab the machine-wide home.tepin.
-    let (hub, _) = build_hub(&db, args.fake_embeddings, true, true, false)?;
-    tracing::info!("MCP server ready on stdio (db: {})", db.display());
-    engram_mcp::serve_stdio_hub(hub).await
+        return None;
+    };
+    tracing::info!(
+        "binding the default agent project '{}' ({}) — the machine-level setting for \
+         sessions that can't reveal their folder",
+        entry.name,
+        entry.root
+    );
+    Some(engram_mcp::ResolvedTarget {
+        url: format!("http://127.0.0.1:{port}/projects/{}/mcp", entry.id),
+        lease_root: entry.root,
+    })
 }
 
 /// What a `serve` invocation should become — decided by looking at the
@@ -1274,58 +1785,136 @@ fn machine_core() -> Option<u16> {
     doctor::http_get(port, "/health").map(|_| port)
 }
 
-/// Absorb a `serve` into an already-running core: hand it the cwd project
-/// (registering an existing graph, or offering init on a bare git repo) and
-/// point the user at the one pane. Ten serves, one core, zero errors.
-fn converge_with_core(port: u16) -> anyhow::Result<()> {
-    if let Ok(cwd) = std::env::current_dir() {
-        let should_register =
-            cwd.join(".engram").exists() || (cwd.join(".git").exists() && propose_init(&cwd));
-        if should_register {
-            let body = serde_json::json!({ "path": cwd }).to_string();
-            match doctor::http_post(port, "/projects", &body) {
-                Some(_) => tracing::info!("registered {} with the running core", cwd.display()),
-                None => tracing::warn!(
-                    "couldn't register {} with the core on port {port}",
-                    cwd.display()
-                ),
+/// The machine core's advertised pid, from the same file [`machine_core`]
+/// health-verifies.
+fn machine_core_pid() -> Option<u32> {
+    let raw = std::fs::read_to_string(registry::engram_home()?.join("daemon.json")).ok()?;
+    Some(serde_json::from_str::<serde_json::Value>(&raw).ok()?["pid"].as_u64()? as u32)
+}
+
+/// The light launcher (0.8.8 process model): make sure the machine core is
+/// running, hand it this repo's project, refresh the repo-local
+/// advertisement, print the pane URL, and exit — the core keeps serving.
+async fn serve(args: ServeArgs) -> anyhow::Result<()> {
+    if args.http_only {
+        eprintln!(
+            "note: --http-only is deprecated — serve now ensures the shared machine core and \
+             exits; with this flag it stays up while the core is healthy (supervisor back-compat)."
+        );
+    }
+    let port = match machine_core() {
+        Some(port) => port,
+        None => {
+            eprintln!("starting the engram core…");
+            spawn_core_and_wait(args.http_port, args.fake_embeddings)?
+        }
+    };
+    match serve_role(&args)? {
+        ServeRole::Project(db) => {
+            ensure_gitignored(&db);
+            // The store may not exist yet (the core creates it on first
+            // open), so absolutize by hand — a canonicalize would fail and
+            // leave a relative path in the registry.
+            let db_abs = if db.is_absolute() {
+                db.clone()
+            } else {
+                std::env::current_dir()?.join(&db)
+            };
+            // Registration is the whole handoff: the registry is the shared
+            // awareness file, and the core opens registered stores lazily on
+            // first access (pane switch, bridge connect).
+            match repo_root_of(&db_abs).or_else(|| std::env::current_dir().ok()) {
+                Some(root) => match registry::register(&root, &db_abs) {
+                    Ok(entry) => {
+                        tracing::info!("registered project '{}' with the core", entry.name);
+                        // The repo-local advertisement plugins scrape the pane
+                        // port from — pointing at the core.
+                        write_daemon_file(&db_abs, port, machine_core_pid().unwrap_or_default());
+                    }
+                    Err(e) => tracing::warn!("couldn't register this repo: {e}"),
+                },
+                None => tracing::warn!("couldn't resolve this repo's root — not registered"),
+            }
+            // First-run nudge (PLAN §8): say once when installed assistants
+            // aren't wired to this repo yet.
+            if let Ok(cwd) = std::env::current_dir() {
+                let unwired: Vec<&str> = setup::detect_agents()
+                    .into_iter()
+                    .filter(|a| !setup::is_wired(&cwd, a))
+                    .collect();
+                if !unwired.is_empty() {
+                    eprintln!(
+                        "detected {} without Engram wiring — run `engram-alpha setup` in this repo to connect them",
+                        unwired.join(", ")
+                    );
+                }
             }
         }
+        ServeRole::CoreOnly => {
+            tracing::info!("no project here — the core serves the home graph");
+        }
     }
-    println!("Engram core already running — pane: http://127.0.0.1:{port}");
+    println!("Engram core running — pane: http://127.0.0.1:{port}");
+    if args.http_only {
+        // Back-compat blocking mode: a process supervisor watching this
+        // invocation effectively watches the core's health through it —
+        // exiting immediately would restart-loop it.
+        block_while_core_healthy(port).await;
+        eprintln!("the engram core on port {port} is gone — exiting");
+    }
     Ok(())
 }
 
-async fn serve(args: ServeArgs) -> anyhow::Result<()> {
-    // One core per machine: a healthy one absorbs this invocation.
+/// Poll the core's /health and return when it stops answering (one retry to
+/// ride out a transient hiccup).
+async fn block_while_core_healthy(port: u16) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        if doctor::http_get(port, "/health").is_none() {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if doctor::http_get(port, "/health").is_none() {
+                return;
+            }
+        }
+    }
+}
+
+/// The machine core (0.8.8): the ONE process on this machine holding every
+/// store lock, the loaded models, the pane, and the MCP endpoints. The HTTP
+/// server is the foreground; SIGTERM, ctrl-c, and `POST /shutdown` all run
+/// the same orchestrated exit. The pre-0.8.8 stdio-MCP-as-foreground shape
+/// (daemon dying with its first client) is gone.
+async fn run_core(args: CoreArgs) -> anyhow::Result<()> {
+    // `--foreground` is documentation: the core always runs in its own
+    // foreground — serve/mcp detach it at spawn time instead.
+    let _ = args.foreground;
+    // One core per machine: a healthy one makes this invocation a no-op.
     if let Some(port) = machine_core() {
-        return converge_with_core(port);
+        println!("Engram core already running — pane: http://127.0.0.1:{port}");
+        return Ok(());
     }
     update::notify_on_newer_release();
-    let role = serve_role(&args)?;
-    let (hub, models, db, db_display) = match role {
-        ServeRole::Project(db) => {
-            ensure_gitignored(&db);
-            let (hub, models) = build_hub(&db, args.fake_embeddings, true, true, true)?;
-            let display = std::fs::canonicalize(&db)
-                .unwrap_or_else(|_| db.clone())
-                .display()
-                .to_string();
-            (hub, models, Some(db), display)
-        }
-        ServeRole::CoreOnly => {
-            let (hub, models) = build_core_hub(args.fake_embeddings)?;
-            let display = registry::home_db_path()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default();
-            tracing::info!("no project here — running the machine core over the home graph");
-            (hub, models, None, display)
-        }
-    };
+    let (hub, models) = build_core_hub(args.fake_embeddings)?;
+    let db_display = registry::home_db_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
 
+    // The core's process identity + client census + the /shutdown trigger,
+    // created before the model wrappers so the idle tracker exists to stamp.
+    let (runtime, mut shutdown_rx) = engram_http::CoreRuntime::new(
+        registry::engram_home()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default(),
+    );
+    // Idle ONNX unload (the strict-spec Decision): every model slot becomes a
+    // reload-capable lazy handle. Unload clears the slots; any demand —
+    // HTTP request, background sweep, hot-swap — reloads single-flight.
+    let lazy_models = lazy::LazyModels::install(&models, &hub, &runtime.idle);
     let admin = Arc::new(CortexAdmin {
         models: models.clone(),
         hub: hub.clone(),
+        lazy: lazy_models.clone(),
+        idle: runtime.idle.clone(),
     });
     // Per-project MCP endpoints (v0.6.2): a bridge from repo X connects to
     // /projects/{id}/mcp and its sessions treat X as the current project —
@@ -1360,58 +1949,78 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             }
         },
     );
-    let router = engram_http::router_hub_with_admins(
+    let router = engram_http::router_hub_core(
         hub.clone(),
         Some(db_display.clone()),
         admin,
         std::sync::Arc::new(skillgen::SkillInstaller),
+        runtime.clone(),
     )
     // The daemon-hosted MCP endpoints (PLAN §0 transport migration):
     // `engram-alpha mcp` bridges stdio sessions here, so exactly one
     // process — this core — holds every store (redb requires it).
     .route_service("/mcp", engram_mcp::streamable_http_service(hub.clone()))
     .route("/projects/{id}/mcp", scoped_mcp);
-    let (listener, port) = match bind_or_converge(args.http_port).await? {
+    // Outermost layer so it sees EVERY request, the /mcp routes included
+    // (they are siblings of the API router, not inside it). The tracker
+    // itself decides which paths count as HTTP activity — /health, /system,
+    // /clients*, /shutdown and the /projects registry meta ops are exempt so
+    // plugin health polls, lease pings, and `engram-alpha status` never keep
+    // models warm.
+    let stamp_idle = runtime.idle.clone();
+    let router = router.layer(axum::middleware::map_request(
+        move |req: axum::extract::Request| {
+            let idle = stamp_idle.clone();
+            async move {
+                idle.stamp_http_request(req.uri().path());
+                req
+            }
+        },
+    ));
+    let preferred = args.http_port.unwrap_or_else(default_http_port);
+    let (listener, port) = match bind_or_converge(preferred).await? {
         Bound::Listener(l, port) => (l, port),
-        Bound::CoreWonTheRace(port) => return converge_with_core(port),
-    };
-    if port != args.http_port {
-        tracing::warn!("port {} was taken; using {port} instead", args.http_port);
-    }
-    // Record where we landed: the machine-level daemon file always (how every
-    // thin client finds the core), the repo-local one too when a project is
-    // current (how pre-0.6.2 clients find their daemon).
-    write_machine_daemon_file(port, &db_display);
-    if let Some(db) = &db {
-        write_daemon_file(db, port, &db_display);
-    }
-    tracing::info!("HTTP + SSE listening on http://127.0.0.1:{port}");
-
-    // First-run nudge: if installed assistants aren't wired to this repo's
-    // graph yet, say so once at startup (PLAN §8 — the binary owns setup).
-    if let Ok(cwd) = std::env::current_dir() {
-        let unwired: Vec<&str> = setup::detect_agents()
-            .into_iter()
-            .filter(|a| !setup::is_wired(&cwd, a))
-            .collect();
-        if !unwired.is_empty() {
-            tracing::info!(
-                "detected {} without Engram wiring — run `engram-alpha setup` in this repo to connect them",
-                unwired.join(", ")
-            );
+        Bound::CoreWonTheRace(port) => {
+            println!("Engram core already running — pane: http://127.0.0.1:{port}");
+            return Ok(());
         }
+    };
+    if port != preferred {
+        tracing::warn!("port {preferred} was taken; using {port} instead");
     }
+    // Record where we landed: `~/.engram/daemon.json` is how every thin
+    // client (serve, mcp, doctor, status, stop) finds the core.
+    write_machine_daemon_file(port, &db_display);
+    tracing::info!("machine core: HTTP + SSE + MCP on http://127.0.0.1:{port}");
 
     // Periodic librarian pass (PLAN §10 Phase 1): archive TTL-expired stale
     // provisional nodes and refresh the suspected-conflict queue. Purely local
     // math — judgment stays with Claude/the user (PLAN §7). First tick fires
     // at startup, then every 6 hours.
     let sweeper = hub.clone();
-    tokio::spawn(async move {
+    let librarian_idle = runtime.idle.clone();
+    let librarian = tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(6 * 60 * 60));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // The graph-write count observed after the last COMPLETED pass —
+        // snapshotting after the pass absorbs the pass's own writes (decay
+        // archives, queued suspects) so they never mark the graph dirty.
+        let mut clean_epoch: Option<u64> = None;
         loop {
             tick.tick().await;
+            // Idle-unload guard: scan_conflicts uses embedder + NLI, so an
+            // unconditional tick would reload the models every 6 hours and
+            // silently defeat the unload. When they are unloaded and nothing
+            // was written since the last completed pass, there is nothing a
+            // sweep could find that the last one didn't — skip. Any write or
+            // harvest re-dirties; the sweep then runs and may reload models,
+            // and the model use re-arms the idle clock afterwards.
+            if librarian_idle.is_unloaded() && clean_epoch == Some(librarian_idle.graph_writes()) {
+                tracing::info!(
+                    "librarian: models idle-unloaded and nothing changed since the last pass — skipping the sweep"
+                );
+                continue;
+            }
             // Every engine the core currently holds open — the machine core
             // sweeps all its projects, not just the launch one.
             let (mut archived_total, mut added_total) = (0usize, 0usize);
@@ -1440,6 +2049,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     "sweep: archived {archived_total} stale nodes, queued {added_total} suspected conflicts"
                 );
             }
+            clean_epoch = Some(librarian_idle.graph_writes());
         }
     });
 
@@ -1449,7 +2059,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // parking lot resolves "on next harvest tick". First tick fires at
     // startup — that's the backfill (months of sessions appear at once).
     let harvest_hub = hub.clone();
-    tokio::spawn(async move {
+    let harvest_idle = runtime.idle.clone();
+    let harvester_task = tokio::spawn(async move {
         let interval = std::env::var("ENGRAM_HARVEST_INTERVAL")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -1501,6 +2112,11 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             });
             harvester = h;
             if stats.wrote_anything() {
+                // Harvest writes dirty the graph for the librarian's
+                // idle-unload gate (they don't ride the ChangeEvent path).
+                // Their embeddings already extended the model-use clock
+                // through the lazy slots, without counting as HTTP activity.
+                harvest_idle.note_graph_write();
                 if !announced_backfill {
                     announced_backfill = true;
                     tracing::info!(
@@ -1526,11 +2142,66 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
     });
 
-    if args.http_only {
-        tracing::info!("http-only mode (no MCP)");
-        axum::serve(listener, router).await?;
-        return Ok(());
-    }
+    // Idle ONNX unload checker (the strict-spec Decision): when ALL of — no
+    // live bridge lease, no counted HTTP activity, no model use — have held
+    // for ENGRAM_IDLE_UNLOAD_SECS (default 15 minutes), drop the three ONNX
+    // sessions. The core itself stays resident; the next demand from any
+    // path reloads lazily. 0 disables.
+    let idle_secs = idle_unload_secs();
+    let unload_task = (idle_secs > 0).then(|| {
+        let runtime = runtime.clone();
+        let lazy_models = lazy_models.clone();
+        tokio::spawn(async move {
+            let idle = runtime.idle.clone();
+            // Sample often enough that short test windows work, rarely
+            // enough to be free at the default 15m.
+            let period = (idle_secs / 10).clamp(1, 30);
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(period));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                // A connected-but-idle bridge keeps models resident by
+                // design; observing a live lease re-arms the lease clock
+                // (renewals stamp it too, between samples).
+                if !runtime.clients().is_empty() {
+                    idle.touch_lease();
+                    continue;
+                }
+                if idle.is_unloaded() {
+                    continue;
+                }
+                let now = engram_core::now();
+                let quiet_for = idle_secs as i64;
+                let all_quiet = [
+                    idle.last_http_activity(),
+                    idle.last_model_use(),
+                    idle.last_lease_seen(),
+                ]
+                .into_iter()
+                .all(|t| now.saturating_sub(t) >= quiet_for);
+                if !all_quiet {
+                    continue;
+                }
+                let rss_before = process_rss_mb();
+                if lazy_models.unload_all() {
+                    idle.mark_unloaded(now);
+                    // Honest accounting, not a promise (the 0.8.3 lesson):
+                    // report what the allocator actually gave back.
+                    match (rss_before, process_rss_mb()) {
+                        (Some(before), Some(after)) => tracing::info!(
+                            "models unloaded after {} idle (freed ~{} MB: RSS {before} MB → {after} MB)",
+                            humane_duration(quiet_for),
+                            before.saturating_sub(after),
+                        ),
+                        _ => tracing::info!(
+                            "models unloaded after {} idle",
+                            humane_duration(quiet_for)
+                        ),
+                    }
+                }
+            }
+        })
+    });
 
     let http = tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, router).await {
@@ -1538,15 +2209,100 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
     });
 
-    // MCP over stdio is the foreground; when Claude disconnects, the daemon ends.
-    tracing::info!("MCP server ready on stdio");
-    let result = engram_mcp::serve_stdio_hub(hub).await;
+    // The foreground is the shutdown wait: POST /shutdown, SIGTERM, or
+    // ctrl-c all land here and run the same orchestrated exit.
+    let reason = wait_for_shutdown(&mut shutdown_rx).await;
+    let clients = runtime.clients().len();
+    tracing::info!("core shutting down ({reason}) — {clients} connected client(s) released");
+    // Closing the listener + loops; open sessions/SSE die with the process,
+    // which is what tells bridges to exit right away.
     http.abort();
-    if let Some(db) = &db {
-        remove_daemon_file(db);
+    librarian.abort();
+    harvester_task.abort();
+    if let Some(task) = &unload_task {
+        task.abort();
     }
+    // Drain in-flight engine work: taking each lock once means every store
+    // operation that had started has committed before the process exits.
+    for engine in hub.engines() {
+        drop(engine.lock());
+    }
+    remove_repo_daemon_files(port);
     remove_machine_daemon_file();
-    result
+    // Process exit releases every store lock the engines held; both backends
+    // are crash-safe past the drain (fsync-per-commit / WAL).
+    std::process::exit(0);
+}
+
+/// Resolve `/shutdown` (the watch), SIGTERM, and ctrl-c into one exit reason.
+async fn wait_for_shutdown(rx: &mut tokio::sync::watch::Receiver<bool>) -> &'static str {
+    #[cfg(unix)]
+    let term = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(_) => std::future::pending().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let term = std::future::pending::<()>();
+    tokio::select! {
+        _ = rx.changed() => "POST /shutdown",
+        _ = tokio::signal::ctrl_c() => "ctrl-c",
+        _ = term => "SIGTERM",
+    }
+}
+
+/// Remove the repo-local `daemon.json` advertisements that point at this
+/// core — `serve` refreshed them with our port; a file left behind would be
+/// a stale pointer every reader has to health-check around.
+fn remove_repo_daemon_files(port: u16) {
+    for entry in registry::load().projects {
+        let Some(dir) = Path::new(&entry.db).parent() else {
+            continue;
+        };
+        let file = dir.join("daemon.json");
+        let advertised = std::fs::read_to_string(&file)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .and_then(|v| v["port"].as_u64());
+        if advertised == Some(port as u64) {
+            let _ = std::fs::remove_file(&file);
+        }
+    }
+}
+
+/// `ENGRAM_IDLE_UNLOAD_SECS`: how long ALL of (no live bridge lease, no
+/// counted HTTP activity, no model use) must hold continuously before the
+/// core drops its ONNX sessions. Default 900 (15 minutes); 0 disables the
+/// unload entirely. Kept out of clap like the port so an auto-spawned core
+/// honors it.
+fn idle_unload_secs() -> u64 {
+    std::env::var("ENGRAM_IDLE_UNLOAD_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(900)
+}
+
+/// This process's resident set in MB (`ps`, works on macOS and Linux) —
+/// sampled only around an unload to put honest numbers in the log line.
+fn process_rss_mb() -> Option<u64> {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+        .output()
+        .ok()?;
+    let kb: u64 = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;
+    Some(kb / 1024)
+}
+
+/// The core's default port: `$ENGRAM_HTTP_PORT` (sandboxes and tests), else
+/// 8787 — kept out of clap so an auto-spawned core (no flags) honors it too.
+fn default_http_port() -> u16 {
+    std::env::var("ENGRAM_HTTP_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8787)
 }
 
 /// How long a filesystem wake-up waits before sweeping, so one transcript
@@ -1612,9 +2368,11 @@ enum Bound {
 }
 
 /// Bind the requested port, or walk forward to the next free one. A taken
-/// port is probed first: if an engram daemon answers /health there, that is
-/// the core this invocation should join, never a reason to open a second
-/// port (v0.6.2: one core, one pane).
+/// port is probed first: if THIS home's core answers /health there (the
+/// advertised db is our home graph), that is the core this invocation should
+/// join, never a reason to open a second port (v0.6.2: one core, one pane).
+/// A foreign engram daemon — another user, or a sandboxed test home — is
+/// just a taken port to walk past.
 async fn bind_or_converge(start: u16) -> anyhow::Result<Bound> {
     const TRIES: u16 = 16;
     for offset in 0..TRIES {
@@ -1623,8 +2381,13 @@ async fn bind_or_converge(start: u16) -> anyhow::Result<Bound> {
         match tokio::net::TcpListener::bind(addr).await {
             Ok(l) => return Ok(Bound::Listener(l, port)),
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                let ours = doctor::http_get(port, "/health")
-                    .is_some_and(|b| b.contains("\"status\"") && b.contains("\"db\""));
+                let ours = doctor::http_get(port, "/health").is_some_and(|b| {
+                    serde_json::from_str::<serde_json::Value>(&b)
+                        .ok()
+                        .and_then(|v| v["db"].as_str().map(str::to_string))
+                        .zip(registry::home_db_path())
+                        .is_some_and(|(db, home)| Path::new(&db) == home)
+                });
                 if ours {
                     return Ok(Bound::CoreWonTheRace(port));
                 }
@@ -1662,26 +2425,28 @@ fn remove_machine_daemon_file() {
 }
 
 /// `.engram/daemon.json`, next to the DB: how plugins and the skill find the
-/// actual port. Stale files are harmless — readers health-check the port and
-/// match the advertised `db` before trusting it.
-fn write_daemon_file(db: &Path, port: u16, db_display: &str) {
+/// pane port (they regex-scrape `port` — keep the shape). Since 0.8.8 it
+/// advertises the machine core (`pid` is the core's), written by `serve` and
+/// removed by the core's orchestrated shutdown. Stale files are harmless —
+/// readers health-check the port before trusting it.
+fn write_daemon_file(db: &Path, port: u16, pid: u32) {
     let Some(dir) = db.parent().filter(|d| !d.as_os_str().is_empty()) else {
         return;
     };
+    let _ = std::fs::create_dir_all(dir);
+    let db_display = std::fs::canonicalize(db)
+        .unwrap_or_else(|_| db.to_path_buf())
+        .display()
+        .to_string();
     let body = serde_json::json!({
         "port": port,
         "url": format!("http://127.0.0.1:{port}"),
-        "pid": std::process::id(),
+        "pid": pid,
         "db": db_display,
+        "version": env!("CARGO_PKG_VERSION"),
     });
     if let Err(e) = std::fs::write(dir.join("daemon.json"), format!("{body:#}\n")) {
         tracing::warn!("couldn't write daemon.json: {e}");
-    }
-}
-
-fn remove_daemon_file(db: &Path) {
-    if let Some(dir) = db.parent() {
-        let _ = std::fs::remove_file(dir.join("daemon.json"));
     }
 }
 

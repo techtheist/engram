@@ -17,10 +17,10 @@ Then, in each repository you want remembered: `/engram:setup` (installs the `eng
 | `hooks/session-brief.sh` | SessionStart hook — injects the graph's brief so every session starts already briefed. Silent in repos without an `.engram/` graph, and defers to a repo-level registration (`engram-alpha setup`) so the brief never injects twice. |
 | `skills/engram-digest/` | The **digest** skill — explicit, user-invoked ingestion of an existing project into the graph (offline `FIXME`/`TODO` scan + ontology-by-example authoring). Loaded only when invoked. |
 | `commands/setup.md` | `/engram:setup` — per-repo wiring (binary → gitignore → `.mcp.json`). |
-| `commands/pane.md` | `/engram:pane` — start the daemon if needed and hand over the pane URL. |
+| `commands/pane.md` | `/engram:pane` — make sure the machine core is running and hand over the pane URL. |
 | `commands/digest.md` | `/engram:digest` — digest the current project (optionally a named subsystem) into memory nodes. |
 
-The plugin deliberately ships **no global MCP server**: `engram-alpha mcp` binds a `.engram/graph.db` in whatever project it starts in, and a plugin-level server would create one in every repo you open. MCP registration stays per-repo via `/engram:setup`.
+The plugin deliberately ships **no global MCP server**: `engram-alpha mcp` is a thin bridge that binds its session to the project it starts in, and a plugin-level server would register a graph for every repo you open. MCP registration stays per-repo via `/engram:setup`.
 
 ## Capture intensity
 

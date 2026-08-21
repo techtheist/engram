@@ -6,6 +6,38 @@ import { useConfigStore } from '@/stores/config'
 import { usePanels } from '@/composables/usePanels'
 import type { ProjectInfo } from '@/types/graph'
 
+declare global {
+    interface Window {
+        /** The IDE deep link, injected by the VSCode webview host — its
+         *  bundled SPA has no real URL to carry a `?project=` query, so the
+         *  workspace folder name rides a global instead. */
+        __ENGRAM_PROJECT__?: string
+    }
+}
+
+/** The remembered selection — localStorage, like the theme and layout keys
+ *  (the mechanism already proven inside the JetBrains JCEF browser). */
+const STORAGE_KEY = 'engram.project'
+
+/** The registry mints project names as kebab slugs of the repo folder name
+ *  (registry.rs `unique_slug`) — normalize a raw IDE folder name the same
+ *  way so a deep link for "MyProject" finds the project named "myproject". */
+function slug(s: string): string {
+    let out = ''
+    for (const c of s) {
+        if (/[a-z0-9]/i.test(c)) out += c.toLowerCase()
+        else if (out && !out.endsWith('-')) out += '-'
+    }
+    return out.replace(/-+$/, '')
+}
+
+/** Last path segment of a project root, tolerant of either separator. */
+function rootBasename(root: string | undefined): string | null {
+    if (!root) return null
+    const parts = root.split(/[/\\]/).filter(Boolean)
+    return parts[parts.length - 1] ?? null
+}
+
 /**
  * The multi-project layer (PLAN §7C): which graph the pane is looking at.
  * `activeId === null` means the daemon's launch project (the bare routes);
@@ -38,7 +70,55 @@ export const useProjectsStore = defineStore('projects', () => {
         }
     }
 
+    /** Match a `?project=` deep-link value: exact registry name, then the
+     *  slug of the raw value, then the basename of a project's root path.
+     *  Unknown → null (the caller falls back silently). */
+    function matchDeepLink(raw: string): ProjectInfo | null {
+        const want = raw.trim()
+        if (!want) return null
+        const wanted = slug(want)
+        const list = projects.value
+        const hit =
+            list.find((p) => p.name === want) ??
+            list.find((p) => wanted !== '' && p.name === wanted) ??
+            list.find((p) => {
+                const base = rootBasename(p.root)
+                return base != null && wanted !== '' && slug(base) === wanted
+            })
+        return hit ?? null
+    }
+
+    /**
+     * Boot-time selection, before the first graph load: the `?project=` deep
+     * link from an IDE wins (and updates the memory), then the remembered
+     * selection — both validated against the live project list, falling back
+     * to the launch graph silently when the value is unknown. Sets the API
+     * scope directly instead of `switchTo`'s reload dance: nothing is loaded
+     * yet — App.vue loads config + graph right after.
+     */
+    async function restore(): Promise<void> {
+        await loadProjects()
+        if (!projects.value.length) return
+        const param =
+            new URLSearchParams(window.location.search).get('project') ??
+            window.__ENGRAM_PROJECT__
+        let target: ProjectInfo | null = null
+        if (param != null) {
+            target = matchDeepLink(param)
+            if (target) localStorage.setItem(STORAGE_KEY, target.id)
+        }
+        if (!target) {
+            const stored = localStorage.getItem(STORAGE_KEY)
+            if (stored != null) target = projects.value.find((p) => p.id === stored) ?? null
+        }
+        if (!target || target.current) return // the launch graph is the default scope
+        activeId.value = target.id
+        setApiProject(target.id)
+    }
+
     async function switchTo(project: ProjectInfo): Promise<void> {
+        // Remember the pick across reloads (registry ids are stable).
+        localStorage.setItem(STORAGE_KEY, project.id)
         const next = project.current ? null : project.id
         if (next === activeId.value) return
         activeId.value = next
@@ -78,6 +158,7 @@ export const useProjectsStore = defineStore('projects', () => {
         error,
         switchEpoch,
         loadProjects,
+        restore,
         switchTo,
         addByPath,
         unregister,
