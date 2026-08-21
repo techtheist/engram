@@ -3,7 +3,7 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
-## v0.8.8 (unreleased)
+## v0.8.8
 
 ### One heavy core, everything else light
 
