@@ -34,52 +34,70 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Make sure the machine core is running (starting it detached if
-    /// needed), register this repo's graph with it, print the pane URL, and
-    /// exit. The core keeps serving after this command returns.
+    /// Serve this repo's memory and print the pane URL.
+    ///
+    /// Makes sure the machine core is running (starting it detached if
+    /// needed), registers this repo's graph with it, prints the pane URL,
+    /// and exits. The core keeps serving after this command returns; safe
+    /// to run from anywhere, as many times as you like.
     Serve(ServeArgs),
-    /// The stdio MCP bridge an MCP client (Claude Code and friends) launches:
-    /// a light proxy to the machine core's MCP endpoint. Never opens the
+    /// Stdio MCP bridge — what your MCP client launches, not you.
+    ///
+    /// A light proxy to the machine core's MCP endpoint. Never opens the
     /// store itself; starts the core when the machine has none. Without
     /// --db it binds to the project the client's MCP roots name (cwd as the
     /// fallback) and follows the client across project switches.
     Mcp(McpArgs),
-    /// Internal: run the machine core — the one process holding every store,
-    /// the models, the pane, and the MCP endpoints. `serve` and `mcp` start
-    /// it detached; running it by hand keeps it in the foreground.
+    /// Internal: run the machine core in the foreground.
+    ///
+    /// The one process holding every store, the models, the pane, and the
+    /// MCP endpoints. `serve` and `mcp` start it detached; running it by
+    /// hand keeps it in the foreground.
     #[command(hide = true)]
     Core(CoreArgs),
-    /// What's running: core process, model state, registered projects, and
-    /// connected MCP clients — read live from the core's API.
+    /// Show what's running: core, models, projects, connected clients.
+    ///
+    /// Read live from the core's API; `--json` for scripts.
     Status(StatusArgs),
     /// Export the whole graph as portable JSON (to a file or stdout).
     Export(ExportArgs),
     /// Import a JSON snapshot (upsert by id; idempotent).
     Import(ImportArgs),
-    /// Print the session-start brief: a compact markdown digest of the graph's
-    /// canon (conflicts, open work, principles, decisions, cautions).
+    /// Print the session-start brief for this repo's graph.
+    ///
+    /// A compact markdown digest of the graph's canon: conflicts, open
+    /// work, principles, decisions, cautions.
     Brief(BriefArgs),
-    /// Self-update: download the latest release for this platform, verify its
-    /// checksum, and replace this binary in place.
+    /// Update this binary to the latest release.
+    ///
+    /// Downloads the release for this platform, verifies its checksum, and
+    /// swaps the binary in place. A no-op when already current.
     Update(UpdateArgs),
-    /// Diagnose this repo's Engram installation: store integrity (asking the
-    /// machine core when it holds the store), core health, embedding model,
-    /// and per-assistant wiring. Exits non-zero when something needs fixing.
+    /// Check this repo's Engram installation and say what to fix.
+    ///
+    /// Covers store integrity (asking the machine core when it holds the
+    /// store), core health, the embedding model, update availability, and
+    /// every detected assistant's wiring. Exits non-zero when something
+    /// needs fixing, so it doubles as a pre-flight in scripts.
     Doctor(DoctorArgs),
-    /// Wire the current repository for AI assistants: MCP registration +
-    /// capture instructions, from assets embedded in this binary. With no
-    /// --cli, auto-detects which assistants are installed and wires those.
+    /// Wire the current repository for AI assistants.
+    ///
+    /// MCP registration plus capture instructions, from assets embedded in
+    /// this binary. With no --cli, auto-detects which assistants are
+    /// installed and wires those. Idempotent — re-running never duplicates.
     Setup(SetupArgs),
-    /// Move this repo's graph onto the TepinDB backend (PLAN §7C step 5):
-    /// nodes + edges travel as the canonical JSON export (embeddings
-    /// regenerated), the suspect queue and audit journal are carried over
-    /// verbatim, and the old graph.db stays behind untouched as a backup.
+    /// Move this repo's graph onto the TepinDB backend.
+    ///
+    /// Nodes and edges travel as the canonical JSON export (embeddings
+    /// regenerated); the suspect queue and audit journal are carried over
+    /// verbatim; the old graph.db stays behind untouched as a backup.
     /// Every command picks up graph.tepin automatically afterwards.
     Migrate(MigrateArgs),
-    /// Stop the machine core in one gesture: an orchestrated shutdown over
-    /// its API (sessions closed, every store lock released, daemon files
-    /// removed), with a PID-kill fallback when it doesn't answer. Bridges
-    /// exit on their own when the core goes.
+    /// Stop the machine core — every project, one gesture.
+    ///
+    /// An orchestrated shutdown over the core's API (sessions closed, every
+    /// store lock released, daemon files removed), with a PID-kill fallback
+    /// when it doesn't answer. Bridges exit on their own when the core goes.
     Stop,
 }
 
@@ -93,15 +111,17 @@ struct ServeArgs {
     /// (127.0.0.1 only; walks forward when taken).
     #[arg(long)]
     http_port: Option<u16>,
-    /// Use the deterministic fake embedder instead of downloading the local
-    /// ONNX model — for offline use and quick smoke tests. Propagated to the
-    /// core when this launch starts it.
+    /// Use the deterministic fake embedder instead of the local ONNX model.
+    ///
+    /// For offline use and quick smoke tests — fake vectors are noise for
+    /// real searches. Propagated to the core when this launch starts it.
     #[arg(long)]
     fake_embeddings: bool,
-    /// Deprecated (pre-0.8.8 shape): serve now always ensures the shared
-    /// machine core. With this flag it stays in the foreground while the
-    /// core is healthy — back-compat for process supervisors — and exits
-    /// when the core dies.
+    /// Deprecated: stay in the foreground while the core is healthy.
+    ///
+    /// Pre-0.8.8 shape kept for process supervisors: serve now always
+    /// ensures the shared machine core; with this flag it blocks while the
+    /// core is healthy and exits when the core dies.
     #[arg(long)]
     http_only: bool,
 }
@@ -115,9 +135,10 @@ struct CoreArgs {
     /// Use the deterministic fake embedder instead of the local ONNX model.
     #[arg(long)]
     fake_embeddings: bool,
-    /// The core always runs in the foreground of its own process — `serve`
-    /// and `mcp` detach it for you. This flag exists for humans starting a
-    /// core by hand and changes nothing.
+    /// No-op: the core always runs in the foreground of its own process.
+    ///
+    /// `serve` and `mcp` detach it for you; this flag exists for humans
+    /// starting a core by hand and changes nothing.
     #[arg(long)]
     foreground: bool,
 }
@@ -131,15 +152,16 @@ struct StatusArgs {
 
 #[derive(clap::Args)]
 struct McpArgs {
-    /// Path to the graph database (created if missing). Optional since
-    /// 0.8.8: without it the session binds to a project by the MCP client's
-    /// roots (first file:// root; the bridge's working directory when the
-    /// client has none) and follows roots/list_changed across project
-    /// switches — one global config entry serves every project. When neither
-    /// names a usable project (an IDE launch from `/` whose client never
-    /// answers roots/list), the session binds the machine-level "default
-    /// agent project" setting (pane Settings, GET/POST /settings), falling
-    /// to the home graph when unset. An explicit --db pins the project and
+    /// Pin this session to one graph database (created if missing).
+    ///
+    /// Optional since 0.8.8: without it the session binds to a project by
+    /// the MCP client's roots (first file:// root; the bridge's working
+    /// directory when the client has none) and follows roots/list_changed
+    /// across project switches — one global config entry serves every
+    /// project. When neither names a usable project (an IDE launch from `/`
+    /// whose client never answers roots/list), the session binds the
+    /// "default agent project" from the pane's Settings, falling to the
+    /// home graph when unset. An explicit --db pins the project and
     /// disables roots binding.
     #[arg(long)]
     db: Option<PathBuf>,
@@ -150,40 +172,48 @@ struct McpArgs {
 
 #[derive(clap::Args)]
 struct ExportArgs {
+    /// Path to the graph database to export.
     #[arg(long, default_value = ".engram/graph.db")]
     db: PathBuf,
     /// Write to this file instead of stdout.
     #[arg(long, short)]
     out: Option<PathBuf>,
+    /// Use the deterministic fake embedder instead of the local ONNX model.
     #[arg(long)]
     fake_embeddings: bool,
 }
 
 #[derive(clap::Args)]
 struct ImportArgs {
+    /// Path to the graph database to import into (created if missing).
     #[arg(long, default_value = ".engram/graph.db")]
     db: PathBuf,
     /// JSON snapshot file to import.
     file: PathBuf,
+    /// Use the deterministic fake embedder instead of the local ONNX model.
+    ///
+    /// Tests only — vectors written this way are noise for real searches.
     #[arg(long)]
     fake_embeddings: bool,
 }
 
 #[derive(clap::Args)]
 struct BriefArgs {
+    /// Path to the graph database to brief from.
     #[arg(long, default_value = ".engram/graph.db")]
     db: PathBuf,
     /// Character budget for the digest (default: the graph's configured
     /// brief budget).
     #[arg(long)]
     max_chars: Option<usize>,
+    /// Use the deterministic fake embedder instead of the local ONNX model.
     #[arg(long)]
     fake_embeddings: bool,
 }
 
 #[derive(clap::Args)]
 struct UpdateArgs {
-    /// Release tag to install (e.g. v0.1.16). Default: the latest release.
+    /// Release tag to install (e.g. v0.8.7). Default: the latest release.
     #[arg(long)]
     version: Option<String>,
 }
@@ -212,6 +242,7 @@ struct MigrateArgs {
 #[derive(clap::Args)]
 struct SetupArgs {
     /// Assistants to wire, comma-separated: claude|codex|gemini|opencode|kilo|antigravity|bob|windsurf|all.
+    ///
     /// Default: auto-detect what's installed. windsurf writes both global
     /// configs — ${XDG_CONFIG_HOME:-~/.config}/devin/mcp_config.json and
     /// ~/.devin/mcp_config.json (db-less — the bridge binds by MCP roots);
