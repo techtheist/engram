@@ -32,5 +32,6 @@ pub mod online;
 pub mod profile;
 pub mod rng;
 pub mod run;
+pub mod sessions;
 pub mod variants;
 pub mod window;

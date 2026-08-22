@@ -3,6 +3,44 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
+## v0.8.10
+
+### Search mixes sessions — and tool replies stop speaking in epochs
+
+- **Session-diverse delivery, on by default.** When more strong candidates
+  survive the calibrated floor than fit the result list, each additional hit
+  from a session already holding a slot is demoted a few rank positions at
+  the final cut — so one session's restatements stop crowding out
+  complementary evidence captured in other sessions, on both `scope:
+  "memory"` and `scope:"history"`. The demotion is rank-based on purpose
+  (absolute score thresholds don't transfer between graphs; relative
+  mechanisms do), it changes selection and order only — scores, the floor,
+  the knee and the confidence verdict still read the cross-encoder's
+  calibrated scale — and a graph with one session (or none recorded) is
+  byte-identical to before. Per-graph knob: `policy.session_diversity_demote`
+  (0 disables); the default is the value measured recall-free by the new
+  bench. Search hits now carry `session_id`, so provenance is visible where
+  the diversity acts.
+- **MCP tool replies are tidied for the model reading them.** Every reply is
+  per-session context on every client (the 0.8.9 tool-description lesson,
+  applied to payloads): unix timestamps now render as ISO instants
+  (`"2026-08-22T14:36:43Z"` — paste one straight back into `after`/
+  `before`), and `null` fields, empty arrays and empty objects are pruned
+  recursively. MCP replies only — the pane, the HTTP API and exports keep
+  raw shapes.
+- **The eval workbench learned sessions.** `--sessions` benches the
+  diversity knob: multi-session subjects (one complementary aspect per
+  session plus same-session recaps) asked as one aggregation question,
+  session coverage as the gain and the regular single-gold questions
+  re-asked under the same knob as the price. `--longmemeval` gains
+  `--lme-turns N` — a per-question ingestion budget (~50 turns instead of
+  the full ~494) that always keeps the labelled answer sessions, loudly
+  marks its receipts, and turns a 16-hour CPU run into a tuning loop — plus
+  a `multi-cov` column: how much of a multi-session question's evidence
+  spread the delivered list covers. `--floor` now also prices the dial-three
+  candidate (delivery floor fitted per graph from the phantom-probe score
+  body) beside the observed-distribution grid.
+
 ## v0.8.9
 
 ### The agent binds itself — and the graph grades its own referee

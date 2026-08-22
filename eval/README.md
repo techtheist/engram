@@ -15,118 +15,50 @@ cargo run -p engram-eval -- --sizes 50 --sample                # read what it ge
 Everything below was produced by these commands. Nothing was measured by
 watching an agent use the tool.
 
+The page reads historically: the current numbers first, then how every
+generation of the stack earned its row, then the full record version by
+version. Column definitions and corpus design live in [Method](#method).
+
 ---
 
-## Result
-
-At 1500 notes shaped like real ones — median 748-character bodies, ~1,590
-edges — asked **4,500 questions** with known answers (every stored fact is
-questioned) plus 375 about subjects never written. First, what the research
-cycle measured on top of the shipped stack — one run, same corpus, each row
-adding one mechanism:
-
-| configuration | tok/query | focus | noise | R@5 | FP |
-|---|---|---|---|---|---|
-| engram 0.8.0, as shipped | 512 | 0.10 | 0.91 | 0.80 | 1.00 |
-| + knee trim *(shipped in 0.8.1)* | 317 | **0.44** | **0.63** | 0.79 | 1.00 |
-| + calibrated "likely not in memory" note *(shipped in 0.8.1)* | 317 | **0.44** | **0.63** | 0.79 | 0.12 |
-| + transplant probes: the line calibrates in the graph's own voice *(0.8.1)* | 317 | **0.44** | **0.63** | 0.79 | **0.02** |
-
-Every column, in plain words:
-
-- **tok/query** — how much text the assistant has to read per question.
-  Smaller is cheaper and less distracting. (Pure-vector RAG needs ~2,700 for
-  the same recall — see the next table.)
-- **focus** — what share of that text is the actual answer. 0.10 means the
-  answer arrives buried under nine parts of other material; 0.44 means
-  nearly half of what arrives is the thing asked for.
-- **noise** — what share of the delivered *results* were not the answer.
-  A miss counts in full, so this can never be gamed by guessing more.
-- **R@5** — how often the right note is among the first five returned.
-  The improvements above cost at most 0.01 of it.
-- **FP** — asked about something that was **never saved**, how often the
-  system still answers as if it knew. Below a confidence line the graph
-  calibrates on itself, the reply is prefixed *"this likely isn't in memory
-  — nearest candidates below"*. Candidates are never removed; a warned
-  answer to an unanswerable question counts as honest. The first
-  self-calibration (question templates over the graph's own vocabulary)
-  reached 0.32 at 100 notes but 0.84 at 1500 — templated probes are
-  lexically in register, not syntactically, and the corpus crowd outruns
-  them. The last row fixes that with a second probe family: **transplants**
-  — real sentences from real notes with their subject words swapped for
-  coinages ([ICT](https://aclanthology.org/P19-1612/) inverted). They score
-  exactly like the graph's loudest noise register, the line takes the max
-  of the two families, and end-to-end FP lands at **0.02 at 1500 and 0.00
-  at 100** — no labels, no LLM, self-calibrated. The price: the warning
-  appears on ~45% of real questions in the lowest-confidence range (their
-  answers still delivered); `weak_line_quantile` is the per-graph softness
-  knob if that reads too cautious.
-
-The knee trim cuts where the ranked score curve falls off a cliff instead of
-at a fixed depth ([Tail-Aware Adaptive-k](https://arxiv.org/abs/2606.11907),
-simplified); the confidence line comes from probes about invented subjects
-the graph provably doesn't contain — it calibrates itself, no labels needed.
-Details and the refuted alternatives: [the research cycle](#the-delivery-strategy-research-cycle-081).
-
-### The current answer, not the whole argument — supersession, measured (0.8.2)
-
-Real project memory gets **re-decided**. The chain bench (`--chains`) plants
-ADR-shaped history in the corpus: the same decision made three times, each
-generation `replaces`-ing the last, only the head current. Then it asks every
-stack about the subject's current state. 200 facts plus 20 chains × 3
-generations, real embeddings:
-
-| stack | R@1 | R@5 | pollution | head-first | tok/query |
-|---|---|---|---|---|---|
-| **engram (superseded — the product)** | **0.75** | 0.85 | **0.00** | **1.00** | 220 |
-| engram, no supersession (ablation) | 0.50 | 0.83 | 0.88 | 0.59 | 293 |
-| rag (pure vectors) | 0.30 | 0.97 | 0.97 | 0.41 | 2,144 |
-| grep | 0.00 | 0.67 | 0.70 | 0.02 | 2,657 |
-| curated-file (3k tokens) | 0.00 | 0.00 | 0.00 | 0.00 | 3,000 |
-| whole-file | 1.00 | 1.00 | 1.00 | 0.00 | 165,115 |
-
-`pollution` is the share of questions that delivered a **retired** generation.
-The product's zero is structural — supersession archives the losing side out
-of retrieval at write time — while every baseline hands the model conflicting
-generations and leaves it to guess which one is current: rag *finds*
-everything (R@5 0.97) and ranks the right generation first 30% of the time;
-the whole file always contains the answer and **never** delivers it
-unambiguously (`head-first` for file-in-context arms = the current answer
-without a retired generation beside it). The curated 3k file simply doesn't
-hold the chains at all. And retirement is not removal: every retired
-generation stays fetchable by id and reachable from the head along the
-`replaces` chain (mechanism checks 1.00/0.00/1.00, test-asserted), so the
-winning hit carries its own history as 1-hop context on 100% of answered
-questions. Details: [the 0.8.2 additions](#external-corpus-and-history--the-082-additions).
-
-### Against every baseline
+## Against every baseline
 
 The same corpus, every arm, at 1,500 notes with every fact questioned.
-Measured 2026-08-07 on the **enriched 0.8.2 corpus** (each slot-vocabulary
-pool grew 12 → 25 entries, a more diverse and less template-shaped crowd —
-numbers before and after the enrichment are different corpora and are never
-mixed in one table). The engram row is the shipped stack measured end to end
-by `--posttune`: knee trim, the self-calibrated recommendation line
-(auto-tuned weak line 0.905 from 24 phantom probes), graph credit included.
-FP follows the recommendation regime: candidates are never cut, a warned
-answer to a never-written question counts as honest.
+Measured **2026-08-22 on the shipped 0.8.10 stack** (receipts
+`results/arms-0810-100-1500.json` and `results/posttune-0810-100-1500.json`),
+on the enriched corpus (each slot-vocabulary pool 12 → 25 entries, a more
+diverse and less template-shaped crowd — numbers before and after the
+enrichment are different corpora and are never mixed in one table). The
+engram row is the shipped stack measured end to end by `--posttune`: knee
+trim, the self-calibrated recommendation line (auto-tuned weak line 0.898
+from 24 phantom probes, two families), graph credit included. FP follows the
+recommendation regime: candidates are never cut, a warned answer to a
+never-written question counts as honest.
+
+The rerun replicates the 0.8.2-era measurement to the digit — itself a
+receipt: three releases of engine work (the process model, temporal search,
+session-diverse delivery) changed nothing they weren't supposed to. The
+0.8.7 depth knob only engages when a search carries a time window, and the
+0.8.10 diversity cut is identity on a single-session corpus by construction.
 
 | arm | standing | tok/query | focus | noise | R@1 | R@5 | lex | para | oblique | FP |
 |---|---|---|---|---|---|---|---|---|---|---|
 | chance | 0 | 2517 | 0.08 | 1.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 1.00 |
 | grep | 0 | 2739 | 0.10 | 0.93 | 0.64 | 0.68 | 1.00 | 1.00 | 0.05 | 1.00 |
 | rag (pure vectors) | 0 | 2721 | 0.10 | 0.91 | 0.66 | 0.79 | 1.00 | 0.93 | 0.45 | 1.00 |
-| **engram (0.8.2)** | 3042 | **297** | **0.52** | **0.55** | **0.69** | 0.79 | 1.00 | **0.99** | 0.39 | **0.01** |
+| **engram** | 3042 | **297** | **0.52** | **0.55** | **0.69** | 0.79 | 1.00 | **0.99** | 0.39 | **0.01** |
 | curated-file 3k | 2944 | 2944 | 0.03 | 1.00 | 0.02 | 0.02 | 0.02 | 0.02 | 0.02 | 1.00 |
 | curated-file 30k | 29997 | 29997 | 0.00 | 1.00 | 0.25 | 0.25 | 0.25 | 0.25 | 0.25 | 1.00 |
 | whole-file | 377898 | 377898 | 0.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
 
-(Extra columns here: **standing** — tokens paid every session before any
-question, e.g. an always-in-context file; **R@1** — the right note ranked
-first; **lex / para / oblique** — recall when the question quotes the note,
-rewords it, or describes it without naming it. `tok/query` differs slightly
-from the first table because the arms bill delivery without markdown
-framing.)
+(Column glossary: **standing** — tokens paid every session before any
+question, e.g. an always-in-context file; **tok/query** — text the assistant
+reads per question; **focus** — the answer's share of that text; **noise** —
+the share of delivered *results* that were not the answer, a miss counting in
+full; **R@1 / R@5** — the right note ranked first / among the first five;
+**lex / para / oblique** — recall when the question quotes the note, rewords
+it, or describes it without naming it; **FP** — asked about something never
+saved, how often the system answers as if it knew.)
 
 Weighted for how often each phrasing actually occurs, the ranking is
 **engram 0.93, rag 0.91, grep 0.90** — engram beats pure vectors on the
@@ -171,17 +103,16 @@ with the best **R@1** of any retrieving arm: the right answer is more often the
 
 The attention story is scale-dependent, so here is the same table at **100
 notes** — the young-project size where a memory layer earns or loses its
-keep, measured 2026-08-07 on the same enriched 0.8.2 corpus as the table
-above, engram row by `--posttune` (auto-tuned weak line 0.886, graph credit
-included). On a young graph the delivered tail is genuinely weak and the
-trims work hardest:
+keep, same corpus, protocol and 2026-08-22 receipts as above (auto-tuned weak
+line 0.871 here). On a young graph the delivered tail is genuinely weak and
+the trims work hardest:
 
 | arm | standing | tok/query | focus | noise | R@1 | R@5 | lex | para | oblique | FP |
 |---|---|---|---|---|---|---|---|---|---|---|
 | chance | 0 | 2518 | 0.09 | 0.99 | 0.01 | 0.05 | 0.04 | 0.04 | 0.06 | 1.00 |
 | grep | 0 | 2547 | 0.10 | 0.90 | 0.72 | 0.84 | 1.00 | 1.00 | 0.52 | 1.00 |
 | rag (pure vectors) | 0 | 2295 | 0.12 | 0.88 | 0.81 | 0.96 | 1.00 | 1.00 | 0.87 | 1.00 |
-| **engram (0.8.2)** | 3051 | **198** | **0.63** | **0.36** | 0.80 | 0.95 | 1.00 | 1.00 | 0.85 | **0.00** |
+| **engram** | 3051 | **198** | **0.63** | **0.36** | 0.80 | 0.95 | 1.00 | 1.00 | 0.85 | **0.00** |
 | curated-file 3k | 2998 | 2998 | 0.03 | 0.99 | 0.37 | 0.37 | 0.37 | 0.37 | 0.37 | 1.00 |
 | curated-file 30k | 8409 | 8409 | 0.01 | 0.99 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
 | whole-file | 25184 | 25184 | 0.01 | 0.99 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
@@ -189,9 +120,8 @@ trims work hardest:
 The engram row is where the young-graph story peaks: **focus 0.63 at 198
 tokens/query** — a twelfth of rag's bill with nearly two-thirds of it being
 the answer — and **FP 0.00**, against a field where every other arm answers
-every never-written question. The trims now cost 0.01 recall@5 and 0.02
-oblique against rag (the enriched, less template-shaped crowd narrowed what
-used to be a 0.03/0.09 gap); what they buy is that an assistant reading the
+every never-written question. The trims cost 0.01 recall@5 and 0.02
+oblique against rag; what they buy is that an assistant reading the
 reply sees the answer, not a pile. And the 30k curated file's recall-1.00
 column sits next to its own price: 8,409 standing tokens every session with
 the answer at 1% of the text — at exactly the size where a diligent file
@@ -200,141 +130,60 @@ to remember.
 
 ---
 
-## The baseline that actually competes
-
-The honest comparison is not "no memory", and it is not a dump of every note
-ever written. It is **a well-maintained `CLAUDE.md`** — pruned to stay readable,
-always in context — plus the occasional prompt to shorten it. That objection
-came from a reviewer of this project, and it is the strongest one available, so
-`curated-file` is that baseline.
-
-Its curation rule is deliberately **blind to the questions**: durable types
-first, an unbiased tie-break within a type, each entry trimmed, filled to a
-token budget. A human pruning a file has no idea what will be asked next, and
-letting the arm peek would be inventing a baseline nobody has.
-
-What it cannot do is hold everything, and that is the whole measurement —
-recall@5 by **total graph size**, every fact questioned, measured rather than
-extrapolated (the ladder, 2026-08-03):
-
-| graph | curated 3k (held) | curated 30k (held) | grep | rag | **engram** |
-|---|---|---|---|---|---|
-| 10 | 1.00 (all) | 1.00 (all) | 0.97 | 1.00 | 1.00 |
-| 100 | 0.36 (36) | 1.00 (all) | 0.82 | 0.97 | 0.96 |
-| 200 | 0.18 (36) | 1.00 (all) | 0.77 | 0.95 | 0.93 |
-| 500 | 0.07 (37) | 0.72 (358) | 0.70 | 0.88 | 0.86 |
-| 1000 | 0.04 (36) | 0.37 (368) | 0.68 | 0.83 | 0.82 |
-| 1500 | 0.02 (36) | 0.25 (368) | 0.68 | 0.80 | 0.80 |
-
-Three things fall out, and the crossovers are now numbers instead of a line's
-extrapolation.
-
-**A 3,000-token file is whole only below ~40 notes** — that is where its
-budget caps out — and it is overtaken by retrieval at 100, where it holds 36
-facts and answers 0.36 against retrieval's 0.96.
-
-**A 30,000-token file genuinely wins while everything fits.** Up to ~200 notes
-it holds the entire graph and beats every retrieving arm on recall — the honest
-point in the file's favour — then falls off the capacity cliff: overtaken at
-500, down to 0.25 by 1500. What that win costs is attention: 30,000 standing
-tokens in context every session, with the answer at ~0.5% of the delivered
-text, against Engram's ~370 tokens per query with the answer at ~20%.
-
-**At every size, curated recall equals its held fraction to the rounding
-digit.** A static file does not care how the question is phrased — if the text
-is present, it is present. It loses on *capacity*, never on retrieval quality,
-because it does no retrieval.
-
-The practical reading survives, with numbers on it: below ~40 notes a
-maintained markdown file is a perfectly reasonable memory and this project is
-not needed; an unusually diligent one stays reasonable to ~200–300; everything
-Engram claims is about what happens after that.
-
-### The ladder
-
-`--ladder` measures exactly where that crossing happens instead of
-extrapolating it: total graph sizes 10 → 1500 under one seed, with the curated
-file scored at **3,000 and 30,000 tokens at every size**, and a closing table
-naming the first size at which each budget falls behind retrieval.
-
-It also changes what gets asked. The sized runs above question a tested third
-of the graph and thin those questions to an assumed type mix; the ladder
-questions **every fact it stores** — no untested distractors, no thinning.
-Noise per question is the same either way (every fact has its own invented
-subject, so the other N−1 notes are the crowd), but the sample is three times
-larger and nothing depends on which third was picked. Assumed workload mixes
-stay where they belong, in the report-side weighting. `--series` runs the
-ladder plus the contradiction bench and writes one combined JSON.
-
-## The big-context question
-
-The obvious objection to any memory layer is that context windows keep growing,
-so retrieval is a temporary problem — just put the notes in the prompt. Three
-measured things make that argument weaker than it sounds, and one makes it
-stronger, so all four are here.
-
-**It stops working, and it stops abruptly.** A 1500-note graph is 377,260
-tokens. That is not a large bill; it is past the window. There is no partial
-version of this failure — the strategy works, works, works, then does not work
-at all, and the note that would have answered the question is not missing from
-the ranking, it is missing from the request. Engram's brief is 3,062 tokens for
-the same graph, and it grows with what is *relevant*, not with what exists.
-
-**Growth is on the wrong side of the ratio.** A project's memory grows without
-bound; a context window grows in occasional steps. The flat-file arm pays for
-every note ever written on every question asked. Engram pays 538 tokens for the
-ten it ranked. Doubling the window doubles what the dump can hold once; it does
-nothing about the next thousand notes.
-
-**Recall is not the same as use.** `whole-file` scores 1.00 on every column here
-*by construction* — the harness credits the fact as retrieved because the text
-was present. Whether a model can find and use one fact inside a 375k-token
-prompt is a completely different question, and this harness does not measure it.
-It is not evidence that dumping works; it is the definition of the baseline.
-
-**And the honest one: prompt caching narrows the cost gap.** The dump is
-byte-identical across every question in a session, so a real deployment would
-cache it and pay roughly a tenth for cache reads. At small and medium corpus
-sizes that is a genuine argument, and the ~5× token advantage above should be
-read as an uncached comparison. It does not rescue the strategy at 375k tokens —
-nothing does, because the limit there is the window and not the price — but
-below that limit, caching is the strongest version of the counter-argument and
-it is fair to say so.
-
-Which of these dominates in practice is not decidable from retrieval metrics
-alone. It needs a live model answering from each arm's context, and that is the
-online half — built as a contract (`src/online.rs`), not yet run. **Those
-results will be published here when they exist.** Until then, the claims on this
-page are about what was retrieved and what it cost, never about answer quality.
-
----
-
 ## Evolution
 
 Every generation of the stack, what it changed, and what that bought — as
 measured when it happened. Early rows predate the attention metrics, so they
 carry the numbers their own era could produce; from 0.8.0 on, the effect
-column is the modern protocol at 1500 notes unless stated.
+column is the modern protocol at 1500 notes unless stated. Each row's full
+story is a section below.
 
 | generation | what changed | measured effect |
 |---|---|---|
 | ≤ 0.7.1 | hybrid RAG, conflict scan, reranker precision layer, NLI logic layer — built on intuition | unmeasured — predates the instrument |
 | 0.7.2 — the instrument | offline harness born: invented-subject corpus, three phrasings, controls, no model in the grading loop | the first honest split: name the thing → recall 1.00; describe it without naming → 0.11 (1000 notes) |
-| 0.7.2 — the retune | keyword weight 0.5 → 0.15, reranker VOTES instead of deciding | +0.135 oblique recall at unchanged token cost |
-| 0.8.0 — measured not promised | attention metrics (focus/noise/FP), gradation ladder, fixed delivery floor | the baseline the next rows move: 528 tok/query, focus 0.10, noise 0.91, R@5 0.81, FP 1.00 |
+| 0.7.2 — the retune | keyword weight 0.5 → 0.15, reranker VOTES instead of deciding | +0.135 oblique recall at unchanged token cost; engram passes pure vectors on the weighted headline |
+| 0.8.0 — measured not promised | attention metrics (focus/noise/FP), gradation ladder, fixed delivery floor | the baseline the next rows move: 528 tok/query, focus 0.10, noise 0.91, R@5 0.81, FP 1.00 — and the crossover sizes where a curated file loses become numbers |
 | 0.8.1 — the knee | trim at the score curve's cliff instead of a fixed depth ([TAA-k](https://arxiv.org/abs/2606.11907), simplified) | 315 tok/query, focus 0.44, noise 0.61, R@5 0.80 — attention tripled for 0.01 recall |
 | 0.8.1 — the phantom line | "likely not in memory" verdict over a self-calibrated confidence line; probes borrow the graph's vocabulary | FP 1.00 → 0.84 at 1500 (0.32 at 100); the probe-register gap gets named |
 | 0.8.1 — the transplants | second probe family: real note sentences with subjects coined out (ICT inverted), max-per-family quantile, damped auto-tune | FP **0.02** at 1500, **0.00** at 100; hedge on ~45% of answerable, recall untouched |
-| next | oblique first-stage gap, listwise reranking, offline consolidation — Sources filed in the eval workbench graph | benched before shipped, as always |
+| 0.8.2 — supersession, measured | `--chains` benches the `replaces` mechanism against its own flat ablation | retired-generation pollution 0.88 → **0.00 by construction** at +0.25 R@1; recency alone does not do what supersession does |
+| 0.8.2 — the first external corpus | LongMemEval adapter: SHA-pinned download, as-is ingestion, retrieval-graded, chat ontology as data; slot vocabulary 12 → 25 | on real chat it was never tuned for: ties rag's R@1 (0.91) within 0.02 R@5 at **208 vs 2,654 tok/query**, zero unwarned answers on the 30 never-answerable questions |
+| 0.8.3 — the null result that mattered | inference batch capped at 2 (was fastembed's 256); default embedder pinned to the fp32 weights every receipt was measured on | daemon runtime growth cut to near nothing, eval wall-clock −40% — and all seven arms identical at 100+500, the receipt that it changed *nothing* it wasn't supposed to |
+| 0.8.7 — search learns time | one temporal grammar (`after`/`before`/`during_version`) over memory and history; `--window` prices the candidate-pool depth | the premise was backwards: a window **buys** recall — oblique 0.263 → 0.830 at 2100 notes, three seeds unanimous; `window_overfetch` 8 → 2; the bench now panics on retrieval errors instead of scoring them zero |
+| 0.8.10 — sessions mix | session-diverse delivery: a rank demotion at the cut so one session's restatements stop crowding out other sessions' evidence; `--sessions` bench, `--lme-turns` tuning loop | at demote 2: top-5 session coverage +0.10–0.12 and full cluster coverage 1.000 at **zero** single-gold cost, three seeds unanimous; inert and cost-free on the chat register — which points the next cycle at the floor |
+| next | the delivery floor, both attacks on one sweep: the per-graph dial-three fit vs full-note reranker input — the winner ships; then the LongMemEval online half | the phantom-q25 fit already measures recall-free at ≤500 notes and −0.01 R@5 at 1500 while trimming more than the fixed floor; the rerank-full half is pending |
 
-The graveyard is part of the evolution. Refuted along the way, each with a
-receipt: spreading activation along edges (wrecks ranking), supervised
-truncation (loses to arithmetic behind a reranker), score-shape QPP gates and
-every per-query null — pool-bottom z, random-background z, Gumbel null-max,
-embedding coherence, local-crowd shoulder — (all blind at 1500: the crowd
-fakes the shape, not just the scale), the knee buffer (rescues nothing at
-scale, burns focus), and full-note reranker input (a null result — the
-snippet was never the bottleneck).
+### The graveyard
+
+The graveyard is part of the evolution — a harness that only reports its wins
+is an advertisement. Refuted along the way, each with a receipt: spreading
+activation along edges (wrecks ranking), supervised truncation (loses to
+arithmetic behind a reranker), score-shape QPP gates and every per-query null
+— pool-bottom z, random-background z, Gumbel null-max, embedding coherence,
+local-crowd shoulder — (all blind at 1500: the crowd fakes the shape, not
+just the scale), the knee buffer (rescues nothing at scale, burns focus), and
+full-note reranker input as a *ranking* fix (a null result at the time — the
+snippet was not the recall bottleneck; it is back on the bench as a
+*delivery-floor* fix, which is a different claim). The early entries,
+implemented, measured and abandoned:
+
+| tried | result |
+|---|---|
+| spreading activation along edges into the ranking | wrecks it — lexical recall 1.00 → 0.88. Real edges *do* carry ~0.09 of oblique signal that randomly rewired edges do not, so the premise was right and the delivery wrong |
+| feeding the cross-encoder whole notes instead of excerpts | worse, 0.31 → 0.28. More text to attend to does not help a small model |
+| rerank depth 60 instead of 30 | no better, twice the cost |
+| the bge query-instruction prefix | no measurable effect |
+| tuning the semantic floor | flat across the entire grid |
+| tuning the score cut and the relative cut | identical recall at every setting |
+
+The rejected list being longer than the shipped list is the normal ratio, and
+the graph-spreading row is the useful one: it is why Engram attaches neighbours
+*after* ranking as delivery rather than *before* it as evidence. That choice buys
++0.06 oblique recall and costs nothing; the alternative was measured and is a
+clear loss.
+
+---
 
 ## Method
 
@@ -379,13 +228,15 @@ corrupt every recall number, so a test asserts that never happens.
 Since the ladder work the vocabulary spans three registers — software
 infrastructure still dominates, salted with laboratory and abstract-process
 categories (assay stations, provenance ledgers, escrow chambers) so no result
-is tuned to one genre's wording. Tables above that predate the widening were
+is tuned to one genre's wording. Tables that predate the widening were
 measured on the software-only vocabulary; the ladder re-measures everything
 under the current corpus.
 
-`replaces` and `conflicts-with` are generated **not at all**, despite being 2.7%
-of real edges: both mutate node state at write time — archival and trust
-demotion — which would silently remove gold facts from search.
+`replaces` and `conflicts-with` are generated **not at all** in the regular
+corpus, despite being 2.7% of real edges: both mutate node state at write time
+— archival and trust demotion — which would silently remove gold facts from
+search. The chains bench (0.8.2) generates exactly that mutation, deliberately
+and separately.
 
 `--terse` restores the old shape, so the difference can be quantified rather
 than asserted.
@@ -444,7 +295,10 @@ overstate the graph.
 
 ---
 
-## The tuning result
+The rest of the page is the record, version by version — the full story
+behind each Evolution row, with the numbers of its own era.
+
+## 0.7.2 — the instrument, and the retune
 
 The retrieval stack has two knobs that decide how a question that *describes*
 something rather than *naming* it gets answered: how much of a hit's relevance
@@ -514,18 +368,148 @@ bge-base as the embedder the shipped stack reaches **full rag parity — 0.97 /
 0.92 — at 346 tokens per query against rag's 2,308.** Tied with pure vectors
 at a seventh of the tokens is the honest sentence.
 
----
+## 0.8.0 — the ladder, and the baseline that actually competes
 
-## The delivery-strategy research cycle (0.8.1)
+The honest comparison is not "no memory", and it is not a dump of every note
+ever written. It is **a well-maintained `CLAUDE.md`** — pruned to stay readable,
+always in context — plus the occasional prompt to shorten it. That objection
+came from a reviewer of this project, and it is the strongest one available, so
+`curated-file` is that baseline.
+
+Its curation rule is deliberately **blind to the questions**: durable types
+first, an unbiased tie-break within a type, each entry trimmed, filled to a
+token budget. A human pruning a file has no idea what will be asked next, and
+letting the arm peek would be inventing a baseline nobody has.
+
+What it cannot do is hold everything, and that is the whole measurement —
+recall@5 by **total graph size**, every fact questioned, measured rather than
+extrapolated (the ladder, 2026-08-03):
+
+| graph | curated 3k (held) | curated 30k (held) | grep | rag | **engram** |
+|---|---|---|---|---|---|
+| 10 | 1.00 (all) | 1.00 (all) | 0.97 | 1.00 | 1.00 |
+| 100 | 0.36 (36) | 1.00 (all) | 0.82 | 0.97 | 0.96 |
+| 200 | 0.18 (36) | 1.00 (all) | 0.77 | 0.95 | 0.93 |
+| 500 | 0.07 (37) | 0.72 (358) | 0.70 | 0.88 | 0.86 |
+| 1000 | 0.04 (36) | 0.37 (368) | 0.68 | 0.83 | 0.82 |
+| 1500 | 0.02 (36) | 0.25 (368) | 0.68 | 0.80 | 0.80 |
+
+Three things fall out, and the crossovers are now numbers instead of a line's
+extrapolation.
+
+**A 3,000-token file is whole only below ~40 notes** — that is where its
+budget caps out — and it is overtaken by retrieval at 100, where it holds 36
+facts and answers 0.36 against retrieval's 0.96.
+
+**A 30,000-token file genuinely wins while everything fits.** Up to ~200 notes
+it holds the entire graph and beats every retrieving arm on recall — the honest
+point in the file's favour — then falls off the capacity cliff: overtaken at
+500, down to 0.25 by 1500. What that win costs is attention: 30,000 standing
+tokens in context every session, with the answer at ~0.5% of the delivered
+text, against Engram's ~370 tokens per query with the answer at ~20%.
+
+**At every size, curated recall equals its held fraction to the rounding
+digit.** A static file does not care how the question is phrased — if the text
+is present, it is present. It loses on *capacity*, never on retrieval quality,
+because it does no retrieval.
+
+The practical reading survives, with numbers on it: below ~40 notes a
+maintained markdown file is a perfectly reasonable memory and this project is
+not needed; an unusually diligent one stays reasonable to ~200–300; everything
+Engram claims is about what happens after that.
+
+### The ladder
+
+`--ladder` measures exactly where that crossing happens instead of
+extrapolating it: total graph sizes 10 → 1500 under one seed, with the curated
+file scored at **3,000 and 30,000 tokens at every size**, and a closing table
+naming the first size at which each budget falls behind retrieval.
+
+It also changes what gets asked. The sized runs question a tested third
+of the graph and thin those questions to an assumed type mix; the ladder
+questions **every fact it stores** — no untested distractors, no thinning.
+Noise per question is the same either way (every fact has its own invented
+subject, so the other N−1 notes are the crowd), but the sample is three times
+larger and nothing depends on which third was picked. Assumed workload mixes
+stay where they belong, in the report-side weighting. `--series` runs the
+ladder plus the contradiction bench and writes one combined JSON.
+
+### The big-context question
+
+The obvious objection to any memory layer is that context windows keep growing,
+so retrieval is a temporary problem — just put the notes in the prompt. Three
+measured things make that argument weaker than it sounds, and one makes it
+stronger, so all four are here.
+
+**It stops working, and it stops abruptly.** A 1500-note graph is 377,260
+tokens. That is not a large bill; it is past the window. There is no partial
+version of this failure — the strategy works, works, works, then does not work
+at all, and the note that would have answered the question is not missing from
+the ranking, it is missing from the request. Engram's brief is 3,062 tokens for
+the same graph, and it grows with what is *relevant*, not with what exists.
+
+**Growth is on the wrong side of the ratio.** A project's memory grows without
+bound; a context window grows in occasional steps. The flat-file arm pays for
+every note ever written on every question asked. Engram pays 538 tokens for the
+ten it ranked. Doubling the window doubles what the dump can hold once; it does
+nothing about the next thousand notes.
+
+**Recall is not the same as use.** `whole-file` scores 1.00 on every column here
+*by construction* — the harness credits the fact as retrieved because the text
+was present. Whether a model can find and use one fact inside a 375k-token
+prompt is a completely different question, and this harness does not measure it.
+It is not evidence that dumping works; it is the definition of the baseline.
+
+**And the honest one: prompt caching narrows the cost gap.** The dump is
+byte-identical across every question in a session, so a real deployment would
+cache it and pay roughly a tenth for cache reads. At small and medium corpus
+sizes that is a genuine argument, and the ~5× token advantage above should be
+read as an uncached comparison. It does not rescue the strategy at 375k tokens —
+nothing does, because the limit there is the window and not the price — but
+below that limit, caching is the strongest version of the counter-argument and
+it is fair to say so.
+
+Which of these dominates in practice is not decidable from retrieval metrics
+alone. It needs a live model answering from each arm's context, and that is the
+online half — built as a contract (`src/online.rs`), not yet run.
+
+## 0.8.1 — calibrated delivery: the research cycle
 
 A literature-first pass over the two problems the 0.8.0 tables left open:
 focus stuck at ~0.10 past 500 notes, and false positives at 1.00 everywhere.
+What it bought, measured as a staircase — one run, same corpus, each row
+adding one mechanism on top of the shipped 0.8.0 stack at 1500 notes:
+
+| configuration | tok/query | focus | noise | R@5 | FP |
+|---|---|---|---|---|---|
+| engram 0.8.0, as shipped | 512 | 0.10 | 0.91 | 0.80 | 1.00 |
+| + knee trim *(shipped in 0.8.1)* | 317 | **0.44** | **0.63** | 0.79 | 1.00 |
+| + calibrated "likely not in memory" note *(shipped in 0.8.1)* | 317 | **0.44** | **0.63** | 0.79 | 0.12 |
+| + transplant probes: the line calibrates in the graph's own voice *(0.8.1)* | 317 | **0.44** | **0.63** | 0.79 | **0.02** |
+
+The FP column's history in one paragraph: below a confidence line the graph
+calibrates on itself, the reply is prefixed *"this likely isn't in memory —
+nearest candidates below"*. Candidates are never removed; a warned answer to
+an unanswerable question counts as honest. The first self-calibration
+(question templates over the graph's own vocabulary) reached 0.32 at 100
+notes but 0.84 at 1500 — templated probes are lexically in register, not
+syntactically, and the corpus crowd outruns them. The last row fixes that
+with a second probe family: **transplants** — real sentences from real notes
+with their subject words swapped for coinages
+([ICT](https://aclanthology.org/P19-1612/) inverted). They score exactly like
+the graph's loudest noise register, the line takes the max of the two
+families, and end-to-end FP lands at **0.02 at 1500 and 0.00 at 100** — no
+labels, no LLM, self-calibrated. The price: the warning appears on ~45% of
+real questions in the lowest-confidence range (their answers still
+delivered); `weak_line_quantile` is the per-graph softness knob if that reads
+too cautious.
+
+### What the literature contributed
+
 Method: candidate strategies from the papers, implemented as score-set
 arithmetic in `--tricks`, scored from one recorded retrieval pass per size
 (100 / 300 / 1000 / 2000 — the last measured once as a trend anchor; the
 working maximum is 1500 from here on).
-
-### What the literature contributed
 
 The adopted mechanism is **Tail-Aware Adaptive-k**
 ([arXiv:2606.11907](https://arxiv.org/abs/2606.11907)): ranked score curves
@@ -533,7 +517,7 @@ are steep-flat-steep — a relevance head, a transition, a noise tail — so cut
 at the knee instead of at a fixed depth. Training-free, which is what makes
 it admissible in a daemon that never runs an LLM; our simplified knee
 (largest relative drop, min-cliff 0.25) is its first stage without the EVT
-validation pass. The calibrated weak line below applies split-conformal
+validation pass. The calibrated weak line applies split-conformal
 thinking with one twist of our own: the harness invents subjects that
 provably aren't in the corpus, so a graph can mint its own calibration set
 with zero human labels.
@@ -563,29 +547,211 @@ the reply leads with *"this likely isn't in memory"*, a warned control counts
 as a correct outcome, and the only remaining false positive is a control
 answered confidently.
 
-Nothing in this section ships by default yet — it is the measured basis for
-the next product decision: knee-mode delivery, and the weak line as the
-second dial under the one auto-tune switch.
+## 0.8.2 — supersession measured, and the first external corpus
 
-## Mechanisms that were tried and rejected
+Two modes landed after a fair external criticism: every number above is graded
+on a corpus this harness generated itself.
 
-Recorded because a harness that only reports its wins is an advertisement. Each
-was implemented, measured, and abandoned:
+### The current answer, not the whole argument
 
-| tried | result |
-|---|---|
-| spreading activation along edges into the ranking | wrecks it — lexical recall 1.00 → 0.88. Real edges *do* carry ~0.09 of oblique signal that randomly rewired edges do not, so the premise was right and the delivery wrong |
-| feeding the cross-encoder whole notes instead of excerpts | worse, 0.31 → 0.28. More text to attend to does not help a small model |
-| rerank depth 60 instead of 30 | no better, twice the cost |
-| the bge query-instruction prefix | no measurable effect |
-| tuning the semantic floor | flat across the entire grid |
-| tuning the score cut and the relative cut | identical recall at every setting |
+Real project memory gets **re-decided**. The chain bench (`--chains`)
+generates what the regular corpus deliberately bans: ADR-shaped supersession
+history. Each chain is one invented subject decided `--chain-len` times,
+every generation `replaces`-ing the last (retired ones backdated a month
+apart), written through the real engine so each `replaces` edge archives the
+generation under it. Then it asks every stack about the subject's current
+state. 200 facts plus 20 chains × 3 generations, real embeddings:
 
-The rejected list being longer than the shipped list is the normal ratio, and
-the graph-spreading row is the useful one: it is why Engram attaches neighbours
-*after* ranking as delivery rather than *before* it as evidence. That choice buys
-+0.06 oblique recall and costs nothing; the alternative was measured and is a
-clear loss.
+| stack | R@1 | R@5 | pollution | head-first | tok/query |
+|---|---|---|---|---|---|
+| **engram (superseded — the product)** | **0.75** | 0.85 | **0.00** | **1.00** | 220 |
+| engram, no supersession (ablation) | 0.50 | 0.83 | 0.88 | 0.59 | 293 |
+| rag (pure vectors) | 0.30 | 0.97 | 0.97 | 0.41 | 2,144 |
+| grep | 0.00 | 0.67 | 0.70 | 0.02 | 2,657 |
+| curated-file (3k tokens) | 0.00 | 0.00 | 0.00 | 0.00 | 3,000 |
+| whole-file | 1.00 | 1.00 | 1.00 | 0.00 | 165,115 |
+
+`pollution` is the share of questions that delivered a **retired** generation.
+The product's zero is structural — supersession archives the losing side out
+of retrieval at write time — while every baseline hands the model conflicting
+generations and leaves it to guess which one is current: rag *finds*
+everything (R@5 0.97) and ranks the right generation first 30% of the time;
+the whole file always contains the answer and **never** delivers it
+unambiguously (`head-first` for file-in-context arms = the current answer
+without a retired generation beside it). The curated 3k file simply doesn't
+hold the chains at all.
+
+And retirement is not removal. The report asserts three mechanism checks by
+test, not just by table: every retired generation must be absent from search
+*when queried with its own title verbatim* (`retired searchable`, want 0.00)
+while staying fetchable by id, archived (`retired fetchable`, want 1.00) and
+fully reachable from the head along the `replaces` chain (`history
+reachable`, want 1.00) — so the winning hit carries its own history as 1-hop
+context on 100% of answered questions. The one-line version: without the
+`replaces` verb, 88% of current-state questions deliver a retired generation
+(97% for pure rag) and the current one wins the ranking 59% of the time (41%
+for rag); with it, pollution is 0.00 by construction at +0.25 R@1. Recency
+alone does not do what supersession does, and no flat stack can.
+
+### LongMemEval — graded on data we didn't generate
+
+**`--longmemeval s|oracle`** runs
+[LongMemEval](https://github.com/xiaowu0162/LongMemEval) (Wu et al., MIT) —
+500 questions, each over its own multi-session chat history, evidence sessions
+labelled, ~6% deliberately unanswerable. The full write-up — the comparison
+table, the chat ontology, and why this is deliberately *not* a LongMemEval
+score — has its own page: [`LONGMEMEVAL.md`](./LONGMEMEVAL.md). The dataset is fetched on demand into
+`eval/data/` (gitignored) and verified against a SHA-256 pinned in
+`longmem.rs`; the repo never carries it. Ingestion is **as-is** — one note per
+chat turn, verbatim, because Engram ships no extractor and the agent-written
+register would be a different (disclosed) experiment. Grading is **retrieval
+over the full population**: a hit is a delivered note from a labelled evidence
+session, no LLM judge anywhere, and the `_abs` questions are scored under the
+calibrated recommendation verdict — a warned answer is honest, an unwarned one
+is the false positive. `--lme-limit N` runs a smoke subset and says so loudly
+in the output; a capped run is not a result. The full-population run
+(2026-08-08, `results/longmemeval-s-full.json`): engram ties rag's R@1
+(0.91) within 0.02 R@5 at **208 vs 2,654 tokens/query**, and the 30
+never-answerable questions produce **zero unwarned answers** — the
+calibrated line holds on real chat it was never tuned for.
+
+By default the LongMemEval stores run under a **chat ontology defined as
+data** (`--lme-ontology chat`): two per-graph types replacing the stock
+software set — user `statement` (a small rank prior, so the first-party
+source wins ties against restating replies) over assistant `reply` (no
+prior, muted). It is the one distinction the as-is ingester can make without
+a classifier, and it exercises exactly the per-graph GraphConfig machinery
+the product ships: same engine, zero engine changes, a register it was never
+written for. Notes are stamped with their session's real date, so recency
+reads the conversation timeline rather than a flat ingestion instant.
+`--lme-ontology default` runs the stock set beside it.
+
+## 0.8.7 — time-scoped search
+
+`--window` exists because 0.8.7 shipped a knob nobody had measured: when a
+search carries an `after`/`before` window, the candidate pool is deepened by
+`policy.window_overfetch`, on the theory that a date-blind index would
+otherwise bury the in-window answer. The theory needed pricing.
+
+Every tested question is asked **twice** — once unscoped, once inside the
+aligned calendar block that contains its gold — over a corpus whose capture
+dates are spread deterministically across 720 days. The unscoped row is the
+reference; what matters is the *gap*.
+
+At 2100 notes (100 tested + 2000 distractors — density varied, question set
+held byte-identical), **mean of three seeds**:
+
+| `window_overfetch` | pool | R@5 30d | oblique 30d | R@5 180d | oblique 180d |
+|---|---|---|---|---|---|
+| reference — no window | 120 | 0.743 | 0.263 | 0.743 | 0.263 |
+| 1 | 120 | 0.922 | 0.766 | 0.844 | 0.550 |
+| **2** | 240 | **0.943** | **0.830** | **0.848** | **0.561** |
+| 4 | 480 | 0.943 | 0.830 | 0.848 | 0.561 |
+| 8 *(was shipped)* | 960 | 0.943 | 0.830 | 0.848 | 0.561 |
+| 16 | 1920 | 0.943 | 0.830 | 0.848 | 0.561 |
+
+**The window is not a tax, it is a filter.** The premise the over-fetch was
+built on was backwards: scoping in time *buys* recall. Oblique recall —
+questions that never name their subject — goes **0.26 → 0.83**, because the
+window deletes distractors the query had no way to discriminate. This is the
+largest single oblique gain this harness has measured, it is unanimous across
+seeds and both widths, and it is not a ranking change at all: time is a second
+axis of evidence the stack otherwise has no access to. Three research cycles of
+ranking knobs (see [the graveyard](#the-graveyard)) moved oblique
+recall far less than this.
+
+**Depth past 2 is dead weight — the firm half of the result.** At 2, 4, 8 and
+16 the mean recall is identical to three decimals at both widths, while
+wall-clock grows with the pool. Rank-1 recall drifts slightly *down* as the
+pool deepens (0.805 → 0.799 at 30 days): the cross-encoder mis-promotes out of
+a larger candidate set, the same effect the oblique work found. The default
+moved 8 → 2 on this.
+
+**The 1 → 2 step is the soft half, and is reported as such.** At 30 days all
+three seeds agree (+0.021 R@5, +0.064 oblique); at 180 days the mean gain is
++0.004 and one seed of three moves the other way (−0.023). Two is chosen as the
+cheapest depth that is never worse, not as a peak.
+
+At 300 notes the multiplier is invisible entirely — 1 and 16 agree to three
+decimals — because the pool is already 40% of the graph. That is the reason
+this bench varies `--distractors` rather than `--sizes`.
+
+The run also found a live bug, which is the better argument for the mode than
+either number above: at the deepest setting recall was *exactly* 0.000. sqlite-vec
+refuses a KNN `k` over 4096 instead of capping it, the vector search quadruples
+`k` internally, and the deepened pool sailed past the ceiling — so search
+returned an error, and the harness was scoring that error as a zero.
+Both were fixed: the store clamps its ask, and **the bench now panics on a
+search error instead of recording it as a miss**. A failed search and a search
+that found nothing produce identical numbers and opposite conclusions.
+
+```sh
+cargo run -p engram-eval --features fastembed -- --window --sizes 100 --distractors 20
+```
+
+## 0.8.10 — session-diverse delivery
+
+`--sessions` exists because retrieval was provenance-blind at the cut: a
+multi-session subject — decided in one session, broken in another, explained
+in a third — is asked as ONE question whose candidates are all strong, and a
+session that said the same thing four times could fill four delivery slots
+while another session's only statement fell off the list.
+
+The corpus plants multi-session **clusters** on top of the regular crowd: one
+invented subject, one complementary aspect per session (different kinds, so
+the aspects are claims, not restatements), and four entailed recaps beside
+each aspect *in the same session*. The aggregation question names the
+subject; **coverage** — how many of the subject's sessions reach the
+delivered list — is the gain, and the regular single-gold questions re-asked
+under the same knob are the price.
+
+At 420 notes (three seeds) and 1875 notes (seed 1), sweeping
+`policy.session_diversity_demote` (rank positions each additional
+same-session hit is demoted at the cut):
+
+| demote | cov@5 (420, 3-seed mean) | full coverage | cov@5 (1875) | R@5 regular | oblique regular |
+|---|---|---|---|---|---|
+| 0 *(was shipped)* | 0.653 | 0.38–0.63 | 0.707 | reference | reference |
+| 1 | 0.694 | **1.000** | 0.787 | =, +0.006, = | =, +0.017, = |
+| **2** | **0.750** | **1.000** | **0.827** | =, +0.012, +0.006 | =, +0.035, +0.018 |
+| 3 | 0.806 | 1.000 | 0.853 | −0.003 at 1875 | −0.007 at 1875 |
+| 5 | 0.986 | 1.000 | 0.960 | −0.006 at 420/s1 | −0.018 at 420/s1 |
+| 8 | 1.000 | 1.000 | 0.987 | −0.012 at 420/s1 | −0.035 at 420/s1 |
+
+**Two is the top of the free zone.** At demote 1–2 every cluster reaches full
+session coverage at the delivered list, top-5 coverage rises ~0.10–0.12, and
+the single-gold recall columns never move down on any seed — twice they move
+*up*, because the demotion pushed a same-session distractor past a gold. The
+cost only appears from 5 upward (seed 1 gives back 0.02–0.04 oblique).
+`policy::SESSION_DIVERSITY_DEMOTE = 2.0` ships on this table. The mechanism
+is rank-based on purpose — the 0.8.1 register lesson is that absolute score
+thresholds don't transfer between graphs while relative mechanisms do — and
+it is identity by construction on a single-session graph, which is why every
+other table in this README is unchanged.
+
+The real-data check rides on LongMemEval: `--lme-turns 50` (below) grades
+a `multi-cov` column — the share of a question's labelled answer sessions
+represented in the delivered list, over the questions whose evidence spans
+more than one session. That check found the knob **inert on the chat
+register, and cost-free**: 100 questions at demote 0 and demote 2 are
+identical to the digit, because engram's delivered list there is already
+floor/knee-trimmed to ~2–3 hits (111 tok/query) — the pool never exceeds the
+limit, so the selection never engages. The multi-cov gap against uncut pure
+vectors (0.56 vs 0.95) is owned by the delivery trims on that register, not
+by the cut — the delivery-floor work's problem, not this knob's.
+
+```sh
+cargo run -p engram-eval --features fastembed -- --sessions --sizes 100,500
+```
+
+### The short LongMemEval loop
+
+`--lme-turns N` caps each question's ingested haystack at ~N turns. The
+labelled answer sessions are ALWAYS kept — a cap that could drop the evidence
+would grade retrieval on an unanswerable world — and distractor sessions fill
+the budget in haystack order. At 50 turns a 100-question pass takes ~7
+minutes on the GPU embedder instead of hours, which makes it a tuning loop;
+receipts carry `turns_cap` and are not comparable to full-haystack numbers.
 
 ---
 
@@ -619,140 +785,6 @@ clear loss.
 - Without `--features fastembed` the embedder is a character-frequency bag. The
   harness runs and the lexical path is exercised; the semantic numbers are noise,
   and every fake run says so at the top.
-
----
-
-## External corpus and history — the 0.8.2 additions
-
-Two modes landed after a fair external criticism: every number above is graded
-on a corpus this harness generated itself.
-
-**`--longmemeval s|oracle`** runs
-[LongMemEval](https://github.com/xiaowu0162/LongMemEval) (Wu et al., MIT) —
-500 questions, each over its own multi-session chat history, evidence sessions
-labelled, ~6% deliberately unanswerable. The full write-up — the comparison
-table, the chat ontology, and why this is deliberately *not* a LongMemEval
-score — has its own page: [`LONGMEMEVAL.md`](./LONGMEMEVAL.md). The dataset is fetched on demand into
-`eval/data/` (gitignored) and verified against a SHA-256 pinned in
-`longmem.rs`; the repo never carries it. Ingestion is **as-is** — one note per
-chat turn, verbatim, because Engram ships no extractor and the agent-written
-register would be a different (disclosed) experiment. Grading is **retrieval
-over the full population**: a hit is a delivered note from a labelled evidence
-session, no LLM judge anywhere, and the `_abs` questions are scored under the
-calibrated recommendation verdict — a warned answer is honest, an unwarned one
-is the false positive. `--lme-limit N` runs a smoke subset and says so loudly
-in the output; a capped run is not a result. The full-population run
-(2026-08-08, `results/longmemeval-s-full.json`): engram ties rag's R@1
-(0.91) within 0.02 R@5 at **208 vs 2,654 tokens/query**, and the 30
-never-answerable questions produce **zero unwarned answers** — the
-calibrated line holds on real chat it was never tuned for.
-
-By default the LongMemEval stores run under a **chat ontology defined as
-data** (`--lme-ontology chat`): two per-graph types replacing the stock
-software set — user `statement` (a small rank prior, so the first-party
-source wins ties against restating replies) over assistant `reply` (no
-prior, muted). It is the one distinction the as-is ingester can make without
-a classifier, and it exercises exactly the per-graph GraphConfig machinery
-the product ships: same engine, zero engine changes, a register it was never
-written for. Notes are stamped with their session's real date, so recency
-reads the conversation timeline rather than a flat ingestion instant.
-`--lme-ontology default` runs the stock set beside it.
-
-**`--chains`** generates what the regular corpus deliberately bans: ADR-shaped
-supersession history. Each chain is one invented subject decided
-`--chain-len` times, every generation `replaces`-ing the last (retired ones
-backdated a month apart), written through the real engine so each `replaces`
-edge archives the generation under it. The report answers three questions:
-
-- **current** — asked about the subject, does the live head come back
-  (R@1/R@5), and does a retired generation ever arrive beside it
-  (`pollution` — 0.00 by construction on the superseded store)?
-- **flat ablation** — the identical facts with no supersession edges, so
-  every generation stays live: what pollution looks like without the
-  mechanism, and whether recency alone would have picked the head.
-- **retired means retired** — every retired generation must be absent from
-  search *when queried with its own title verbatim* (`retired searchable`,
-  want 0.00) while staying fetchable by id, archived (`retired fetchable`,
-  want 1.00) and fully reachable from the head along the `replaces` chain
-  (`history reachable`, want 1.00). Retirement is not removal; both halves
-  are asserted by tests, not just reported.
-
-The measured table — the product against its own no-supersession ablation,
-rag, grep, the curated file, and the whole file — sits at the front of this
-page: [supersession, measured](#the-current-answer-not-the-whole-argument--supersession-measured-082).
-The one-line version: without the `replaces` verb, 88% of current-state
-questions deliver a retired generation (97% for pure rag) and the current
-one wins the ranking 59% of the time (41% for rag); with it, pollution is
-0.00 by construction at +0.25 R@1 — while every retired generation stays
-fetchable by id and walkable from the head. Recency alone does not do what
-supersession does, and no flat stack can.
-
----
-
-## Time-scoped search — the 0.8.7 addition
-
-`--window` exists because 0.8.7 shipped a knob nobody had measured: when a
-search carries an `after`/`before` window, the candidate pool is deepened by
-`policy.window_overfetch`, on the theory that a date-blind index would
-otherwise bury the in-window answer. The theory needed pricing.
-
-Every tested question is asked **twice** — once unscoped, once inside the
-aligned calendar block that contains its gold — over a corpus whose capture
-dates are spread deterministically across 720 days. The unscoped row is the
-reference; what matters is the *gap*.
-
-At 2100 notes (100 tested + 2000 distractors — density varied, question set
-held byte-identical), **mean of three seeds**:
-
-| `window_overfetch` | pool | R@5 30d | oblique 30d | R@5 180d | oblique 180d |
-|---|---|---|---|---|---|
-| reference — no window | 120 | 0.743 | 0.263 | 0.743 | 0.263 |
-| 1 | 120 | 0.922 | 0.766 | 0.844 | 0.550 |
-| **2** | 240 | **0.943** | **0.830** | **0.848** | **0.561** |
-| 4 | 480 | 0.943 | 0.830 | 0.848 | 0.561 |
-| 8 *(was shipped)* | 960 | 0.943 | 0.830 | 0.848 | 0.561 |
-| 16 | 1920 | 0.943 | 0.830 | 0.848 | 0.561 |
-
-**The window is not a tax, it is a filter.** The premise the over-fetch was
-built on was backwards: scoping in time *buys* recall. Oblique recall —
-questions that never name their subject — goes **0.26 → 0.83**, because the
-window deletes distractors the query had no way to discriminate. This is the
-largest single oblique gain this harness has measured, it is unanimous across
-seeds and both widths, and it is not a ranking change at all: time is a second
-axis of evidence the stack otherwise has no access to. Three research cycles of
-ranking knobs (see *Mechanisms that were tried and rejected*) moved oblique
-recall far less than this.
-
-**Depth past 2 is dead weight — the firm half of the result.** At 2, 4, 8 and
-16 the mean recall is identical to three decimals at both widths, while
-wall-clock grows with the pool. Rank-1 recall drifts slightly *down* as the
-pool deepens (0.805 → 0.799 at 30 days): the cross-encoder mis-promotes out of
-a larger candidate set, the same effect the oblique work found. The default
-moved 8 → 2 on this.
-
-**The 1 → 2 step is the soft half, and is reported as such.** At 30 days all
-three seeds agree (+0.021 R@5, +0.064 oblique); at 180 days the mean gain is
-+0.004 and one seed of three moves the other way (−0.023). Two is chosen as the
-cheapest depth that is never worse, not as a peak.
-
-At 300 notes the multiplier is invisible entirely — 1 and 16 agree to three
-decimals — because the pool is already 40% of the graph. That is the reason
-this bench varies `--distractors` rather than `--sizes`.
-
-The run also found a live bug, which is the better argument for the mode than
-either number above: at the deepest setting recall was *exactly* 0.000. sqlite-vec
-refuses a KNN `k` over 4096 instead of capping it, the vector search quadruples
-`k` internally, and the deepened pool sailed past the ceiling — so search
-returned an error, and the harness was scoring that error as a zero.
-Both were fixed: the store clamps its ask, and **the bench now panics on a
-search error instead of recording it as a miss**. A failed search and a search
-that found nothing produce identical numbers and opposite conclusions.
-
-```sh
-cargo run -p engram-eval --features fastembed -- --window --sizes 100 --distractors 20
-```
-
----
 
 ## The online half — not yet run
 
@@ -795,15 +827,16 @@ Results will be added here once they are measured.
 
 | file | |
 |---|---|
-| `generate.rs` | the corpus: facts, three phrasings, distractors, controls, twins, NLI pairs |
+| `generate.rs` | the corpus: facts, three phrasings, distractors, controls, twins, NLI pairs, session clusters |
 | `arms.rs` | the baselines and their token accounting |
 | `variants.rs` | retrieval strategies, including ones that do not ship |
 | `metrics.rs` | recall@k, MRR, twin confusion, threshold separation |
 | `nli_eval.rs` | confusion matrix and per-label precision/recall |
-| `run.rs` | the suite, the fusion sweep, the strategy grid, the contradiction bench |
+| `run.rs` | the suite, the fusion sweep, the strategy grid, the floor sweep, the contradiction bench |
 | `chains.rs` | supersession chains: current-state recall, pollution, the flat ablation |
 | `window.rs` | time-scoped search: what a window costs against the same question unscoped, swept over candidate-pool depth |
-| `longmem.rs` | the LongMemEval adapter: pinned download, as-is ingestion, retrieval grading |
+| `sessions.rs` | session-diverse delivery: cluster coverage as the gain, the regular questions as the price |
+| `longmem.rs` | the LongMemEval adapter: pinned download, as-is ingestion, retrieval grading, the `--lme-turns` tuning loop |
 | `CONTRADICTIONS.md` | the logic layer's own metric — the model swap, the gate, the real-graph check |
 | `online.rs` | the online half's contract |
 | `rng.rs` | seeded splitmix64 — every run reproduces from `--seed` |

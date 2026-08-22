@@ -1306,6 +1306,13 @@ pub fn budget(cfg: &Config) -> anyhow::Result<BudgetReport> {
 #[derive(Debug, Clone, Serialize)]
 pub struct FloorPoint {
     pub floor: f64,
+    /// Set when this floor was FITTED by the dial-three candidate formula —
+    /// this quantile of every score a phantom (control) question reached, the
+    /// noise body rather than its ceiling (Problem 00b227i6tdob) — instead of
+    /// coming from the observed-distribution grid. The formula is per-graph
+    /// by construction; the row prices it on this register.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dial_quantile: Option<f64>,
     pub recall_at_5: f64,
     pub oblique_recall_at_5: f64,
     /// Share of answerable questions where the floor left nothing — the
@@ -1381,6 +1388,9 @@ pub fn floor_sweep(cfg: &Config) -> anyhow::Result<FloorReport> {
             p.delivery_floor = 0.0;
             p.knee_cliff = None;
             p.rerank_full_note = cfg.rerank_full;
+            // Raw curves are also diversity-free: a session-diverse selection
+            // would change which hits get recorded out of the pool.
+            p.session_diversity_demote = 0.0;
         })?;
 
         let mut recs = Vec::new();
@@ -1411,20 +1421,31 @@ pub fn floor_sweep(cfg: &Config) -> anyhow::Result<FloorReport> {
             .chain(control_scores.iter().flatten().copied())
             .collect();
         all.sort_by(f64::total_cmp);
-        let mut floors = vec![0.0];
+        let mut floors: Vec<(f64, Option<f64>)> = vec![(0.0, None)];
         const STEPS: usize = 20;
         for i in 1..=STEPS {
             if all.is_empty() {
                 break;
             }
             let q = all[(i * (all.len() - 1)) / STEPS];
-            if floors.last().is_none_or(|l| q - l > 1e-9) {
-                floors.push(q);
+            if floors.last().is_none_or(|(l, _)| q - l > 1e-9) {
+                floors.push((q, None));
+            }
+        }
+        // The dial-three candidates: fit the floor from THIS graph's phantom
+        // score body — what auto-tune's third dial would run — and price each
+        // fit on the same recorded curves the grid rows use.
+        let mut phantom: Vec<f64> = control_scores.iter().flatten().copied().collect();
+        phantom.sort_by(f64::total_cmp);
+        if !phantom.is_empty() {
+            for q in [0.25, 0.50, 0.75, 0.90] {
+                let idx = ((phantom.len() - 1) as f64 * q).ceil() as usize;
+                floors.push((phantom[idx.min(phantom.len() - 1)], Some(q)));
             }
         }
 
         let mut points = Vec::new();
-        for &floor in &floors {
+        for &(floor, dial_quantile) in &floors {
             let (mut hit5, mut obl_hit, mut obl_n, mut declined) = (0usize, 0usize, 0usize, 0usize);
             let (mut noise_sum, mut focus_sum) = (0.0f64, 0.0f64);
             let (mut focus_n, mut returned_sum, mut tokens_sum) = (0usize, 0usize, 0usize);
@@ -1465,6 +1486,7 @@ pub fn floor_sweep(cfg: &Config) -> anyhow::Result<FloorReport> {
             let n = recs.len().max(1);
             points.push(FloorPoint {
                 floor,
+                dial_quantile,
                 recall_at_5: hit5 as f64 / n as f64,
                 oblique_recall_at_5: obl_hit as f64 / obl_n.max(1) as f64,
                 declined_answerable: declined as f64 / n as f64,
@@ -1863,6 +1885,9 @@ pub fn tricks(cfg: &Config) -> anyhow::Result<TricksReport> {
             p.delivery_floor = 0.0;
             p.knee_cliff = None;
             p.rerank_full_note = cfg.rerank_full;
+            // Raw curves are also diversity-free: a session-diverse selection
+            // would change which hits get recorded out of the pool.
+            p.session_diversity_demote = 0.0;
         })?;
 
         let mut recs = Vec::new();
@@ -2275,6 +2300,7 @@ pub fn qpp(cfg: &Config) -> anyhow::Result<QppReport> {
             p.knee_cliff = None;
             p.rerank_trust_weight = 0.0;
             p.rerank_full_note = cfg.rerank_full;
+            p.session_diversity_demote = 0.0;
         })?;
 
         // The per-query null: a seeded sample of notes retrieval never saw

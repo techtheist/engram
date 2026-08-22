@@ -1038,6 +1038,10 @@ pub struct Fact {
     /// generations, so the flat-store ablation can ask whether recency alone
     /// would have picked the head.
     pub backdate_days: u64,
+    /// The session this fact is written under. `None` (the whole regular
+    /// corpus) keeps the historical single-session write — every existing
+    /// bench is byte-identical — and only the sessions bench assigns ids.
+    pub session: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1091,6 +1095,40 @@ impl Chain {
     pub fn retired(&self) -> &[String] {
         &self.keys[..self.keys.len() - 1]
     }
+}
+
+/// Shape of the session-clustered corpus the sessions bench asks for.
+#[derive(Debug, Clone, Copy)]
+pub struct SessionSpec {
+    /// Multi-session subjects generated on top of the regular corpus.
+    pub clusters: usize,
+    /// Sessions per cluster — each contributes one complementary aspect fact.
+    pub sessions_per_cluster: usize,
+    /// Near-duplicate restatements written beside each aspect, in the SAME
+    /// session — the crowd a session-blind cut fills its slots with.
+    pub recaps_per_session: usize,
+    /// Sessions the regular (non-cluster) corpus is spread across, the way a
+    /// real graph accumulates a few notes per working session.
+    pub session_pool: usize,
+}
+
+/// One multi-session subject: `sessions_per_cluster` complementary aspect
+/// facts, each born in its own session and shadowed by same-session recaps.
+/// The aggregation question is answered WELL only by covering every session's
+/// aspect — coverage, not rank, is what the sessions bench grades.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionCluster {
+    pub subject: String,
+    /// The aggregation query ("what do we know about X") — deliberately
+    /// naming the subject, so every cluster note is a strong candidate and
+    /// the ranking has to CHOOSE which sessions fill the slots.
+    pub question: String,
+    /// Fact key -> the cluster session ordinal whose information it carries
+    /// (an aspect and its recaps carry the same ordinal: finding either
+    /// covers that session's contribution).
+    pub members: Vec<(String, usize)>,
+    /// The aspect keys, one per session ordinal — the gold set.
+    pub aspects: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1290,7 +1328,31 @@ pub fn corpus_full(
     profile: &Profile,
     type_mix: &[(Kind, u32)],
 ) -> Corpus {
-    corpus_impl(tested, distractors, seed, profile, type_mix, 0, 0)
+    corpus_impl(tested, distractors, seed, profile, type_mix, 0, 0, None).0
+}
+
+/// The sessions-bench corpus: the regular corpus spread across a session
+/// pool, plus `spec.clusters` multi-session subjects (see [`SessionCluster`]).
+/// Clusters claim slot ordinals past the regular range exactly like chains
+/// do, so no cluster note can answer a regular question.
+pub fn corpus_sessions(
+    tested: usize,
+    distractors: usize,
+    seed: u64,
+    profile: &Profile,
+    type_mix: &[(Kind, u32)],
+    spec: SessionSpec,
+) -> (Corpus, Vec<SessionCluster>) {
+    corpus_impl(
+        tested,
+        distractors,
+        seed,
+        profile,
+        type_mix,
+        0,
+        0,
+        Some(spec),
+    )
 }
 
 /// As `corpus_full`, plus `n_chains` ADR-shaped supersession chains of
@@ -1315,9 +1377,12 @@ pub fn corpus_chained(
         type_mix,
         n_chains,
         chain_len,
+        None,
     )
+    .0
 }
 
+#[allow(clippy::too_many_arguments)]
 fn corpus_impl(
     tested: usize,
     distractors: usize,
@@ -1326,7 +1391,8 @@ fn corpus_impl(
     type_mix: &[(Kind, u32)],
     n_chains: usize,
     chain_len: usize,
-) -> Corpus {
+    sessions: Option<SessionSpec>,
+) -> (Corpus, Vec<SessionCluster>) {
     let mut rng = Rng::new(seed);
     let vocab = Vocab::new(&mut rng);
     let mut names = Names::new(&mut rng);
@@ -1400,17 +1466,155 @@ fn corpus_impl(
         profile,
     );
 
+    // Session assignment + multi-session clusters (sessions bench only).
+    // Clusters draw fresh names BEFORE the controls, like chains, so a
+    // phantom subject can never collide with a cluster's.
+    let clusters = match sessions {
+        Some(spec) => {
+            assert!(
+                n_chains == 0,
+                "the sessions corpus does not combine with chains"
+            );
+            // Regular facts spread across the pool with an avalanched mix —
+            // `i % pool` would correlate session with kind (i % KINDS).
+            for (i, f) in facts.iter_mut().enumerate() {
+                let mix = (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+                f.session = Some(format!("sess{:03}", mix % spec.session_pool.max(1) as u64));
+            }
+            session_clusters(
+                &mut facts,
+                spec,
+                tested + distractors,
+                &vocab,
+                &mut names,
+                profile,
+            )
+        }
+        None => Vec::new(),
+    };
+
     let (unanswerable, phantom_subjects) = controls(tested, &mut names);
 
-    Corpus {
-        seed,
-        facts,
-        unanswerable,
-        phantom_subjects,
-        pairs,
-        edges,
-        chains,
+    (
+        Corpus {
+            seed,
+            facts,
+            unanswerable,
+            phantom_subjects,
+            pairs,
+            edges,
+            chains,
+        },
+        clusters,
+    )
+}
+
+/// Generate the multi-session clusters. Each cluster claims a fresh invented
+/// subject and a slot triple past the range the regular facts used (the same
+/// trick chains use, asserted disjoint), then writes one ASPECT fact per
+/// session — a different kind each, so the aspects are complementary claims
+/// about one subject rather than restatements — and `recaps_per_session`
+/// entailed restatements beside each aspect in the SAME session. Everything
+/// is written untested: cluster notes are graded only by the sessions bench's
+/// own coverage metric, never by the regular recall columns.
+fn session_clusters(
+    facts: &mut Vec<Fact>,
+    spec: SessionSpec,
+    total: usize,
+    vocab: &Vocab,
+    names: &mut Names,
+    profile: &Profile,
+) -> Vec<SessionCluster> {
+    if spec.clusters == 0 {
+        return Vec::new();
     }
+    assert!(
+        (1..=KINDS.len()).contains(&spec.sessions_per_cluster),
+        "aspects reuse the cluster's slot triple across kinds, so more \
+         sessions than kinds would mint duplicate claims"
+    );
+    let used = total.div_ceil(KINDS.len());
+    assert!(
+        used + spec.clusters <= MAX_PER_KIND,
+        "{} clusters exceed the free slot space",
+        spec.clusters
+    );
+
+    let mut out = Vec::with_capacity(spec.clusters);
+    for ci in 0..spec.clusters {
+        let j = used + ci;
+        let (c, s1, s2) = vocab.slots(j);
+        let component = COMPONENTS[c];
+        let subject = format!("{} {component}", coined(names.next()));
+
+        let mut members = Vec::new();
+        let mut aspects = Vec::new();
+        for s in 0..spec.sessions_per_cluster {
+            let kind = KINDS[s % KINDS.len()];
+            let session = format!("cs{ci:03}-{s}");
+            let ord = (total + ci * spec.sessions_per_cluster + s) as u64;
+            let mut aspect = build(
+                kind,
+                format!("c{ci:03}a{s}"),
+                subject.clone(),
+                Slots {
+                    component,
+                    s1,
+                    s2,
+                    j,
+                },
+                None,
+                false,
+                profile,
+                ord,
+            );
+            // Suffixed like chain generations: within a cluster the subject
+            // is shared on purpose, and the corpus-wide uniqueness set must
+            // not read that as two facts answering one question.
+            aspect.oblique_key = format!("{} [{}]", aspect.oblique_key, aspect.key);
+            aspect.session = Some(session.clone());
+
+            for r in 0..spec.recaps_per_session {
+                let key = format!("c{ci:03}s{s}r{r}");
+                let mix = ord
+                    .wrapping_add(1 + r as u64)
+                    .wrapping_mul(0x9E37_79B9_7F4A_7C15);
+                let (_, entailed) = restatements(&aspect, ci * 31 + s * 7 + r);
+                facts.push(Fact {
+                    key: key.clone(),
+                    kind,
+                    subject: subject.clone(),
+                    title: extend_title(entailed, mix),
+                    // The aspect's body verbatim: a recap is the same session
+                    // saying the same thing again, and the crowding the bench
+                    // measures needs the embedding to agree.
+                    body: aspect.body.clone(),
+                    answer: aspect.answer.clone(),
+                    predicate: aspect.predicate.clone(),
+                    questions: Vec::new(),
+                    tested: false,
+                    oblique_key: format!("{} [{key}]", aspect.oblique_key),
+                    twin_of: None,
+                    code_refs: aspect.code_refs.clone(),
+                    backdate_days: 0,
+                    session: Some(session.clone()),
+                });
+                members.push((key, s));
+            }
+
+            members.push((aspect.key.clone(), s));
+            aspects.push(aspect.key.clone());
+            facts.push(aspect);
+        }
+
+        out.push(SessionCluster {
+            question: format!("what do we know about the {subject}?"),
+            subject,
+            members,
+            aspects,
+        });
+    }
+    out
 }
 
 /// Generate the supersession chains. Each chain claims a fresh invented
@@ -1490,6 +1694,7 @@ fn chains(
                 // further back, so the flat-store ablation can ask whether
                 // recency alone would have picked the head.
                 backdate_days: ((chain_len - 1 - g) as u64) * 30,
+                session: None,
             });
             keys.push(key);
         }
@@ -1800,6 +2005,7 @@ fn build(
         twin_of,
         code_refs,
         backdate_days: 0,
+        session: None,
     }
 }
 

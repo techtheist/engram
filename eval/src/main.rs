@@ -69,6 +69,13 @@ OPTIONS:
                           questions costs in recall, and what trimming the
                           weak tail buys in focus/noise. The calibrated-
                           delivery default comes from this table
+    --sessions            0.8.10 session-diversity bench: multi-session
+                          subjects (one aspect per session + same-session
+                          recaps) asked as one aggregation question, swept
+                          over policy.session_diversity_demote. Coverage of
+                          the subject's sessions is the gain; the regular
+                          single-gold questions re-asked under the same knob
+                          are the price
     --window              0.8.7 time-window bench: what a time-scoped search
                           costs against the same question asked unscoped, swept
                           over the candidate-pool depth (policy.window_overfetch)
@@ -91,6 +98,11 @@ OPTIONS:
                           verdict. Expect a long run on the s variant
     --lme-limit N         cap LongMemEval questions — a smoke run, loudly
                           labelled as capped, never a quotable result
+    --lme-turns N         per-question ingestion budget in turns (~50 makes a
+                          fast tuning loop; the full s haystack is ~494).
+                          Answer sessions are ALWAYS kept, distractor
+                          sessions fill to the budget — receipts carry the
+                          cap and are not comparable to full-haystack runs
     --lme-ontology V      per-graph ontology for the LongMemEval stores:
                           chat (default — two data-defined types, user
                           `statement` with a rank prior over assistant
@@ -155,10 +167,12 @@ fn cli() -> anyhow::Result<()> {
     let mut sample = false;
     let mut chains_mode = false;
     let mut window_mode = false;
+    let mut sessions_mode = false;
     let mut chain_count: Option<usize> = None;
     let mut chain_len: usize = 3;
     let mut longmemeval: Option<String> = None;
     let mut lme_limit: Option<usize> = None;
+    let mut lme_turns: Option<usize> = None;
     let mut lme_ontology: String = "chat".to_string();
     let mut lme_embedder: String = "fastembed".to_string();
     let mut lme_workers: Option<usize> = None;
@@ -207,10 +221,12 @@ fn cli() -> anyhow::Result<()> {
             }
             "--chains" => chains_mode = true,
             "--window" => window_mode = true,
+            "--sessions" => sessions_mode = true,
             "--chain-count" => chain_count = Some(value()?.parse()?),
             "--chain-len" => chain_len = value()?.parse()?,
             "--longmemeval" => longmemeval = Some(value()?),
             "--lme-limit" => lme_limit = Some(value()?.parse()?),
+            "--lme-turns" => lme_turns = Some(value()?.parse()?),
             "--lme-ontology" => lme_ontology = value()?,
             "--lme-embedder" => lme_embedder = value()?,
             "--lme-workers" => lme_workers = Some(value()?.parse()?),
@@ -261,6 +277,15 @@ fn cli() -> anyhow::Result<()> {
         }
         return Ok(());
     }
+    if sessions_mode {
+        let report = engram_eval::sessions::run(&cfg)?;
+        engram_eval::sessions::print(&report);
+        if let Some(path) = json_out {
+            std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
+            println!("\nwrote {path}");
+        }
+        return Ok(());
+    }
     if chains_mode {
         anyhow::ensure!(chain_len >= 2, "--chain-len needs at least 2 generations");
         let n =
@@ -281,6 +306,7 @@ fn cli() -> anyhow::Result<()> {
             &lme_ontology,
             &lme_embedder,
             lme_workers,
+            lme_turns,
         )?;
         print_longmem(&report);
         if let Some(path) = json_out {
@@ -583,18 +609,26 @@ fn print_longmem(r: &engram_eval::longmem::LmeReport) {
         "runtime: embedder={}  reranker={}  ontology={}  limit={}  notes/question ~{:.0}",
         r.embedder, r.reranker, r.ontology, r.limit, r.notes_mean
     );
+    if let Some(t) = r.turns_cap {
+        println!("!! TURNS CAPPED at ~{t}/question — a tuning loop, not comparable to full runs");
+    }
     if r.embeddings_are_fake {
         println!("!! FAKE EMBEDDINGS — every number below is noise");
     }
     println!(
-        "\n  {:<14} {:>6} {:>6} {:>6} {:>6} {:>9}",
-        "arm", "asked", "R@1", "R@5", "MRR", "tok/query"
+        "\n  {:<14} {:>6} {:>6} {:>6} {:>6} {:>9} {:>9}",
+        "arm", "asked", "R@1", "R@5", "MRR", "tok/query", "multi-cov"
     );
     for row in &r.arms {
         let a = &row.score;
+        let cov = if a.multi_session_questions > 0 {
+            format!("{:.2}", a.multi_session_coverage)
+        } else {
+            "-".to_string()
+        };
         println!(
-            "  {:<14} {:>6} {:>6.2} {:>6.2} {:>6.2} {:>9.0}",
-            row.arm, a.queries, a.recall_at_1, a.recall_at_5, a.mrr, a.tokens_mean
+            "  {:<14} {:>6} {:>6.2} {:>6.2} {:>6.2} {:>9.0} {:>9}",
+            row.arm, a.queries, a.recall_at_1, a.recall_at_5, a.mrr, a.tokens_mean, cov
         );
     }
     if !r.by_type.is_empty() {
@@ -832,7 +866,7 @@ fn print_floor(r: &engram_eval::run::FloorReport) {
         );
         for p in &s.points {
             println!(
-                "  {:>7.3} {:>6.2} {:>6.2} {:>9.2} {:>9.2} {:>6.2} {:>6.2} {:>6.1} {:>9.0}",
+                "  {:>7.3} {:>6.2} {:>6.2} {:>9.2} {:>9.2} {:>6.2} {:>6.2} {:>6.1} {:>9.0}{}",
                 p.floor,
                 p.recall_at_5,
                 p.oblique_recall_at_5,
@@ -842,6 +876,10 @@ fn print_floor(r: &engram_eval::run::FloorReport) {
                 p.focus,
                 p.mean_returned,
                 p.tokens_mean,
+                match p.dial_quantile {
+                    Some(q) => format!("  <- dial-3 fit (phantom q{:.0})", q * 100.0),
+                    None => String::new(),
+                },
             );
         }
     }

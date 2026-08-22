@@ -237,6 +237,20 @@ fn evidence_rank(delivered_sids: &[&str], answers: &[String]) -> Option<usize> {
         .position(|sid| answers.iter().any(|a| a == sid))
 }
 
+/// Share of the answer sessions represented in the delivered list — only
+/// meaningful (Some) when the evidence spans more than one session, which is
+/// the population session-diverse ranking exists for.
+fn session_coverage(delivered_sids: &[&str], answers: &[String]) -> Option<f64> {
+    if answers.len() < 2 {
+        return None;
+    }
+    let covered = answers
+        .iter()
+        .filter(|a| delivered_sids.contains(&a.as_str()))
+        .count();
+    Some(covered as f64 / answers.len() as f64)
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct LmeArmScore {
     pub queries: usize,
@@ -244,6 +258,13 @@ pub struct LmeArmScore {
     pub recall_at_5: f64,
     pub mrr: f64,
     pub tokens_mean: f64,
+    /// Questions whose evidence spans MORE than one labelled answer session
+    /// — the population session-diverse ranking exists for.
+    pub multi_session_questions: usize,
+    /// Mean share of a question's answer sessions represented in the
+    /// delivered list, over the multi-session questions (ranked arms only;
+    /// 0 when the arm reports no coverage).
+    pub multi_session_coverage: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -281,6 +302,11 @@ pub struct LmeReport {
     /// True when `--lme-limit` dropped part of the population. A capped run
     /// is a smoke test, not a result — the cap is printed, never silent.
     pub capped: bool,
+    /// `--lme-turns`: per-question ingestion budget in turns (answer sessions
+    /// always kept, distractor sessions fill to the budget). `None` = the
+    /// full haystack. A capped world is a TUNING loop — its numbers are not
+    /// comparable to full-haystack receipts and say so here.
+    pub turns_cap: Option<usize>,
     pub embedder: String,
     pub reranker: String,
     pub embeddings_are_fake: bool,
@@ -305,6 +331,8 @@ struct Tally {
     hit5: usize,
     mrr: f64,
     tokens: usize,
+    coverage: f64,
+    multi: usize,
 }
 
 impl Tally {
@@ -315,9 +343,11 @@ impl Tally {
             hit5: 0,
             mrr: 0.0,
             tokens: 0,
+            coverage: 0.0,
+            multi: 0,
         }
     }
-    fn add(&mut self, rank: Option<usize>, tokens: usize) {
+    fn add(&mut self, rank: Option<usize>, tokens: usize, coverage: Option<f64>) {
         self.queries += 1;
         self.tokens += tokens;
         if let Some(r) = rank {
@@ -329,6 +359,10 @@ impl Tally {
             }
             self.mrr += 1.0 / (r + 1) as f64;
         }
+        if let Some(c) = coverage {
+            self.coverage += c;
+            self.multi += 1;
+        }
     }
     fn score(&self) -> LmeArmScore {
         let n = self.queries.max(1) as f64;
@@ -338,6 +372,8 @@ impl Tally {
             recall_at_5: self.hit5 as f64 / n,
             mrr: self.mrr / n,
             tokens_mean: self.tokens as f64 / n,
+            multi_session_questions: self.multi,
+            multi_session_coverage: self.coverage / self.multi.max(1) as f64,
         }
     }
 }
@@ -347,6 +383,7 @@ impl Tally {
 /// "chat" (the fitted two-type config, the default) or "default" (the stock
 /// software ontology, every turn an `Insight`) — the delta between the two
 /// runs is what the type layer buys on a register it was configured for.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     cfg: &Config,
     dataset: &str,
@@ -354,6 +391,7 @@ pub fn run(
     ontology: &str,
     embedder_kind: &str,
     workers: Option<usize>,
+    turns_cap: Option<usize>,
 ) -> anyhow::Result<LmeReport> {
     anyhow::ensure!(
         matches!(ontology, "chat" | "default"),
@@ -369,6 +407,12 @@ pub fn run(
     let run_n = cap.map(|n| n.min(total)).unwrap_or(total);
     if run_n < total {
         eprintln!("  ! --lme-limit kept {run_n} of {total} questions — a smoke run, not a result");
+    }
+    if let Some(t) = turns_cap {
+        eprintln!(
+            "  ! --lme-turns {t}: each question ingests ~{t} turns (answer sessions always \
+             kept) — a tuning loop, not comparable to full-haystack numbers"
+        );
     }
 
     // The GPU swap changes the runtime, not the model: same bge-small
@@ -424,7 +468,7 @@ pub fn run(
                 loop {
                     let qi = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some(&q) = qs.get(qi) else { break };
-                    let out = run_question(cfg, ontology, &embed, &rerank, dim, q);
+                    let out = run_question(cfg, ontology, &embed, &rerank, dim, q, turns_cap);
                     *slots[qi].lock().unwrap() = Some(out);
                     let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                     if d.is_multiple_of(10) {
@@ -464,15 +508,15 @@ pub fn run(
                 }
             }
             QVerdict::Graded(g) => {
-                engram.add(g.engram.rank, g.engram.cost);
+                engram.add(g.engram.rank, g.engram.cost, g.engram.coverage);
                 by_type
                     .entry(out.question_type.clone())
                     .or_insert_with(Tally::new)
-                    .add(g.engram.rank, g.engram.cost);
-                rag.add(g.rag.rank, g.rag.cost);
-                grep.add(g.grep.rank, g.grep.cost);
-                curated.add(g.curated.rank, g.curated.cost);
-                whole.add(g.whole.rank, g.whole.cost);
+                    .add(g.engram.rank, g.engram.cost, g.engram.coverage);
+                rag.add(g.rag.rank, g.rag.cost, g.rag.coverage);
+                grep.add(g.grep.rank, g.grep.cost, g.grep.coverage);
+                curated.add(g.curated.rank, g.curated.cost, g.curated.coverage);
+                whole.add(g.whole.rank, g.whole.cost, g.whole.coverage);
             }
         }
     }
@@ -495,6 +539,7 @@ pub fn run(
         questions_total: total,
         questions_run: run_n,
         capped: run_n < total,
+        turns_cap,
         embeddings_are_fake: embedder_name.contains("(fake)"),
         embedder: embedder_name,
         reranker: reranker_name,
@@ -520,10 +565,12 @@ pub fn run(
 }
 
 /// One arm's grade on one question: where the evidence landed, what the
-/// delivery billed.
+/// delivery billed, and (ranked arms, multi-session questions only) how much
+/// of the evidence's session spread the delivery covered.
 struct ArmGrade {
     rank: Option<usize>,
     cost: usize,
+    coverage: Option<f64>,
 }
 
 struct ArmsGrade {
@@ -553,6 +600,32 @@ struct QOutcome {
     verdict: QVerdict,
 }
 
+/// The sessions a turn budget keeps: every answer session unconditionally —
+/// a cap that could drop the evidence would grade retrieval on an
+/// unanswerable world — then distractor sessions in haystack order until the
+/// budget is met. Indices come back in haystack order either way.
+fn capped_sessions(q: &LmeQuestion, turns_cap: Option<usize>) -> Vec<usize> {
+    let all = 0..q.haystack_sessions.len();
+    let Some(cap) = turns_cap else {
+        return all.collect();
+    };
+    let (mut keep, rest): (Vec<usize>, Vec<usize>) = all.partition(|&i| {
+        q.answer_session_ids
+            .iter()
+            .any(|a| a == &q.haystack_session_ids[i])
+    });
+    let mut turns: usize = keep.iter().map(|&i| q.haystack_sessions[i].len()).sum();
+    for i in rest {
+        if turns >= cap {
+            break;
+        }
+        keep.push(i);
+        turns += q.haystack_sessions[i].len();
+    }
+    keep.sort_unstable();
+    keep
+}
+
 /// One question, one world: build the store, ingest the haystack, grade
 /// every arm. Self-contained so questions can run on parallel workers.
 fn run_question(
@@ -562,6 +635,7 @@ fn run_question(
     rerank: &Option<Arc<dyn Reranker>>,
     dim: usize,
     q: &LmeQuestion,
+    turns_cap: Option<usize>,
 ) -> anyhow::Result<QOutcome> {
     let mut notes = 0usize;
     // One store per question: the haystack is this question's world.
@@ -588,12 +662,8 @@ fn run_question(
     // the same turns feeds the file-shaped baselines.
     let mut sid_of: HashMap<String, String> = HashMap::new();
     let mut flat_turns: Vec<(String, String)> = Vec::new();
-    for (i, (sid, session)) in q
-        .haystack_session_ids
-        .iter()
-        .zip(&q.haystack_sessions)
-        .enumerate()
-    {
+    for i in capped_sessions(q, turns_cap) {
+        let (sid, session) = (&q.haystack_session_ids[i], &q.haystack_sessions[i]);
         let session_date = q.haystack_dates.get(i).and_then(|d| unix_from_lme_date(d));
         for turn in session {
             let content = turn.content.trim();
@@ -679,6 +749,7 @@ fn run_question(
     let engram_grade = ArmGrade {
         rank: evidence_rank(&delivered_sids, &q.answer_session_ids),
         cost,
+        coverage: session_coverage(&delivered_sids, &q.answer_session_ids),
     };
 
     // The pure-vector baseline on the same store and embeddings: nearest
@@ -699,6 +770,7 @@ fn run_question(
     let rag_grade = ArmGrade {
         rank: evidence_rank(&rag_sids, &q.answer_session_ids),
         cost: rag_cost,
+        coverage: session_coverage(&rag_sids, &q.answer_session_ids),
     };
 
     // Keyword search over the flat turns — most-matched-terms first,
@@ -724,6 +796,7 @@ fn run_question(
     let grep_grade = ArmGrade {
         rank: evidence_rank(&grep_sids, &q.answer_session_ids),
         cost: grep_cost,
+        coverage: session_coverage(&grep_sids, &q.answer_session_ids),
     };
 
     // The hand-maintained file, chat edition. Chat turns carry no types,
@@ -751,6 +824,8 @@ fn run_question(
     let curated_grade = ArmGrade {
         rank: curated_hit.then_some(0),
         cost: curated_cost,
+        // A budgeted dump has no ranking to diversify — no coverage claim.
+        coverage: None,
     };
 
     // The whole haystack in context — LongMemEval-S is sized so this
@@ -769,6 +844,7 @@ fn run_question(
             whole: ArmGrade {
                 rank: Some(0),
                 cost: whole_cost,
+                coverage: None,
             },
         }),
     })

@@ -625,7 +625,9 @@ fn new_node(f: &Fact) -> NewNode {
         created_at,
         durability: engram_core::Durability::Stable,
         source: engram_core::Source::Claude,
-        session_id: Some("eval".to_string()),
+        // The sessions bench assigns per-fact sessions; every other corpus
+        // keeps the historical single-session write.
+        session_id: Some(f.session.clone().unwrap_or_else(|| "eval".to_string())),
         status: f.kind.status(),
         code_refs: f.code_refs.clone(),
         tags: vec![],

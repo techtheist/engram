@@ -1,0 +1,109 @@
+{
+  "dataset": "s",
+  "file": "longmemeval_s_cleaned.json",
+  "questions_total": 500,
+  "questions_run": 100,
+  "capped": true,
+  "turns_cap": 50,
+  "embedder": "bge-small-en-v1.5 (ollama gpu, gguf f16)",
+  "reranker": "jina-reranker-v1-turbo-en",
+  "embeddings_are_fake": false,
+  "ontology": "chat",
+  "limit": 10,
+  "notes_mean": 55.96,
+  "arms": [
+    {
+      "arm": "engram",
+      "score": {
+        "queries": 94,
+        "recall_at_1": 0.9574468085106383,
+        "recall_at_5": 0.9574468085106383,
+        "mrr": 0.9574468085106383,
+        "tokens_mean": 111.3936170212766,
+        "multi_session_questions": 30,
+        "multi_session_coverage": 0.5572222222222222
+      }
+    },
+    {
+      "arm": "rag",
+      "score": {
+        "queries": 94,
+        "recall_at_1": 1.0,
+        "recall_at_5": 1.0,
+        "mrr": 1.0,
+        "tokens_mean": 2708.4574468085107,
+        "multi_session_questions": 30,
+        "multi_session_coverage": 0.9505555555555556
+      }
+    },
+    {
+      "arm": "grep",
+      "score": {
+        "queries": 94,
+        "recall_at_1": 0.8404255319148937,
+        "recall_at_5": 0.9680851063829787,
+        "mrr": 0.8941489361702127,
+        "tokens_mean": 3849.4893617021276,
+        "multi_session_questions": 30,
+        "multi_session_coverage": 0.8227777777777779
+      }
+    },
+    {
+      "arm": "curated-file",
+      "score": {
+        "queries": 94,
+        "recall_at_1": 1.0,
+        "recall_at_5": 1.0,
+        "mrr": 1.0,
+        "tokens_mean": 2559.521276595745,
+        "multi_session_questions": 0,
+        "multi_session_coverage": 0.0
+      }
+    },
+    {
+      "arm": "whole-file",
+      "score": {
+        "queries": 94,
+        "recall_at_1": 1.0,
+        "recall_at_5": 1.0,
+        "mrr": 1.0,
+        "tokens_mean": 15217.68085106383,
+        "multi_session_questions": 0,
+        "multi_session_coverage": 0.0
+      }
+    }
+  ],
+  "by_type": [
+    {
+      "question_type": "multi-session",
+      "score": {
+        "queries": 30,
+        "recall_at_1": 0.9333333333333333,
+        "recall_at_5": 0.9333333333333333,
+        "mrr": 0.9333333333333333,
+        "tokens_mean": 151.4,
+        "multi_session_questions": 30,
+        "multi_session_coverage": 0.5572222222222222
+      }
+    },
+    {
+      "question_type": "single-session-user",
+      "score": {
+        "queries": 64,
+        "recall_at_1": 0.96875,
+        "recall_at_5": 0.96875,
+        "mrr": 0.96875,
+        "tokens_mean": 92.640625,
+        "multi_session_questions": 0,
+        "multi_session_coverage": 0.0
+      }
+    }
+  ],
+  "abstention": {
+    "questions": 6,
+    "empty": 2,
+    "warned": 4,
+    "unwarned": 0,
+    "tuned_stores": 4
+  }
+}
