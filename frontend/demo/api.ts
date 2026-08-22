@@ -132,6 +132,18 @@ export const api: EngramApi = {
     suspects: () => ok(engine.state().suspects),
     scanConflicts: () => ok({ added: engine.scanSuspects() }),
 
+    // Pre-recorded: a plausible judged history for the NLI scoreboard.
+    nliAgreement: () =>
+        ok({
+            judged: 14,
+            with_hint: 12,
+            hits: 7,
+            false_alarms: 2,
+            misses: 1,
+            passes: 2,
+            agreement: 0.75,
+        }),
+
     // Pre-recorded: NLI verdicts need the local model.
     checkClaim: (text) => ok(claimReport(text)),
 

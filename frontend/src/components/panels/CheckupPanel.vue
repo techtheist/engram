@@ -10,6 +10,7 @@ import type {
     AnsweredHint,
     ClaimReport,
     GraphNode,
+    NliAgreement,
     PromotionCandidate,
     StaleTriage,
 } from '@/types/graph'
@@ -26,6 +27,7 @@ const { nodeList, edgeList } = storeToRefs(store)
 
 const open = ref(false)
 const nliReady = ref<boolean | null>(null)
+const agreement = ref<NliAgreement | null>(null)
 
 watch(open, async (isOpen) => {
     if (!isOpen) return
@@ -33,6 +35,11 @@ watch(open, async (isOpen) => {
         nliReady.value = (await api.system()).nli
     } catch {
         nliReady.value = null
+    }
+    try {
+        agreement.value = await api.nliAgreement()
+    } catch {
+        agreement.value = null
     }
 })
 
@@ -156,6 +163,7 @@ async function runClaim(): Promise<void> {
 /** Every report on this panel names nodes of the graph we are leaving. */
 onProjectSwitch(() => {
     nliReady.value = null
+    agreement.value = null
     sweepNote.value = {}
     answered.value = null
     staleTriage.value = null
@@ -309,6 +317,32 @@ const STRUCT_CAP = 8
                     <span v-if="t.score" class="pct">{{ Math.round(t.score * 100) }}%</span>
                 </div>
             </div>
+        </section>
+
+        <section v-if="agreement && agreement.judged > 0" class="block">
+            <h3 class="block-title">NLI scoreboard — models nominate, people judge</h3>
+            <p v-if="agreement.with_hint === 0" class="note">
+                none of the {{ agreement.judged }} judged pairs carried an NLI hint —
+                the scoreboard fills in as hinted suspects get judged in Review
+            </p>
+            <template v-else>
+                <p class="struct-line">
+                    the model's hint matched your verdict on
+                    <b>{{ Math.round((agreement.agreement ?? 0) * 100) }}%</b>
+                    of {{ agreement.with_hint }} judged pair{{ agreement.with_hint > 1 ? 's' : '' }}
+                </p>
+                <p class="struct-line">
+                    <b>{{ agreement.hits }}</b> flagged as contradiction and confirmed ·
+                    <b>{{ agreement.false_alarms }}</b> flagged but dismissed ·
+                    <b>{{ agreement.misses }}</b> unflagged yet confirmed ·
+                    <b>{{ agreement.passes }}</b> unflagged and dismissed
+                </p>
+                <p v-if="agreement.judged > agreement.with_hint" class="note">
+                    {{ agreement.judged - agreement.with_hint }} more judged
+                    pair{{ agreement.judged - agreement.with_hint > 1 ? 's' : '' }} carried no hint
+                    (judged before the NLI layer, or the model wasn't loaded)
+                </p>
+            </template>
         </section>
 
         <section class="block">

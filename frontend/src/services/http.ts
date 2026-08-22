@@ -5,6 +5,7 @@ import type {
     AuditPage,
     StaleTriage,
     AuditSweep,
+    NliAgreement,
     ClaimReport,
     DriftEntry,
     ExportGraph,
@@ -158,6 +159,9 @@ export const api = {
 
     /** Run the candidate sweep now; returns how many new suspects were queued. */
     scanConflicts: () => request<{ added: number }>('/conflicts/scan', { method: 'POST' }),
+
+    /** NLI hint vs. judge verdict agreement over the judged suspect history. */
+    nliAgreement: () => request<NliAgreement>('/conflicts/agreement'),
 
     /** Verify a claim against the canon via the local NLI model. */
     checkClaim: (text: string, limit = 8) =>

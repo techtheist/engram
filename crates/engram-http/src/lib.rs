@@ -24,9 +24,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use engram_core::{
     AnsweredHint, AuditOrigin, AuditPage, AuditSweep, ChangeEvent, ClaimReport, Drift, Edge,
-    EdgePatch, EdgeType, Engine, Error, ExportGraph, Hub, ImportSummary, NewEdge, NewNode, Node,
-    NodePatch, NodeType, ProjectInfo, SuspectVerdict, SuspectView, TagStat, TimelineEntry,
-    registry,
+    EdgePatch, EdgeType, Engine, Error, ExportGraph, Hub, ImportSummary, NewEdge, NewNode,
+    NliAgreement, Node, NodePatch, NodeType, ProjectInfo, SuspectVerdict, SuspectView, TagStat,
+    TimelineEntry, registry,
 };
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
@@ -651,6 +651,7 @@ fn api_router(state: Arc<AppState>) -> Router {
         .route("/tags", get(tags))
         .route("/conflicts/suspects", get(list_suspects))
         .route("/conflicts/suspects/{id}/resolve", post(resolve_suspect))
+        .route("/conflicts/agreement", get(nli_agreement))
         .route("/conflicts/scan", post(scan_conflicts))
         .route("/claims/check", post(check_claim))
         .route("/audit/conflicts", post(audit_conflicts))
@@ -1385,6 +1386,17 @@ async fn list_suspects(
     let engine = state.engine_arc(&scope)?;
     let suspects = pane(&engine).suspects()?;
     Ok(Json(suspects))
+}
+
+/// The Checkup panel's NLI scoreboard: how often the local model's suspect
+/// hint agreed with the judge's actual verdict, over the judged history.
+async fn nli_agreement(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+) -> Result<Json<NliAgreement>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    let report = pane(&engine).nli_agreement()?;
+    Ok(Json(report))
 }
 
 /// Verified code refs (PLAN §10): nodes whose path-shaped refs no longer

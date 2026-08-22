@@ -480,6 +480,30 @@ pub struct SuspectEndpoint {
     pub title: String,
 }
 
+/// The "models nominate, people judge" loop, scored: over judged suspect
+/// pairs that carried an NLI hint, how often the hint matched the verdict.
+/// The row keeps no finer grain than confirmed/dismissed (conflict and
+/// replaces both land as confirmed), so agreement reads "the hint said
+/// contradiction and the judge kept the pair".
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct NliAgreement {
+    /// Judged pairs total, hinted or not.
+    pub judged: usize,
+    /// Judged pairs that carried an NLI hint — the report's denominator.
+    pub with_hint: usize,
+    /// Hint said contradiction, judge confirmed the pair.
+    pub hits: usize,
+    /// Hint said contradiction, judge dismissed the pair.
+    pub false_alarms: usize,
+    /// Hint said entailment/neutral, judge confirmed anyway.
+    pub misses: usize,
+    /// Hint said entailment/neutral, judge dismissed.
+    pub passes: usize,
+    /// (hits + passes) / with_hint; absent until a hinted pair is judged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agreement: Option<f64>,
+}
+
 /// One node's NLI verdict against a checked claim (PLAN §7A check_claim).
 #[derive(Debug, Clone, Serialize)]
 pub struct ClaimVerdict {

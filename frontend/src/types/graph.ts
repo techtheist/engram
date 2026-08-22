@@ -125,6 +125,25 @@ export interface SuspectEndpoint {
 }
 
 /**
+ * The "models nominate, people judge" loop, scored: over judged suspect
+ * pairs that carried an NLI hint, how often the hint matched the verdict.
+ */
+export interface NliAgreement {
+    judged: number
+    with_hint: number
+    /** Hint said contradiction, judge confirmed the pair. */
+    hits: number
+    /** Hint said contradiction, judge dismissed the pair. */
+    false_alarms: number
+    /** Hint said entailment/neutral, judge confirmed anyway. */
+    misses: number
+    /** Hint said entailment/neutral, judge dismissed. */
+    passes: number
+    /** (hits + passes) / with_hint; absent until a hinted pair is judged. */
+    agreement?: number
+}
+
+/**
  * A node whose path-shaped code_refs no longer exist in the project
  * (GET /drift): the code moved and the memory didn't — needs review.
  */

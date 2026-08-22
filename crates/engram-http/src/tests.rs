@@ -635,6 +635,14 @@ async fn conflict_scan_flow_over_http() {
 
     let (_, after) = req(&app, "GET", "/conflicts/suspects", None).await;
     assert!(after.as_array().unwrap().is_empty());
+
+    // The judged pair feeds the NLI scoreboard; the test engine runs without
+    // an NLI model, so the pair is judged-but-unhinted and no rate exists.
+    let (status, report) = req(&app, "GET", "/conflicts/agreement", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(report["judged"], 1);
+    assert_eq!(report["with_hint"], 0);
+    assert!(report.get("agreement").is_none());
     let _ = a;
 }
 

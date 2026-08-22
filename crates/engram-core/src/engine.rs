@@ -3751,6 +3751,36 @@ impl Engine {
         self.store.suspects_pending()
     }
 
+    /// Score the "models nominate, people judge" loop: over every judged
+    /// suspect pair, how often the local NLI hint (nli_label) matched the
+    /// judge's verdict. Read-only — a report, never a calibration input
+    /// (dial one reads similarity, not the hint).
+    pub fn nli_agreement(&self) -> Result<NliAgreement> {
+        let mut r = NliAgreement::default();
+        for s in self.store.all_suspects()? {
+            let confirmed = match s.status {
+                SuspectStatus::Confirmed => true,
+                SuspectStatus::Dismissed => false,
+                SuspectStatus::Suspected => continue,
+            };
+            r.judged += 1;
+            let Some(label) = s.nli_label.as_deref() else {
+                continue;
+            };
+            r.with_hint += 1;
+            match (label == "contradiction", confirmed) {
+                (true, true) => r.hits += 1,
+                (true, false) => r.false_alarms += 1,
+                (false, true) => r.misses += 1,
+                (false, false) => r.passes += 1,
+            }
+        }
+        if r.with_hint > 0 {
+            r.agreement = Some((r.hits + r.passes) as f64 / r.with_hint as f64);
+        }
+        Ok(r)
+    }
+
     /// Tags in use, freshest first (the pane's dropdown; the brief's vocabulary).
     pub fn tags(&self, limit: usize) -> Result<Vec<TagStat>> {
         self.store.tag_stats(limit)

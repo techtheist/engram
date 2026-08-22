@@ -872,6 +872,66 @@ fn write_time_suspects_carry_nli_hints() {
 }
 
 #[test]
+fn nli_agreement_scores_hints_against_verdicts() {
+    let e = engine_with_nli();
+    // Four near-identical pairs: "contra" pairs draw contradiction hints,
+    // containment pairs entailment hints (FakeNli). "yes" marks what the
+    // judge will confirm, so each of the four cells gets at least one pair.
+    // The fake embedder may also queue cross-pairs; the marker rule judges
+    // those deterministically and the expected counts track them.
+    for t in [
+        "contra alpha yes plan",
+        "contra alpha yes plan!",
+        "contra beta cache rule",
+        "contra beta cache rule!",
+        "gamma retry policy yes",
+        "gamma retry policy yes!",
+        "delta log format",
+        "delta log format!",
+    ] {
+        e.add_node(new_node(NodeType::Decision, t, "")).unwrap();
+    }
+    e.scan_conflicts().unwrap();
+    let before = e.nli_agreement().unwrap();
+    assert_eq!(before.judged, 0, "pending pairs don't count");
+    assert!(before.agreement.is_none());
+
+    let suspects = e.suspects().unwrap();
+    assert!(suspects.len() >= 4, "the four intended pairs queue");
+    let (mut hits, mut fa, mut misses, mut passes) = (0, 0, 0, 0);
+    for s in &suspects {
+        let confirm = s.a.title.contains("yes");
+        let contra = s.nli_label.as_deref() == Some("contradiction");
+        match (contra, confirm) {
+            (true, true) => hits += 1,
+            (true, false) => fa += 1,
+            (false, true) => misses += 1,
+            (false, false) => passes += 1,
+        }
+        let verdict = if confirm {
+            SuspectVerdict::Conflict
+        } else {
+            SuspectVerdict::Dismiss
+        };
+        e.resolve_suspect(&s.id, verdict, Source::User).unwrap();
+    }
+
+    let r = e.nli_agreement().unwrap();
+    assert_eq!(r.judged, suspects.len());
+    assert_eq!(
+        (r.hits, r.false_alarms, r.misses, r.passes),
+        (hits, fa, misses, passes)
+    );
+    assert!(
+        r.hits >= 1 && r.false_alarms >= 1 && r.misses >= 1 && r.passes >= 1,
+        "every cell exercised: {r:?}"
+    );
+    assert_eq!(r.with_hint, hits + fa + misses + passes);
+    let expect = (hits + passes) as f64 / r.with_hint as f64;
+    assert!((r.agreement.unwrap() - expect).abs() < 1e-9);
+}
+
+#[test]
 fn check_claim_buckets_supports_contradicts_silent() {
     let e = engine_with_nli();
     e.add_node(new_node(
