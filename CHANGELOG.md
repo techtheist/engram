@@ -3,6 +3,61 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
+## v0.8.9
+
+### The agent binds itself — and the graph grades its own referee
+
+- **`set_project`: a session can now rebind itself to the right project
+  (#4).** Some clients advertise the MCP roots capability but answer
+  `roots/list` empty (Windsurf and the Devin CLI, per field reports), so the
+  binding ladder can't see the workspace and the session lands on a fallback
+  graph. The new tool closes that gap from the agent's side: call it with a
+  project name, id, or any absolute path inside a registered root, and *this*
+  session rebinds and gets that project's brief back in the same reply — no
+  global setting is touched, and other sessions keep their bindings. Unknown
+  selectors are refused with the roster of registered projects, so a typo
+  can't silently land in the wrong graph. When a session binds to the home
+  graph or the default-agent-project rung of the ladder, its brief now opens
+  with a one-line hint naming the tool; the skills teach the pattern, and a
+  single `AGENTS.md` line — *"at the start of a session, call engram's
+  `set_project` with the absolute path of the workspace, then follow the
+  brief it returns"* — makes it automatic for roots-silent clients.
+  [Runtime architecture](docs/runtime.md) documents where it sits in the
+  binding ladder.
+- **MCP sessions join the process census.** The pane's **Settings → System →
+  Processes** (and `GET /system`) now list every live MCP session alongside
+  the client leases: which project it's bound to, since when, and when it
+  last acted — so "which graph is my assistant actually writing into?" has a
+  visible answer. Sessions age out of the list after 30 idle minutes; the
+  section hides itself against an older core.
+- **Every MCP tool description cut to its contract.** Tool descriptions are
+  context each session pays, on every client, before its first thought. All
+  of them were rewritten to roughly half their former length: the
+  load-bearing lines stay (verdict duties, safety rules — the parts an agent
+  must not skip), the details moved into per-argument docs where they're read
+  on use.
+- **The Checkup panel scores the referee: an NLI scoreboard.** Engram's
+  conflict scan runs on "models nominate, people judge" — and the judging
+  history can now grade the nominator. Over every judged suspect pair that
+  carried an NLI hint, the new block reports how often the hint matched the
+  verdict: hits, false alarms, misses, correct passes, and the agreement rate
+  (`GET /conflicts/agreement`). On our own dogfood graph the answer is 67.5%
+  over 40 judged pairs — mostly correct passes, with the model over-flagging
+  contradictions. That's the local cortex measured on your graph, not
+  promised from a benchmark.
+
+### Fixed
+
+- **Cross-project reads no longer skip live TepinDB stores as "db
+  missing".** The registry records the store path each project was
+  *registered* with — which may still say `graph.db` while the store on disk
+  migrated to `graph.tepin` long ago. Cross-project surfaces (the pane's
+  promotion scan, `search` with `project: "all"`, the projects listing) read
+  that recorded path literally and skipped healthy projects. Every registry
+  reader now resolves the recorded path exactly the way opening it does
+  (a `.tepin` sibling wins over the recorded `.db`), so stale registry
+  entries keep working forever — no manual edits needed.
+
 ## v0.8.8
 
 ### One heavy core, everything else light
