@@ -983,8 +983,11 @@ mod projects {
                 .iter()
                 .any(|p| p["name"] == "beta")
         );
+        // The entry named graph.db, but a store born lazily through the hub
+        // is born on the RESOLVED path (tepin since v0.6.2) — unregistering
+        // must leave that file behind.
         assert!(
-            beta_root.join(".engram/graph.db").is_file(),
+            engram_core::resolve_db_path(&beta_root.join(".engram/graph.db")).is_file(),
             "the data itself is untouched"
         );
 
