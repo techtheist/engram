@@ -148,10 +148,10 @@ impl Hub {
     ) -> Self {
         let current = match current {
             Some(e) => ProjectHandle {
+                db: Some(e.resolved_db()),
                 id: e.id,
                 name: e.name,
                 root: Some(PathBuf::from(e.root)),
-                db: Some(PathBuf::from(e.db)),
                 engine,
             },
             None => {
@@ -369,12 +369,13 @@ impl Hub {
         if let Some(h) = self.open.lock().unwrap().get(&entry.id) {
             return Ok(h.engine.clone());
         }
-        let engine = (self.factory()?)(Path::new(&entry.db))?;
+        let db = entry.resolved_db();
+        let engine = (self.factory()?)(&db)?;
         Ok(self.insert_open(ProjectHandle {
             id: entry.id.clone(),
             name: entry.name.clone(),
             root: Some(PathBuf::from(&entry.root)),
-            db: Some(PathBuf::from(&entry.db)),
+            db: Some(db),
             engine: Arc::new(Mutex::new(engine)),
         }))
     }
@@ -473,10 +474,10 @@ impl Hub {
             }
             out.push(ProjectInfo {
                 open: open.contains_key(&p.id),
+                db: p.resolved_db().display().to_string(),
                 id: p.id,
                 name: p.name,
                 root: Some(p.root),
-                db: p.db,
                 current: false,
                 home: false,
                 last_seen: Some(p.last_seen),
@@ -509,8 +510,9 @@ impl Hub {
             if self.entry_is_current(&entry) {
                 continue;
             }
-            if !Path::new(&entry.db).is_file() {
-                skipped.push(format!("{}: db missing ({})", entry.name, entry.db));
+            let db = entry.resolved_db();
+            if !db.is_file() {
+                skipped.push(format!("{}: db missing ({})", entry.name, db.display()));
                 continue;
             }
             match self.open_entry(&entry) {

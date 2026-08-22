@@ -3022,6 +3022,31 @@ fn hub_federation_end_to_end() {
     );
     assert!(brief.contains("beta, home"), "got: {brief}");
 
+    // A sibling whose registry entry still names `graph.db` while the store
+    // on disk is `graph.tepin` (registered pre-migration, backup cleaned up)
+    // must be reached through the same resolution every open applies — the
+    // raw-path existence guard used to skip it as "db missing".
+    let gamma_root = tmp.join("gamma");
+    let gamma_tepin = gamma_root.join(".engram/graph.tepin");
+    std::fs::create_dir_all(gamma_tepin.parent().unwrap()).unwrap();
+    Engine::new(
+        SqliteStore::open(&gamma_tepin).unwrap(),
+        Box::new(FakeEmbedder::default()),
+    )
+    .add_node(new_node(
+        NodeType::Decision,
+        "gamma renders diagrams with graphviz",
+        "sibling canon behind a stale registry path",
+    ))
+    .unwrap();
+    registry::register(&gamma_root, &gamma_root.join(".engram/graph.db")).unwrap();
+    let (hits, skipped) = hub.search_all("gamma graphviz diagrams", &[], 8).unwrap();
+    assert!(skipped.is_empty(), "stale db name must resolve: {skipped:?}");
+    assert!(
+        hits.iter().any(|h| h.project.as_deref() == Some("gamma")),
+        "the tepin store behind a graph.db entry is searchable"
+    );
+
     // Promotions: the same Principle in alpha and beta nominates…
     hub.current_engine()
         .lock()

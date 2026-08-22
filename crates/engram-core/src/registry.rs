@@ -34,6 +34,17 @@ pub struct ProjectEntry {
     pub last_seen: i64,
 }
 
+impl ProjectEntry {
+    /// The store this entry actually opens today. The recorded `db` is wiring
+    /// (writers have registered `graph.db` across versions, and a migrated
+    /// repo's entry keeps the name its backup file no longer justifies), so
+    /// every reader must apply the same `.db`→`.tepin` resolution every open
+    /// applies — an existence check on the raw path skips live tepin stores.
+    pub fn resolved_db(&self) -> PathBuf {
+        crate::resolve_db_path(Path::new(&self.db))
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Registry {
     #[serde(default)]
