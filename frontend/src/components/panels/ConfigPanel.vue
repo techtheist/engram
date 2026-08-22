@@ -395,6 +395,9 @@ const deliveryWords = computed(() => {
         p.auto_tune
             ? `Auto-tune is on: past 200 notes and 20 judged look-alike pairs this graph refits its suspect threshold from your own verdicts, and past 50 notes it recalibrates the weak-evidence line from ${p.weak_line_probes} phantom probes (questions about invented subjects that cannot be in memory) at q${Math.round(p.weak_line_quantile * 100)} of what they still score. Both run at session boundaries; every adjustment lands in the audit journal.`
             : `Auto-tune is off: the suspect threshold and the weak-evidence line stay exactly where you set them.`,
+        p.session_diversity_demote > 0
+            ? `Session-diverse delivery is on: when more strong candidates survive the floor than fit the list, each extra hit from a session already holding a slot is demoted ${p.session_diversity_demote} rank position${p.session_diversity_demote === 1 ? '' : 's'} — one session's restatements stop crowding out other sessions' evidence. Measured recall-free at the shipped value; scores and the verdict are untouched.`
+            : `Session-diverse delivery is off: the result list is cut purely by rank, however many hits share a session.`,
     ]
 })
 
@@ -704,6 +707,7 @@ const kneeCliff = computed({
                 <label>weak below <StepperInput v-model="draft.policy.weak_evidence_top" :step="0.01" :max="1" aria-label="weak evidence line" /></label>
                 <label v-if="kneeOn">knee cliff ≥ <StepperInput v-model="kneeCliff" :step="0.05" :max="1" aria-label="knee cliff" /></label>
                 <label>weak-line q <StepperInput v-model="draft.policy.weak_line_quantile" :step="0.05" :max="1" aria-label="weak-line quantile" /></label>
+                <label>session demote <StepperInput v-model="draft.policy.session_diversity_demote" :step="1" :max="50" aria-label="session diversity demotion" /></label>
             </div>
             <div class="checks">
                 <ToggleChip

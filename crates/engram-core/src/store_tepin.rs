@@ -700,6 +700,7 @@ impl Store for TepinStore {
                 created_at: node.created_at,
                 trust: node.trust,
                 stale: node.stale,
+                session_id: node.session_id.clone(),
                 neighbors: Vec::new(),
                 project: None,
             });

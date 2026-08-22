@@ -845,7 +845,7 @@ impl Store for SqliteStore {
                     snippet(nodes_fts, -1, '{SNIPPET_OPEN}', '{SNIPPET_CLOSE}', '…', 12) AS snip, \
                     n.durability, n.status, bm25(nodes_fts) AS rank, \
                     n.created_at, n.confirmed_at, n.approved_at, \
-                    n.demoted_at, n.trust_override \
+                    n.demoted_at, n.trust_override, n.session_id \
              FROM nodes_fts JOIN nodes n ON n.rowid = nodes_fts.rowid \
              WHERE nodes_fts MATCH ?1 AND n.valid_until IS NULL",
         );
@@ -894,6 +894,7 @@ impl Store for SqliteStore {
                 created_at,
                 trust,
                 stale: crate::policy::is_stale(trust, &policy),
+                session_id: row.get(12)?,
                 neighbors: Vec::new(),
                 project: None,
             })

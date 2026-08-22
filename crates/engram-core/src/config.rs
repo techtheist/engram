@@ -352,6 +352,16 @@ pub struct PolicyConfig {
     /// tier 1).
     #[serde(default)]
     pub rerank_full_note: bool,
+    /// Session-diverse delivery: rank positions each additional same-session
+    /// hit is demoted when the candidate pool is deeper than the delivery
+    /// limit — selection and order only, never scores. `0` disables. See
+    /// [`crate::policy::SESSION_DIVERSITY_DEMOTE`].
+    #[serde(default = "default_session_diversity_demote")]
+    pub session_diversity_demote: f64,
+}
+
+fn default_session_diversity_demote() -> f64 {
+    crate::policy::SESSION_DIVERSITY_DEMOTE
 }
 
 fn default_delivery_floor() -> f64 {
@@ -436,6 +446,7 @@ impl Default for PolicyConfig {
             weak_line_quantile: WEAK_LINE_QUANTILE,
             weak_line_probes: WEAK_LINE_PROBES,
             rerank_full_note: false,
+            session_diversity_demote: SESSION_DIVERSITY_DEMOTE,
         }
     }
 }
@@ -1227,6 +1238,15 @@ impl GraphConfig {
             return fail(format!(
                 "policy.weak_line_probes {} out of 4..=256",
                 p.weak_line_probes
+            ));
+        }
+        // A rank demotion, not a 0..1 weight: measured in list positions. The
+        // candidate pool is at most 50 deep, so anything past that is a hard
+        // one-per-session cap wearing a bigger number.
+        if !(0.0..=50.0).contains(&p.session_diversity_demote) {
+            return fail(format!(
+                "policy.session_diversity_demote {} out of 0..=50",
+                p.session_diversity_demote
             ));
         }
         // A rank-fusion constant, not a 0..1 weight: it is added to a 1-based

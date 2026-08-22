@@ -62,6 +62,17 @@ the [evaluation harness](../eval/README.md)'s floor sweep, and both are
 per-graph policy (`delivery_floor`, `weak_evidence_top`) if yours needs
 different ones.
 
+Since 0.8.10 delivery is also **session-diverse**: when more strong candidates
+survive the floor than fit the result list, each additional hit from a session
+already holding a slot is demoted a few rank positions, so one session's
+restatements stop crowding out complementary evidence captured in other
+sessions — the difference between "the answer, said five ways" and "the
+decision, the caution it earned, and the insight that explains it". The
+demotion is rank-based (it transfers across graphs where absolute score
+thresholds don't), changes selection and order only — scores, the floor and
+the verdict still read the calibrated scale — and is `policy.
+session_diversity_demote` if you want it stronger or off.
+
 ## Writes come back as verdicts
 
 Capture is batched and silent — no *"I've saved a note!"* chatter. But every

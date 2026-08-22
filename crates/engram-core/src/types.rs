@@ -354,6 +354,11 @@ pub struct SearchHit {
     /// Trust fell below the stale threshold — treat with suspicion and
     /// consider reconfirming or superseding.
     pub stale: bool,
+    /// The session that captured the node, carried so the delivered set can
+    /// be diversified across sessions without a per-hit re-read (0.8.10).
+    /// `None` for nodes with no recorded session (pane-created, imports).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     /// 1-hop subgraph around the match, `conflicts-with`/`replaces` first
     /// (PLAN §6A retrieval), capped.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

@@ -136,6 +136,25 @@ pub const WEAK_EVIDENCE_TOP: f64 = 0.85;
 /// and unlike the fixed floor, the cliff sharpens with crowd size, so the
 /// gain holds where the floor went quiet.
 pub const KNEE_MIN_CLIFF: f64 = 0.25;
+/// Session-diverse delivery (0.8.10): when the floor-surviving candidate pool
+/// is deeper than the delivery limit, each additional hit from a session
+/// already represented in the delivered set is demoted this many RANK
+/// positions before the final cut, so complementary evidence from other
+/// sessions fills the slots a single session's restatements would otherwise
+/// crowd. Rank-based on purpose — the register lesson (0.8.1) is that
+/// absolute score thresholds don't transfer between graphs while relative
+/// mechanisms do, and a rank demotion is scale-free. `0` disables. Selection
+/// and order only: reported scores stay the cross-encoder's, exactly like the
+/// reciprocal-rank vote.
+///
+/// 2 is the top of the measured free zone (`engram-eval --sessions`,
+/// 2026-08-22, 420 and 1875 notes): session coverage of multi-session
+/// subjects rises 0.625→0.792 / 0.707→0.827 in the top 5 and every cluster
+/// reaches full coverage, while the single-gold recall columns are identical
+/// to three decimals at both sizes. The cost only appears from 5 up (oblique
+/// −0.02..−0.04 at 420 notes). Graphs whose notes share one session — or
+/// carry none — are byte-identical to the pre-0.8.10 cut by construction.
+pub const SESSION_DIVERSITY_DEMOTE: f64 = 2.0;
 /// Auto-tune, weak-line dial: the calibrated "likely not in memory" line is
 /// fitted per graph as this quantile of the top scores that phantom probes —
 /// questions about invented subjects guaranteed absent from any graph —

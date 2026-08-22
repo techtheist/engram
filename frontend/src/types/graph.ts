@@ -530,6 +530,11 @@ export interface PolicyConfig {
     weak_evidence_top: number
     /** Let a mature graph refit its conflict threshold from judged history. */
     auto_tune: boolean
+    /**
+     * Rank positions each additional same-session hit is demoted at the
+     * delivery cut — session-diverse delivery. 0 disables.
+     */
+    session_diversity_demote: number
 }
 
 export interface BriefConfig {

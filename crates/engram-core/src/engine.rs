@@ -606,7 +606,15 @@ impl Engine {
             }
         }
         hits.sort_by(|a, b| b.score.total_cmp(&a.score));
-        hits.truncate(limit);
+        // The same session-diverse cut the curated path runs: dialogue is
+        // where one session's restatements crowd hardest (an empty session
+        // string means "unknown" and is never demoted).
+        session_diverse_select(
+            &mut hits,
+            limit,
+            self.store.config().policy.session_diversity_demote,
+            |h| Some(h.session.as_str()).filter(|s| !s.is_empty()),
+        );
         // Section gate, not per-hit trim (measured 2026-08-11): the per-hit
         // delivery floor halved false-fall-through noise but cost 0.03
         // end-to-end and 0.09 oblique dialogue recall — the 0.8.1 register
@@ -2179,7 +2187,17 @@ impl Engine {
             let floor = self.store.config().policy.delivery_floor;
             hits.retain(|h| h.score >= floor);
         }
-        hits.truncate(limit);
+        // Session-diverse delivery: when the floor-surviving pool is deeper
+        // than the limit, a session already holding a delivered slot pays a
+        // rank demotion for each further one, so restatements from one
+        // session stop crowding out complementary evidence from others. With
+        // the knob at 0 this IS `truncate(limit)`.
+        session_diverse_select(
+            &mut hits,
+            limit,
+            self.store.config().policy.session_diversity_demote,
+            |h| h.session_id.as_deref(),
+        );
         // Calibrated delivery, knee face: cut at the largest relative drop
         // in the delivered score curve — the cliff between the relevance
         // head and the noise tail (policy::KNEE_MIN_CLIFF). Measured free of
@@ -4236,6 +4254,59 @@ fn order_history_hits(
             hits.sort_by(|a, b| (b.timestamp, &b.message_id).cmp(&(a.timestamp, &a.message_id)));
         }
     }
+}
+
+/// Session-diverse delivery cut (0.8.10): pick `limit` hits from a ranked
+/// candidate list, demoting each additional hit from an already-picked
+/// session by `demote` RANK positions — a greedy MMR keyed on rank rather
+/// than score, because rank is the one scale that transfers between graphs
+/// (the 0.8.1 register lesson). With `demote` 0 the pick is byte-identical
+/// to `truncate(limit)`; hits without a session are never demoted and never
+/// count against one. Selection and order only — scores are untouched, so
+/// the floor, the knee and the verdict all still read the cross-encoder's
+/// calibrated scale.
+pub(crate) fn session_diverse_select<T>(
+    hits: &mut Vec<T>,
+    limit: usize,
+    demote: f64,
+    session_of: impl Fn(&T) -> Option<&str>,
+) {
+    if hits.len() <= limit || demote <= 0.0 {
+        hits.truncate(limit);
+        return;
+    }
+    let n = hits.len();
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut used = vec![false; n];
+    let mut picked: Vec<usize> = Vec::with_capacity(limit);
+    while picked.len() < limit {
+        let mut best: Option<(f64, usize)> = None;
+        for (i, taken) in used.iter().enumerate() {
+            if *taken {
+                continue;
+            }
+            let repeats = session_of(&hits[i])
+                .and_then(|s| counts.get(s).copied())
+                .unwrap_or(0);
+            let effective = i as f64 + demote * repeats as f64;
+            // Strict `<` keeps ties on the earlier (better-ranked) index.
+            if best.is_none_or(|(b, _)| effective < b) {
+                best = Some((effective, i));
+            }
+        }
+        let Some((_, i)) = best else { break };
+        used[i] = true;
+        if let Some(s) = session_of(&hits[i]) {
+            *counts.entry(s.to_string()).or_default() += 1;
+        }
+        picked.push(i);
+    }
+    let mut keep = std::mem::take(hits);
+    let mut by_index: Vec<Option<T>> = keep.drain(..).map(Some).collect();
+    *hits = picked
+        .into_iter()
+        .filter_map(|i| by_index[i].take())
+        .collect();
 }
 
 /// The knee of a DESC-sorted score curve: the largest relative drop, when it
