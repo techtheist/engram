@@ -3041,7 +3041,10 @@ fn hub_federation_end_to_end() {
     .unwrap();
     registry::register(&gamma_root, &gamma_root.join(".engram/graph.db")).unwrap();
     let (hits, skipped) = hub.search_all("gamma graphviz diagrams", &[], 8).unwrap();
-    assert!(skipped.is_empty(), "stale db name must resolve: {skipped:?}");
+    assert!(
+        skipped.is_empty(),
+        "stale db name must resolve: {skipped:?}"
+    );
     assert!(
         hits.iter().any(|h| h.project.as_deref() == Some("gamma")),
         "the tepin store behind a graph.db entry is searchable"
