@@ -293,6 +293,21 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
+/// A unix-seconds instant as the ISO form `parse_instant` reads back
+/// ("2026-08-22T14:32:11Z") — the render MCP responses use so an assistant
+/// never has to convert epoch integers itself, and can paste any date it was
+/// shown straight into `after`/`before`.
+pub fn iso_instant(ts: i64) -> String {
+    let (y, m, d) = civil_from_days(ts.div_euclid(DAY));
+    let s = ts.rem_euclid(DAY);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        s / 3600,
+        (s % 3600) / 60,
+        s % 60
+    )
+}
+
 /// Build a window from two optional expressions, anchored at `now_ts`.
 /// An unparseable bound is an error naming the offender — never a dropped
 /// filter.

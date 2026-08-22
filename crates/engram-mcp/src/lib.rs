@@ -2771,9 +2771,103 @@ fn debracket(hit: &mut engram_core::SearchHit) {
 }
 
 fn ok_json<T: Serialize>(v: &T) -> Result<CallToolResult, ErrorData> {
-    let text = serde_json::to_string_pretty(v)
+    let mut value =
+        serde_json::to_value(v).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    tidy(&mut value);
+    let text = serde_json::to_string_pretty(&value)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
     Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
+}
+
+/// Keys whose integer values are unix seconds. Rendered as ISO instants in
+/// tool replies so an assistant never converts epoch numbers itself — and can
+/// paste any date it was shown straight back into `after`/`before` (the
+/// temporal grammar reads the same ISO form).
+const TIMESTAMP_KEYS: [&str; 14] = [
+    "created_at",
+    "confirmed_at",
+    "approved_at",
+    "demoted_at",
+    "valid_from",
+    "valid_until",
+    "last_seen",
+    "timestamp",
+    "ts",
+    "first_at",
+    "last_at",
+    "started_at",
+    "ended_at",
+    "touched_at",
+];
+
+/// Every tool reply is per-session context on every client (the 0.8.9
+/// description lesson, applied to payloads): a `"status": null` teaches an
+/// assistant nothing that its absence would not, and an epoch integer is a
+/// conversion it should never be asked to do. Nulls, empty arrays and empty
+/// objects are pruned recursively; known timestamp keys render as ISO
+/// instants. MCP replies only — the pane and exports keep raw shapes.
+fn tidy(v: &mut serde_json::Value) {
+    use serde_json::Value;
+    // Sanity band so a small integer that merely shares a key name (a count,
+    // a turn number) is never mistaken for an instant: 2000-01-01..2100.
+    const EPOCH_BAND: std::ops::Range<i64> = 946_684_800..4_102_444_800;
+    match v {
+        Value::Object(map) => {
+            for (k, val) in map.iter_mut() {
+                if TIMESTAMP_KEYS.contains(&k.as_str())
+                    && let Some(ts) = val.as_i64()
+                    && EPOCH_BAND.contains(&ts)
+                {
+                    *val = Value::String(engram_core::timespec::iso_instant(ts));
+                } else {
+                    tidy(val);
+                }
+            }
+            map.retain(|_, val| {
+                !(val.is_null()
+                    || val.as_array().is_some_and(|a| a.is_empty())
+                    || val.as_object().is_some_and(|o| o.is_empty()))
+            });
+        }
+        Value::Array(items) => {
+            for item in items {
+                tidy(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tidy_tests {
+    use super::tidy;
+    use serde_json::json;
+
+    #[test]
+    fn tidy_prunes_noise_and_renders_instants() {
+        let mut v = json!({
+            "id": "n1",
+            "status": null,
+            "tags": [],
+            "props": {},
+            "created_at": 1787409403_i64,
+            "turn": 55,
+            "score": 0.73,
+            "edges": [{"strength": null, "valid_from": 1787409403_i64, "note": "kept"}],
+        });
+        tidy(&mut v);
+        let o = v.as_object().unwrap();
+        assert!(!o.contains_key("status"), "nulls are pruned");
+        assert!(!o.contains_key("tags"), "empty arrays are pruned");
+        assert!(!o.contains_key("props"), "empty objects are pruned");
+        assert_eq!(o["created_at"], "2026-08-22T14:36:43Z");
+        assert_eq!(o["turn"], 55, "small ints never masquerade as instants");
+        assert_eq!(o["score"], 0.73);
+        let e = v["edges"][0].as_object().unwrap();
+        assert!(!e.contains_key("strength"), "pruning recurses");
+        assert_eq!(e["valid_from"], "2026-08-22T14:36:43Z");
+        assert_eq!(e["note"], "kept");
+    }
 }
 
 const HIERARCHY_MAX_DEPTH: usize = 3;
@@ -3019,8 +3113,10 @@ pub(crate) mod tool_tests {
             }))
             .await
             .unwrap();
+        // Replies render instants in ISO form (the tidy pass), so the
+        // original date is asserted the way an assistant actually reads it.
         assert!(
-            text_of(&fetched).contains(&engram_core::parse_day("2025-03-10").unwrap().to_string()),
+            text_of(&fetched).contains("2025-03-10T00:00:00Z"),
             "the node carries its original date, not the ingest date"
         );
 
