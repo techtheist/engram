@@ -376,29 +376,14 @@ impl Engram {
 
     #[tool(
         description = "Hybrid semantic + keyword search over the memory graph. \
-        Hits carry: type, title, snippet, score, trust (computed 0..1), stale \
-        (true = decayed trust, verify before relying), status, and 1-hop \
-        neighbors (conflicts-with/replaces first). The reply's `confidence` \
-        is a verdict to respect: `strong` = the top hit cleared the \
-        calibrated line; `weak` = likely not in memory — the hits are the \
-        nearest candidates (never cut), verify before relying on one; \
-        `none` = the graph is silent — say so instead of inventing a \
-        memory. The line is calibrated per graph by auto-tune. Weak-scoring \
-        tail hits are trimmed before delivery so \
-        attention stays on the answer. Being returned stamps \
-        last_seen for observability only — retrieval never refreshes trust. \
-        SCOPE IT IN TIME when the question is temporal: `after`/`before` take \
-        a day, an ISO instant, or a relative expression the daemon resolves \
-        (\"yesterday\", \"last week\", \"last 3 days\", \"2 hours ago\", \"this \
-        year\") — don't compute dates yourself; `during_version` (e.g. \
-        \"0.8.4\") scopes to when that working version was current. \
-        `order: \"chronological\"` reads oldest-first for how something \
-        developed, `order: \"recent\"` newest-first for the CURRENT value of \
-        something that changed. The window filters before the confidence \
-        verdict, so a scoped verdict is about the scoped set. \
-        `project: \"all\"` searches every registered project plus the home \
-        graph — foreign hits carry `project` provenance and rank under a \
-        locality prior, so the local canon wins ties."
+        Respect the reply's `confidence` verdict: `strong` = the top hit cleared \
+        this graph's calibrated line; `weak` = likely not in memory, the hits \
+        are nearest candidates — verify before relying; `none` = the graph is \
+        silent — say so instead of inventing a memory. Hits carry trust (0..1), \
+        stale (verify first), and 1-hop neighbors (conflicts/replaces first). \
+        Temporal questions: scope with `after`/`before`/`during_version` \
+        (the daemon resolves relative phrases — never compute dates yourself) \
+        and `order` (chronological = how it developed, recent = current value)."
     )]
     async fn search(
         &self,
@@ -517,14 +502,10 @@ impl Engram {
         self.reply(&body)
     }
 
-    #[tool(
-        description = "Read the recorded exchange around one turn of a session-history hit: \
-        the surrounding user/assistant dialogue, in order. Takes the `session` and `turn` \
-        handles a history hit (or a curated hit's born_in line) carried; `window` messages \
-        of context each side (default 4). History is raw dialogue, not curated memory. \
-        The reply also carries `notes`: every curated memory note born during this \
-        session (its born-in provenance, reversed), each one a get_node away."
-    )]
+    #[tool(description = "Read the recorded dialogue around one turn: takes the \
+        `session` and `turn` a history hit (or a node's `born_in`) carried; \
+        `window` = context each side (default 4). Raw dialogue, not curated \
+        memory. The reply's `notes` lists curated nodes born in that session.")]
     async fn expand_history(
         &self,
         Parameters(a): Parameters<ExpandHistoryArgs>,
@@ -553,13 +534,10 @@ impl Engram {
     }
 
     #[tool(
-        description = "Browse the recorded session history: every session, newest first — \
-        title (the opening user message), harness, start/end, message count, and the \
-        `session` handle expand_history takes. The browsing entry point when you don't \
-        have a search hit to start from; empty when recording is off. Scope it in time \
-        with `after`/`before` (a day, an ISO instant, or \"yesterday\" / \"last week\" / \
-        \"3 days ago\") to answer \"what was I working on then\" without needing a search \
-        hit at all. History is raw dialogue records, not curated memory."
+        description = "List recorded sessions, newest first, with the `session` \
+        handle expand_history takes. Scope with `after`/`before` to answer \
+        \"what was I working on then\" without a search hit. Raw history, not \
+        curated memory; empty when recording is off."
     )]
     async fn list_sessions(
         &self,
@@ -597,14 +575,10 @@ impl Engram {
     }
 
     #[tool(
-        description = "Fetch one node by id with its outgoing and incoming edges. \
-        Node fields include computed trust (0..1) and stale (true = trust < 0.3). \
-        Optional `parents`/`children` (depth 0-3) also return the reasoning \
-        hierarchy: parents are nodes this one points at (its reasons/subjects — \
-        e.g. the Principle behind a Decision); children are nodes pointing at it \
-        (what answers / builds on it). Nested as {edge, node, parents|children}. \
-        A node born in a recorded exchange carries `born_in` (session, turn) — \
-        the birth dialogue is one expand_history away."
+        description = "Fetch one node by id with its edges, computed trust/stale, \
+        and `born_in` provenance when recorded (expand_history reads the birth \
+        dialogue). `parents`/`children` (depth 0-3) walk the reasoning hierarchy: \
+        parents = what it points at (its reasons), children = what points at it."
     )]
     async fn get_node(
         &self,
@@ -657,15 +631,13 @@ impl Engram {
     }
 
     #[tool(
-        description = "Create a memory node (source = claude, starts provisional). \
-        ALWAYS read the response, it is a verdict, not a receipt — every check runs in this \
-        same turn: {matched, created: false} = a same-type near-duplicate exists, merge via \
-        update_node (if it carries nli_label=contradiction it is a NEGATED duplicate — read \
-        before merging, likely a conflicts-with instead); `warnings` = the note landed near \
-        contradicted or superseded knowledge; `missing_code_refs` = paths that don't resolve \
-        in the repo, fix or drop them; `suspects` = queued look-alike pairs (each may carry \
-        an nli hint), judge each with resolve_suspect now and tell the user if one is a \
-        genuine contradiction."
+        description = "Create a memory node (source = claude, provisional). The \
+        response is a verdict, not a receipt — act on it: {matched, created: \
+        false} = near-duplicate, merge via update_node (nli_label=contradiction \
+        = a NEGATED duplicate — read it first, likely conflicts-with instead); \
+        `warnings` = landed near contradicted/superseded canon; \
+        `missing_code_refs` = fix or drop; `suspects` = judge each with \
+        resolve_suspect now, telling the user about genuine contradictions."
     )]
     async fn add_note(
         &self,
@@ -775,13 +747,9 @@ impl Engram {
         })
     }
 
-    #[tool(
-        description = "Batch create: add several notes in one call — each item \
-        runs the same near-duplicate pre-check and redaction as add_note. \
-        Results are per-item and positional: {id, created} | {matched, \
-        created: false} | {ok: false, error}; one bad item never blocks the \
-        rest. For seeding passes and multi-note stopping points."
-    )]
+    #[tool(description = "Batch add_note: same per-item checks and verdicts, \
+        positional results ({id, created} | {matched, created: false} | \
+        {ok: false, error}); one bad item never blocks the rest.")]
     async fn add_notes(
         &self,
         Parameters(a): Parameters<AddNotesArgs>,
@@ -804,9 +772,8 @@ impl Engram {
     }
 
     #[tool(
-        description = "Session-start digest of the memory graph as markdown: unresolved \
-        conflicts, open problems/intents, principles, decisions, cautions, recent changes \
-        — token-budgeted. Call this once when starting work on the project."
+        description = "Token-budgeted markdown digest of the graph: conflicts, \
+        open work, canon, recent changes. Call once when starting work."
     )]
     async fn brief(
         &self,
@@ -835,11 +802,9 @@ impl Engram {
         Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
     }
 
-    #[tool(description = "Describe this graph's ontology: every node type (the \
-        thought it captures, default durability, roles) and every edge verb \
-        (worked example, roles). The graph defines its own ontology (it may \
-        be customized per project) — call this when type or verb names \
-        surprise you, or before writing into an unfamiliar graph.")]
+    #[tool(description = "This graph's ontology: every node type and edge verb, \
+        with roles and examples (ontologies are per-graph). Call when names \
+        surprise you or before writing into an unfamiliar graph.")]
     async fn describe_ontology(
         &self,
         Parameters(a): Parameters<DescribeOntologyArgs>,
@@ -849,12 +814,10 @@ impl Engram {
         Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
     }
 
-    #[tool(description = "Set (or clear, with null) the graph's CURRENT WORKING \
-        VERSION — version tracking stamps it on every new version-bound note \
-        so the graph shows when each piece of knowledge was captured. Call it \
-        when the project moves to a new version (release cut, version bump). \
-        Setting a version turns version tracking on if it was off (clearing \
-        never does). The response carries the recent switch history.")]
+    #[tool(description = "Set (or clear, with null) the graph's current working \
+        version, stamped on new notes. Call when the project moves on (release \
+        cut, cycle open). Setting enables version tracking; clearing never \
+        toggles it.")]
     async fn set_version(
         &self,
         Parameters(a): Parameters<SetVersionArgs>,
@@ -889,8 +852,8 @@ impl Engram {
         self.reply(&reply)
     }
 
-    #[tool(description = "Delete one edge by id — for repairing a mislink. \
-        Nodes are never deleted this way (hard node delete is user-only).")]
+    #[tool(description = "Delete one edge by id (repair a mislink). Nodes are \
+        never deleted here — hard delete is user-only.")]
     async fn unlink(&self, Parameters(a): Parameters<IdArg>) -> Result<CallToolResult, ErrorData> {
         let engine = self.engine_for(&a.project)?;
         let removed = self.mcp(&engine).delete_edge(&a.id).map_err(map_err)?;
@@ -905,7 +868,7 @@ impl Engram {
 
     #[tool(
         description = "Update an edge's status (active | resolved | dismissed), \
-        note, or confidence — e.g. mark a conflicts-with as resolved."
+        note, or confidence."
     )]
     async fn update_edge(
         &self,
@@ -961,13 +924,10 @@ impl Engram {
     }
 
     #[tool(
-        description = "Verify a claim against the memory graph using the local \
-        NLI model: returns {supports, contradicts, silent} — nodes that entail \
-        the claim, nodes that contradict it, and nearby nodes with no verdict. \
-        Use before acting on an assumption ('does the canon contradict this \
-        plan?'). Contradicts-hits are conflicts to surface; all-silent on a \
-        real topic is a gap worth capturing. Verdicts are hints from a small \
-        local model — judgment stays with you."
+        description = "Check a claim against the graph with the local NLI model: \
+        {supports, contradicts, silent}. Use before acting on an assumption; \
+        contradicts-hits are conflicts to surface, all-silent on a real topic \
+        is a gap worth capturing. Verdicts are small-model hints — you judge."
     )]
     async fn check_claim(
         &self,
@@ -989,10 +949,9 @@ impl Engram {
     }
 
     #[tool(
-        description = "Pending suspected conflicts from the local scan: unlinked \
-        look-alike node pairs awaiting judgment (each may carry an nli_label / \
-        nli_score triage hint from the local model — a suggestion, not a \
-        verdict). Judge each with resolve_suspect."
+        description = "Pending suspected conflicts: unlinked look-alike pairs \
+        awaiting judgment (nli_label is a triage hint, not a verdict). Judge \
+        each with resolve_suspect."
     )]
     async fn list_suspects(
         &self,
@@ -1003,11 +962,9 @@ impl Engram {
         self.reply(&json!({ "suspects": suspects }))
     }
 
-    #[tool(
-        description = "Judge a suspected conflict: verdict `conflict` records a \
-        conflicts-with edge, `replaces` records a replaces edge AND archives the \
-        older node, `dismiss` marks the pair fine-together (never re-raised)."
-    )]
+    #[tool(description = "Judge a suspect: `conflict` links conflicts-with, \
+        `replaces` links AND archives the older node, `dismiss` = fine \
+        together (never re-raised).")]
     async fn resolve_suspect(
         &self,
         Parameters(a): Parameters<ResolveSuspectArgs>,
@@ -1025,11 +982,9 @@ impl Engram {
         self.reply(&json!({ "ok": true, "edge": edge }))
     }
 
-    #[tool(description = "Approve a node: trust restarts at 100% (and holds \
-        there on stable knowledge until contradicting evidence lands). ONLY on \
-        explicit user demand, or after verifying the node's content \
-        word-by-word against current reality. Routine still-relevant signals \
-        belong in update_node, not here.")]
+    #[tool(description = "Approve a node: trust restarts at 100%. ONLY on \
+        explicit user demand or after word-by-word verification against current \
+        reality; routine still-true confirmations belong in update_node.")]
     async fn approve_node(
         &self,
         Parameters(a): Parameters<ApproveArgs>,
@@ -1040,13 +995,10 @@ impl Engram {
     }
 
     #[tool(
-        description = "Update fields on an existing node (merge / reclassify / \
-        confirm still true). A deliberate update stamps confirmed_at — the \
-        unapproved trust anchor — and clears any evidence demotion; this is \
-        how a verified-still-true stale node gets its trust back. Re-embeds \
-        when any indexed field changes. Read the response like add_note's: \
-        `warnings` and `suspects` carry the same act-now duties (judge \
-        suspects via resolve_suspect; surface real contradictions to the user)."
+        description = "Patch a node (merge / reclassify / confirm still true — \
+        a deliberate update stamps confirmed_at, which is how a \
+        verified-still-true stale node gets its trust back). The response is \
+        an add_note-style verdict with the same act-now duties."
     )]
     async fn update_node(
         &self,
@@ -1110,18 +1062,12 @@ impl Engram {
         Ok(out)
     }
 
-    #[tool(description = "Merge duplicate notes into one survivor: unions tags \
-        and code_refs, rehomes the victims' live edges onto the survivor \
-        (deduped; self-loops and incoming replaces stay behind as the \
-        victim's story), writes a replaces edge per victim so each remains \
-        traversable as an archived generation, and stamps the survivor \
-        confirmed. Supersession, not deletion — nothing is destroyed. Use \
-        when several notes state the same knowledge; pass title/body with \
-        the merged text you composed from the parts (omitted = the \
-        survivor's text stands, which silently drops the victims' content). \
-        Refused when a victim is user-pinned — surface that to the user. \
-        Read the response like add_note's: `warnings` and `suspects` carry \
-        the same act-now duties.")]
+    #[tool(description = "Consolidate duplicates into one survivor: unions \
+        tags/code_refs, rehomes the victims' edges, links replaces per victim \
+        (archived, still traversable — supersession, not deletion). Pass \
+        title/body with your merged text, else the survivor's text stands and \
+        the victims' content is dropped. Refused on pinned victims — tell the \
+        user. Response is an add_note-style verdict.")]
     async fn merge_nodes(
         &self,
         Parameters(a): Parameters<MergeArgs>,
@@ -1156,14 +1102,9 @@ impl Engram {
         self.reply(&out)
     }
 
-    #[tool(
-        description = "Batch update: apply several node patches in one call — \
-        the bulk counterpart of update_node for curation sweeps (term renames, \
-        status fixes, tag hygiene). Each item takes the same fields as \
-        update_node; items apply independently, results are positional \
-        ({ok, id} | {ok: false, id, error}), one bad item never blocks the \
-        rest, and every change lands in the audit journal individually."
-    )]
+    #[tool(description = "Batch update_node for curation sweeps: items apply \
+        independently, results positional ({ok, id} | {ok: false, id, error}), \
+        every change audited individually.")]
     async fn update_nodes(
         &self,
         Parameters(a): Parameters<UpdateNodesArgs>,
@@ -1186,15 +1127,10 @@ impl Engram {
         self.reply(&json!({ "results": results }))
     }
 
-    #[tool(description = "Full-fidelity paged read of the graph: complete nodes \
-        (whole body, tags, status, durability, code_refs, computed trust) with \
-        optional filters — types, status, tag, include_archived, pinned \
-        (pinned: true reads the user's constant-trust canon). This is the \
-        lossless bulk read for reviews and exports: building a decisions.md \
-        means paging every Decision with its full body, which search snippets \
-        and the budgeted brief cannot provide. Newest first; `total` is the \
-        filtered count, page with limit/offset. Read-only — does not refresh \
-        trust clocks.")]
+    #[tool(description = "Lossless paged read: complete nodes with filters \
+        (types, status, tag, pinned, include_archived) — the bulk read for \
+        reviews and exports where snippets won't do. Newest first; page with \
+        limit/offset; sort: recent | most-connected | least-connected.")]
     async fn list_nodes(
         &self,
         Parameters(a): Parameters<ListNodesArgs>,
@@ -1273,10 +1209,8 @@ impl Engram {
     }
 
     #[tool(
-        description = "The chronological story of one piece of knowledge: the \
-        node's `replaces` chain, oldest first. Each superseded generation \
-        carries the note of the replaces edge that retired it. Use to answer \
-        \"how did this decision evolve\"."
+        description = "A node's replaces chain, oldest first, each generation \
+        with the note that retired it — how a decision evolved."
     )]
     async fn timeline(
         &self,
@@ -1287,10 +1221,9 @@ impl Engram {
         self.reply(&json!({ "timeline": chain }))
     }
 
-    #[tool(description = "Nodes whose path-shaped code_refs no longer exist in \
-        the project — the code moved and the memory didn't (drifted). Review \
-        each: fix the refs via update_node, and check whether the knowledge \
-        itself is still true (supersede or conflicts-with it if not).")]
+    #[tool(description = "Nodes whose code_refs no longer resolve — code moved, \
+        memory didn't. Fix refs via update_node; supersede or conflict the \
+        knowledge if it's no longer true.")]
     async fn list_drift(
         &self,
         Parameters(a): Parameters<ProjectArg>,
@@ -1308,11 +1241,9 @@ impl Engram {
         self.reply(&json!({ "drifted": drifted }))
     }
 
-    #[tool(description = "One page of the audit journal, newest first: every \
-        node/edge mutation with before/after snapshots and writer context \
-        (origin, session, cwd, pid, version). Filter to one node/edge with \
-        entity_id; page with before = the last row's seq. Read-only — answers \
-        \"what changed while I was away\" and \"who wrote this\".")]
+    #[tool(description = "Audit journal page, newest first: every mutation with \
+        before/after snapshots and writer context. Filter with entity_id; page \
+        with before = the last row's seq.")]
     async fn audit(
         &self,
         Parameters(a): Parameters<AuditArgs>,
@@ -1329,13 +1260,10 @@ impl Engram {
         self.reply(&page)
     }
 
-    #[tool(description = "Every project this memory hub can reach: the current \
-        project, the user-level home graph, and the machine registry \
-        (~/.engram/registry.json — populated by every engram-alpha serve/mcp \
-        run). Use the names here as the `project` argument other tools accept: \
-        omit = current, a name = that project (reads AND writes), 'home' = \
-        the shared user-level graph, 'all' = fan a search/check_claim out \
-        across everything (reads only).")]
+    #[tool(description = "Every graph this hub reaches: current project, the \
+        user-level home graph, and the machine registry. The names are the \
+        `project` argument other tools accept: omit = current, name = that \
+        project, 'home' = shared user graph, 'all' = fan-out reads only.")]
     async fn list_projects(&self) -> Result<CallToolResult, ErrorData> {
         // `current` is THIS SESSION's project, not the core's launch graph —
         // a bound session told it is in `home` reads as the wrong graph
