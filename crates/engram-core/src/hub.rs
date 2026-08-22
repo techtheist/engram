@@ -134,7 +134,27 @@ pub struct Hub {
     /// delete so the running harvester drops its cursors and caches. A
     /// counter, not an event — the harvester compares at each sweep.
     history_epoch: std::sync::atomic::AtomicU64,
+    /// Live MCP session bindings (0.8.9 set_project): where each session
+    /// actually is, which after an in-session rebind is NOT what the bridge's
+    /// launch lease says — `/system` reads census truth from here.
+    sessions: Mutex<HashMap<String, SessionBinding>>,
 }
+
+/// One live MCP session's binding, `/system`'s census row.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SessionBinding {
+    pub session_id: String,
+    /// Resolved project id (`home` for the home graph).
+    pub project: String,
+    pub name: String,
+    pub since: i64,
+    pub last_seen: i64,
+}
+
+/// A session binding this stale (no tool call, and the transport never
+/// dropped the service) belongs to a client that vanished without a close —
+/// pruned lazily on read, like leases.
+const SESSION_BINDING_TTL_SECS: i64 = 1800;
 
 impl Hub {
     /// Full hub: the launch project's engine plus a factory for every other
@@ -179,6 +199,7 @@ impl Hub {
             open: Mutex::new(HashMap::new()),
             alerts,
             history_epoch: std::sync::atomic::AtomicU64::new(0),
+            sessions: Mutex::new(HashMap::new()),
         }
     }
 
@@ -202,6 +223,7 @@ impl Hub {
             open: Mutex::new(HashMap::new()),
             alerts,
             history_epoch: std::sync::atomic::AtomicU64::new(0),
+            sessions: Mutex::new(HashMap::new()),
         }
     }
 
@@ -356,6 +378,78 @@ impl Hub {
                     .into(),
             )
         })
+    }
+
+    /// Whether this hub can reach other projects at all — single-project
+    /// constructions (stdio `serve` on one db) have no factory, and surfaces
+    /// like the set_project fallback hint must stay silent there.
+    pub fn is_multi(&self) -> bool {
+        self.factory.is_some()
+    }
+
+    /// The display name for a resolved project id.
+    fn project_name(&self, id: &str) -> String {
+        if id == self.current.id {
+            return self.current.name.clone();
+        }
+        registry::load()
+            .projects
+            .into_iter()
+            .find(|p| p.id == id)
+            .map(|p| p.name)
+            .unwrap_or_else(|| id.to_string())
+    }
+
+    /// A live MCP session announces (or moves, on set_project) its binding.
+    /// `selector` is any project selector; `None` = the hub's launch project.
+    /// Census truth for `/system`: after an in-session rebind the bridge's
+    /// lease still shows the launch root, so readers ask here.
+    pub fn session_bind(&self, session_id: &str, selector: Option<&str>) {
+        let id = match selector {
+            Some(sel) => match self.resolve_id(sel) {
+                Ok(id) => id,
+                Err(_) => return,
+            },
+            None => self.current.id.clone(),
+        };
+        let name = self.project_name(&id);
+        let now = crate::store::now();
+        let mut sessions = self.sessions.lock().unwrap();
+        let entry = sessions
+            .entry(session_id.to_string())
+            .or_insert_with(|| SessionBinding {
+                session_id: session_id.to_string(),
+                project: id.clone(),
+                name: name.clone(),
+                since: now,
+                last_seen: now,
+            });
+        entry.project = id;
+        entry.name = name;
+        entry.last_seen = now;
+    }
+
+    /// A tool call on the session — keeps its census row alive.
+    pub fn session_touch(&self, session_id: &str) {
+        if let Some(s) = self.sessions.lock().unwrap().get_mut(session_id) {
+            s.last_seen = crate::store::now();
+        }
+    }
+
+    /// The session's transport closed — drop its census row.
+    pub fn session_end(&self, session_id: &str) {
+        self.sessions.lock().unwrap().remove(session_id);
+    }
+
+    /// Live session bindings, stale ones pruned on the way out (lazy expiry,
+    /// like client leases).
+    pub fn sessions(&self) -> Vec<SessionBinding> {
+        let now = crate::store::now();
+        let mut sessions = self.sessions.lock().unwrap();
+        sessions.retain(|_, s| now - s.last_seen <= SESSION_BINDING_TTL_SECS);
+        let mut out: Vec<SessionBinding> = sessions.values().cloned().collect();
+        out.sort_by(|a, b| a.since.cmp(&b.since).then(a.session_id.cmp(&b.session_id)));
+        out
     }
 
     fn open_entry(&self, entry: &ProjectEntry) -> Result<Arc<Mutex<Engine>>> {

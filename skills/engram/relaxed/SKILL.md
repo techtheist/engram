@@ -78,6 +78,7 @@ Since v0.6.0 one hub serves every registered project plus a user-level **home gr
 - **A name/id** reads or writes THAT project's graph. Etiquette: knowledge *about a sibling project* belongs in **its** graph (`add_note(project: "<name>")`) — this project's graph records only what *this* project decided about the sibling. Never fan one insight into several graphs; `all` writes are refused for exactly that reason.
 - **`home`** is the user-level graph for knowledge that transcends projects — global principles, the user's standing preferences. "Remember this globally / everywhere" means a home write. Home canon rides along in every project's brief.
 - **`all`** on `search` / `check_claim` reads across every graph: foreign hits carry `project` provenance and rank under a locality prior (local canon wins ties). When retelling a foreign hit, attribute it ("in tepindb's graph…").
+- **Wrong project?** If the brief or tool results name a project that is not your workspace (a client that never answered MCP roots), call `set_project` with the workspace ABSOLUTE path — it rebinds this session and returns that project's brief. Session-scoped; registered projects only; it never changes any global setting.
 
 Edges never cross graphs — if nodes in different graphs relate, say so in body text, don't force a link. Promotion of recurring Principles/Cautions into home is the *user's* gesture (the pane's Checkup nominates); don't copy canon into home unprompted.
 

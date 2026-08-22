@@ -29,7 +29,9 @@ pub use config::GraphConfig;
 pub(crate) use engine::claim_texts as engine_claims_for_tests;
 pub use engine::{AuditOrigin, ChangeEvent, EMBED_COMPOSITION, Engine, Listener, SearchFilter};
 pub use error::{Error, Result};
-pub use hub::{ConflictAlert, ConflictFeed, EngineFactory, Hub, ListenerFactory, ProjectHandle};
+pub use hub::{
+    ConflictAlert, ConflictFeed, EngineFactory, Hub, ListenerFactory, ProjectHandle, SessionBinding,
+};
 pub use migrate::{MigrationSummary, migrate_to_tepin};
 #[cfg(feature = "fastembed")]
 pub use nli::FastNli;

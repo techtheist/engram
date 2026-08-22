@@ -288,6 +288,26 @@ function wiringStatus(w: { wired: boolean; prerename: boolean }): { status: Stat
             <p v-if="!info.processes.clients.length" class="state">
                 No light processes connected.
             </p>
+
+            <!-- Live MCP session bindings (0.8.9 set_project): where each
+                 session IS right now — after an in-session rebind that is
+                 not what its bridge lease above says. Absent on older
+                 cores; hidden when there are none. -->
+            <template v-if="info.processes.sessions?.length">
+                <h4 class="block-subtitle">Sessions</h4>
+                <div v-for="s in info.processes.sessions" :key="s.session_id" class="proc">
+                    <div class="proc-head">
+                        <span class="proc-name">{{ s.name }}</span>
+                        <span class="proc-tag">mcp session</span>
+                        <span class="proc-tag mono" :title="s.session_id">
+                            {{ s.session_id.slice(0, 12) }}…
+                        </span>
+                    </div>
+                    <span class="proc-times">
+                        bound {{ relTime(s.since) }} · seen {{ relTime(s.last_seen) }}
+                    </span>
+                </div>
+            </template>
         </section>
 
         <section class="block">
@@ -529,6 +549,13 @@ function wiringStatus(w: { wired: boolean; prerename: boolean }): { status: Stat
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
+    color: var(--text-tertiary);
+}
+
+.block-subtitle {
+    margin-top: 4px;
+    font-size: var(--text-caption);
+    font-weight: 600;
     color: var(--text-tertiary);
 }
 

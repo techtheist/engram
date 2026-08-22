@@ -149,6 +149,16 @@ export interface ProcessCore {
     home: string
 }
 
+/** One live MCP session's binding (0.8.9 set_project census). */
+export interface SessionBinding {
+    session_id: string
+    /** Resolved project id ('home' for the home graph). */
+    project: string
+    name: string
+    since: number
+    last_seen: number
+}
+
 /** One registered light client (an MCP bridge holding a lease on the core). */
 export interface ProcessClient {
     lease_id: string
@@ -218,6 +228,10 @@ export interface SystemInfo {
     processes?: {
         core: ProcessCore
         clients: ProcessClient[]
+        /** Live MCP session bindings (0.8.9 set_project): where each session
+         *  IS right now, which after an in-session rebind is not what its
+         *  bridge's launch lease says. Absent on older cores. */
+        sessions?: SessionBinding[]
     }
     /** Whether the cortex models are resident ('loaded') or idle-unloaded
      *  ('unloaded_idle'), and since when. Absent on older daemons. */

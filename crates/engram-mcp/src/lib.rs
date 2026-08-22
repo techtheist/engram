@@ -159,23 +159,41 @@ impl Drop for SessionTrace {
     }
 }
 
+/// This session's live binding: which engine an omitted `project` param
+/// means, which selector hub-level renders report as "current", and the
+/// lifecycle trace journaling in that graph. One struct behind one lock
+/// because set_project (0.8.9) swaps all three atomically — a session whose
+/// client answered no MCP roots rebinds itself mid-session.
+struct Binding {
+    engine: Arc<Mutex<Engine>>,
+    /// Resolved project id when bound (`/projects/{id}/mcp` or set_project);
+    /// `None` = the launch project.
+    bound: Option<Arc<str>>,
+    /// Session lifecycle journal rows in the bound graph; the old graph gets
+    /// its `mcp_session_ended` when a rebind drops this.
+    trace: Arc<SessionTrace>,
+}
+
+/// Removes the session from the hub's live census when the last clone drops.
+struct SessionRegistration {
+    hub: Arc<Hub>,
+    session_id: Arc<str>,
+}
+
+impl Drop for SessionRegistration {
+    fn drop(&mut self) {
+        self.hub.session_end(&self.session_id);
+    }
+}
+
 #[derive(Clone)]
 pub struct Engram {
-    /// Session lifecycle journal rows; ends when the last clone drops.
-    _trace: Arc<SessionTrace>,
+    /// The live binding — see [`Binding`]. Clones share it: rmcp hands out
+    /// clones per request, and a set_project on one must move them all.
+    binding: Arc<std::sync::RwLock<Binding>>,
     /// The multi-project hub (PLAN §7C). Single-project constructions get a
     /// factory-less hub, so cross-project selectors fail with a clear message.
     hub: Arc<Hub>,
-    /// This session's project engine — `hub.current()` for a launch-bound
-    /// session, the bound project's for one minted by [`Engram::for_project`]
-    /// — cached for the unscoped fast path.
-    engine: Arc<Mutex<Engine>>,
-    /// The selector this session is bound to, when it is bound to one project
-    /// of a multi-project hub (`/projects/{id}/mcp`). `None` = the launch
-    /// project. Every hub-level call that reports or renders "the current
-    /// project" must pass this — the engine alone can't tell the hub which
-    /// project it is looking at.
-    bound: Option<Arc<str>>,
     /// Fallback session id when the client omits one: minted once per server
     /// process, which over stdio is one Claude session. Superseded by the
     /// transport session id after the streamable-HTTP migration (PLAN §0).
@@ -184,6 +202,8 @@ pub struct Engram {
     /// session or project land here and ride out on this session's next tool
     /// response.
     conflicts: Arc<Mutex<engram_core::ConflictFeed>>,
+    /// Census lifetime guard; ends when the last clone drops.
+    _registration: Arc<SessionRegistration>,
 }
 
 #[tool_router]
@@ -201,11 +221,18 @@ impl Engram {
     pub fn with_hub(hub: Arc<Hub>) -> Self {
         let engine = hub.current_engine();
         let session_id: Arc<str> = format!("mcp-{}", engram_core::id::new_id()).into();
+        hub.session_bind(&session_id, None);
         Self {
-            _trace: SessionTrace::start(&engine, &session_id, None),
-            engine,
-            bound: None,
+            binding: Arc::new(std::sync::RwLock::new(Binding {
+                trace: SessionTrace::start(&engine, &session_id, None),
+                engine,
+                bound: None,
+            })),
             conflicts: Arc::new(Mutex::new(hub.subscribe_conflicts())),
+            _registration: Arc::new(SessionRegistration {
+                hub: hub.clone(),
+                session_id: session_id.clone(),
+            }),
             hub,
             session_id,
         }
@@ -217,23 +244,38 @@ impl Engram {
     pub fn for_project(hub: Arc<Hub>, selector: &str) -> Result<Self, engram_core::Error> {
         let engine = hub.get(selector)?;
         let session_id: Arc<str> = format!("mcp-{}", engram_core::id::new_id()).into();
+        hub.session_bind(&session_id, Some(selector));
         Ok(Self {
-            _trace: SessionTrace::start(&engine, &session_id, Some(format!("project {selector}"))),
-            engine,
-            bound: Some(selector.into()),
+            binding: Arc::new(std::sync::RwLock::new(Binding {
+                trace: SessionTrace::start(
+                    &engine,
+                    &session_id,
+                    Some(format!("project {selector}")),
+                ),
+                engine,
+                bound: Some(selector.into()),
+            })),
             conflicts: Arc::new(Mutex::new(hub.subscribe_conflicts())),
+            _registration: Arc::new(SessionRegistration {
+                hub: hub.clone(),
+                session_id: session_id.clone(),
+            }),
             hub,
             session_id,
         })
     }
 
-    /// Lock the engine and stamp this MCP session as the writer (audit journal
-    /// attribution). Re-stamped on every operation: the engine may be shared
-    /// with the HTTP pane, which stamps itself the same way.
-    fn engine(&self) -> std::sync::MutexGuard<'_, Engine> {
-        let mut guard = self.engine.lock().unwrap();
-        guard.set_audit_origin(engram_core::AuditOrigin::mcp(self.session_id.to_string()));
-        guard
+    /// This session's engine right now (rebindable — never cache across
+    /// calls).
+    fn session_engine(&self) -> Arc<Mutex<Engine>> {
+        self.binding.read().unwrap().engine.clone()
+    }
+
+    /// The selector this session is bound to (`None` = the launch project).
+    /// Every hub-level call that reports "the current project" must pass
+    /// this — the engine alone can't tell the hub which project it is.
+    fn session_bound(&self) -> Option<Arc<str>> {
+        self.binding.read().unwrap().bound.clone()
     }
 
     /// Resolve a tool's optional `project` selector: omitted = the current
@@ -242,7 +284,7 @@ impl Engram {
     /// explains where fan-out reads and shared writes belong.
     fn engine_for(&self, project: &Option<String>) -> Result<Arc<Mutex<Engine>>, ErrorData> {
         match project.as_deref() {
-            None => Ok(self.engine.clone()),
+            None => Ok(self.session_engine()),
             Some(sel) => self.hub.get(sel).map_err(map_err),
         }
     }
@@ -285,7 +327,7 @@ impl Engram {
                         let resolved = match (&h.project, engine) {
                             (Some(p), _) => self.hub.get(p).ok(),
                             (None, Some(e)) => Some((*e).clone()),
-                            (None, None) => Some(self.engine.clone()),
+                            (None, None) => Some(self.session_engine()),
                         };
                         if let Some(e) = resolved
                             && let Ok(Some(node)) = e.lock().unwrap().get_node(&h.id)
@@ -367,8 +409,11 @@ impl Engram {
         });
     }
 
-    /// Lock a scoped engine with this session stamped as the writer.
+    /// Lock a scoped engine with this session stamped as the writer. Every
+    /// tool passes through here, so it also keeps the session's census row
+    /// alive (lazy-expired like leases).
     fn mcp<'a>(&self, engine: &'a Arc<Mutex<Engine>>) -> std::sync::MutexGuard<'a, Engine> {
+        self.hub.session_touch(&self.session_id);
         let mut guard = engine.lock().unwrap();
         guard.set_audit_origin(engram_core::AuditOrigin::mcp(self.session_id.to_string()));
         guard
@@ -789,16 +834,21 @@ impl Engram {
         // scoped project (or `home`) briefs that graph alone. The session's
         // binding is the whole point: the hub's own current project is the
         // core's launch graph (home), which is nobody's answer.
-        let text = match &a.project {
+        let mut text = match &a.project {
             None => self
                 .hub
-                .brief_for(self.bound.as_deref(), max_chars)
+                .brief_for(self.session_bound().as_deref(), max_chars)
                 .map_err(map_err)?,
             Some(_) => {
                 let engine = self.engine_for(&a.project)?;
                 self.mcp(&engine).brief(max_chars).map_err(map_err)?
             }
         };
+        if a.project.is_none()
+            && let Some(hint) = self.fallback_hint()
+        {
+            text = format!("{hint}\n\n{text}");
+        }
         Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
     }
 
@@ -1268,7 +1318,71 @@ impl Engram {
         // `current` is THIS SESSION's project, not the core's launch graph —
         // a bound session told it is in `home` reads as the wrong graph
         // being open and sends the assistant looking for its memory elsewhere.
-        self.reply(&json!({ "projects": self.hub.projects_for(self.bound.as_deref()) }))
+        self.reply(&json!({ "projects": self.hub.projects_for(self.session_bound().as_deref()) }))
+    }
+
+    /// One line atop the unscoped brief when this session's binding came from
+    /// a fallback rung — the home graph or the default-agent-project setting.
+    /// A client that advertised roots but never answered them (issue #4:
+    /// Windsurf, Devin CLI) leaves the agent as the only party that knows the
+    /// real workspace; teach the recovery exactly where it's needed.
+    fn fallback_hint(&self) -> Option<String> {
+        if !self.hub.is_multi() {
+            return None;
+        }
+        let id = match self.session_bound() {
+            Some(b) => self.hub.resolve_id(&b).ok()?,
+            None => self.hub.current().id.clone(),
+        };
+        let default = engram_core::settings::load().default_agent_project;
+        if id != registry::HOME_PROJECT && default.as_deref() != Some(id.as_str()) {
+            return None;
+        }
+        Some(format!(
+            "_This session is bound to '{id}' by fallback. If your workspace is a \
+             different project, call set_project with its absolute path first._"
+        ))
+    }
+
+    #[tool(
+        description = "Rebind THIS session to a registered project (name, id, \
+        or any absolute path inside its root) and get its brief back. Call it \
+        when your workspace differs from the project your tool results name — \
+        a client that answers no MCP roots can't bind you itself. \
+        Session-scoped; unknown selectors are refused with the known roster."
+    )]
+    async fn set_project(
+        &self,
+        Parameters(a): Parameters<SetProjectArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        // Resolve BEFORE touching the binding: a refused selector must leave
+        // the session exactly where it was. `get` accepts registered projects
+        // only (unknowns are refused WITH the known roster) — a hallucinated
+        // path can never birth a graph here.
+        let engine = self.hub.get(&a.project).map_err(map_err)?;
+        let id = self.hub.resolve_id(&a.project).map_err(map_err)?;
+        let trace = SessionTrace::start(
+            &engine,
+            &self.session_id,
+            Some(format!("project {id} via set_project")),
+        );
+        {
+            let mut binding = self.binding.write().unwrap();
+            binding.engine = engine.clone();
+            binding.bound = Some(id.as_str().into());
+            // Dropping the old trace journals mcp_session_ended in the graph
+            // this session is leaving.
+            binding.trace = trace;
+        }
+        self.hub.session_bind(&self.session_id, Some(&id));
+        let max_chars = engine.lock().unwrap().brief_chars(None);
+        let brief = self.hub.brief_for(Some(&id), max_chars).map_err(map_err)?;
+        let project = self
+            .hub
+            .projects_for(Some(&id))
+            .into_iter()
+            .find(|p| p.current);
+        self.reply(&json!({ "ok": true, "project": project, "brief": brief }))
     }
 }
 
@@ -1304,8 +1418,9 @@ impl ServerHandler for Engram {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
+        let engine = self.session_engine();
         let nodes = self
-            .engine()
+            .mcp(&engine)
             .store()
             .recent_nodes(RESOURCE_LIST_CAP)
             .map_err(map_err)?;
@@ -1358,7 +1473,8 @@ impl ServerHandler for Engram {
                 None,
             ));
         };
-        let engine = self.engine();
+        let engine = self.session_engine();
+        let engine = self.mcp(&engine);
         let Some(node) = engine.get_node(id).map_err(map_err)? else {
             return Err(ErrorData::invalid_params(
                 format!("node not found: {id}"),
@@ -2353,6 +2469,13 @@ struct ProjectArg {
 }
 
 #[derive(Deserialize, JsonSchema)]
+struct SetProjectArgs {
+    /// A registered project: name, id, or any absolute path inside its root
+    /// (your workspace directory).
+    project: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
 struct AuditArgs {
     /// Max rows to return (default 20, newest first).
     #[serde(default)]
@@ -2936,7 +3059,13 @@ pub(crate) mod tool_tests {
                 .await
                 .unwrap(),
         );
-        let node = s.engine.lock().unwrap().get_node(&id).unwrap().unwrap();
+        let node = s
+            .session_engine()
+            .lock()
+            .unwrap()
+            .get_node(&id)
+            .unwrap()
+            .unwrap();
         assert_eq!(node.session_id.as_deref(), Some(&*s.session_id));
         assert!(s.session_id.starts_with("mcp-"));
     }
@@ -2953,7 +3082,13 @@ pub(crate) mod tool_tests {
             .await
             .unwrap(),
         );
-        let node = s.engine.lock().unwrap().get_node(&id).unwrap().unwrap();
+        let node = s
+            .session_engine()
+            .lock()
+            .unwrap()
+            .get_node(&id)
+            .unwrap()
+            .unwrap();
         assert_eq!(node.tags, vec!["phase-1", "ui"]);
     }
 
@@ -3382,7 +3517,8 @@ pub(crate) mod tool_tests {
     }
 
     fn seed_history(s: &Engram, sid: &str, texts: &[(&str, &str)]) {
-        let engine = s.engine.lock().unwrap();
+        let engine = s.session_engine();
+        let engine = engine.lock().unwrap();
         let base = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -3481,7 +3617,8 @@ pub(crate) mod tool_tests {
     async fn list_sessions_scopes_to_a_window_and_says_so_when_empty() {
         let (s, dir) = history_server();
         {
-            let engine = s.engine.lock().unwrap();
+            let engine = s.session_engine();
+            let engine = engine.lock().unwrap();
             for (sid, day) in [("sess-june", "2026-06-10"), ("sess-august", "2026-08-10")] {
                 let mut props = serde_json::Map::new();
                 props.insert("harness".into(), "claude-code".into());
@@ -3603,7 +3740,8 @@ pub(crate) mod tool_tests {
         assert!(text_of(&res).contains("Nothing recorded"));
 
         {
-            let engine = s.engine.lock().unwrap();
+            let engine = s.session_engine();
+            let engine = engine.lock().unwrap();
             for (sid, harness, ts) in [
                 ("sess-old", "claude-code", 1_786_300_000i64),
                 ("sess-new", "bob", 1_786_400_000),
@@ -3671,7 +3809,8 @@ pub(crate) mod tool_tests {
         // Two recorded turns at fixed times; the note parks at the assistant
         // turn's moment, so provenance resolves in the same pass.
         {
-            let engine = s.engine.lock().unwrap();
+            let engine = s.session_engine();
+            let engine = engine.lock().unwrap();
             for (i, (role, text, ts)) in [
                 ("user", "how should we cap the batch", 1_786_400_000i64),
                 (
@@ -3721,7 +3860,8 @@ pub(crate) mod tool_tests {
             .unwrap();
         let note_id = created["id"].as_str().unwrap().to_string();
         {
-            let engine = s.engine.lock().unwrap();
+            let engine = s.session_engine();
+            let engine = engine.lock().unwrap();
             engine.park_provenance(&note_id, 1_786_400_010);
             assert_eq!(engine.resolve_provenance().unwrap(), 1);
         }
@@ -3799,7 +3939,8 @@ pub(crate) mod tool_tests {
         );
         // The knob: search_fallthrough=false silences the section.
         {
-            let engine = s.engine.lock().unwrap();
+            let engine = s.session_engine();
+            let engine = engine.lock().unwrap();
             let mut cfg = engine.graph_config();
             cfg.history.search_fallthrough = false;
             engine.set_graph_config(&cfg).unwrap();
@@ -3967,7 +4108,14 @@ mod suspect_tests {
             "got: {brief_text}"
         );
 
-        let sid = s.engine.lock().unwrap().suspects().unwrap().remove(0).id;
+        let sid = s
+            .session_engine()
+            .lock()
+            .unwrap()
+            .suspects()
+            .unwrap()
+            .remove(0)
+            .id;
         let resolved = s
             .resolve_suspect(Parameters(ResolveSuspectArgs {
                 id: sid,
@@ -4302,8 +4450,126 @@ mod scoped_transport_tests {
             "the hub's current project stays its own graph: {text}"
         );
 
+        // 0.8.9 set_project: the session rebinds ITSELF — the recovery for
+        // clients that advertise roots but never answer them (issue #4). An
+        // unknown selector is refused with the known roster and leaves the
+        // binding untouched…
+        let err = unscoped
+            .peer()
+            .call_tool(
+                CallToolRequestParams::new("set_project").with_arguments(
+                    serde_json::json!({ "project": "definitely-not-a-project" })
+                        .as_object()
+                        .cloned()
+                        .unwrap(),
+                ),
+            )
+            .await
+            .unwrap_err();
+        let err = err.to_string();
+        assert!(err.contains("beta"), "refusal lists the roster: {err}");
+
+        // …a directory selector rebinds, and the response carries the brief,
+        // so one call yields binding + memory context.
+        let bound = unscoped
+            .peer()
+            .call_tool(
+                CallToolRequestParams::new("set_project").with_arguments(
+                    serde_json::json!({ "project": beta_root.display().to_string() })
+                        .as_object()
+                        .cloned()
+                        .unwrap(),
+                ),
+            )
+            .await
+            .unwrap();
+        let text = format!("{:?}", bound.content);
+        assert!(
+            text.contains("beta owns this decision"),
+            "set_project returns the scoped brief: {text}"
+        );
+
+        let hits = unscoped
+            .peer()
+            .call_tool(
+                CallToolRequestParams::new("search").with_arguments(
+                    serde_json::json!({ "query": "beta owns decision" })
+                        .as_object()
+                        .cloned()
+                        .unwrap(),
+                ),
+            )
+            .await
+            .unwrap();
+        let text = format!("{:?}", hits.content);
+        assert!(
+            text.contains("beta owns this decision"),
+            "after set_project the session's default project IS beta: {text}"
+        );
+
+        // The census follows the rebind: no live session still claims the
+        // launch binding; the moved session reports beta.
+        let sessions = hub.sessions();
+        assert!(
+            sessions.iter().any(|s| s.name == "beta"),
+            "census carries the rebind: {sessions:?}"
+        );
+        assert!(
+            !sessions.iter().any(|s| s.project == "current"),
+            "no session still claims the launch binding: {sessions:?}"
+        );
+
         unsafe { std::env::remove_var("ENGRAM_HOME") };
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The fallback hint: a session that landed on the home graph (the
+    /// ladder's last rung) is told, atop its brief, how to recover — and a
+    /// properly bound session never sees the line.
+    #[tokio::test]
+    async fn home_bound_session_brief_carries_the_set_project_hint() {
+        let factory: engram_core::EngineFactory = Box::new(|db| {
+            Ok(Engine::new(
+                SqliteStore::open(db)?,
+                Box::new(FakeEmbedder::default()),
+            ))
+        });
+        let home = Engine::new(
+            SqliteStore::open_in_memory().unwrap(),
+            Box::new(FakeEmbedder::default()),
+        );
+        let hub = Arc::new(Hub::new_home(Arc::new(Mutex::new(home)), Some(factory)));
+        let s = Engram::with_hub(hub);
+        let brief = s
+            .brief(Parameters(BriefArgs {
+                max_chars: None,
+                project: None,
+            }))
+            .await
+            .unwrap();
+        let text = format!("{:?}", brief.content);
+        assert!(
+            text.contains("set_project"),
+            "home-bound sessions are taught the recovery: {text}"
+        );
+
+        // Single-project processes have no other projects to rebind to.
+        let single = Engram::new(Engine::new(
+            SqliteStore::open_in_memory().unwrap(),
+            Box::new(FakeEmbedder::default()),
+        ));
+        let brief = single
+            .brief(Parameters(BriefArgs {
+                max_chars: None,
+                project: None,
+            }))
+            .await
+            .unwrap();
+        let text = format!("{:?}", brief.content);
+        assert!(
+            !text.contains("set_project"),
+            "a single-project session never sees the hint: {text}"
+        );
     }
 }
 
