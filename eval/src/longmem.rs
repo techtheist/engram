@@ -653,6 +653,14 @@ fn run_question(
     if ontology == "chat" {
         engine.set_graph_config(&chat_config(engine.graph_config()))?;
     }
+    // `--rerank-full` reaches this arm too: the floor problem lives on
+    // foreign registers, so the candidate has to be priced here, not only
+    // on the synthetic corpus.
+    if cfg.rerank_full {
+        let mut gc = engine.graph_config();
+        gc.policy.rerank_full_note = true;
+        engine.set_graph_config(&gc)?;
+    }
     let (statement, reply) = (NodeType::parse("statement")?, NodeType::parse("reply")?);
 
     // As-is ingestion: one note per turn, verbatim, both roles — the

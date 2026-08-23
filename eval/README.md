@@ -152,7 +152,8 @@ story is a section below.
 | 0.8.3 — the null result that mattered | inference batch capped at 2 (was fastembed's 256); default embedder pinned to the fp32 weights every receipt was measured on | daemon runtime growth cut to near nothing, eval wall-clock −40% — and all seven arms identical at 100+500, the receipt that it changed *nothing* it wasn't supposed to |
 | 0.8.7 — search learns time | one temporal grammar (`after`/`before`/`during_version`) over memory and history; `--window` prices the candidate-pool depth | the premise was backwards: a window **buys** recall — oblique 0.263 → 0.830 at 2100 notes, three seeds unanimous; `window_overfetch` 8 → 2; the bench now panics on retrieval errors instead of scoring them zero |
 | 0.8.10 — sessions mix | session-diverse delivery: a rank demotion at the cut so one session's restatements stop crowding out other sessions' evidence; `--sessions` bench, `--lme-turns` tuning loop | at demote 2: top-5 session coverage +0.10–0.12 and full cluster coverage 1.000 at **zero** single-gold cost, three seeds unanimous; inert and cost-free on the chat register — which points the next cycle at the floor |
-| next | the delivery floor, both attacks on one sweep: the per-graph dial-three fit vs full-note reranker input — the winner ships; then the LongMemEval online half | the phantom-q25 fit already measures recall-free at ≤500 notes and −0.01 R@5 at 1500 while trimming more than the fixed floor; the rerank-full half is pending |
+| 0.8.10 — the floor bake-off | both floor attacks priced on one sweep: the per-graph dial-three fit vs full-note reranker input, cross-checked on the chat register | **neither ships**: full-note input wins the note register uncut (+0.07 oblique at 1500) and collapses on chat (R@5 0.96 → 0.78, delivery 111 → 67 tok/query) — register-fragile, stays a knob; the dial-three q25 fit is recall-free at ≤500, −0.01 R@5 at 1500, and misfires under full-note input — the surviving candidate, pending a chat-register fit |
+| next | a LongMemEval floor sweep (chat-register raw score curves), then the dial-three auto-tune dial if the fit validates there; the LongMemEval online half | benched before shipped, as always |
 
 ### The graveyard
 
@@ -163,9 +164,10 @@ arithmetic behind a reranker), score-shape QPP gates and every per-query null
 — pool-bottom z, random-background z, Gumbel null-max, embedding coherence,
 local-crowd shoulder — (all blind at 1500: the crowd fakes the shape, not
 just the scale), the knee buffer (rescues nothing at scale, burns focus), and
-full-note reranker input as a *ranking* fix (a null result at the time — the
-snippet was not the recall bottleneck; it is back on the bench as a
-*delivery-floor* fix, which is a different claim). The early entries,
+full-note reranker input **as a shipped default** (a null result as a 0.7.2
+ranking fix under the old decide-mode reranker; re-benched in 0.8.10 across
+two registers — it wins the note register uncut and collapses on chat, so it
+stays a per-graph knob; see the floor bake-off). The early entries,
 implemented, measured and abandoned:
 
 | tried | result |
@@ -752,6 +754,54 @@ would grade retrieval on an unanswerable world — and distractor sessions fill
 the budget in haystack order. At 50 turns a 100-question pass takes ~7
 minutes on the GPU embedder instead of hours, which makes it a tuning loop;
 receipts carry `turns_cap` and are not comparable to full-haystack numbers.
+
+### The delivery-floor bake-off: both attacks, priced
+
+The fixed floor's standing problem is register-dependence: 0.22 was measured
+recall-free on this bench's note register, and on graphs whose whole score
+scale sits lower (dense prose, chat) it behaves as the hard abstention gate
+the research cycle refuted three times. Two attacks on that root, benched on
+one sweep (`--floor --distractors 0`, receipts
+`results/floor-dial3-{snippet,rerankfull}.json`):
+
+**Attack one — dial three**: fit the floor per graph as a quantile of every
+score the phantom (control) questions reach — the noise body, not its
+ceiling. The sweep prices the fit inline (`dial-3 fit` rows). On the note
+register the q25 fit lands at 0.18 / 0.28 / 0.33 at 100/500/1500 — recall-
+free at 100 and 500 while trimming *more* than the fixed 0.22 (focus
+0.12 → 0.18 at 500), and −0.01 R@5 / −0.02 oblique at 1500. Promising, not
+yet free everywhere.
+
+**Attack two — full-note reranker input** (`policy.rerank_full_note`): let
+the cross-encoder judge `title + whole body` instead of the keyword-window
+snippet, so a dense note's evidence sentence stops being invisible to the
+judge — attacking the low scores instead of adapting the threshold. On the
+note register it wins **as a ranking change**, before any floor: uncut
+R@5/oblique go 0.78/0.34 → **0.80/0.41** at 1500, 0.85/0.56 → 0.87/0.62 at
+500 — which refines the 0.7.2 graveyard verdict (measured under the old
+decide-mode reranker; under the vote, whole compact bodies help).
+
+**But the attacks are antagonistic, and the register decides.** Full-note
+input raises phantom scores along with answer scores, so the dial-three fit
+misfires on it (the q25 fit at 1500 costs 0.07 R@5 and half the oblique
+column). And on the register the floor problem actually lives on — chat —
+full-note input **collapses**: the same 100-question `--lme-turns 50` loop
+goes R@5 0.96 → **0.78**, multi-session questions 0.93 → 0.50, delivery
+over-trimmed from 111 to 67 tok/query
+(`results/longmemeval-s-turns50-rerankfull.json`; `--rerank-full` reaches
+the LongMemEval arm since this bench). A chat turn is long and rambling, the
+whole body dilutes the evidence sentence, the deflated scores fall to the
+fixed floor. Helps compact single-claim notes, hurts everything else — the
+definition of register-fragile, and exactly what the 0.8.1 lesson predicts
+for input-sensitive scoring.
+
+**Verdict: neither ships as a default.** `rerank_full_note` stays a per-graph
+knob, refuted as a default by the chat receipt. Dial three survives as the
+only live candidate, but its bench cost at 1500 and its input-sensitivity
+say the auto-tune dial isn't written until the fit is validated on the
+register it exists for — which needs chat-register raw score curves (an
+LongMemEval floor sweep) that don't exist yet. The fixed 0.22 stands,
+Problem-open, with both alternatives now priced instead of promised.
 
 ---
 

@@ -39,7 +39,15 @@ body of its GitHub Release (draft-release.yml lifts it automatically).
   a `multi-cov` column: how much of a multi-session question's evidence
   spread the delivered list covers. `--floor` now also prices the dial-three
   candidate (delivery floor fitted per graph from the phantom-probe score
-  body) beside the observed-distribution grid.
+  body) beside the observed-distribution grid, and `--rerank-full` reaches
+  the LongMemEval arm. The delivery-floor bake-off those tools ran ended
+  with **neither attack shipping**: full-note reranker input wins the note
+  register uncut (+0.07 oblique at 1500) but collapses on the chat register
+  (R@5 0.96 → 0.78) — register-fragile, it stays a per-graph knob — and the
+  dial-three q25 fit is recall-free at ≤500 notes but not at 1500 and
+  misfires under full-note input, so the auto-tune dial waits for a
+  chat-register fit. Receipts in `eval/results/`, story in the eval README's
+  0.8.10 section.
 
 ## v0.8.9
 
