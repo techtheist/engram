@@ -3,6 +3,37 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
+## v0.8.11
+
+### One tool binds and briefs — and Windsurf and Devin CLI get first-class wiring
+
+- **`brief` absorbs `set_project` (24 tools, was 25).** Passing `project` to
+  `brief` — a name, id, or any absolute path inside a registered root — now
+  REBINDS the session to that project and returns its brief in one call,
+  exactly what 0.8.9's separate `set_project` did. One tool means one
+  instruction: the field report on issue #4 showed the injected "call
+  `brief` first" guidance overruling a workspace rule that said
+  `set_project` first — with the merge there is no wrong first call left to
+  make. The server instructions, the `brief` description, and the fallback
+  hint atop a fallback-bound session's brief all teach the same gesture; a
+  refused selector (unknowns are listed with the known roster) leaves the
+  binding untouched.
+- **Windsurf project wiring (issue #7).** `setup --cli windsurf` now also
+  writes `.windsurf/rules/engram.md` — an `always_on` rule whose critical
+  first instruction is the brief-rebind (Windsurf has no session hooks and
+  answers no MCP roots) — and installs the capture + digest skills under
+  `.windsurf/skills/`, both honoring `--skill` and skipped by `--mcp-only`.
+  The global config merge and the `AGENTS.md` block are unchanged.
+- **Devin CLI adapter (issue #8).** `setup --cli devin` wires the repo
+  three ways: `.devin/mcp_config.local.json` (Devin's highest-precedence,
+  per-project tier — explicit `--db`, and git-ignored since it carries
+  personal absolute paths), skills under `.devin/skills/`, and a
+  `SessionStart` hook registered in `.devin/hooks.v1.json` that injects the
+  brief. Devin accepts injected context only as a `hookSpecificOutput`
+  JSON envelope — plain stdout is dropped — so the hook wraps the portable
+  brief script's markdown in that envelope (escaping verified by test).
+  `devin` joins auto-detection (PATH probe) and doctor's wiring report.
+
 ## v0.8.10
 
 ### Search mixes sessions — and tool replies stop speaking in epochs
