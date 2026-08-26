@@ -168,7 +168,7 @@ export interface ProcessCore {
     home: string
 }
 
-/** One live MCP session's binding (0.8.9 set_project census). */
+/** One live MCP session's binding (the in-session rebind census). */
 export interface SessionBinding {
     session_id: string
     /** Resolved project id ('home' for the home graph). */
@@ -247,7 +247,7 @@ export interface SystemInfo {
     processes?: {
         core: ProcessCore
         clients: ProcessClient[]
-        /** Live MCP session bindings (0.8.9 set_project): where each session
+        /** Live MCP session bindings (in-session rebind: 0.8.9 set_project, brief(project) since 0.8.11): where each session
          *  IS right now, which after an in-session rebind is not what its
          *  bridge's launch lease says. Absent on older cores. */
         sessions?: SessionBinding[]

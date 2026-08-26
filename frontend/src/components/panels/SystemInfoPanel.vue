@@ -289,7 +289,7 @@ function wiringStatus(w: { wired: boolean; prerename: boolean }): { status: Stat
                 No light processes connected.
             </p>
 
-            <!-- Live MCP session bindings (0.8.9 set_project): where each
+            <!-- Live MCP session bindings (in-session rebind: 0.8.9 set_project, brief(project) since 0.8.11): where each
                  session IS right now — after an in-session rebind that is
                  not what its bridge lease above says. Absent on older
                  cores; hidden when there are none. -->

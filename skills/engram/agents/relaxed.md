@@ -9,6 +9,10 @@ are the way they are, and the user sees and curates everything in the pane.
 **Recall.** Call the `brief` tool once at session start and read it before
 planning — unless the session already opens with an injected "# Engram brief"
 (a session-start hook provides it); then read that and skip the tool call.
+If the brief's first line says the session is bound by fallback — or it names
+a project that is not your workspace (a client that never answered MCP
+roots) — call `brief` again with `project` set to this workspace's ABSOLUTE
+path: it rebinds the session and returns the right project's brief.
 Before any non-trivial decision, `search` the graph; hits carry their 1-hop
 neighbors — read `conflicts-with` / `replaces` edges first, and pass
 `parents`/`children` to `get_node` when you need the reasoning chain. For

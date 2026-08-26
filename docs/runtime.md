@@ -120,19 +120,21 @@ so `mcp.log` always says which one bound the session):
    than dying. A later `roots/list_changed` naming a real workspace still
    rebinds away normally.
 
-**The agent can rebind itself: `set_project`.** When a client advertises
-roots but never answers them (Windsurf and Devin CLI in the field) and has
-no usable working directory either, the agent is the only party that knows
-the real workspace. The `set_project` tool rebinds the running session to a
-registered project — name, id, or any absolute path inside its root — and
-returns that project's brief in the same call. Sessions stranded on rungs 4
-or 5 see a one-line hint atop their brief pointing at it. One line in the
-client's rules file (e.g. `AGENTS.md`) makes it automatic:
+**The agent can rebind itself: `brief` with `project`.** When a client
+advertises roots but never answers them (Windsurf and Devin CLI in the
+field) and has no usable working directory either, the agent is the only
+party that knows the real workspace. Passing `project` to the `brief` tool —
+name, id, or any absolute path inside a registered root — rebinds the
+running session to that project and returns its brief in the same call
+(0.8.9 shipped this as a separate `set_project` tool; 0.8.11 folded it into
+`brief`). Sessions stranded on rungs 4 or 5 see a one-line hint atop their
+brief pointing at it. One line in the client's rules file (e.g. `AGENTS.md`)
+makes it automatic:
 
-> At the start of a session, call engram's `set_project` with the absolute
-> path of the workspace, then follow the brief it returns.
+> At the start of a session, call engram's `brief` with `project` set to the
+> absolute path of the workspace, then follow the brief it returns.
 
-`set_project` is session-scoped: it refuses unregistered paths (listing the
+The rebind is session-scoped: it refuses unregistered paths (listing the
 known projects — register a repo by running `engram-alpha serve` in it once)
 and never touches the default-agent-project setting. The pane's Processes
 census shows each live session's current binding under **Sessions**.

@@ -879,7 +879,7 @@ async fn system(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
                     "home": rt.home,
                 },
                 "clients": rt.clients(),
-                // Live MCP session bindings (0.8.9 set_project): where each
+                // Live MCP session bindings (in-session rebind: 0.8.9 set_project, brief(project) since 0.8.11): where each
                 // session IS, which after an in-session rebind is not what
                 // its bridge's launch lease says.
                 "sessions": state.hub.sessions(),

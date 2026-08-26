@@ -134,7 +134,7 @@ pub struct Hub {
     /// delete so the running harvester drops its cursors and caches. A
     /// counter, not an event — the harvester compares at each sweep.
     history_epoch: std::sync::atomic::AtomicU64,
-    /// Live MCP session bindings (0.8.9 set_project): where each session
+    /// Live MCP session bindings (in-session rebind: 0.8.9 set_project, brief(project) since 0.8.11): where each session
     /// actually is, which after an in-session rebind is NOT what the bridge's
     /// launch lease says — `/system` reads census truth from here.
     sessions: Mutex<HashMap<String, SessionBinding>>,
@@ -382,7 +382,7 @@ impl Hub {
 
     /// Whether this hub can reach other projects at all — single-project
     /// constructions (stdio `serve` on one db) have no factory, and surfaces
-    /// like the set_project fallback hint must stay silent there.
+    /// like the brief fallback hint must stay silent there.
     pub fn is_multi(&self) -> bool {
         self.factory.is_some()
     }
@@ -400,7 +400,7 @@ impl Hub {
             .unwrap_or_else(|| id.to_string())
     }
 
-    /// A live MCP session announces (or moves, on set_project) its binding.
+    /// A live MCP session announces (or moves, on a scoped brief) its binding.
     /// `selector` is any project selector; `None` = the hub's launch project.
     /// Census truth for `/system`: after an in-session rebind the bridge's
     /// lease still shows the launch root, so readers ask here.

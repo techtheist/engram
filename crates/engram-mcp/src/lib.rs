@@ -24,7 +24,12 @@ use serde_json::json;
 const INSTRUCTIONS: &str = "\
 Engram is the project's durable reasoning/decision memory as an editable graph. \
 Call `brief` at the start of a session for a compact digest of the canon \
-(conflicts, open work, principles, decisions, cautions). Use `search` before \
+(conflicts, open work, principles, decisions, cautions). If its first line \
+says the session is bound by fallback — or your client answered no MCP roots \
+and the briefed project is not your workspace — call `brief` again with \
+`project` set to your workspace's absolute path: it rebinds this session to \
+that registered project and returns ITS brief in the same call. \
+Use `search` before \
 non-trivial work — hits carry their 1-hop neighbors, conflicts and supersessions \
 first. Capture every decision as it happens — a feature request usually hides \
 one (library picked, shape chosen, tradeoff accepted) and it belongs in the \
@@ -162,12 +167,13 @@ impl Drop for SessionTrace {
 /// This session's live binding: which engine an omitted `project` param
 /// means, which selector hub-level renders report as "current", and the
 /// lifecycle trace journaling in that graph. One struct behind one lock
-/// because set_project (0.8.9) swaps all three atomically — a session whose
-/// client answered no MCP roots rebinds itself mid-session.
+/// because a scoped `brief` (0.8.9's set_project, folded into brief in
+/// 0.8.11) swaps all three atomically — a session whose client answered no
+/// MCP roots rebinds itself mid-session.
 struct Binding {
     engine: Arc<Mutex<Engine>>,
-    /// Resolved project id when bound (`/projects/{id}/mcp` or set_project);
-    /// `None` = the launch project.
+    /// Resolved project id when bound (`/projects/{id}/mcp` or a scoped
+    /// `brief`); `None` = the launch project.
     bound: Option<Arc<str>>,
     /// Session lifecycle journal rows in the bound graph; the old graph gets
     /// its `mcp_session_ended` when a rebind drops this.
@@ -189,7 +195,7 @@ impl Drop for SessionRegistration {
 #[derive(Clone)]
 pub struct Engram {
     /// The live binding — see [`Binding`]. Clones share it: rmcp hands out
-    /// clones per request, and a set_project on one must move them all.
+    /// clones per request, and a brief-rebind on one must move them all.
     binding: Arc<std::sync::RwLock<Binding>>,
     /// The multi-project hub (PLAN §7C). Single-project constructions get a
     /// factory-less hub, so cross-project selectors fail with a clear message.
@@ -818,35 +824,57 @@ impl Engram {
 
     #[tool(
         description = "Token-budgeted markdown digest of the graph: conflicts, \
-        open work, canon, recent changes. Call once when starting work."
+        open work, canon, recent changes. Call once when starting work. \
+        Passing `project` REBINDS this session to that registered project \
+        first and returns ITS brief — the one call that both selects the \
+        workspace's project and loads its memory when the client answered no \
+        MCP roots. Unknown selectors are refused with the known roster."
     )]
     async fn brief(
         &self,
         Parameters(a): Parameters<BriefArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        // No explicit budget → the briefed graph's configured one.
+        // A scoped call is a rebind (0.8.11, folding in 0.8.9's set_project):
+        // the agent is the roots provider its client failed to be (issue #4).
+        // Resolve BEFORE touching the binding — a refused selector must leave
+        // the session exactly where it was; `get` accepts registered projects
+        // only (unknowns are refused WITH the known roster), so a hallucinated
+        // path can never birth a graph here.
+        if let Some(sel) = &a.project {
+            let engine = self.hub.get(sel).map_err(map_err)?;
+            let id = self.hub.resolve_id(sel).map_err(map_err)?;
+            let trace = SessionTrace::start(
+                &engine,
+                &self.session_id,
+                Some(format!("project {id} via brief")),
+            );
+            {
+                let mut binding = self.binding.write().unwrap();
+                binding.engine = engine.clone();
+                binding.bound = Some(id.as_str().into());
+                // Dropping the old trace journals mcp_session_ended in the
+                // graph this session is leaving.
+                binding.trace = trace;
+            }
+            self.hub.session_bind(&self.session_id, Some(&id));
+            let max_chars = engine.lock().unwrap().brief_chars(a.max_chars);
+            let brief = self.hub.brief_for(Some(&id), max_chars).map_err(map_err)?;
+            let text = format!("_Session rebound to project '{id}'._\n\n{brief}");
+            return Ok(CallToolResult::success(vec![ContentBlock::text(text)]));
+        }
+        // Unscoped = THIS SESSION's project plus the home-graph section. The
+        // session's binding is the whole point: the hub's own current project
+        // is the core's launch graph (home), which is nobody's answer.
         let max_chars = self
-            .engine_for(&a.project)?
+            .session_engine()
             .lock()
             .unwrap()
             .brief_chars(a.max_chars);
-        // Unscoped = THIS SESSION's project plus the home-graph section; a
-        // scoped project (or `home`) briefs that graph alone. The session's
-        // binding is the whole point: the hub's own current project is the
-        // core's launch graph (home), which is nobody's answer.
-        let mut text = match &a.project {
-            None => self
-                .hub
-                .brief_for(self.session_bound().as_deref(), max_chars)
-                .map_err(map_err)?,
-            Some(_) => {
-                let engine = self.engine_for(&a.project)?;
-                self.mcp(&engine).brief(max_chars).map_err(map_err)?
-            }
-        };
-        if a.project.is_none()
-            && let Some(hint) = self.fallback_hint()
-        {
+        let mut text = self
+            .hub
+            .brief_for(self.session_bound().as_deref(), max_chars)
+            .map_err(map_err)?;
+        if let Some(hint) = self.fallback_hint() {
             text = format!("{hint}\n\n{text}");
         }
         Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
@@ -1340,49 +1368,10 @@ impl Engram {
         }
         Some(format!(
             "_This session is bound to '{id}' by fallback. If your workspace is a \
-             different project, call set_project with its absolute path first._"
+             different project, call `brief` again with `project` set to your \
+             workspace's absolute path — it rebinds this session and returns \
+             that project's brief._"
         ))
-    }
-
-    #[tool(
-        description = "Rebind THIS session to a registered project (name, id, \
-        or any absolute path inside its root) and get its brief back. Call it \
-        when your workspace differs from the project your tool results name — \
-        a client that answers no MCP roots can't bind you itself. \
-        Session-scoped; unknown selectors are refused with the known roster."
-    )]
-    async fn set_project(
-        &self,
-        Parameters(a): Parameters<SetProjectArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        // Resolve BEFORE touching the binding: a refused selector must leave
-        // the session exactly where it was. `get` accepts registered projects
-        // only (unknowns are refused WITH the known roster) — a hallucinated
-        // path can never birth a graph here.
-        let engine = self.hub.get(&a.project).map_err(map_err)?;
-        let id = self.hub.resolve_id(&a.project).map_err(map_err)?;
-        let trace = SessionTrace::start(
-            &engine,
-            &self.session_id,
-            Some(format!("project {id} via set_project")),
-        );
-        {
-            let mut binding = self.binding.write().unwrap();
-            binding.engine = engine.clone();
-            binding.bound = Some(id.as_str().into());
-            // Dropping the old trace journals mcp_session_ended in the graph
-            // this session is leaving.
-            binding.trace = trace;
-        }
-        self.hub.session_bind(&self.session_id, Some(&id));
-        let max_chars = engine.lock().unwrap().brief_chars(None);
-        let brief = self.hub.brief_for(Some(&id), max_chars).map_err(map_err)?;
-        let project = self
-            .hub
-            .projects_for(Some(&id))
-            .into_iter()
-            .find(|p| p.current);
-        self.reply(&json!({ "ok": true, "project": project, "brief": brief }))
     }
 }
 
@@ -2469,13 +2458,6 @@ struct ProjectArg {
 }
 
 #[derive(Deserialize, JsonSchema)]
-struct SetProjectArgs {
-    /// A registered project: name, id, or any absolute path inside its root
-    /// (your workspace directory).
-    project: String,
-}
-
-#[derive(Deserialize, JsonSchema)]
 struct AuditArgs {
     /// Max rows to return (default 20, newest first).
     #[serde(default)]
@@ -2719,8 +2701,11 @@ struct BriefArgs {
     /// Character budget for the digest (default ~16000, about 4k tokens).
     #[serde(default)]
     max_chars: Option<usize>,
-    /// Omit = this session's project plus the home-graph section; a name,
-    /// an id, a project directory (or "home") briefs that graph alone.
+    /// Omit = this session's project plus the home-graph section. A name, an
+    /// id, an absolute path inside a registered root, or "home" REBINDS this
+    /// session to that project and briefs it — session-scoped, and a refused
+    /// selector (unknowns are refused with the known roster) leaves the
+    /// binding untouched.
     #[serde(default)]
     project: Option<String>,
 }
@@ -4546,14 +4531,15 @@ mod scoped_transport_tests {
             "the hub's current project stays its own graph: {text}"
         );
 
-        // 0.8.9 set_project: the session rebinds ITSELF — the recovery for
-        // clients that advertise roots but never answer them (issue #4). An
-        // unknown selector is refused with the known roster and leaves the
-        // binding untouched…
+        // A scoped `brief` rebinds the session ITSELF (0.8.9's set_project,
+        // folded into brief in 0.8.11) — the recovery for clients that
+        // advertise roots but never answer them (issue #4). An unknown
+        // selector is refused with the known roster and leaves the binding
+        // untouched…
         let err = unscoped
             .peer()
             .call_tool(
-                CallToolRequestParams::new("set_project").with_arguments(
+                CallToolRequestParams::new("brief").with_arguments(
                     serde_json::json!({ "project": "definitely-not-a-project" })
                         .as_object()
                         .cloned()
@@ -4570,7 +4556,7 @@ mod scoped_transport_tests {
         let bound = unscoped
             .peer()
             .call_tool(
-                CallToolRequestParams::new("set_project").with_arguments(
+                CallToolRequestParams::new("brief").with_arguments(
                     serde_json::json!({ "project": beta_root.display().to_string() })
                         .as_object()
                         .cloned()
@@ -4581,8 +4567,12 @@ mod scoped_transport_tests {
             .unwrap();
         let text = format!("{:?}", bound.content);
         assert!(
+            text.contains("Session rebound to project"),
+            "a scoped brief confirms the rebind: {text}"
+        );
+        assert!(
             text.contains("beta owns this decision"),
-            "set_project returns the scoped brief: {text}"
+            "a scoped brief returns the target's brief: {text}"
         );
 
         let hits = unscoped
@@ -4600,7 +4590,7 @@ mod scoped_transport_tests {
         let text = format!("{:?}", hits.content);
         assert!(
             text.contains("beta owns this decision"),
-            "after set_project the session's default project IS beta: {text}"
+            "after the rebind the session's default project IS beta: {text}"
         );
 
         // The census follows the rebind: no live session still claims the
@@ -4623,7 +4613,7 @@ mod scoped_transport_tests {
     /// ladder's last rung) is told, atop its brief, how to recover — and a
     /// properly bound session never sees the line.
     #[tokio::test]
-    async fn home_bound_session_brief_carries_the_set_project_hint() {
+    async fn home_bound_session_brief_carries_the_rebind_hint() {
         let factory: engram_core::EngineFactory = Box::new(|db| {
             Ok(Engine::new(
                 SqliteStore::open(db)?,
@@ -4645,7 +4635,7 @@ mod scoped_transport_tests {
             .unwrap();
         let text = format!("{:?}", brief.content);
         assert!(
-            text.contains("set_project"),
+            text.contains("rebinds this session"),
             "home-bound sessions are taught the recovery: {text}"
         );
 
@@ -4663,7 +4653,7 @@ mod scoped_transport_tests {
             .unwrap();
         let text = format!("{:?}", brief.content);
         assert!(
-            !text.contains("set_project"),
+            !text.contains("rebinds this session"),
             "a single-project session never sees the hint: {text}"
         );
     }
