@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-pub const AGENTS: [&str; 8] = [
+pub const AGENTS: [&str; 9] = [
     "claude",
     "codex",
     "gemini",
@@ -16,6 +16,7 @@ pub const AGENTS: [&str; 8] = [
     "antigravity",
     "bob",
     "windsurf",
+    "devin",
 ];
 
 /// Which assistants look installed on this machine (binary on PATH or a
@@ -58,6 +59,12 @@ pub fn detect_agents() -> Vec<&'static str> {
         || Path::new("/Applications/Windsurf.app").exists()
     {
         found.push("windsurf");
+    }
+    // Devin CLI: PATH only — the ~/.devin and ~/.config/devin directories
+    // are shared with Windsurf's plugin generations and prove nothing about
+    // the CLI being installed.
+    if on_path("devin") {
+        found.push("devin");
     }
     found
 }
@@ -114,7 +121,15 @@ pub fn is_wired(repo: &Path, agent: &str) -> bool {
         // files — either counts.
         "windsurf" => {
             home_file(".devin/mcp_config.json").is_some_and(&has_engram)
-                || windsurf_xdg_config().is_some_and(has_engram)
+                || windsurf_xdg_config().is_some_and(&has_engram)
+        }
+        // Devin CLI reads a three-tier config: project-local, project, then
+        // the same user-level file the Windsurf JetBrains plugin reads — any
+        // tier carrying engram counts.
+        "devin" => {
+            has_engram(repo.join(".devin/mcp_config.local.json"))
+                || has_engram(repo.join(".devin/mcp_config.json"))
+                || windsurf_xdg_config().is_some_and(&has_engram)
         }
         _ => false,
     }

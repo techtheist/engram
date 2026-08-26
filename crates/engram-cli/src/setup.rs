@@ -32,6 +32,9 @@ const AGENT_AGGRESSIVE: &str = include_str!("../../../skills/engram/agents/aggre
 // SessionStart hook: injects the brief so sessions start pre-briefed.
 const SESSION_BRIEF_HOOK: &str = include_str!("../../../hooks/session-brief.sh");
 const FILE_READ_MATCH_HOOK: &str = include_str!("../../../hooks/file-read-match.sh");
+// Devin CLI wrapper: Devin injects SessionStart context only via the
+// hookSpecificOutput JSON envelope, so this wraps the portable script above.
+const DEVIN_BRIEF_HOOK: &str = include_str!("../../../hooks/devin-session-brief.sh");
 
 pub fn claude_skill(variant: &str) -> &'static str {
     match variant {
@@ -103,6 +106,7 @@ impl Setup {
                 "antigravity" => self.wire_antigravity()?,
                 "bob" => self.wire_bob()?,
                 "windsurf" => self.wire_windsurf()?,
+                "devin" => self.wire_devin()?,
                 other => anyhow::bail!("unknown agent: {other}"),
             }
         }
@@ -111,14 +115,19 @@ impl Setup {
     }
 
     fn ensure_gitignore(&self) -> anyhow::Result<()> {
+        self.ensure_gitignore_line(".engram/", "Engram local graph (personal)")
+    }
+
+    /// Append one line to .gitignore unless it is already there.
+    fn ensure_gitignore_line(&self, line: &str, comment: &str) -> anyhow::Result<()> {
         let path = self.repo.join(".gitignore");
         let current = fs::read_to_string(&path).unwrap_or_default();
-        if !current.lines().any(|l| l.trim() == ".engram/") {
+        if !current.lines().any(|l| l.trim() == line) {
             let mut s = current;
             if !s.is_empty() && !s.ends_with('\n') {
                 s.push('\n');
             }
-            s.push_str("\n# Engram local graph (personal)\n.engram/\n");
+            s.push_str(&format!("\n# {comment}\n{line}\n"));
             fs::write(&path, s)?;
         }
         Ok(())
@@ -284,29 +293,43 @@ impl Setup {
         if self.mcp_only {
             return Ok(());
         }
+        // The dogfood layout symlinks .claude/skills/engram into the source
+        // tree — treat that as "this checkout manages its own wiring" and
+        // skip skills and hooks entirely, as setup always has.
         let dir = self.repo.join(".claude/skills/engram");
-        // A symlinked skill dir (this repo dogfoods that way) points into
-        // someone's source tree — writing through it would clobber the
-        // original. Leave symlinks strictly alone.
         if is_symlink(&dir) || is_symlink(&dir.join("SKILL.md")) {
             say("claude: .claude/skills/engram is a symlink — leaving it untouched");
             return Ok(());
         }
-        fs::create_dir_all(&dir)?;
-        fs::write(dir.join("SKILL.md"), claude_skill(&self.variant))?;
+        self.install_skills(".claude/skills", "claude")?;
+        self.install_claude_brief_hook()
+    }
+
+    /// Install the capture-variant and digest skills under `base` (SKILL.md
+    /// format shared by Claude Code, Windsurf, and Devin CLI). A symlinked
+    /// skill dir (this repo dogfoods that way) points into someone's source
+    /// tree — writing through it would clobber the original; symlinks are
+    /// left strictly alone.
+    fn install_skills(&self, base: &str, label: &str) -> anyhow::Result<()> {
+        for (name, body) in [
+            ("engram", claude_skill(&self.variant)),
+            ("engram-digest", CLAUDE_DIGEST),
+        ] {
+            let dir = self.repo.join(base).join(name);
+            if is_symlink(&dir) || is_symlink(&dir.join("SKILL.md")) {
+                say(&format!(
+                    "{label}: {base}/{name} is a symlink — leaving it untouched"
+                ));
+                continue;
+            }
+            fs::create_dir_all(&dir)?;
+            fs::write(dir.join("SKILL.md"), body)?;
+        }
         say(&format!(
-            "claude: installed the '{}' skill to .claude/skills/engram",
+            "{label}: installed the '{}' + digest skills to {base}",
             self.variant
         ));
-        let digest_dir = self.repo.join(".claude/skills/engram-digest");
-        if is_symlink(&digest_dir) || is_symlink(&digest_dir.join("SKILL.md")) {
-            say("claude: .claude/skills/engram-digest is a symlink — leaving it untouched");
-        } else {
-            fs::create_dir_all(&digest_dir)?;
-            fs::write(digest_dir.join("SKILL.md"), CLAUDE_DIGEST)?;
-            say("claude: installed the digest skill to .claude/skills/engram-digest");
-        }
-        self.install_claude_brief_hook()
+        Ok(())
     }
 
     /// Install the SessionStart brief hook: the script under `.claude/hooks/`
@@ -448,9 +471,117 @@ impl Setup {
         let legacy = home_file(".devin/mcp_config.json").context("no home directory")?;
         self.wire_windsurf_file(&legacy, "~/.devin/mcp_config.json")?;
         say("windsurf: reload Windsurf so Cascade picks up the server");
+        if !self.mcp_only {
+            // Windsurf has no session hooks, so an always_on rule carries
+            // what the Claude hook automates: bind first, then recall
+            // (issue #7). Cascade reads .windsurf/skills natively.
+            self.write_windsurf_rule()?;
+            self.install_skills(".windsurf/skills", "windsurf")?;
+        }
         // Cascade reads AGENTS.md, so the capture discipline travels the
         // same shared file the other harnesses use.
         self.write_instructions("AGENTS.md")
+    }
+
+    /// The `.windsurf/rules/engram.md` always_on rule: Windsurf's client
+    /// advertises MCP roots but answers none and the IntelliJ plugin has no
+    /// usable cwd, so the session starts on a fallback binding — the rule's
+    /// critical first line makes the agent rebind itself via a scoped
+    /// `brief`. The file is engram-namespaced and fully owned: rewritten on
+    /// every setup run (symlinks excepted).
+    fn write_windsurf_rule(&self) -> anyhow::Result<()> {
+        let path = self.repo.join(".windsurf/rules/engram.md");
+        if is_symlink(&path) {
+            say("windsurf: .windsurf/rules/engram.md is a symlink — leaving it untouched");
+            return Ok(());
+        }
+        fs::create_dir_all(path.parent().expect("rules path has a parent"))?;
+        let rule = format!(
+            "---\ntrigger: always_on\ndescription: Engram durable project memory — bind \
+             the session and recall at session start\n---\n\nCRITICAL — first tool call \
+             of every new session: call engram's `brief` with `project` set to this \
+             workspace's ABSOLUTE path. Windsurf answers no MCP roots, so the session \
+             starts bound to a fallback graph until you rebind it; the call returns \
+             this project's memory brief — read it before planning.\n\n{}",
+            agent_block(&self.variant)
+        );
+        fs::write(&path, rule)?;
+        say(&format!(
+            "windsurf: wrote the always_on rule to .windsurf/rules/engram.md ({})",
+            self.variant
+        ));
+        Ok(())
+    }
+
+    /// Devin CLI (issue #8). Three moves: (1) the project-local MCP config
+    /// `.devin/mcp_config.local.json` — Devin's highest-precedence tier,
+    /// personal by contract (absolute paths), so it carries an explicit
+    /// --db and is git-ignored; (2) skills under `.devin/skills` (same
+    /// SKILL.md format); (3) a SessionStart hook in `.devin/hooks.v1.json`
+    /// injecting the brief — Devin only accepts context through the
+    /// hookSpecificOutput JSON envelope, so the hook is a wrapper around
+    /// the portable brief script installed next to it.
+    fn wire_devin(&self) -> anyhow::Result<()> {
+        self.write_mcp_servers(".devin/mcp_config.local.json", "devin", true)?;
+        self.ensure_gitignore_line(
+            ".devin/mcp_config.local.json",
+            "Devin CLI local MCP config (personal, absolute paths)",
+        )?;
+        if !self.mcp_only {
+            self.install_skills(".devin/skills", "devin")?;
+            self.install_devin_brief_hook()?;
+        }
+        self.write_instructions("AGENTS.md")
+    }
+
+    /// The Devin SessionStart hook: two scripts under `.devin/hooks/` (the
+    /// shared brief script plus the JSON-envelope wrapper Devin requires)
+    /// and their registration in `.devin/hooks.v1.json`. A foreign hooks
+    /// file is never rewritten — the snippet is printed instead (same
+    /// policy as Claude's settings.json).
+    fn install_devin_brief_hook(&self) -> anyhow::Result<()> {
+        let hooks_dir = self.repo.join(".devin/hooks");
+        fs::create_dir_all(&hooks_dir)?;
+        for (name, body) in [
+            ("engram-brief-text.sh", SESSION_BRIEF_HOOK),
+            ("engram-brief.sh", DEVIN_BRIEF_HOOK),
+        ] {
+            let script = hooks_dir.join(name);
+            fs::write(&script, body)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
+            }
+        }
+
+        let registration = r#"{
+  "SessionStart": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "./.devin/hooks/engram-brief.sh"
+        }
+      ]
+    }
+  ]
+}
+"#;
+        let config = self.repo.join(".devin/hooks.v1.json");
+        if config.exists() {
+            let current = fs::read_to_string(&config)?;
+            if current.contains("engram-brief") {
+                say("devin: .devin/hooks.v1.json already runs the brief hook — leaving it");
+            } else {
+                say("devin: .devin/hooks.v1.json exists — merge the SessionStart hook from:");
+                println!("{registration}");
+            }
+            return Ok(());
+        }
+        fs::write(&config, registration)?;
+        say("devin: brief hook installed (.devin/hooks + hooks.v1.json)");
+        Ok(())
     }
 
     /// One Windsurf global config file: merge the db-less engram entry in.

@@ -73,7 +73,8 @@ engram-alpha setup --cli kilo --skill aggressive
 | `opencode` | `opencode.json` | `AGENTS.md` |
 | `kilo` | `kilo.json` | `AGENTS.md` |
 | `antigravity` | `.agents/mcp_config.json` | `AGENTS.md` |
-| `windsurf` | `${XDG_CONFIG_HOME:-~/.config}/devin/mcp_config.json` **and** `~/.devin/mcp_config.json` (global — Windsurf/Cascade reads one machine-wide config, but which file depends on the plugin generation, so setup writes the same db-less entry into both; the server follows your open workspace via MCP roots) | `AGENTS.md` |
+| `windsurf` | `${XDG_CONFIG_HOME:-~/.config}/devin/mcp_config.json` **and** `~/.devin/mcp_config.json` (global — Windsurf/Cascade reads one machine-wide config, but which file depends on the plugin generation, so setup writes the same db-less entry into both; the server follows your open workspace via MCP roots) | `AGENTS.md` + `.windsurf/rules/engram.md` (an `always_on` rule that binds the session first — Windsurf has no hooks) + `.windsurf/skills/` |
+| `devin` | `.devin/mcp_config.local.json` (project-local, highest-precedence tier, explicit `--db`; git-ignored — it carries personal absolute paths) | `AGENTS.md` + `.devin/skills/` + a `SessionStart` hook in `.devin/hooks.v1.json` that injects the brief |
 
 Windsurf support is freshly added and still being field-tested — reports
 welcome. One Windsurf-specific note: its JetBrains plugin spawns the MCP
@@ -81,7 +82,12 @@ server from `/` and its client never answers the roots request, so those
 sessions carry no folder signal at all. They land on the **default agent
 project** — set it in the pane under **Settings → System info → Default
 agent project** so Cascade's memory goes to the project you're actually
-working on; unset, such sessions bind the shared home graph. Every wired assistant reads and writes the same graph through the
+working on; unset, such sessions bind the shared home graph. Running
+`engram-alpha setup --cli windsurf` inside a repo also writes an `always_on`
+rule (`.windsurf/rules/engram.md`) whose first instruction makes Cascade
+rebind the session itself — `brief` with `project` set to the workspace
+path — so multi-project work lands on the right graph without touching the
+default. Every wired assistant reads and writes the same graph through the
 same MCP server — one shared, local memory across your AI agents: a decision captured
 by Claude is recalled by Codex. The `AGENTS.md`/`GEMINI.md` additions are a
 marked, idempotent section; re-running the installer never duplicates them.
@@ -110,6 +116,7 @@ that harness's transcripts.
 | Antigravity | ✓ | — | — | ✓ |
 | Bob (IDE + Shell) | ✓ | — | — | ✓ |
 | Windsurf / Cascade | ✓ ** | — | — | — *** |
+| Devin CLI | ✓ | ✓ auto (hook) | — | — |
 
 \* Kilo's adapter is verified against fixture transcripts, not yet against a
 live install — reports welcome.

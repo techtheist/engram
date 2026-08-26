@@ -241,12 +241,14 @@ struct MigrateArgs {
 
 #[derive(clap::Args)]
 struct SetupArgs {
-    /// Assistants to wire, comma-separated: claude|codex|gemini|opencode|kilo|antigravity|bob|windsurf|all.
+    /// Assistants to wire, comma-separated: claude|codex|gemini|opencode|kilo|antigravity|bob|windsurf|devin|all.
     ///
     /// Default: auto-detect what's installed. windsurf writes both global
     /// configs — ${XDG_CONFIG_HOME:-~/.config}/devin/mcp_config.json and
-    /// ~/.devin/mcp_config.json (db-less — the bridge binds by MCP roots);
-    /// the rest wire this repository.
+    /// ~/.devin/mcp_config.json (db-less — the bridge binds by MCP roots) —
+    /// plus the .windsurf rule and skills; devin wires this repository
+    /// (.devin: local MCP config, skills, SessionStart hook); the rest wire
+    /// this repository.
     #[arg(long)]
     cli: Option<String>,
     /// Capture intensity for the installed instructions/skill.
@@ -719,7 +721,7 @@ fn run_setup(args: SetupArgs) -> anyhow::Result<()> {
             for a in list.split(',').map(str::trim).filter(|a| !a.is_empty()) {
                 let known = setup::AGENTS.iter().find(|k| **k == a).with_context(|| {
                     format!(
-                        "unknown --cli '{a}' (claude|codex|gemini|opencode|kilo|antigravity|bob|windsurf|all)"
+                        "unknown --cli '{a}' (claude|codex|gemini|opencode|kilo|antigravity|bob|windsurf|devin|all)"
                     )
                 })?;
                 v.push(*known);
