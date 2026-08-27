@@ -32,9 +32,10 @@ const AGENT_AGGRESSIVE: &str = include_str!("../../../skills/engram/agents/aggre
 // SessionStart hook: injects the brief so sessions start pre-briefed.
 const SESSION_BRIEF_HOOK: &str = include_str!("../../../hooks/session-brief.sh");
 const FILE_READ_MATCH_HOOK: &str = include_str!("../../../hooks/file-read-match.sh");
-// Devin CLI wrapper: Devin injects SessionStart context only via the
-// hookSpecificOutput JSON envelope, so this wraps the portable script above.
-const DEVIN_BRIEF_HOOK: &str = include_str!("../../../hooks/devin-session-brief.sh");
+// Envelope wrapper: Devin CLI and Codex CLI inject SessionStart context only
+// via the hookSpecificOutput JSON envelope, so both get this wrapper around
+// the portable script above.
+const ENVELOPE_BRIEF_HOOK: &str = include_str!("../../../hooks/envelope-session-brief.sh");
 
 pub fn claude_skill(variant: &str) -> &'static str {
     match variant {
@@ -431,7 +432,60 @@ impl Setup {
                 "codex: the desktop app may launch MCP servers from another cwd — if you use it, pin this repo there: add `cwd = \"<repo>\"` or `args = [\"mcp\", \"--db\", \"<repo>/.engram/graph.tepin\"]` to that entry (`engram-alpha doctor` checks this)",
             );
         }
+        if !self.mcp_only {
+            // Project-scope skills (.codex/skills, SKILL.md format) and the
+            // SessionStart brief hook — Codex injects hook context only via
+            // the hookSpecificOutput JSON envelope, same contract as Devin.
+            self.install_skills(".codex/skills", "codex")?;
+            self.install_codex_brief_hook()?;
+        }
         self.write_instructions("AGENTS.md")
+    }
+
+    /// The Codex SessionStart hook: the envelope scripts under
+    /// `.codex/hooks/` and their registration in `.codex/hooks.json`
+    /// (project layer). Codex trusts hooks per definition hash, so the
+    /// install ends with a one-time `/hooks` review on the user's side; a
+    /// foreign hooks file is never rewritten — the snippet is printed
+    /// instead. The command resolves the repo root itself because codex
+    /// sessions can start in a subdirectory.
+    fn install_codex_brief_hook(&self) -> anyhow::Result<()> {
+        self.write_envelope_brief_scripts(".codex/hooks")?;
+
+        let registration = r#"{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\"/.codex/hooks/engram-brief.sh",
+            "statusMessage": "Loading Engram brief"
+          }
+        ]
+      }
+    ]
+  }
+}
+"#;
+        let config = self.repo.join(".codex/hooks.json");
+        if config.exists() {
+            let current = fs::read_to_string(&config)?;
+            if current.contains("engram-brief") {
+                say("codex: .codex/hooks.json already runs the brief hook — leaving it");
+            } else {
+                say("codex: .codex/hooks.json exists — merge the SessionStart hook from:");
+                println!("{registration}");
+            }
+        } else {
+            fs::write(&config, registration)?;
+            say("codex: brief hook installed (.codex/hooks + hooks.json)");
+        }
+        say(
+            "codex: project hooks are trust-gated — run `/hooks` inside codex once to review and trust the engram hook (older codex builds also need `codex --enable skills` for .codex/skills)",
+        );
+        Ok(())
     }
 
     /// Gemini keeps --db: the CLI is often launched from a subdirectory (its
@@ -534,17 +588,15 @@ impl Setup {
         self.write_instructions("AGENTS.md")
     }
 
-    /// The Devin SessionStart hook: two scripts under `.devin/hooks/` (the
-    /// shared brief script plus the JSON-envelope wrapper Devin requires)
-    /// and their registration in `.devin/hooks.v1.json`. A foreign hooks
-    /// file is never rewritten — the snippet is printed instead (same
-    /// policy as Claude's settings.json).
-    fn install_devin_brief_hook(&self) -> anyhow::Result<()> {
-        let hooks_dir = self.repo.join(".devin/hooks");
+    /// The two brief-hook scripts for a JSON-envelope harness (Devin, Codex):
+    /// the shared portable brief script plus the envelope wrapper, installed
+    /// under `<dir>/` as engram-brief-text.sh / engram-brief.sh.
+    fn write_envelope_brief_scripts(&self, hooks_dir_rel: &str) -> anyhow::Result<()> {
+        let hooks_dir = self.repo.join(hooks_dir_rel);
         fs::create_dir_all(&hooks_dir)?;
         for (name, body) in [
             ("engram-brief-text.sh", SESSION_BRIEF_HOOK),
-            ("engram-brief.sh", DEVIN_BRIEF_HOOK),
+            ("engram-brief.sh", ENVELOPE_BRIEF_HOOK),
         ] {
             let script = hooks_dir.join(name);
             fs::write(&script, body)?;
@@ -554,6 +606,15 @@ impl Setup {
                 fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
             }
         }
+        Ok(())
+    }
+
+    /// The Devin SessionStart hook: the envelope scripts under
+    /// `.devin/hooks/` and their registration in `.devin/hooks.v1.json`. A
+    /// foreign hooks file is never rewritten — the snippet is printed
+    /// instead (same policy as Claude's settings.json).
+    fn install_devin_brief_hook(&self) -> anyhow::Result<()> {
+        self.write_envelope_brief_scripts(".devin/hooks")?;
 
         let registration = r#"{
   "SessionStart": [

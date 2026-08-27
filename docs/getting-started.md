@@ -68,7 +68,7 @@ engram-alpha setup --cli kilo --skill aggressive
 | `--cli` | MCP registration | Capture instructions |
 |---|---|---|
 | `claude` *(default)* | `.mcp.json` | `.claude/skills/engram/SKILL.md` (three intensities via `--skill`) |
-| `codex` | `~/.codex/config.toml` (global — shared by the CLI **and** the Codex/ChatGPT desktop app; launch `codex` from the repo root, and for the app pin `cwd` or an absolute `--db` in the entry) | `AGENTS.md` |
+| `codex` | `~/.codex/config.toml` (global — shared by the CLI **and** the Codex/ChatGPT desktop app; launch `codex` from the repo root, and for the app pin `cwd` or an absolute `--db` in the entry) | `AGENTS.md` + `.codex/skills/` + a `SessionStart` brief hook in `.codex/hooks.json` (Codex trust-gates project hooks — run `/hooks` inside codex once to approve it) |
 | `gemini` | `.gemini/settings.json` | `GEMINI.md` |
 | `opencode` | `opencode.json` | `AGENTS.md` |
 | `kilo` | `kilo.json` | `AGENTS.md` |
@@ -109,7 +109,7 @@ that harness's transcripts.
 | Harness | Memory tools (MCP) | Injected brief | File-read recall | History recording |
 |---|---|---|---|---|
 | Claude Code | ✓ | ✓ auto (hook + plugin) | ✓ auto | ✓ |
-| Codex CLI / app | ✓ | manual | — | ✓ |
+| Codex CLI / app | ✓ | ✓ auto (hook — trust once via `/hooks`) | — | ✓ |
 | Gemini CLI | ✓ | manual | — | ✓ |
 | OpenCode | ✓ | — | — | ✓ |
 | Kilo Code | ✓ | — | — | ✓ * |

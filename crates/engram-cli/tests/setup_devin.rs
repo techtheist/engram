@@ -208,3 +208,79 @@ fn windsurf_full_setup_writes_rule_and_skills() {
         "--mcp-only writes no .windsurf directory"
     );
 }
+
+/// Codex CLI wiring (0.8.12): beyond the global config.toml MCP entry, setup
+/// installs project-scope skills, the envelope brief hook (Codex shares
+/// Devin's hookSpecificOutput-only contract), and its `.codex/hooks.json`
+/// registration — trust-gated on Codex's side via `/hooks`.
+#[test]
+fn codex_wires_skills_and_trust_gated_hook() {
+    let sb = Sandbox::new("codex");
+    let out = sb.run_setup("codex", &[]);
+    assert!(out.status.success(), "setup failed: {out:?}");
+
+    let toml = std::fs::read_to_string(sb.root.join("home/.codex/config.toml")).unwrap();
+    assert!(
+        toml.contains("[mcp_servers.engram]"),
+        "global MCP entry:\n{toml}"
+    );
+
+    let hooks: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(sb.repo().join(".codex/hooks.json")).expect("hooks.json written"),
+    )
+    .unwrap();
+    let cmd = hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap();
+    assert!(
+        cmd.contains(".codex/hooks/engram-brief.sh") && cmd.contains("git rev-parse"),
+        "the hook command resolves the repo root itself: {cmd}"
+    );
+    for script in ["engram-brief.sh", "engram-brief-text.sh"] {
+        assert!(
+            sb.repo().join(".codex/hooks").join(script).exists(),
+            "{script} installed"
+        );
+    }
+    assert!(
+        sb.repo().join(".codex/skills/engram/SKILL.md").exists()
+            && sb
+                .repo()
+                .join(".codex/skills/engram-digest/SKILL.md")
+                .exists(),
+        "project-scope skills installed"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("/hooks"),
+        "the trust-review step is named — a silent hook that never runs is the failure mode:\n{stdout}"
+    );
+
+    // A foreign hooks file is never rewritten — the snippet is printed.
+    std::fs::write(
+        sb.repo().join(".codex/hooks.json"),
+        r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"./check.sh"}]}]}}"#,
+    )
+    .unwrap();
+    let out = sb.run_setup("codex", &[]);
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("merge the SessionStart hook"),
+        "foreign hooks file gets the snippet: {out:?}"
+    );
+    assert!(
+        std::fs::read_to_string(sb.repo().join(".codex/hooks.json"))
+            .unwrap()
+            .contains("PreToolUse"),
+        "the foreign hooks file is untouched"
+    );
+
+    // --mcp-only keeps the old shape: config entry only, no repo .codex dir.
+    let sb2 = Sandbox::new("codex-mcponly");
+    let out = sb2.run_setup("codex", &["--mcp-only"]);
+    assert!(out.status.success());
+    assert!(
+        !sb2.repo().join(".codex").exists(),
+        "--mcp-only writes no .codex directory"
+    );
+}
