@@ -11,6 +11,12 @@ use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_engram-alpha");
 
+/// One shared patience window for "the spawned core answers /health". The
+/// loop exits the moment the core is up, so generosity is free — and a
+/// starved CI runner regularly needs more than the old 30s (the production
+/// spawner itself allows 180s). Three flakes taught this; don't shrink it.
+const CORE_HEALTH_WINDOW: Duration = Duration::from_secs(120);
+
 struct Sandbox {
     root: PathBuf,
     home: PathBuf,
@@ -377,7 +383,7 @@ fn dbless_bridge_binds_by_cwd() {
     // No --db, no roots capability: the bridge must fall back to its cwd —
     // and still spawn the core when the machine has none.
     let mut bridge = Bridge::spawn(&sb, &["mcp", "--fake-embeddings"], &proj, None);
-    let port = sb.wait_core_healthy(Duration::from_secs(30));
+    let port = sb.wait_core_healthy(CORE_HEALTH_WINDOW);
 
     let tools = bridge.tools_list(2).to_string();
     assert!(
@@ -405,7 +411,7 @@ fn roots_capability_binds_to_advertised_root_not_cwd() {
         &alpha,
         Some(vec![file_uri(&beta)]),
     );
-    let port = sb.wait_core_healthy(Duration::from_secs(30));
+    let port = sb.wait_core_healthy(CORE_HEALTH_WINDOW);
 
     bridge.add_note(2, "roots binding proof note");
     assert!(bridge.saw_roots_list, "the bridge asked for roots");
@@ -431,7 +437,7 @@ fn roots_list_changed_rebinds_and_census_follows() {
         &alpha,
         Some(vec![file_uri(&alpha)]),
     );
-    let port = sb.wait_core_healthy(Duration::from_secs(30));
+    let port = sb.wait_core_healthy(CORE_HEALTH_WINDOW);
     bridge.add_note(2, "before the switch");
     assert!(sb.graph_has(port, "alpha", "before the switch"));
 
@@ -480,7 +486,7 @@ fn unanswered_roots_list_falls_back_to_cwd() {
         Some(vec![]),
         false,
     );
-    let port = sb.wait_core_healthy(Duration::from_secs(30));
+    let port = sb.wait_core_healthy(CORE_HEALTH_WINDOW);
 
     let asked = Instant::now();
     let tools = bridge.tools_list(2).to_string();
@@ -525,7 +531,7 @@ fn unwritable_cwd_binds_home_graph() {
     std::fs::set_permissions(&jail, std::fs::Permissions::from_mode(0o555)).unwrap();
 
     let mut bridge = Bridge::spawn(&sb, &["mcp", "--fake-embeddings"], &jail, None);
-    let port = sb.wait_core_healthy(Duration::from_secs(30));
+    let port = sb.wait_core_healthy(CORE_HEALTH_WINDOW);
 
     let tools = bridge.tools_list(2).to_string();
     assert!(
@@ -573,7 +579,7 @@ fn list_changed_rebinds_home_to_project() {
     // Advertises roots but answers an EMPTY list: cwd fallback → unwritable
     // → home graph.
     let mut bridge = Bridge::spawn(&sb, &["mcp", "--fake-embeddings"], &jail, Some(vec![]));
-    let port = sb.wait_core_healthy(Duration::from_secs(30));
+    let port = sb.wait_core_healthy(CORE_HEALTH_WINDOW);
     bridge.add_note(2, "note born on the home graph");
     assert!(
         http_get(port, "/projects/home/graph")
@@ -625,7 +631,7 @@ fn default_agent_project_binds_unbindable_session() {
         .status()
         .expect("running serve");
     assert!(status.success(), "serve registers the project");
-    let port = sb.wait_core_healthy(Duration::from_secs(30));
+    let port = sb.wait_core_healthy(CORE_HEALTH_WINDOW);
     let gamma_id = sb
         .project_id(port, "gamma")
         .expect("serve put gamma on the registry");
@@ -772,7 +778,7 @@ fn explicit_db_wins_over_roots() {
         &alpha,
         Some(vec![file_uri(&beta)]),
     );
-    let port = sb.wait_core_healthy(Duration::from_secs(30));
+    let port = sb.wait_core_healthy(CORE_HEALTH_WINDOW);
 
     bridge.tools_list(2);
     bridge.add_note(3, "explicit db proof note");

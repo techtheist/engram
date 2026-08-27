@@ -12,6 +12,12 @@ use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_engram-alpha");
 
+/// One shared patience window for "the spawned core answers /health". The
+/// loop exits the moment the core is up, so generosity is free — and a
+/// starved CI runner regularly needs more than the old 30s (the production
+/// spawner itself allows 180s). Three flakes taught this; don't shrink it.
+const CORE_HEALTH_WINDOW: Duration = Duration::from_secs(120);
+
 struct Sandbox {
     root: PathBuf,
     home: PathBuf,
@@ -253,7 +259,7 @@ fn serve_spawns_core_registers_project_and_exits() {
     );
 
     // serve exited; the core it spawned survives and serves /health.
-    let port = sb.wait_core_healthy(Duration::from_secs(10));
+    let port = sb.wait_core_healthy(CORE_HEALTH_WINDOW);
     let first_pid = sb.core_pid().unwrap();
 
     // The repo-local advertisement exists and carries the core's port
@@ -299,7 +305,7 @@ fn serve_http_only_blocks_while_core_lives_and_exits_when_it_dies() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let port = sb.wait_core_healthy(Duration::from_secs(15));
+    let port = sb.wait_core_healthy(CORE_HEALTH_WINDOW);
 
     // Deprecated blocking mode: still running well after the core is up.
     std::thread::sleep(Duration::from_secs(4));
@@ -322,7 +328,7 @@ fn mcp_spawns_core_bridges_tools_and_census_tracks_expiry() {
 
     // No core exists: the bridge must start one and proxy to it.
     let mut a = Bridge::spawn(&sb, &proj);
-    let port = sb.wait_core_healthy(Duration::from_secs(30));
+    let port = sb.wait_core_healthy(CORE_HEALTH_WINDOW);
 
     a.send(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
     let tools = a.recv();
@@ -374,7 +380,7 @@ fn stop_orchestrates_shutdown_and_releases_the_tepin_lock() {
         .output()
         .unwrap();
     assert!(out.status.success(), "serve failed: {out:?}");
-    let port = sb.wait_core_healthy(Duration::from_secs(10));
+    let port = sb.wait_core_healthy(CORE_HEALTH_WINDOW);
 
     // Make the core actually open (and lock) the store.
     let projects: serde_json::Value =
@@ -425,7 +431,7 @@ fn doctor_reports_core_held_store_as_healthy() {
     // Issue #6's shape: the core auto-spawned (not `serve` from the repo)
     // and holding the repo's tepin store open.
     let mut bridge = Bridge::spawn(&sb, &proj);
-    let port = sb.wait_core_healthy(Duration::from_secs(30));
+    let port = sb.wait_core_healthy(CORE_HEALTH_WINDOW);
     // The bridge registers the project at bind time, AFTER the stdio
     // handshake (handshake-first) — wait for alpha instead of assuming
     // registration preceded the initialize answer.
@@ -475,7 +481,7 @@ fn idle_unload_flips_state_and_search_reloads_single_flight() {
         .output()
         .expect("running serve");
     assert!(out.status.success(), "serve failed: {out:?}");
-    let port = sb.wait_core_healthy(Duration::from_secs(10));
+    let port = sb.wait_core_healthy(CORE_HEALTH_WINDOW);
 
     // A graph write is HTTP activity AND model use — both clocks re-arm and
     // any boot-window unload (the 2s test window can elapse during startup)
@@ -536,7 +542,7 @@ fn bridge_lease_prevents_idle_unload_until_it_expires() {
     let proj = sb.project("alpha");
 
     let mut bridge = Bridge::spawn(&sb, &proj);
-    let port = sb.wait_core_healthy(Duration::from_secs(30));
+    let port = sb.wait_core_healthy(CORE_HEALTH_WINDOW);
     assert!(
         eventually(Duration::from_secs(10), || census_len(port) == 1),
         "the bridge holds a lease"
@@ -597,7 +603,7 @@ fn status_renders_core_projects_and_clients() {
 
     // With a core and one bridge.
     let mut bridge = Bridge::spawn(&sb, &proj);
-    let port = sb.wait_core_healthy(Duration::from_secs(30));
+    let port = sb.wait_core_healthy(CORE_HEALTH_WINDOW);
     assert!(eventually(Duration::from_secs(10), || census_len(port) >= 1));
 
     let out = sb.cmd(&["status"], &proj).output().unwrap();
@@ -627,4 +633,124 @@ fn status_renders_core_projects_and_clients() {
     assert!(v["system"]["processes"]["core"]["pid"].as_u64().is_some());
     assert_eq!(v["system"]["models_state"]["state"], "loaded");
     bridge.kill();
+}
+
+/// Status-aware GET: the status code plus the body, for asserting refusals
+/// (the plain `http_get` returns any status's body indistinguishably).
+fn http_status_get(port: u16, path: &str) -> Option<(u16, String)> {
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    write!(stream, "GET {path} HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n").ok()?;
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    let status: u16 = text.split_whitespace().nth(1)?.parse().ok()?;
+    let body = text
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b.to_string())
+        .unwrap_or_default();
+    Some((status, body))
+}
+
+/// The registered project id for `name`, if the core knows it.
+fn project_id(port: u16, name: &str) -> Option<String> {
+    let raw = http_get(port, "/projects")?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    v.as_array()?
+        .iter()
+        .find(|p| p["name"] == name)
+        .and_then(|p| p["id"].as_str().map(str::to_string))
+}
+
+/// Registration is idempotent, and folder-as-selector has edges: any path
+/// INSIDE the repo selects the project, a path outside every registered
+/// root is refused — never silently answered with some other graph.
+#[test]
+fn registration_is_idempotent_and_inner_paths_select_the_project() {
+    let sb = Sandbox::new("regidem", 19160);
+    let proj = sb.project("alpha");
+    std::fs::create_dir_all(proj.join("src/deep")).unwrap();
+
+    for _ in 0..2 {
+        let out = sb
+            .cmd(&["serve", "--fake-embeddings"], &proj)
+            .output()
+            .expect("running serve");
+        assert!(out.status.success(), "serve failed: {out:?}");
+    }
+    let port = sb.wait_core_healthy(CORE_HEALTH_WINDOW);
+
+    let projects: serde_json::Value =
+        serde_json::from_str(&http_get(port, "/projects").unwrap()).unwrap();
+    let alphas = projects
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["name"] == "alpha")
+        .count();
+    assert_eq!(
+        alphas, 1,
+        "a second serve registers nothing new: {projects}"
+    );
+
+    let inner = proj.join("src/deep").display().to_string();
+    let (status, body) =
+        http_status_get(port, &format!("/brief?project={inner}&max_chars=2000")).unwrap();
+    assert_eq!(status, 200, "a nested path selects the project: {body}");
+
+    let outside = sb.root.join("elsewhere").display().to_string();
+    let (status, body) =
+        http_status_get(port, &format!("/brief?project={outside}&max_chars=2000")).unwrap();
+    assert_ne!(
+        status, 200,
+        "a path outside every registered root must be refused: {body}"
+    );
+}
+
+/// Runtime stability across the core's lifecycle: an orchestrated stop
+/// releases everything, and the next serve spawns a core that still knows
+/// the project (same id) and reopens the same store with its data intact.
+#[test]
+fn registration_and_data_survive_core_restart() {
+    let sb = Sandbox::new("restartreg", 19180);
+    let proj = sb.project("alpha");
+
+    let out = sb
+        .cmd(&["serve", "--fake-embeddings"], &proj)
+        .output()
+        .expect("running serve");
+    assert!(out.status.success(), "serve failed: {out:?}");
+    let port = sb.wait_core_healthy(CORE_HEALTH_WINDOW);
+
+    let id = project_id(port, "alpha").expect("alpha registered");
+    let created = http_post(
+        port,
+        &format!("/projects/{id}/nodes"),
+        r#"{"type":"Decision","title":"survives the restart","durability":"stable","source":"claude"}"#,
+    );
+    assert!(created.is_some(), "node lands in alpha's graph");
+
+    let out = sb.cmd(&["stop"], &proj).output().expect("running stop");
+    assert!(out.status.success(), "stop failed: {out:?}");
+    assert!(
+        eventually(Duration::from_secs(10), || http_get(port, "/health")
+            .is_none()),
+        "the core is gone after stop"
+    );
+
+    let out = sb
+        .cmd(&["serve", "--fake-embeddings"], &proj)
+        .output()
+        .expect("running serve again");
+    assert!(out.status.success(), "second serve failed: {out:?}");
+    let port = sb.wait_core_healthy(CORE_HEALTH_WINDOW);
+
+    let id2 = project_id(port, "alpha").expect("alpha still registered");
+    assert_eq!(id, id2, "the project keeps its identity across restarts");
+    let graph = http_get(port, &format!("/projects/{id2}/graph")).unwrap();
+    assert!(
+        graph.contains("survives the restart"),
+        "the reopened store carries the pre-restart data: {graph}"
+    );
 }
