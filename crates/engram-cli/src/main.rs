@@ -1863,17 +1863,55 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                         // The repo-local advertisement plugins scrape the pane
                         // port from — pointing at the core.
                         write_daemon_file(&db_abs, port, machine_core_pid().unwrap_or_default());
+                        // Eager first open (issue #8): registration alone
+                        // leaves the store uncreated until something touches
+                        // the project, and SessionStart hooks gate on the
+                        // store file existing — a fresh repo would sit
+                        // briefless. One loopback brief against this root
+                        // makes the core open (and thereby create) the store
+                        // NOW, so "registered" is also true on disk.
+                        let probe = format!(
+                            "/brief?project={}&max_chars=1",
+                            percent_encode(&root.display().to_string())
+                        );
+                        let opened = doctor::http_get_timeout(
+                            port,
+                            &probe,
+                            std::time::Duration::from_secs(20),
+                        )
+                        .is_some();
+                        let store = engram_core::resolve_db_path(&db_abs);
+                        if opened && store.exists() {
+                            println!("store ready: {}", store.display());
+                        } else {
+                            eprintln!(
+                                "warning: the core didn't open the store at {} — the first \
+                                 assistant session will create it on demand",
+                                store.display()
+                            );
+                        }
                     }
                     Err(e) => tracing::warn!("couldn't register this repo: {e}"),
                 },
                 None => tracing::warn!("couldn't resolve this repo's root — not registered"),
             }
-            // First-run nudge (PLAN §8): say once when installed assistants
-            // aren't wired to this repo yet.
+            // First-run nudge (PLAN §8): confirm what IS wired, then say once
+            // when installed assistants aren't wired to this repo yet. The
+            // wired list scans the full roster, not just detect_agents —
+            // detection is a PATH/config probe and misses CLIs installed
+            // off-PATH (issue #8: a repo wired for devin read as unwired).
             if let Ok(cwd) = std::env::current_dir() {
+                let wired: Vec<&str> = setup::AGENTS
+                    .iter()
+                    .copied()
+                    .filter(|a| setup::is_wired(&cwd, a))
+                    .collect();
+                if !wired.is_empty() {
+                    println!("engram wired for: {}", wired.join(", "));
+                }
                 let unwired: Vec<&str> = setup::detect_agents()
                     .into_iter()
-                    .filter(|a| !setup::is_wired(&cwd, a))
+                    .filter(|a| !wired.contains(a))
                     .collect();
                 if !unwired.is_empty() {
                     eprintln!(
@@ -1896,6 +1934,19 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         eprintln!("the engram core on port {port} is gone — exiting");
     }
     Ok(())
+}
+
+/// Percent-encode a query value for the hand-rolled loopback GET. `/` stays
+/// literal — the values are absolute paths and the daemon reads them raw.
+fn percent_encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 /// Poll the core's /health and return when it stops answering (one retry to

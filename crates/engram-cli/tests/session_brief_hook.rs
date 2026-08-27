@@ -179,3 +179,34 @@ fn brief_hook_finds_the_binary_off_path() {
     );
     let _ = fs::remove_dir_all(&tmp);
 }
+
+/// A repo `serve` registered whose store the core hasn't materialized yet
+/// (issue #8): its daemon.json alone admits the hook — the core query makes
+/// the core open (and create) the store on demand — but the CLI direct-open
+/// fallback stays gated on an existing store, so the hook can never birth a
+/// fresh graph itself.
+#[test]
+fn brief_hook_serves_a_registered_but_storeless_repo_via_the_core_only() {
+    let (tmp, repo, home) = sandbox("storeless");
+    fs::remove_file(repo.join(".engram/graph.tepin")).unwrap();
+    stub_binary(&home);
+
+    // Phase 1 — no core reachable (port 1 refuses): with no store on disk
+    // the hook must stay silent, never fall through to the CLI direct-open.
+    write_daemon_files(&[repo.join(".engram")], 1);
+    let text = run_hook(&repo, &home);
+    assert!(
+        text.is_empty(),
+        "no store + no core must be silence, not a CLI direct-open: {text:?}"
+    );
+
+    // Phase 2 — a core is up: the same storeless repo gets its scoped brief.
+    let port = fake_core(&repo, &home, true);
+    write_daemon_files(&[repo.join(".engram")], port);
+    let text = run_hook(&repo, &home);
+    assert!(
+        text.contains("SCOPED BRIEF"),
+        "daemon.json alone must admit a registered repo: {text:?}"
+    );
+    let _ = fs::remove_dir_all(&tmp);
+}

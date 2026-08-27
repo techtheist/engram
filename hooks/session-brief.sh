@@ -4,9 +4,12 @@
 # instead of having to remember to call the `brief` tool (PLAN §10 hooks,
 # candidate b).
 #
-# Portable by construction: Claude Code, Codex CLI, and Gemini CLI all treat
-# a SessionStart hook's stdout as injected context, so this one script serves
-# all three (only the settings registration differs per harness).
+# Portable by construction: harnesses that treat a SessionStart hook's
+# stdout as injected context (Claude Code, Gemini CLI) run this script
+# directly; harnesses that accept only the hookSpecificOutput JSON envelope
+# (Devin CLI, Codex CLI) run it through hooks/envelope-session-brief.sh,
+# installed next to it as engram-brief.sh. Only the registration differs
+# per harness.
 #
 # A memory hook must never break a session: every failure path exits 0 with
 # no output. Daemon discovery (daemon.json port + /health db match, then the
@@ -21,9 +24,12 @@ ROOT="$(cd -P "${CLAUDE_PROJECT_DIR:-$PWD}" 2>/dev/null && pwd)" || exit 0
 DB="$ROOT/.engram/graph.db"
 MAX_CHARS="${ENGRAM_BRIEF_CHARS:-16000}"
 
-# Not an Engram-wired repo (or a brand-new one) — stay silent. Either
-# backend counts: tepin-born repos never have a graph.db.
-[ -e "$DB" ] || [ -e "${DB%.db}.tepin" ] || exit 0
+# Not an Engram-wired repo — stay silent. Either backend counts (tepin-born
+# repos never have a graph.db), and so does a daemon.json alone: a repo
+# `serve` registered whose store the core hasn't materialized yet (issue #8)
+# still deserves its brief — the daemon query below makes the core open the
+# store on demand.
+[ -e "$DB" ] || [ -e "${DB%.db}.tepin" ] || [ -f "$ROOT/.engram/daemon.json" ] || exit 0
 
 # The Claude Code plugin runs this script too (ENGRAM_HOOK_SOURCE=plugin).
 # When the repo also registers its own copy (engram-alpha setup, or a checkout of
@@ -68,9 +74,12 @@ fi
 # Fallback: the CLI, itself a thin client to whatever daemon owns the store
 # (it opens the DB directly only when nothing does; the brief never embeds
 # anything, so --fake-embeddings just skips the ONNX load that would slow
-# session start). `command -v` alone is not enough — hooks run with a
+# session start). Only with an existing store: a repo admitted on its
+# daemon.json alone must not have the CLI direct-open birth a fresh graph.
+# `command -v` alone is not enough — hooks run with a
 # login-less PATH that often carries neither install dir, and exiting on that
 # produced an empty brief indistinguishable from an empty graph.
+[ -e "$DB" ] || [ -e "${DB%.db}.tepin" ] || exit 0
 BIN="$(command -v engram-alpha 2>/dev/null || true)"
 for CANDIDATE in "$HOME/.cargo/bin/engram-alpha" "$HOME/.local/bin/engram-alpha" \
     /usr/local/bin/engram-alpha /opt/homebrew/bin/engram-alpha; do

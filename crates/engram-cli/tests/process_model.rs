@@ -266,6 +266,19 @@ fn serve_spawns_core_registers_project_and_exits() {
     let projects = http_get(port, "/projects").unwrap();
     assert!(projects.contains("alpha"), "core knows alpha: {projects}");
 
+    // …and the store exists ON DISK before any assistant session touches
+    // the project: serve's eager first-open created it (issue #8 — a fresh
+    // repo used to stay storeless, so SessionStart hooks gating on the
+    // store file injected nothing).
+    assert!(
+        proj.join(".engram/graph.tepin").exists(),
+        "serve materializes the store, not just the registration"
+    );
+    assert!(
+        stdout.contains("store ready"),
+        "serve reports the store on disk: {stdout}"
+    );
+
     // A second serve converges on the same core instead of starting another.
     let out2 = sb
         .cmd(&["serve", "--fake-embeddings"], &proj)

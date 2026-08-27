@@ -312,10 +312,17 @@ pub(crate) fn http_post_timeout(
 /// after the blank line is the body. Shared with the thin-client resolution
 /// in main.rs (mcp bridge, daemon-aware brief).
 pub(crate) fn http_get(port: u16, path: &str) -> Option<String> {
+    http_get_timeout(port, path, Duration::from_secs(3))
+}
+
+/// GET with a caller-chosen read timeout — serve's eager first-open of a
+/// fresh project makes the core create the store, which outlives the
+/// quick-probe default.
+pub(crate) fn http_get_timeout(port: u16, path: &str, read_timeout: Duration) -> Option<String> {
     use std::io::{Read, Write};
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     let mut stream = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).ok()?;
-    stream.set_read_timeout(Some(Duration::from_secs(3))).ok()?;
+    stream.set_read_timeout(Some(read_timeout)).ok()?;
     write!(stream, "GET {path} HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n").ok()?;
     let mut buf = Vec::new();
     stream.read_to_end(&mut buf).ok()?;
