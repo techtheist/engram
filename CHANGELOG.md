@@ -3,6 +3,39 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
+## v0.8.12
+
+### serve means it — and Codex sessions start pre-briefed
+
+- **`serve` eagerly opens the store it registers (issue #8).** Registration
+  alone left a fresh repo's `.engram/graph.tepin` uncreated until something
+  touched the project — so SessionStart hooks that gate on the store file
+  existing injected nothing, silently. After registering, `serve` now makes
+  one loopback `GET /brief?project=<root>` so the core opens (and thereby
+  creates) the store immediately, verifies the file is on disk, and prints
+  `store ready: <path>` — or a warning when it isn't. The brief hook also
+  gained defense in depth: a repo is recognized on its `.engram/daemon.json`
+  alone (registered but not yet materialized — the daemon query creates the
+  store on demand), while the CLI direct-open fallback stays gated on an
+  existing store so the hook can never birth a fresh graph itself.
+- **The wiring footer confirms before it nags.** `serve` now prints
+  `engram wired for: …` by scanning the full adapter roster (wiring is
+  file evidence, not a PATH probe — a repo wired for Devin CLI used to read
+  as unwired when the binary wasn't detectable), and the "run
+  `engram-alpha setup`" nudge only covers assistants that are detected AND
+  unwired.
+- **Codex CLI: skills + an auto-injected brief.** `setup --cli codex` now
+  also installs the capture + digest skills to `.codex/skills/` and a
+  `SessionStart` brief hook (`.codex/hooks.json` + scripts under
+  `.codex/hooks/`). Codex injects hook context only via the
+  `hookSpecificOutput` JSON envelope — the same contract as Devin CLI — so
+  both share one wrapper (`hooks/envelope-session-brief.sh`), which now also
+  resolves the repo root via `git rev-parse` since codex sessions can start
+  in a subdirectory. Codex trust-gates project hooks per definition hash:
+  run `/hooks` inside codex once to approve the engram hook (setup says so).
+  Foreign `hooks.json` files get the merge snippet printed, never rewritten;
+  `--mcp-only` skips all of it.
+
 ## v0.8.11
 
 ### One tool binds and briefs — and Windsurf and Devin CLI get first-class wiring
