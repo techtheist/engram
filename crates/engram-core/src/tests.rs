@@ -3172,7 +3172,11 @@ fn hub_federation_end_to_end() {
     // The recreated store is tepin-born (resolved_db: fresh graphs get the
     // .tepin path when nothing exists yet), so assert on the resolved path.
     assert!(
-        registry::load().resolve("beta").unwrap().resolved_db().exists(),
+        registry::load()
+            .resolve("beta")
+            .unwrap()
+            .resolved_db()
+            .exists(),
         "the reopen recreates the store file on disk"
     );
     assert!(

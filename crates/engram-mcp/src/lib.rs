@@ -2974,9 +2974,7 @@ mod tests {
     /// item. `#[schemars(inline)]` on the item structs is what this locks.
     #[test]
     fn batch_item_schemas_are_inlined_with_visible_required_fields() {
-        let schema_for = |gen_fn: fn(
-            &mut schemars::SchemaGenerator,
-        ) -> schemars::Schema| {
+        let schema_for = |gen_fn: fn(&mut schemars::SchemaGenerator) -> schemars::Schema| {
             let mut generator = schemars::generate::SchemaSettings::draft2020_12().into_generator();
             serde_json::to_value(gen_fn(&mut generator)).unwrap()
         };
@@ -3002,7 +3000,9 @@ mod tests {
 
         let updates = schema_for(|g| g.root_schema_for::<UpdateNodesArgs>());
         assert!(
-            updates["properties"]["updates"]["items"].get("$ref").is_none(),
+            updates["properties"]["updates"]["items"]
+                .get("$ref")
+                .is_none(),
             "update_nodes items must be inlined too"
         );
 
