@@ -3,6 +3,58 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
+## v0.8.13
+
+### Locks that actually release — and write tools a small model can drive
+
+- **A deleted store no longer haunts the core (issue #8).** The core's engine
+  cache is now identity-checked: every cached open re-stats its backing file
+  (device + inode), and a store that was deleted or replaced on disk —
+  a wiped `.engram/` — is evicted and reopened fresh instead of being served
+  from the orphaned inode forever. Deleting a project's `.engram/` and
+  running `serve` now creates a fresh graph without recycling the core.
+- **`stop` means stopped.** `engram-alpha stop` now waits for the core
+  *process* to exit (PID-verified), not just for `/health` to go silent —
+  the store locks release at process exit, and the old health-only check
+  could report success while the core still held every lock behind a wedged
+  engine. Escalation is orchestrated `/shutdown` → SIGTERM → SIGKILL (both
+  backends are crash-safe), with a warning if the port is still occupied
+  afterwards. The core's own exit path was reordered to match: engines drain
+  (bounded, 10s) *before* the listener closes, so health-silence now means
+  "about to exit", never "draining indefinitely".
+- **Version handshake: an update reaches the core on the next touch.** Every
+  `serve`, bridge bind/rebind, and `core` start now compares the running
+  core's advertised version against its own binary. An older core is retired
+  (orchestrated stop) and respawned from the newer binary; a newer core is
+  converged on, never downgraded. This closes the issue #8 tail where a
+  client relaunching its bridges after an update could resurrect — or keep
+  converging on — a core from the old binary, serving stale code and stale
+  tool descriptions indefinitely. `bind_or_converge` also probes a taken
+  port three times before walking past it, so a busy core is not mistaken
+  for a foreign process (which used to open a second core over the same
+  home graph).
+- **The write tools teach their own shapes (issue #9).** `add_notes` /
+  `update_nodes` items are now inlined in the wire schema — previously they
+  collapsed to a bare `$ref` a small model never chased, hiding every field
+  name and the required list. The two required `type` fields (node type,
+  link verb) now carry their full vocabulary in the schema itself, unknown
+  fields on write tools are rejected loudly (an inline `links` array used to
+  be silently dropped), and the server instructions were cut from 4.1KB of
+  mechanism essays to the contract: the 8 node types, the 7 verbs, and the
+  exact call shapes, including "add_notes carries no links — link the
+  returned ids in a second pass".
+- **Skills show real calls.** The capture skills' examples were positional
+  pseudo-syntax (`link(a, b, answers)`) that small models imitated verbatim
+  into invalid calls; they now show exact keyword JSON, name the 8 types in
+  one line, and include a worked `add_notes` + second-pass `link` example.
+  The digest skill's "batch into add_notes… link as you go" contradiction is
+  resolved the same way, it now stops early on a near-empty tree instead of
+  inflating, and an empty graph's cold-start brief appends the graph's
+  actual ontology — the one channel that reaches a model with no skill
+  loaded. The Devin/Codex/Windsurf `AGENTS.md` block gained the full type
+  roster (Anchor was missing), `describe_ontology`, and the same call
+  shapes.
+
 ## v0.8.12
 
 ### serve means it — and Codex sessions start pre-briefed
