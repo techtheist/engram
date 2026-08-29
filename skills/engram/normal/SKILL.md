@@ -110,7 +110,7 @@ When the user asks for a decision log / `DECISIONS.md`: walk the current (non-su
 ## How to write
 
 1. **Avoid duplicates — proportionally.** On a small graph, or right after you've already searched/recalled the area, write directly: `add_note` self-checks similarity and returns `{ matched, created: false }` instead of duping — then `update_node` the match. **Search first when the graph has grown large or the topic is plausibly already covered.**
-2. **Pick the type** from the list above. Don't invent types — there are exactly 8 (the 7 above + **Anchor**). *(0.7+: a graph can run a **customized ontology** — renamed types, different verbs. If the brief opens by teaching one, or a write is refused with "unknown node type", call `describe_ontology` and use *that* vocabulary: the graph defines its ontology, not this skill. Reshaping it is the user's gesture — the pane's Settings or `GET/PUT /config` over HTTP; never write config yourself.)*
+2. **Pick the type** from the list above. Don't invent types — there are exactly 8: `Decision`, `Principle`, `Caution`, `Problem`, `Resolution`, `Insight`, `Intent`, `Anchor`. *(0.7+: a graph can run a **customized ontology** — renamed types, different verbs. If the brief opens by teaching one, or a write is refused with "unknown node type", call `describe_ontology` and use *that* vocabulary: the graph defines its ontology, not this skill. Reshaping it is the user's gesture — the pane's Settings or `GET/PUT /config` over HTTP; never write config yourself.)*
 3. **Title**: a short, declarative label. **Body**: the reasoning in 1–3 sentences — the *why*, not a transcript.
 4. **Link it.** Edges must read as an English sentence: subject → verb → object. Use:
    - `because` — Decision/Caution **because** Principle (the reason).
@@ -132,14 +132,23 @@ When the user asks for a decision log / `DECISIONS.md`: walk the current (non-su
 
 ## Example flows — imitate these
 
+Write calls are keyword JSON — `type` and `title` are required on every note, `type` is also the verb field on `link`, and links are always separate `link` calls, never fields inside a note.
+
 **Recall before work.** User: "let's switch the pane to WebSockets."
 → `search("SSE websocket pane live updates")` → hit *"Source SSE from the Engine change-listener"* [Decision] with a `because` neighbor. Surface it: "There's a standing decision to use SSE (one-way, fits the shared daemon). Switching supersedes it — proceed?" Only after a yes: implement, then `add_note` the new Decision and `link` it `replaces` the old, edge note = why it changed.
 
-**Capture at a stopping point.** A genuinely tricky bug just got fixed:
-→ `add_note(Problem, "Audit rows attributed node updates to the creator session", body: what was wrong and how it stayed hidden)`
-→ `add_note(Resolution, "audit_node stamps the acting session; the node's own session only marks its created row")`
-→ `link(resolution, problem, answers)` → `update_node(problem, status: "resolved")` — the loop is closed.
-Three nodes now concern the same subject? `add_note(Anchor, "Audit journal")` and `about`-link them.
+**Capture at a stopping point.** A genuinely tricky bug just got fixed — batch the notes, then link the ids the response returns:
+
+```json
+add_notes {"notes": [
+  {"type": "Problem", "title": "Audit rows attributed node updates to the creator session", "body": "What was wrong and how it stayed hidden."},
+  {"type": "Resolution", "title": "audit_node stamps the acting session; the node's own session only marks its created row"}
+]}
+link {"from": "<resolution-id>", "to": "<problem-id>", "type": "answers"}
+update_node {"id": "<problem-id>", "status": "resolved"}
+```
+
+— the loop is closed (notes carry no links; linking is always this second pass over the returned ids). Three nodes now concern the same subject? `add_note {"type": "Anchor", "title": "Audit journal"}` and `about`-link them.
 
 **Judging a suspect pair.** Brief: *"Audit journal shipped" [Resolution] vs "Append-only audit journal" [Intent] (87%)*. They don't contradict — the Resolution implements the Intent → `dismiss`, then verify the `answers` edge exists and the Intent's status is `resolved`. Same scan, different pair: two Decisions stating opposite rules → `conflict`. A fresher restatement of an old claim → `replaces`.
 

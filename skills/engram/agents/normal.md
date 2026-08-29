@@ -2,7 +2,8 @@
 
 This project keeps a local, user-owned knowledge graph of its *reasoning*:
 Decisions and their reasons, Principles, Cautions that bit us, Problems and
-Resolutions, Insights, open Intents. Not code structure — the code holds that.
+Resolutions, Insights, open Intents, Anchors that cluster them. Not code
+structure — the code holds that.
 What good capture buys: the next session starts already knowing why things
 are the way they are, and the user sees and curates everything in the pane.
 
@@ -23,6 +24,12 @@ captures go through `update_nodes` / `add_notes`. A hit marked `stale: true` has
 relying on it, and refresh it with `update_node` if it's still accurate.
 
 **Capture.** Capture the load-bearing knowledge: Decisions with reasons, Principles and conventions, Cautions and gotchas, resolved Problems, selective non-obvious Insights, and Intents worth surviving the session. Skip anything the code or docs already state verbatim.
+Node `type` is one of exactly 8: Decision, Principle, Caution, Problem,
+Resolution, Insight, Intent, Anchor (call `describe_ontology` if this graph
+runs a custom set). Write shapes: `add_note {"type": "Decision", "title":
+"...", "body": "..."}`; `link {"from": "<id>", "to": "<id>", "type":
+"because"}`; `add_notes {"notes": [...]}` items carry NO links — `link` the
+returned ids in a second pass.
 Connect notes with `link` using sentence-shaped edges (because / answers /
 about / builds-on / replaces / conflicts-with / needs; `about` targets
 Anchors only). Every write's response is a verdict, not a receipt: on

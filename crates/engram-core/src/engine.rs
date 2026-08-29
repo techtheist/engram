@@ -3162,6 +3162,14 @@ impl Engine {
         // the assistant to offer seeding instead of reporting nothing.
         if included.is_empty() && self.store.all_nodes()?.is_empty() {
             out.push_str(COLD_START_BRIEF);
+            // A cold graph is exactly where the writer has never seen the
+            // ontology (issue #9: a model with no loaded skill guessed at
+            // types until it grepped the schema) — teach this graph's actual
+            // set in the same breath, unless the brief already led with it.
+            if !bc.ontology.show {
+                out.push('\n');
+                out.push_str(&cfg.describe_ontology());
+            }
         }
 
         self.store.touch(&included)?;

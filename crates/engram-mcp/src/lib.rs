@@ -21,64 +21,43 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+// Cut to its contract (finishing Decision 00c0b7rdbcs4): this string rides
+// into EVERY client session, so it carries what a first write needs — the
+// type roster and the call shapes issue #9 showed models guessing at — and
+// leaves the mechanism essays (trust math, multi-project etiquette) to the
+// tool descriptions and docs.
 const INSTRUCTIONS: &str = "\
 Engram is the project's durable reasoning/decision memory as an editable graph. \
-Call `brief` at the start of a session for a compact digest of the canon \
-(conflicts, open work, principles, decisions, cautions). If its first line \
-says the session is bound by fallback — or your client answered no MCP roots \
-and the briefed project is not your workspace — call `brief` again with \
-`project` set to your workspace's absolute path: it rebinds this session to \
-that registered project and returns ITS brief in the same call. \
-Use `search` before \
-non-trivial work — hits carry their 1-hop neighbors, conflicts and supersessions \
-first. Capture every decision as it happens — a feature request usually hides \
-one (library picked, shape chosen, tradeoff accepted) and it belongs in the \
-graph even though nobody said \"remember this\". Every write's response is a \
-verdict, not a receipt: `add_note` returns {matched, created:false} on a \
-near-duplicate (merge via `update_node`; when SEVERAL notes state the same \
-knowledge, consolidate them with `merge_nodes` — it rehomes their edges \
-instead of stranding them), `warnings` when the text lands near \
-contradicted or superseded knowledge, and `suspects` when it queued unjudged \
-look-alike pairs — judge those immediately with `resolve_suspect` and tell \
-the user when one is a genuine contradiction; that alert is the one exception \
-to silent capture. \
-Link nodes with sentence-shaped edges (e.g. a Decision `because` a Principle); \
-repair a wrong link with `unlink` / `update_edge`. When the brief lists \
-suspected conflicts, judge them early via `resolve_suspect` (conflict | \
-replaces | dismiss) — the scan only finds candidates; you are the judge. \
-Nodes carry computed \
-`trust` (0..1) and `stale` (trust < 0.3 — verify before relying). Trust reads \
-only deliberate acts: updates (confirmed_at) and approvals; retrieval never \
-refreshes it — being findable proves nothing. Stable-durability knowledge \
-holds its trust flat until a judged conflict demotes it (withdrawing the \
-conflict withdraws the demotion; drift is review-only and never demotes); \
-episodic/volatile knowledge decays with time. If a stale node is still true, \
-say so with `update_node` — that is what restores trust. Pinned nodes \
-(constant trust, set by the user in the pane) are marked PINNED in the brief; \
-pinning and unpinning are user-only gestures, and a `replaces` verdict that \
-would archive a pinned node is refused — surface it to the user instead. \
-Nodes can carry free-form `tags` — how the user slices the graph (phases, \
-concerns). Reuse the recent tags the brief lists before inventing new ones; \
-an unknown tag is simply created. \
-`check_claim` verifies a statement against the canon via the local NLI \
-model ({supports, contradicts, silent}) — use it before acting on an \
-assumption; its verdicts are hints, never judgments. \
-For history questions: `timeline` walks a node's replaces chain (\"how did \
-this decision evolve\"), `audit` pages the mutation journal (\"what changed, \
-who wrote this\"). `list_drift` finds nodes whose code_refs no longer exist \
-in the project — repair the refs via `update_node` and re-check the claim. \
-For whole-graph work, use the bulk tools: `list_nodes` pages complete nodes \
-(full bodies — the lossless read behind \"export every Decision to a \
-decisions.md\"), `update_nodes` applies many patches in one call (curation \
-sweeps), `add_notes` batch-creates with the same dupe checks as add_note. \
-Most tools take an optional `project`: omit it for this project; a name, an \
-id, or a project's directory (see `list_projects`) reads or writes THAT \
-project's graph — capturing an insight about a sibling project into its own \
-graph is deliberate and encouraged; `home` is the user-level graph for knowledge that transcends \
-projects (global principles, preferences — write there on \"remember this \
-globally\"); `search`/`check_claim` accept `project: \"all\"` to read across \
-every graph (foreign hits carry provenance and a locality prior). Writes to \
-`all` are refused — one insight lives in one graph, not N copies. \
+First call `brief` for the canon digest; if its first line says the session is \
+bound by fallback — or the briefed project isn't your workspace — call `brief` \
+again with `project` set to your workspace's absolute path: it rebinds this \
+session and returns THAT project's brief. `search` before non-trivial work. \
+Capture decisions silently as they happen — a feature request usually hides one. \
+Node types (this graph's actual set: `describe_ontology`): Decision, Principle, \
+Caution, Problem, Resolution, Insight, Intent, Anchor. \
+Edge verbs: about, because, answers, builds-on, replaces, conflicts-with, needs \
+— \"from <verb> to\" must read as a sentence. \
+Call shapes: add_note {\"type\": \"Decision\", \"title\": \"...\", \"body\": \
+\"...\"}; then link {\"from\": \"<new-id>\", \"to\": \"<other-id>\", \"type\": \
+\"because\"}. add_notes {\"notes\": [<add_note items>]} carries NO links — \
+create first, link the returned ids in a second pass. \
+Every write's response is a verdict, not a receipt: {matched, created: false} \
+= near-duplicate (merge via `update_node`; several notes with the same \
+knowledge → `merge_nodes`); `warnings` = landed near contradicted/superseded \
+canon; `suspects` = judge each with `resolve_suspect` (conflict | replaces | \
+dismiss) NOW and tell the user about genuine contradictions — the one \
+exception to silent capture. Judge the brief's suspected conflicts early too. \
+Nodes carry computed `trust` and `stale` (verify before relying); only \
+deliberate acts refresh trust — a still-true stale node wants `update_node`. \
+Pinning is user-only; a `replaces` that would archive a pinned node is refused. \
+Reuse the brief's recent tags before inventing new ones. \
+`check_claim` checks a statement against canon (hints, never judgments); \
+`timeline` walks a replaces chain; `audit` pages the mutation journal; \
+`list_drift` finds broken code_refs. \
+`project` on most tools: omit = this project; name/id/directory = that graph \
+(cross-project capture into a sibling's own graph is encouraged); \"home\" = \
+the user-level graph; search/check_claim take \"all\" (reads only — writes \
+to `all` are refused). \
 Never store secrets or volatile implementation detail.";
 
 /// Upper bound on items per batch tool call — big enough for any real
@@ -681,15 +660,16 @@ impl Engram {
         self.reply(&json!({ "nodes": nodes, "edges": edges }))
     }
 
-    #[tool(
-        description = "Create a memory node (source = claude, provisional). The \
-        response is a verdict, not a receipt — act on it: {matched, created: \
-        false} = near-duplicate, merge via update_node (nli_label=contradiction \
-        = a NEGATED duplicate — read it first, likely conflicts-with instead); \
-        `warnings` = landed near contradicted/superseded canon; \
-        `missing_code_refs` = fix or drop; `suspects` = judge each with \
-        resolve_suspect now, telling the user about genuine contradictions."
-    )]
+    #[tool(description = "Create a memory node: {type, title} required (types: \
+        Decision | Principle | Caution | Problem | Resolution | Insight | \
+        Intent | Anchor), body/tags optional; edges go through `link`, never \
+        inline. The response is a verdict, not a receipt — act on it: \
+        {matched, created: false} = near-duplicate, merge via update_node \
+        (nli_label=contradiction = a NEGATED duplicate — read it first, \
+        likely conflicts-with instead); `warnings` = landed near \
+        contradicted/superseded canon; `missing_code_refs` = fix or drop; \
+        `suspects` = judge each with resolve_suspect now, telling the user \
+        about genuine contradictions.")]
     async fn add_note(
         &self,
         Parameters(a): Parameters<AddNoteArgs>,
@@ -798,9 +778,12 @@ impl Engram {
         })
     }
 
-    #[tool(description = "Batch add_note: same per-item checks and verdicts, \
-        positional results ({id, created} | {matched, created: false} | \
-        {ok: false, error}); one bad item never blocks the rest.")]
+    #[tool(description = "Batch add_note: `notes` is an array of add_note \
+        items (each: required type + title, optional body/tags/…; NO links \
+        inside items — `link` the returned ids afterwards). Same per-item \
+        checks and verdicts, positional results ({id, created} | {matched, \
+        created: false} | {ok: false, error}); one bad item never blocks the \
+        rest.")]
     async fn add_notes(
         &self,
         Parameters(a): Parameters<AddNotesArgs>,
@@ -881,8 +864,9 @@ impl Engram {
     }
 
     #[tool(description = "This graph's ontology: every node type and edge verb, \
-        with roles and examples (ontologies are per-graph). Call when names \
-        surprise you or before writing into an unfamiliar graph.")]
+        with roles and examples (ontologies are per-graph). Call before your \
+        first write into any graph you haven't described yet — an empty or \
+        unfamiliar graph especially — and whenever names surprise you.")]
     async fn describe_ontology(
         &self,
         Parameters(a): Parameters<DescribeOntologyArgs>,
@@ -973,8 +957,10 @@ impl Engram {
         self.reply(&json!({ "ok": true, "id": edge.id }))
     }
 
-    #[tool(description = "Link two nodes with a sentence-shaped edge \
-        (about, because, answers, builds-on, replaces, conflicts-with, needs).")]
+    #[tool(description = "Link two nodes with a sentence-shaped edge: \
+        {from, to, type} — `type` is the verb, one of about | because | \
+        answers | builds-on | replaces | conflicts-with | needs, and \
+        \"from <verb> to\" must read as an English sentence.")]
     async fn link(&self, Parameters(a): Parameters<LinkArgs>) -> Result<CallToolResult, ErrorData> {
         let edge_type = EdgeType::parse(&a.edge_type).map_err(map_err)?;
         let engine = self.engine_for(&a.project)?;
@@ -2503,10 +2489,21 @@ struct TraverseArgs {
     project: Option<String>,
 }
 
+// `inline`: without it the batch form's items collapse to a bare
+// `{"$ref": "#/$defs/AddNoteArgs"}` on the wire, and a model that doesn't
+// chase the pointer sees an array of nothing — no field names, no required
+// list (the issue #9 failure signature). `deny_unknown_fields`: an inline
+// `links` on a note item must fail loudly, not be silently dropped.
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(inline)]
 struct AddNoteArgs {
+    /// Node type — the default ontology's 8: Decision | Principle | Caution |
+    /// Problem | Resolution | Insight | Intent | Anchor (this graph's actual
+    /// set: describe_ontology).
     #[serde(rename = "type")]
     node_type: String,
+    /// One-sentence summary, the claim itself (required; detail goes in body).
     title: String,
     #[serde(default)]
     body: Option<String>,
@@ -2539,9 +2536,14 @@ struct AddNoteArgs {
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct LinkArgs {
+    /// Subject node id — the edge reads "from <verb> to".
     from: String,
+    /// Object node id.
     to: String,
+    /// Edge verb (required) — one of: about | because | answers | builds-on |
+    /// replaces | conflicts-with | needs.
     #[serde(rename = "type")]
     edge_type: String,
     #[serde(default)]
@@ -2555,7 +2557,11 @@ struct LinkArgs {
     project: Option<String>,
 }
 
+// `inline` for the same wire-visibility reason as AddNoteArgs (update_nodes'
+// items would otherwise hide behind a $ref).
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(inline)]
 struct UpdateArgs {
     id: String,
     /// Reclassify the node (one of the 8 canonical types).
@@ -2584,6 +2590,7 @@ struct UpdateArgs {
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct MergeArgs {
     /// The node that lives on and receives the union.
     survivor: String,
@@ -2604,12 +2611,16 @@ struct MergeArgs {
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct AddNotesArgs {
-    /// Notes to create; each item takes the same fields as add_note.
+    /// Notes to create; each item takes the same fields as add_note (type and
+    /// title required). Items carry NO links — create the notes first, then
+    /// `link` the returned ids in a second pass.
     notes: Vec<AddNoteArgs>,
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct UpdateNodesArgs {
     /// Patches to apply; each item takes the same fields as update_node.
     updates: Vec<UpdateArgs>,
@@ -2954,6 +2965,54 @@ mod tests {
         assert_eq!(durability("Decision"), Durability::Stable);
         assert_eq!(durability("Insight"), Durability::Episodic);
         assert_eq!(durability("Intent"), Durability::Volatile);
+    }
+
+    /// Issue #9: rmcp generates tool schemas with draft2020_12 settings,
+    /// under which a non-inlined item type collapses to a bare
+    /// `{"$ref": "#/$defs/AddNoteArgs"}` — no field names, no required list —
+    /// and a small model that doesn't chase the pointer can't shape a batch
+    /// item. `#[schemars(inline)]` on the item structs is what this locks.
+    #[test]
+    fn batch_item_schemas_are_inlined_with_visible_required_fields() {
+        let schema_for = |gen_fn: fn(
+            &mut schemars::SchemaGenerator,
+        ) -> schemars::Schema| {
+            let mut generator = schemars::generate::SchemaSettings::draft2020_12().into_generator();
+            serde_json::to_value(gen_fn(&mut generator)).unwrap()
+        };
+        let notes = schema_for(|g| g.root_schema_for::<AddNotesArgs>());
+        let items = &notes["properties"]["notes"]["items"];
+        assert!(
+            items.get("$ref").is_none(),
+            "add_notes items must be inlined, not $ref'd: {items}"
+        );
+        let required: Vec<&str> = items["required"]
+            .as_array()
+            .expect("inlined items carry their required list")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(required, ["type", "title"]);
+        assert!(
+            items["properties"]["type"]["description"]
+                .as_str()
+                .is_some_and(|d| d.contains("Decision")),
+            "the type field must teach its vocabulary in the schema"
+        );
+
+        let updates = schema_for(|g| g.root_schema_for::<UpdateNodesArgs>());
+        assert!(
+            updates["properties"]["updates"]["items"].get("$ref").is_none(),
+            "update_nodes items must be inlined too"
+        );
+
+        let link = schema_for(|g| g.root_schema_for::<LinkArgs>());
+        assert!(
+            link["properties"]["type"]["description"]
+                .as_str()
+                .is_some_and(|d| d.contains("because")),
+            "link's verb field must name its vocabulary in the schema"
+        );
     }
 
     #[test]
