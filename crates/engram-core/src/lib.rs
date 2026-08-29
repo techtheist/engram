@@ -55,3 +55,13 @@ mod tests;
 pub fn brief_line(n: &Node) -> String {
     engine::node_line(n, engine::EXCERPT_CHARS)
 }
+
+/// The version this process advertises (/health, daemon files) and compares
+/// in the 0.8.13 version handshake. `ENGRAM_TEST_VERSION` overrides it —
+/// e2e-only, so the update-mechanics tests can make one binary play an old
+/// core against a current one without building the workspace twice (same
+/// knob family as ENGRAM_ROOTS_TIMEOUT_SECS). All workspace crates share one
+/// version, so reading CARGO_PKG_VERSION here equals reading it anywhere.
+pub fn advertised_version() -> String {
+    std::env::var("ENGRAM_TEST_VERSION").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string())
+}

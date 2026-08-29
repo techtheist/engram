@@ -294,7 +294,7 @@ impl CoreRuntime {
         (
             Arc::new(Self {
                 pid: std::process::id(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
+                version: engram_core::advertised_version(),
                 started_at: engram_core::now(),
                 home,
                 idle: Arc::new(IdleTracker::new()),
@@ -780,7 +780,7 @@ struct EdgesResponse {
 async fn health(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     Json(json!({
         "status": "ok",
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": engram_core::advertised_version(),
         "db": state.db_path,
     }))
 }
@@ -889,7 +889,7 @@ async fn system(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     });
 
     let mut out = json!({
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": engram_core::advertised_version(),
         "daemon": {
             "pid": std::process::id(),
             "uptime_secs": state.started.elapsed().as_secs(),

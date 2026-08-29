@@ -1915,10 +1915,9 @@ fn parse_semver(v: &str) -> Option<(u64, u64, u64)> {
 /// Is the advertised core version strictly older than this binary? Unknown
 /// or unparsable versions are never "older" — converge, don't fight.
 fn core_is_older(advertised: Option<&str>) -> bool {
-    let (Some(theirs), Some(ours)) = (
-        advertised.and_then(parse_semver),
-        parse_semver(env!("CARGO_PKG_VERSION")),
-    ) else {
+    let ours_raw = engram_core::advertised_version();
+    let (Some(theirs), Some(ours)) = (advertised.and_then(parse_semver), parse_semver(&ours_raw))
+    else {
         return false;
     };
     theirs < ours
@@ -1941,7 +1940,7 @@ fn retire_older_core() -> bool {
     tracing::info!(
         "machine core on port {port} is v{} — this binary is v{}; restarting it",
         version.as_deref().unwrap_or("unknown"),
-        env!("CARGO_PKG_VERSION")
+        engram_core::advertised_version()
     );
     let Some(home) = registry::engram_home() else {
         return false;
@@ -1971,7 +1970,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     if retire_older_core() {
         eprintln!(
             "stopped an older engram core — this binary (v{}) starts a fresh one",
-            env!("CARGO_PKG_VERSION")
+            engram_core::advertised_version()
         );
     }
     let port = match machine_core() {
@@ -2658,7 +2657,7 @@ async fn bind_or_converge(start: u16) -> anyhow::Result<Bound> {
                         tracing::info!(
                             "core v{} holds port {port} — this binary is v{}; taking over",
                             version.as_deref().unwrap_or("unknown"),
-                            env!("CARGO_PKG_VERSION")
+                            engram_core::advertised_version()
                         );
                         let pid = machine_core_pid();
                         if doctor::http_post(port, "/shutdown", "{}").is_some() {
@@ -2699,7 +2698,7 @@ fn write_machine_daemon_file(port: u16, db_display: &str) {
         "url": format!("http://127.0.0.1:{port}"),
         "pid": std::process::id(),
         "db": db_display,
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": engram_core::advertised_version(),
     });
     if let Err(e) = std::fs::write(home.join("daemon.json"), format!("{body:#}\n")) {
         tracing::warn!("couldn't write the machine daemon file: {e}");
@@ -2731,7 +2730,7 @@ fn write_daemon_file(db: &Path, port: u16, pid: u32) {
         "url": format!("http://127.0.0.1:{port}"),
         "pid": pid,
         "db": db_display,
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": engram_core::advertised_version(),
     });
     if let Err(e) = std::fs::write(dir.join("daemon.json"), format!("{body:#}\n")) {
         tracing::warn!("couldn't write daemon.json: {e}");
