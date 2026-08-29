@@ -119,6 +119,53 @@ pub struct ProjectHandle {
     pub root: Option<PathBuf>,
     pub db: Option<PathBuf>,
     pub engine: Arc<Mutex<Engine>>,
+    /// The backing file's on-disk identity at open time (issue #8): a cache
+    /// hit re-stats the path, and a mismatch means the store was deleted or
+    /// replaced under the handle — evict and reopen instead of serving the
+    /// orphaned inode forever. `None` = unknown, never evicted on that.
+    identity: Option<StoreIdentity>,
+}
+
+/// What makes an open store file "the same file": device + inode on unix,
+/// creation time elsewhere (stable across writes, different for a recreated
+/// file). Deleting `.engram/` doesn't disturb an open handle — the flock and
+/// the reads live on the unlinked inode — so path equality alone can't tell
+/// a live store from a corpse.
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+struct StoreIdentity {
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+    #[cfg(not(unix))]
+    created: Option<std::time::SystemTime>,
+}
+
+fn store_identity(path: &Path) -> Option<StoreIdentity> {
+    let meta = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some(StoreIdentity {
+            dev: meta.dev(),
+            ino: meta.ino(),
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        Some(StoreIdentity {
+            created: meta.created().ok(),
+        })
+    }
+}
+
+/// Is the handle's backing file still the one it opened? Unknowns lean
+/// "yes": a handle with no recorded db or identity is never evicted.
+fn backing_intact(handle: &ProjectHandle) -> bool {
+    let (Some(db), Some(opened)) = (&handle.db, handle.identity) else {
+        return true;
+    };
+    store_identity(db) == Some(opened)
 }
 
 pub struct Hub {
@@ -173,6 +220,7 @@ impl Hub {
                 name: e.name,
                 root: Some(PathBuf::from(e.root)),
                 engine,
+                identity: None,
             },
             None => {
                 let root = engine.lock().unwrap().repo_root().map(Path::to_path_buf);
@@ -187,6 +235,7 @@ impl Hub {
                     root,
                     db: None,
                     engine,
+                    identity: None,
                 }
             }
         };
@@ -217,6 +266,7 @@ impl Hub {
                 root: None,
                 db: registry::home_db_path(),
                 engine,
+                identity: None,
             },
             factory,
             listener_factory: Mutex::new(None),
@@ -460,8 +510,23 @@ impl Hub {
         if self.entry_is_current(entry) {
             return Ok(self.current.engine.clone());
         }
-        if let Some(h) = self.open.lock().unwrap().get(&entry.id) {
-            return Ok(h.engine.clone());
+        // Registry ids survive a `.engram/` wipe (register upserts by root),
+        // so a bare cache hit here would keep serving a deleted store's
+        // orphaned inode forever (issue #8) — verify the backing file first.
+        {
+            let mut open = self.open.lock().unwrap();
+            if let Some(h) = open.get(&entry.id) {
+                if backing_intact(h) {
+                    return Ok(h.engine.clone());
+                }
+                eprintln!(
+                    "engram: store for '{}' was deleted or replaced on disk — reopening fresh",
+                    entry.name
+                );
+                // Sessions still holding the old engine keep their Arc; the
+                // orphaned inode's lock never conflicts with the fresh file.
+                open.remove(&entry.id);
+            }
         }
         let db = entry.resolved_db();
         let engine = (self.factory()?)(&db)?;
@@ -469,14 +534,24 @@ impl Hub {
             id: entry.id.clone(),
             name: entry.name.clone(),
             root: Some(PathBuf::from(&entry.root)),
+            identity: store_identity(&db),
             db: Some(db),
             engine: Arc::new(Mutex::new(engine)),
         }))
     }
 
     fn open_home(&self) -> Result<Arc<Mutex<Engine>>> {
-        if let Some(h) = self.open.lock().unwrap().get(HOME_PROJECT) {
-            return Ok(h.engine.clone());
+        {
+            let mut open = self.open.lock().unwrap();
+            if let Some(h) = open.get(HOME_PROJECT) {
+                if backing_intact(h) {
+                    return Ok(h.engine.clone());
+                }
+                eprintln!(
+                    "engram: the home graph was deleted or replaced on disk — reopening fresh"
+                );
+                open.remove(HOME_PROJECT);
+            }
         }
         let db = registry::home_db_path()
             .ok_or_else(|| Error::Io("no home directory for the home graph".into()))?;
@@ -489,6 +564,7 @@ impl Hub {
             id: HOME_PROJECT.into(),
             name: HOME_PROJECT.into(),
             root: None,
+            identity: store_identity(&db),
             db: Some(db),
             engine: Arc::new(Mutex::new(engine)),
         }))

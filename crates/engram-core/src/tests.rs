@@ -3157,6 +3157,39 @@ fn hub_federation_end_to_end() {
     assert!(projects.iter().any(|p| p.home));
     assert!(projects.iter().any(|p| p.name == "beta" && p.open));
 
+    // Issue #8: deleting a project's store under a live hub must not leave
+    // the cached engine serving the orphaned inode — the registry id
+    // survives the wipe (upsert by root), so without an identity check the
+    // next get() would cache-hit the corpse and the store would never be
+    // recreated on disk.
+    let beta_before = hub.get("beta").unwrap();
+    std::fs::remove_dir_all(beta_root.join(".engram")).unwrap();
+    let beta_after = hub.get("beta").unwrap();
+    assert!(
+        !std::sync::Arc::ptr_eq(&beta_before, &beta_after),
+        "a deleted store evicts the cached engine"
+    );
+    // The recreated store is tepin-born (resolved_db: fresh graphs get the
+    // .tepin path when nothing exists yet), so assert on the resolved path.
+    assert!(
+        registry::load().resolve("beta").unwrap().resolved_db().exists(),
+        "the reopen recreates the store file on disk"
+    );
+    assert!(
+        beta_after
+            .lock()
+            .unwrap()
+            .brief(8000)
+            .unwrap()
+            .contains("cold start"),
+        "the fresh store is empty — a new graph, not the corpse"
+    );
+    // And an intact store keeps its engine: no eviction churn.
+    assert!(std::sync::Arc::ptr_eq(
+        &hub.get("beta").unwrap(),
+        &beta_after
+    ));
+
     unsafe { std::env::remove_var("ENGRAM_HOME") };
     let _ = std::fs::remove_dir_all(&tmp);
 }

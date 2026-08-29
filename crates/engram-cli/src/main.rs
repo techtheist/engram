@@ -366,7 +366,7 @@ fn mcp_log_file(db: &Path) -> Option<std::sync::Arc<std::fs::File>> {
 fn run_stop() -> anyhow::Result<()> {
     let mut stopped = 0;
     if let Some(home) = registry::engram_home() {
-        stopped += stop_machine_core(&home.join("daemon.json"));
+        stopped += stop_machine_core(&home.join("daemon.json"), false);
     }
 
     // Legacy per-repo daemons, discovered from the daemon files we already
@@ -419,8 +419,10 @@ fn run_stop() -> anyhow::Result<()> {
 }
 
 /// Stop the machine core advertised in `file`. Returns how many processes
-/// were stopped (0 or 1).
-fn stop_machine_core(file: &Path) -> usize {
+/// were stopped (0 or 1). `quiet` suppresses the stdout report — the version
+/// handshake runs this from inside an MCP bridge, whose stdout IS the
+/// JSON-RPC channel (progress goes to tracing/stderr there).
+fn stop_machine_core(file: &Path, quiet: bool) -> usize {
     let Ok(raw) = std::fs::read_to_string(file) else {
         return 0;
     };
@@ -440,32 +442,29 @@ fn stop_machine_core(file: &Path) -> usize {
     let clients = doctor::http_get(port, "/system")
         .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
         .and_then(|v| v["processes"]["clients"].as_array().map(|c| c.len()));
-    let pid = meta["pid"].as_u64();
+    let pid = meta["pid"].as_u64().map(|p| p as u32);
 
     // Orchestrated first: the core closes sessions, drops every engine (all
-    // store locks released), removes its daemon files, and exits 0.
+    // store locks released), removes its daemon files, and exits 0. "Gone"
+    // is judged on the PROCESS, not on /health — the exit path holds every
+    // store lock until process exit, and a health-silent core still holding
+    // its locks was exactly the issue #8 field report.
     let mut gone = false;
     if doctor::http_post(port, "/shutdown", "{}").is_some() {
-        for _ in 0..40 {
-            std::thread::sleep(std::time::Duration::from_millis(250));
-            if doctor::http_get(port, "/health").is_none() {
-                gone = true;
-                break;
-            }
-        }
+        gone = wait_core_exit(pid, port, 60); // 15s: the exit path drains engines first
     }
-    if !gone {
-        // Unresponsive, or an older binary without /shutdown: PID kill.
-        if let Some(pid) = pid
-            && terminate_pid(pid as u32)
-        {
-            for _ in 0..20 {
-                std::thread::sleep(std::time::Duration::from_millis(250));
-                if doctor::http_get(port, "/health").is_none() {
-                    gone = true;
-                    break;
-                }
-            }
+    if !gone
+        && let Some(pid) = pid
+        && terminate_pid(pid)
+    {
+        gone = wait_core_exit(Some(pid), port, 20);
+    }
+    if !gone && let Some(pid) = pid {
+        // Last resort — both backends are crash-safe (fsync-per-commit / WAL),
+        // and a core that ignored /shutdown AND SIGTERM is wedged, not working.
+        eprintln!("the core (pid {pid}) didn't exit in time — force-killing it");
+        if force_kill_pid(pid) {
+            gone = wait_core_exit(Some(pid), port, 20);
         }
     }
     if !gone {
@@ -476,17 +475,84 @@ fn stop_machine_core(file: &Path) -> usize {
         return 0;
     }
     let _ = std::fs::remove_file(file); // the core removes it itself; belt and braces
-    match clients {
-        Some(n) => println!(
-            "stopped machine core (pid {}, port {port}) — {n} connected client(s) released",
-            pid.unwrap_or_default()
-        ),
-        None => println!(
-            "stopped machine core (pid {}, port {port})",
-            pid.unwrap_or_default()
-        ),
+    if !port_is_free(port) {
+        eprintln!(
+            "warning: port {port} is still in use after the stop — another process is listening there"
+        );
+    }
+    if !quiet {
+        match clients {
+            Some(n) => println!(
+                "stopped machine core (pid {}, port {port}) — {n} connected client(s) released",
+                pid.unwrap_or_default()
+            ),
+            None => println!(
+                "stopped machine core (pid {}, port {port})",
+                pid.unwrap_or_default()
+            ),
+        }
     }
     1
+}
+
+/// Wait for the core to actually exit: poll the pid when we have one (the
+/// only signal that means the store locks are released), fall back to the
+/// health probe for pre-pid daemon files. 4 ticks per second.
+fn wait_core_exit(pid: Option<u32>, port: u16, ticks: u32) -> bool {
+    for _ in 0..ticks {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let gone = match pid {
+            Some(p) => !pid_alive(p),
+            None => doctor::http_get(port, "/health").is_none(),
+        };
+        if gone {
+            return true;
+        }
+    }
+    false
+}
+
+/// Is the process alive? Safe against pid recycling here: the pid comes from
+/// a daemon file whose port answered /health moments ago — the core itself
+/// wrote it and was alive to prove it.
+fn pid_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+    #[cfg(windows)]
+    {
+        std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
+            .unwrap_or(false)
+    }
+}
+
+fn port_is_free(port: u16) -> bool {
+    std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
+fn force_kill_pid(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+    #[cfg(windows)]
+    {
+        // terminate_pid already uses taskkill /F — force IS terminate there.
+        terminate_pid(pid)
+    }
 }
 
 fn terminate_pid(pid: u32) -> bool {
@@ -1499,6 +1565,11 @@ fn spawn_core_and_wait(http_port: Option<u16>, fake_embeddings: bool) -> anyhow:
 fn ensure_machine_core(fake_embeddings: bool) -> anyhow::Result<u16> {
     static GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _flight = GATE.lock().unwrap_or_else(|e| e.into_inner());
+    // Version handshake: an older core is retired here so the spawn below
+    // replaces it with this binary — otherwise a client relaunching its
+    // bridges right after an update would keep converging on the old core
+    // (or resurrect one from an old binary) forever.
+    retire_older_core();
     if let Some(port) = machine_core() {
         return Ok(port);
     }
@@ -1603,6 +1674,9 @@ async fn run_mcp_fixed(raw_db: &Path, fake_embeddings: bool) -> anyhow::Result<(
             url,
             lease_root: lease_root.clone(),
         };
+        // Version handshake before the first resolution — resolving against
+        // an older core would silently pin this session to it.
+        retire_older_core();
         if let Some(url) = resolve_mcp_target(&db) {
             tracing::info!("bridging stdio MCP to {url} (db: {})", db.display());
             return Ok(target(url));
@@ -1812,10 +1886,67 @@ fn propose_init(repo: &Path) -> bool {
 /// registry — new state folds into the existing file family) verified over
 /// /health.
 fn machine_core() -> Option<u16> {
+    machine_core_info().map(|(port, _)| port)
+}
+
+/// The healthy machine core's port plus the version its /health advertises
+/// (older cores may not advertise one).
+fn machine_core_info() -> Option<(u16, Option<String>)> {
     let path = registry::engram_home()?.join("daemon.json");
     let raw = std::fs::read_to_string(path).ok()?;
     let port = serde_json::from_str::<serde_json::Value>(&raw).ok()?["port"].as_u64()? as u16;
-    doctor::http_get(port, "/health").map(|_| port)
+    let health = doctor::http_get(port, "/health")?;
+    let version = serde_json::from_str::<serde_json::Value>(&health)
+        .ok()
+        .and_then(|v| v["version"].as_str().map(str::to_string));
+    Some((port, version))
+}
+
+/// "X.Y.Z" (any suffix ignored) for the newer-binary comparison.
+fn parse_semver(v: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = v
+        .trim()
+        .trim_start_matches('v')
+        .split(['.', '-', '+'])
+        .map(|p| p.parse::<u64>().ok());
+    Some((parts.next()??, parts.next()??, parts.next()??))
+}
+
+/// Is the advertised core version strictly older than this binary? Unknown
+/// or unparsable versions are never "older" — converge, don't fight.
+fn core_is_older(advertised: Option<&str>) -> bool {
+    let (Some(theirs), Some(ours)) = (
+        advertised.and_then(parse_semver),
+        parse_semver(env!("CARGO_PKG_VERSION")),
+    ) else {
+        return false;
+    };
+    theirs < ours
+}
+
+/// The version handshake (issue #8's binary-update tail): a healthy machine
+/// core OLDER than this binary is stopped here so the caller's normal
+/// ensure/spawn path brings up a current one — every serve, bridge bind, and
+/// rebind becomes a self-healing upgrade point. A core that is newer or
+/// version-silent is left alone (never downgrade). Quiet on stdout: bridges
+/// call this with stdout as their MCP channel. Returns whether a takeover
+/// happened.
+fn retire_older_core() -> bool {
+    let Some((port, version)) = machine_core_info() else {
+        return false;
+    };
+    if !core_is_older(version.as_deref()) {
+        return false;
+    }
+    tracing::info!(
+        "machine core on port {port} is v{} — this binary is v{}; restarting it",
+        version.as_deref().unwrap_or("unknown"),
+        env!("CARGO_PKG_VERSION")
+    );
+    let Some(home) = registry::engram_home() else {
+        return false;
+    };
+    stop_machine_core(&home.join("daemon.json"), true) > 0
 }
 
 /// The machine core's advertised pid, from the same file [`machine_core`]
@@ -1833,6 +1964,14 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         eprintln!(
             "note: --http-only is deprecated — serve now ensures the shared machine core and \
              exits; with this flag it stays up while the core is healthy (supervisor back-compat)."
+        );
+    }
+    // Version handshake: converging on an older core would leave every
+    // session on stale code (and stale tool descriptions) after an update.
+    if retire_older_core() {
+        eprintln!(
+            "stopped an older engram core — this binary (v{}) starts a fresh one",
+            env!("CARGO_PKG_VERSION")
         );
     }
     let port = match machine_core() {
@@ -1972,7 +2111,9 @@ async fn run_core(args: CoreArgs) -> anyhow::Result<()> {
     // `--foreground` is documentation: the core always runs in its own
     // foreground — serve/mcp detach it at spawn time instead.
     let _ = args.foreground;
-    // One core per machine: a healthy one makes this invocation a no-op.
+    // One core per machine: a healthy CURRENT one makes this invocation a
+    // no-op; an older one is retired so this binary takes its place.
+    retire_older_core();
     if let Some(port) = machine_core() {
         println!("Engram core already running — pane: http://127.0.0.1:{port}");
         return Ok(());
@@ -2298,9 +2439,11 @@ async fn run_core(args: CoreArgs) -> anyhow::Result<()> {
     let reason = wait_for_shutdown(&mut shutdown_rx).await;
     let clients = runtime.clients().len();
     tracing::info!("core shutting down ({reason}) — {clients} connected client(s) released");
-    // Closing the listener + loops; open sessions/SSE die with the process,
-    // which is what tells bridges to exit right away.
-    http.abort();
+    // Background writers first, listener LAST: /health keeps answering while
+    // engine locks are still held, so a `stop` polling us reads silence as
+    // "about to exit", never as "still draining with every lock held" (the
+    // issue #8 gap — the old order aborted http first and could sit on the
+    // locks indefinitely behind a wedged engine mutex).
     librarian.abort();
     harvester_task.abort();
     if let Some(task) = &unload_task {
@@ -2308,13 +2451,30 @@ async fn run_core(args: CoreArgs) -> anyhow::Result<()> {
     }
     // Drain in-flight engine work: taking each lock once means every store
     // operation that had started has committed before the process exits.
+    // Bounded — a wedged spawn_blocking job (model download, re-embed) must
+    // not turn shutdown into a hang; past the deadline we exit anyway, and
+    // both backends are crash-safe (fsync-per-commit / WAL).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     for engine in hub.engines() {
-        drop(engine.lock());
+        loop {
+            if engine.try_lock().is_ok() {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                tracing::warn!(
+                    "an engine was still busy at the drain deadline — exiting anyway (crash-safe)"
+                );
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
     remove_repo_daemon_files(port);
     remove_machine_daemon_file();
-    // Process exit releases every store lock the engines held; both backends
-    // are crash-safe past the drain (fsync-per-commit / WAL).
+    // Closing the listener; open sessions/SSE die with the process, which is
+    // what tells bridges to exit right away.
+    http.abort();
+    // Process exit releases every store lock the engines held.
     std::process::exit(0);
 }
 
@@ -2465,15 +2625,59 @@ async fn bind_or_converge(start: u16) -> anyhow::Result<Bound> {
         match tokio::net::TcpListener::bind(addr).await {
             Ok(l) => return Ok(Bound::Listener(l, port)),
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                let ours = doctor::http_get(port, "/health").is_some_and(|b| {
-                    serde_json::from_str::<serde_json::Value>(&b)
-                        .ok()
-                        .and_then(|v| v["db"].as_str().map(str::to_string))
-                        .zip(registry::home_db_path())
-                        .is_some_and(|(db, home)| Path::new(&db) == home)
-                });
+                // Three probes, not one: a busy-but-alive core failing a
+                // single 3s read would read as "foreign", and walking past
+                // it opens a second core over the same home graph.
+                let mut health = None;
+                for attempt in 0..3 {
+                    health = doctor::http_get(port, "/health");
+                    if health.is_some() {
+                        break;
+                    }
+                    if attempt < 2 {
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    }
+                }
+                let parsed = health
+                    .as_deref()
+                    .and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok());
+                let ours = parsed
+                    .as_ref()
+                    .and_then(|v| v["db"].as_str().map(str::to_string))
+                    .zip(registry::home_db_path())
+                    .is_some_and(|(db, home)| Path::new(&db) == home);
                 if ours {
+                    let version = parsed
+                        .as_ref()
+                        .and_then(|v| v["version"].as_str().map(str::to_string));
+                    // Version handshake at the bind: an older core holding
+                    // our port yields to this binary — orchestrated stop,
+                    // wait for its actual exit (pid, not just health: the
+                    // locks release at process exit), then take the port.
+                    if core_is_older(version.as_deref()) {
+                        tracing::info!(
+                            "core v{} holds port {port} — this binary is v{}; taking over",
+                            version.as_deref().unwrap_or("unknown"),
+                            env!("CARGO_PKG_VERSION")
+                        );
+                        let pid = machine_core_pid();
+                        if doctor::http_post(port, "/shutdown", "{}").is_some() {
+                            wait_core_exit(pid, port, 60);
+                        }
+                        if let Ok(l) = tokio::net::TcpListener::bind(addr).await {
+                            return Ok(Bound::Listener(l, port));
+                        }
+                        tracing::warn!(
+                            "the older core didn't release port {port} — converging on it"
+                        );
+                    }
                     return Ok(Bound::CoreWonTheRace(port));
+                }
+                if health.is_none() {
+                    tracing::warn!(
+                        "port {port} is taken and won't answer /health — treating it as foreign \
+                         and walking on (if this is a wedged engram core, `engram-alpha stop` it)"
+                    );
                 }
                 continue;
             }

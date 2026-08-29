@@ -167,9 +167,21 @@ the activity clock, so *watching* the core never keeps it warm.
 loopback-only `POST /shutdown`: MCP sessions close (bridges exit immediately
 instead of timing out), every engine is drained so any store operation that
 had started has committed, every store lock is released, the daemon files are
-removed, and the process exits. If the core doesn't answer, `stop` falls back
-to a health-verified PID kill. Legacy per-repo daemons from pre-0.8.8
-binaries are discovered and stopped the old way.
+removed, and the process exits. Since 0.8.13 `stop` waits on the *process*,
+not just the health endpoint — "stopped" means the PID is gone and every
+store lock with it — escalating SIGTERM → SIGKILL only if the orchestrated
+path stalls, and warning if the port is still occupied afterwards. Legacy
+per-repo daemons from pre-0.8.8 binaries are discovered and stopped the old
+way.
+
+**Version handshake (0.8.13).** Every `serve`, bridge bind, and rebind
+compares the running core's `/health` version against its own binary: a core
+older than the binary is stopped and respawned from the newer one, so an
+update propagates to the core on the next touch instead of leaving stale
+sessions converging on old code forever. A newer core is always converged on
+— nothing ever downgrades it. If the core's store was deleted or replaced on
+disk (a wiped `.engram/`), the core notices on the next access and reopens —
+creating a fresh store — instead of serving the deleted file from its cache.
 
 **Deprecated: `serve --http-only`.** The pre-0.8.8 foreground shape. It
 still works — it ensures the core exactly like plain `serve` and then stays
