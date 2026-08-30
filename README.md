@@ -121,13 +121,14 @@ memory systems run as arms on the same corpus.
 
 ## Install
 
-From your project's root:
-
 ```sh
 curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh | sh
 ```
 
-Then `engram-alpha serve` and open `http://127.0.0.1:8787` — or use the
+The installer fetches the binary and nothing else — wiring your assistants
+is your own explicit step. From your project's root: `engram-alpha setup`
+(auto-detects what's installed), then `engram-alpha serve` and open
+`http://127.0.0.1:8787` — or use the
 [JetBrains plugin](https://plugins.jetbrains.com/plugin/32654-engram) / VS
 Code extension instead of the browser. Claude Code users can install
 everything as a plugin: `/plugin marketplace add techtheist/engram`. Windows,
@@ -135,7 +136,7 @@ per-assistant wiring, and updating: [Getting started](./docs/getting-started.md)
 
 ## What you get
 
-- **A graph you can read and edit** — the whole graph rendered live, four
+- **A graph you can read and edit** — the whole graph rendered live, three
   layouts, tags and filters that slice it by concern, and full by-hand
   editing. Hard-delete is deliberately user-only. → [The pane](./docs/pane.md)
 - **A timeline you can scroll** — the second screen renders the same memory

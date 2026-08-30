@@ -1928,12 +1928,18 @@ fn parse_semver(v: &str) -> Option<(u64, u64, u64)> {
 /// Is the advertised core version strictly older than this binary? Unknown
 /// or unparsable versions are never "older" — converge, don't fight.
 fn core_is_older(advertised: Option<&str>) -> bool {
-    let ours_raw = engram_core::advertised_version();
-    let (Some(theirs), Some(ours)) = (advertised.and_then(parse_semver), parse_semver(&ours_raw))
-    else {
+    version_precedes(advertised, &engram_core::advertised_version())
+}
+
+/// The pure comparison behind [`core_is_older`]: strictly older, and ONLY
+/// when both sides parse — a version-silent or unparsable core (a dev build,
+/// a corrupt /health) is converged on, never fought, and an unparsable SELF
+/// never claims to be newer than anything.
+fn version_precedes(theirs: Option<&str>, ours: &str) -> bool {
+    let (Some(t), Some(o)) = (theirs.and_then(parse_semver), parse_semver(ours)) else {
         return false;
     };
-    theirs < ours
+    t < o
 }
 
 /// The version handshake (issue #8's binary-update tail): a healthy machine
@@ -2065,9 +2071,15 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     .filter(|a| !wired.contains(a))
                     .collect();
                 if !unwired.is_empty() {
+                    // The installer deliberately never wires anything (it is
+                    // often run from $HOME) — this nudge, with the exact
+                    // command for exactly what was found, is the onboarding
+                    // path instead.
                     eprintln!(
-                        "detected {} without Engram wiring — run `engram-alpha setup` in this repo to connect them",
-                        unwired.join(", ")
+                        "found {} — installed but not connected to Engram in this repo; wire {}: engram-alpha setup --cli {}",
+                        unwired.join(", "),
+                        if unwired.len() == 1 { "it" } else { "them" },
+                        unwired.join(",")
                     );
                 }
             }
@@ -2773,5 +2785,54 @@ fn ensure_gitignored(db: &Path) {
     next.push('\n');
     if std::fs::write(gitignore, next).is_ok() {
         tracing::info!("added {entry} to .gitignore");
+    }
+}
+
+#[cfg(test)]
+mod version_handshake_tests {
+    use super::{parse_semver, version_precedes};
+
+    #[test]
+    fn parse_semver_accepts_release_shapes_and_ignores_suffixes() {
+        assert_eq!(parse_semver("0.9.0"), Some((0, 9, 0)));
+        assert_eq!(parse_semver("v0.9.0"), Some((0, 9, 0)));
+        assert_eq!(parse_semver(" 10.20.30 "), Some((10, 20, 30)));
+        // Pre-release / build suffixes never change the comparison key.
+        assert_eq!(parse_semver("0.9.0-rc1"), Some((0, 9, 0)));
+        assert_eq!(parse_semver("0.9.0+build5"), Some((0, 9, 0)));
+        assert_eq!(parse_semver("1.2.3.4"), Some((1, 2, 3)));
+    }
+
+    #[test]
+    fn parse_semver_refuses_what_it_cannot_read() {
+        for v in ["", "dev", "0.9", "0", "a.b.c", "0.9.x", "-", "…"] {
+            assert_eq!(parse_semver(v), None, "{v:?} must not parse");
+        }
+    }
+
+    /// The unsuccessful-handshake matrix: every ambiguous shape converges
+    /// (false) — the takeover fires ONLY on a provable strictly-older core.
+    #[test]
+    fn handshake_fires_only_on_a_provably_older_core() {
+        // The one true positive.
+        assert!(version_precedes(Some("0.8.13"), "0.9.0"));
+        assert!(
+            version_precedes(Some("0.9.9"), "0.10.0"),
+            "numeric, not lexicographic"
+        );
+        // Equal or newer: converge / never downgrade.
+        assert!(!version_precedes(Some("0.9.0"), "0.9.0"));
+        assert!(!version_precedes(Some("99.0.0"), "0.9.0"));
+        // A version-silent core (pre-0.8.13 /health) is never "older".
+        assert!(!version_precedes(None, "0.9.0"));
+        // An unparsable advertised version (dev build, corrupt health).
+        assert!(!version_precedes(Some("dev"), "0.9.0"));
+        assert!(!version_precedes(Some(""), "0.9.0"));
+        assert!(!version_precedes(Some("0.9"), "0.9.0"));
+        // An unparsable SELF never claims seniority over anyone.
+        assert!(!version_precedes(Some("0.0.1"), "dev"));
+        assert!(!version_precedes(Some("0.0.1"), ""));
+        // Suffixes collapse to the same key — an rc never fights its release.
+        assert!(!version_precedes(Some("0.9.0-rc1"), "0.9.0"));
     }
 }

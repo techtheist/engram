@@ -7,21 +7,25 @@ repository.
 
 ## Install
 
-From your project's root:
-
 ```sh
 curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh | sh
 ```
 
 The installer downloads the binary for your platform (checksum-verified,
-into `~/.local/bin`), wires the repository for the assistants it detects, and
-git-ignores `.engram/`. Then:
+into `~/.local/bin`) — and deliberately nothing more: it never writes a
+config unasked, so it is safe to run from anywhere, your home directory
+included. Wiring is your own explicit step, from the project you mean:
 
 ```sh
+cd your-project
+engram-alpha setup     # auto-detects your installed assistants and wires them
 engram-alpha serve
 ```
 
-and open `http://127.0.0.1:8787` — or use the
+(`serve` also reminds you: any assistant it detects that isn't wired to the
+repo yet gets a ready-to-paste `engram-alpha setup --cli …` line.)
+
+Then open `http://127.0.0.1:8787` — or use the
 [JetBrains plugin](https://plugins.jetbrains.com/plugin/32654-engram) or the
 VS Code extension
 ([VS Marketplace](https://marketplace.visualstudio.com/items?itemName=techtheist.engram-alpha)
@@ -56,11 +60,12 @@ Setup lives in the binary. `engram-alpha setup` auto-detects which assistants
 are installed and wires them; `--cli` picks explicitly (comma-separated, or
 `all`), and `--skill relaxed|normal|aggressive` sets the
 [capture intensity](./memory-model.md#capture-modes) for any assistant. The
-installer forwards both flags:
+installer forwards both flags — passing `--cli` there is the one way to have
+the install wire anything (it opts the current directory in):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh | sh -s -- --cli codex,gemini --skill normal
-# later, from any repo:
+# the usual path — from any repo:
 engram-alpha setup                          # auto-detect and wire
 engram-alpha setup --cli kilo --skill aggressive
 ```

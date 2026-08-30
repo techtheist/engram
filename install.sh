@@ -1,23 +1,24 @@
 #!/usr/bin/env sh
-# Engram installer (Linux, macOS, and WSL) — fetches the binary, then hands
-# repo wiring to the binary itself:
+# Engram installer (Linux, macOS, and WSL) — fetches the binary. Nothing else:
 #
 #   curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh | sh
 #
-# Run it from your project's root. It downloads the platform binary from
-# GitHub Releases (checksum-verified) into ~/.local/bin and then runs
-# `engram-alpha setup`, which auto-detects your installed AI assistants and wires
-# MCP + capture instructions for them (all assets embedded in the binary).
+# It downloads the platform binary from GitHub Releases (checksum-verified)
+# into ~/.local/bin. Repo wiring is a separate, deliberate step you run from
+# your project's root — `engram-alpha setup` (and `serve` reminds you which
+# detected assistants aren't wired yet). Writing configs is opt-in because
+# this script is often run from $HOME, where auto-wiring would scatter
+# project files and touch global assistant configs unasked.
 #
 # Native Windows: use install.ps1 instead. Inside WSL this script installs
 # the Linux binary — the daemon, the assistants, and the graph all stay on
 # the WSL side, sharing one filesystem.
 #
-# Options (forwarded to `engram-alpha setup`):
-#   --cli claude|codex|gemini|opencode|kilo|antigravity|all
-#                    assistants to wire (comma-separated; default: auto-detect)
-#   --skill relaxed|normal|aggressive   capture intensity (default: relaxed)
-#   --bin-only                          install the binary, skip repo wiring
+# Options (asking for wiring here IS the opt-in — forwarded to `engram-alpha setup`):
+#   --cli claude|codex|gemini|opencode|kilo|antigravity|bob|windsurf|devin|all
+#                    wire these assistants in the CURRENT directory (comma-separated)
+#   --skill relaxed|normal|aggressive   capture intensity for --cli (default: relaxed)
+#   --bin-only                          accepted for compatibility (now the default)
 # Environment:
 #   ENGRAM_VERSION   pin a release tag (default: latest)
 #   ENGRAM_BIN_DIR   install directory (default: ~/.local/bin)
@@ -107,24 +108,25 @@ if [ -x "$OLD" ] && "$OLD" --help 2>/dev/null | grep -q "Durable graph memory"; 
     say "removed the pre-rename engram binary (the product binary is engram-alpha since v0.4.0)"
 fi
 
-[ "$BIN_ONLY" = 1 ] && { say "done (binary only)"; exit 0; }
-
-# ---- repo wiring: the binary owns it -----------------------------------------
-if [ -n "$CLI" ]; then
+# ---- repo wiring: opt-in only (the binary owns it) ---------------------------
+# An explicit --cli is the user asking for wiring right here; otherwise the
+# installer stops at the binary — configs are only ever written by a command
+# the user runs themselves, from the repo they mean.
+if [ "$BIN_ONLY" = 0 ] && [ -n "$CLI" ]; then
     "$BIN_DIR/engram-alpha" setup --cli "$CLI" --skill "$SKILL"
-else
-    "$BIN_DIR/engram-alpha" setup --skill "$SKILL" ||
-        say "no assistants detected — wire one explicitly: engram-alpha setup --cli claude"
 fi
 
 cat <<DONE
 
-Next steps:
-  1. start the daemon in this repo:   engram-alpha serve
-     (first run downloads the local embedding model, ~30 MB)
-  2. open the pane:                   http://127.0.0.1:8787
+Next steps (from your project's root):
+  1. wire your assistants:            engram-alpha setup
+       (auto-detects what's installed; or pick: engram-alpha setup --cli claude,codex)
+  2. start the daemon:                engram-alpha serve
+     (first run downloads the local embedding model, ~30 MB; serve also
+      tells you which detected assistants aren't wired yet)
+  3. open the pane:                   http://127.0.0.1:8787
        JetBrains:  https://plugins.jetbrains.com/plugin/32654-engram
        VS Code:    https://marketplace.visualstudio.com/items?itemName=techtheist.engram-alpha
-  3. restart your assistant's session. All wired assistants share this graph.
+  4. restart your assistant's session. All wired assistants share this graph.
   Later: update with \`engram-alpha update\`.
 DONE

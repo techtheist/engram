@@ -1,16 +1,18 @@
-# Engram installer for native Windows — fetches engram-alpha.exe, then hands repo
-# wiring to the binary itself:
+# Engram installer for native Windows — fetches engram-alpha.exe. Nothing else:
 #
 #   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/techtheist/engram/main/install.ps1 | iex"
 #
-# Run it from your project's root. Downloads the Windows binary from GitHub
-# Releases (checksum-verified) into %LOCALAPPDATA%\Engram\bin, adds it to
-# your user PATH, and runs `engram-alpha setup` (auto-detects installed AI
-# assistants; wiring assets are embedded in the binary).
+# Downloads the Windows binary from GitHub Releases (checksum-verified) into
+# %LOCALAPPDATA%\Engram\bin and adds it to your user PATH. Repo wiring is a
+# separate, deliberate step you run from your project's root —
+# `engram-alpha setup` (and `serve` reminds you which detected assistants
+# aren't wired yet). Writing configs is opt-in because this script is often
+# run from the home directory, where auto-wiring would scatter project files
+# and touch global assistant configs unasked.
 #
-# With parameters (download once, then run):
+# With parameters (passing -Cli IS the wiring opt-in; download once, then run):
 #   .\install.ps1 -Cli codex,gemini -Skill normal
-#   .\install.ps1 -BinOnly
+#   .\install.ps1 -BinOnly    # accepted for compatibility (now the default)
 # Environment: ENGRAM_VERSION pins a release tag; ENGRAM_BIN_DIR overrides
 # the install directory.
 #
@@ -76,18 +78,19 @@ if (Test-Path $old) {
     }
 }
 
-if ($BinOnly) { Say "done (binary only)"; exit 0 }
-
-$setupArgs = @("setup", "--skill", $Skill)
-if ($Cli) { $setupArgs += @("--cli", $Cli) }
-& $exe @setupArgs
-if ($LASTEXITCODE -ne 0) {
-    Say "no assistants detected - wire one explicitly: engram-alpha setup --cli claude"
+# Repo wiring is opt-in only: an explicit -Cli is the user asking for it here;
+# otherwise the installer stops at the binary — configs are only ever written
+# by a command the user runs themselves, from the repo they mean.
+if (-not $BinOnly -and $Cli) {
+    & $exe setup --cli $Cli --skill $Skill
 }
 
 Write-Host ""
-Write-Host "Next steps:"
-Write-Host "  1. start the daemon in this repo:   engram-alpha serve"
-Write-Host "     (first run downloads the local embedding model, ~30 MB)"
-Write-Host "  2. open the pane:                   http://127.0.0.1:8787"
-Write-Host "  3. restart your assistant's session. Later: engram-alpha update"
+Write-Host "Next steps (from your project's root):"
+Write-Host "  1. wire your assistants:            engram-alpha setup"
+Write-Host "       (auto-detects what's installed; or pick: engram-alpha setup --cli claude,codex)"
+Write-Host "  2. start the daemon:                engram-alpha serve"
+Write-Host "     (first run downloads the local embedding model, ~30 MB; serve also"
+Write-Host "      tells you which detected assistants aren't wired yet)"
+Write-Host "  3. open the pane:                   http://127.0.0.1:8787"
+Write-Host "  4. restart your assistant's session. Later: engram-alpha update"
