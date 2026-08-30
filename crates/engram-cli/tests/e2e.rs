@@ -276,3 +276,89 @@ fn stability_churn_and_concurrent_serves() {
         .count();
     assert_eq!(twins, 0, "no split-brain second core on nearby ports");
 }
+
+/// The UNSUCCESSFUL handshake, converge branch: a core whose /health
+/// advertises an unparsable version (a dev build; pre-0.8.13 cores are
+/// version-silent, same branch) must be converged on — never killed, never
+/// fought. "Unknown is never older" is what keeps a mixed install from
+/// restart-looping the machine core.
+#[test]
+fn unparsable_core_version_converges_instead_of_fighting() {
+    let sb = Sandbox::new("verdev", 19340);
+    let proj = sb.project("alpha");
+
+    let out = sb
+        .cmd(&["serve", "--fake-embeddings"], &proj)
+        .env("ENGRAM_TEST_VERSION", "dev")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "dev-version serve failed: {out:?}");
+    let port = sb.wait_core_healthy(CORE_HEALTH_WINDOW);
+    assert_eq!(health_version(port).as_deref(), Some("dev"));
+    let pid = sb.core_pid().unwrap();
+
+    // A release binary arrives. It cannot prove the core older — converge.
+    let out = sb
+        .cmd(&["serve", "--fake-embeddings"], &proj)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "release serve failed: {out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("stopped an older engram core"),
+        "no takeover on an unprovable version: {stderr}"
+    );
+    assert_eq!(sb.core_pid(), Some(pid), "same core, no restart");
+    assert_eq!(
+        health_version(port).as_deref(),
+        Some("dev"),
+        "the dev core is untouched"
+    );
+}
+
+/// The UNSUCCESSFUL handshake, no-core branch: a corrupt or stale
+/// ~/.engram/daemon.json must read as "no machine core" — serve spawns a
+/// fresh one and rewrites the advertisement, instead of erroring out or
+/// trusting the garbage.
+#[test]
+fn corrupt_or_stale_daemon_file_never_blocks_serve() {
+    let sb = Sandbox::new("badadvert", 19360);
+    let proj = sb.project("alpha");
+
+    // Corrupt: not JSON at all.
+    std::fs::create_dir_all(&sb.home).unwrap();
+    std::fs::write(sb.home.join("daemon.json"), "{ not json").unwrap();
+    let out = sb
+        .cmd(&["serve", "--fake-embeddings"], &proj)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "serve over corrupt advert: {out:?}");
+    let port = sb.wait_core_healthy(CORE_HEALTH_WINDOW);
+    let pid = sb.core_pid().unwrap();
+    let stop = sb.cmd(&["stop"], &proj).output().unwrap();
+    assert!(stop.status.success());
+    assert!(!pid_alive(pid));
+
+    // Stale: valid JSON advertising a dead port. Every reader
+    // health-verifies, so this is "no core" too.
+    std::fs::write(
+        sb.home.join("daemon.json"),
+        format!("{{\"port\": {port}, \"pid\": 4194000, \"version\": \"0.0.1\"}}"),
+    )
+    .unwrap();
+    let out = sb
+        .cmd(&["serve", "--fake-embeddings"], &proj)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "serve over stale advert: {out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("stopped an older engram core"),
+        "a dead core can't be 'retired' — it just isn't there: {stderr}"
+    );
+    let port2 = sb.wait_core_healthy(CORE_HEALTH_WINDOW);
+    assert!(
+        http_get(port2, "/health").is_some(),
+        "a fresh core answers where the stale advert pointed"
+    );
+}
