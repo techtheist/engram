@@ -1,11 +1,11 @@
 # The memory model
 
 Engram stores *reasoning*, not code structure: why things were decided, what
-went wrong, what to watch out for. The model is deliberately small — eight
+went wrong, what to watch out for. The model is deliberately small — nine
 node types, seven edge verbs, three durability classes — so that both you and
 an AI assistant can hold all of it in mind.
 
-## The eight node types
+## The nine node types
 
 Each type answers a different question about the project:
 
@@ -19,14 +19,15 @@ Each type answers a different question about the project:
 | **Insight** | A non-obvious realization worth carrying forward |
 | **Intent** | A TODO or deferred idea that should survive the session |
 | **Anchor** | A code subject other nodes attach to — *"the RAG layer"* |
+| **Tombstone** | A record that knowledge was deliberately removed — *"we dropped the vendor SDK, don't resurrect it"* |
 
 The Problem → Resolution pair is where memory pays off most visibly: the
 second time your assistant meets a flaky build step or a library quirk, the
 graph already holds the fix from last time, and it applies it instead of
 rediscovering it.
 
-Your assistant never invents a ninth type — a write can only use a type the
-graph declares. These eight are the shipped default, and they're what most
+Your assistant never invents a tenth type — a write can only use a type the
+graph declares. These nine are the shipped default, and they're what most
 projects should keep; if a note doesn't fit one of them, that's usually a
 sign it doesn't belong in reasoning memory. If your project genuinely wants a
 different vocabulary, the whole set is yours to reshape — see

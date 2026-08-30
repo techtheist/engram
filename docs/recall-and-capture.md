@@ -62,6 +62,19 @@ the [evaluation harness](../eval/README.md)'s floor sweep, and both are
 per-graph policy (`delivery_floor`, `weak_evidence_top`) if yours needs
 different ones.
 
+Search also speaks **time** (0.8.7): `after`/`before` take days, ISO
+instants, or relative phrases the daemon resolves ("last week", "2 hours
+ago"), `during_version` scopes to when a recorded working version was
+current, and `order` re-reads the delivered set chronologically or
+newest-first. By default the window reads `created_at` — when the knowledge
+was captured. Since 0.9.0 a graph that declares
+[date-kind custom fields](./customization.md#custom-fields) can aim the same
+window at its **event clock** instead: `date_field: "event_date"` filters on
+the field's value, and a `"from..to"` pair
+(`"effective_from..effective_to"`) matches notes whose validity span
+overlaps the window — bitemporal search for historic imports, where
+everything was captured today but happened over years.
+
 Since 0.8.10 delivery is also **session-diverse**: when more strong candidates
 survive the floor than fit the result list, each additional hit from a session
 already holding a slot is demoted a few rank positions, so one session's

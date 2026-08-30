@@ -1,6 +1,6 @@
 # Customization
 
-Engram ships with an opinionated memory model — eight node types, seven edge
+Engram ships with an opinionated memory model — nine node types, seven edge
 verbs, tuned trust and decay numbers. From v0.7.0 onward, none of it is
 fixed. Everything the engine treats as *meaning* is per-graph configuration,
 stored inside the graph itself and edited in one place: **Settings → Graph
@@ -53,6 +53,7 @@ The roles you can assign:
 |---|---|---|
 | **worklist** | open/resolved lifecycle; lives in the brief's worklist, never decays while open | Problem, Intent |
 | **anchor** | a code subject; carries `code_refs`, sits out the conflict scan, renders muted | Anchor |
+| **tombstone** | a deletion marker: records deliberately removed knowledge so it isn't re-learned; sits out the conflict scan, and hard delete offers to mint one | Tombstone |
 | **highlight** | may be accented on the canvas (off ⇒ always muted) | most types |
 | **rank prior** | a small ranking nudge in search (never touches trust) | Principle, Caution |
 
@@ -81,18 +82,53 @@ strand knowledge.)
 
 ## Presets
 
-The redactor's preset shelf swaps the whole ontology at once. Three ship:
+The redactor's preset shelf swaps the whole ontology at once. Four ship:
 
-- **Engram** — the default 8-type product-building set. This is what every
+- **Engram** — the default 9-type product-building set. This is what every
   graph is born with.
 - **Research** — for investigation-shaped work: Claim, Method, Question,
-  Finding, Source, Task, with `refutes` carrying the contradiction role.
+  Finding, Source, Task, Retraction, with `refutes` carrying the
+  contradiction role.
 - **Minimal** — three types (Rule, Note, Todo) for a graph that wants almost
   no ceremony.
+- **General** — an open experimental set for saving almost anything: Fact,
+  Note, Idea, Task, Reference, Tombstone — designed to pair with custom
+  fields.
 
 Applying a preset replaces types, verbs, policy, and brief settings together.
 On a graph that already holds nodes it only lands cleanly when the type names
 line up (or after you've retyped), for the same no-stranding reason as above.
+
+## Custom fields
+
+Since 0.9.0 a graph can declare **custom fields** — your own first-class
+values on every note, beside the built-ins (`title`, `tags`, `created_at`,
+…). The redactor's **Custom fields** section defines them, and includes a
+built-in-fields reference so you can see the whole picture; a custom name
+can never shadow a built-in one (Save refuses the collision).
+
+Each field has:
+
+- **Name** — lowercase snake_case, the JSON key everywhere the node travels.
+- **Kind** — `text`, `number`, `bool`, `date`, `enum` (with its allowed
+  values), or `url`. Values are validated at write time, on every surface —
+  the assistant's writes included. A `date` field is also a search clock:
+  `date_field` on search aims the `after`/`before` window at it (or at a
+  `from..to` pair with overlap semantics) instead of `created_at` — see
+  [Recall & capture](./recall-and-capture.md#search-that-carries-its-context).
+- **Required** — writes of applicable types that omit the field are refused,
+  with an error that teaches the full roster so the assistant self-corrects.
+- **Applies to** — limit the field to certain types, or leave it on all.
+- **Indexed** — the value joins search (embedded with the note and in the
+  keyword channel). Tepin-backed graphs only.
+- **In brief** — render `name: value` on the note's brief lines.
+
+The assistant passes values as `"fields": {"name": value}` on
+`add_note`/`update_node` (update merges; a `null` value deletes a key), and
+learns a graph's fields from `describe_ontology`. Defining or reshaping the
+fields themselves stays a user gesture — the pane, or
+`PUT /config` / `POST /config/rename-field` over HTTP. Renaming a field is a
+migration: every stored value moves with the name, like renaming a type.
 
 ## Tuning trust, decay, and thresholds
 

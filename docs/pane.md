@@ -6,19 +6,18 @@ every review and repair gesture lives. It runs in the browser at
 `http://127.0.0.1:8787`, inside JetBrains IDEs (tool window or editor tab),
 and in VS Code's secondary sidebar.
 
-## Four layouts
+## Three layouts
 
-One shape can't serve every question, so the canvas ships four:
+One shape can't serve every question, so the canvas ships three:
 
-| **Skyline** — layered left→right, packed rows | **Nebula** — one force-directed cloud |
+| **Skyline** — layered left→right, packed rows | **Archipelago** — community islands, physics inside |
 |---|---|
-| ![Skyline layout](../.screenshots/layout-skyline-example.png) | ![Nebula layout](../.screenshots/layout-nebula-example.png) |
-| **Archipelago** — community islands, physics inside | **Orbit** — hubs with satellites in rings |
-| ![Archipelago layout](../.screenshots/layout-archipelago-example.png) | ![Orbit layout](../.screenshots/layout-orbit-example.png) |
+| ![Skyline layout](../.screenshots/layout-skyline-example.png) | ![Archipelago layout](../.screenshots/layout-archipelago-example.png) |
+| **Orbit** — hubs with satellites in rings | |
+| ![Orbit layout](../.screenshots/layout-orbit-example.png) | |
 
-Skyline reads like a history, Nebula shows what clusters, Archipelago
-separates concerns into islands, Orbit puts the load-bearing nodes in the
-middle of their neighborhoods. Themes match where you work (Engram Purple,
+Skyline reads like a history, Archipelago separates concerns into islands,
+Orbit puts the load-bearing nodes in the middle of their neighborhoods. Themes match where you work (Engram Purple,
 JetBrains dark/light, VS Code dark/light), a click-to-center minimap handles
 big graphs, and a health strip keeps the counts that matter — suspected
 conflicts, stale nodes, provisional writes — in the corner of your eye.
@@ -97,14 +96,18 @@ The graph is yours, not a read-only visualization of what the AI did.
 <img src="../.screenshots/engram-alpha-add-memory-feature.png" width="198" alt="The New memory dialog">
 
 - **Create** nodes from the **+ New** drawer — type, title, markdown body,
-  durability, tags.
+  durability, tags, and any [custom fields](./customization.md#custom-fields)
+  the graph declares (required ones marked).
 - **Link** by dragging from one node's handle to another; a dialog asks
   which of the seven verbs the connection means. If no verb fits, there is
   no edge to create.
-- **Edit, retype, re-anchor** any node in place; retype or delete edges from
-  the node's connection list.
+- **Edit, retype, re-anchor** any node in place — custom field values
+  included; retype or delete edges from the node's connection list.
 - **Hard-delete is user-only** by design: the assistant can supersede
-  knowledge, but only you can destroy it.
+  knowledge, but only you can destroy it. Since 0.9.0 the delete confirm
+  offers to **leave a Tombstone** (on by default, with an optional reason) —
+  a record of what was removed and why, so no future session innocently
+  re-learns it.
 
 ## The Review drawer
 
@@ -148,4 +151,9 @@ store backend and integrity, the loaded
 Since 0.8.8 it also lists the [processes](./runtime.md): the machine core
 (pid, version, uptime) and every connected MCP client with its project
 folder and connection age, from the same live census `engram-alpha status`
-reads — plus whether the models are loaded or idle-unloaded.
+reads — plus whether the models are loaded or idle-unloaded. Since 0.9.0 it
+carries the two **At-rest encryption** switches (encrypt graph — off by
+default; encrypt history — on by default): flipping one migrates the whole
+store with a progress readout, and each store's recorded state is shown
+beside its switch. See [SECURITY.md](../SECURITY.md) for what sealing does
+and doesn't protect.

@@ -194,14 +194,15 @@ per-assistant wiring, and updating: [Getting started](./docs/getting-started.md)
 
 ## The memory model
 
-Eight node types (Principle, Decision, Caution, Problem, Resolution,
-Insight, Intent, Anchor) and seven edge verbs that read as sentences — a
-Decision **because** a Principle, a Resolution **answers** a Problem, the
-newer **replaces** the older, two claims **conflict-with** each other. Three
+Nine node types (Principle, Decision, Caution, Problem, Resolution,
+Insight, Intent, Anchor, Tombstone) and seven edge verbs that read as
+sentences — a Decision **because** a Principle, a Resolution **answers** a
+Problem, the newer **replaces** the older, two claims **conflict-with**
+each other, a Tombstone records what was deliberately removed. Three
 capture intensities (`relaxed` / `normal` / `aggressive`) set how much your
 assistant writes. It's the shipped default, and the one most projects should
-keep — but every part of it is [yours to reshape](./docs/customization.md).
-→ [The memory model](./docs/memory-model.md)
+keep — but every part of it is [yours to reshape](./docs/customization.md),
+custom fields included. → [The memory model](./docs/memory-model.md)
 
 ## Documentation
 

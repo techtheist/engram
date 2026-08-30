@@ -20,10 +20,10 @@ automatically.
   documents, keyword index, and vectors together. New graphs are created on
   TepinDB by default.
 
-The roadmap is a staged sunset: today migration is opt-in; a later 0.7
-release migrates by default (with the SQLite file kept as backup); 0.8 drops
-the SQLite backend for new writes while still reading old files to migrate
-stragglers.
+The sunset is nearly complete: a repository still on `graph.db` migrates
+itself automatically at the daemon's next open (the SQLite file stays
+behind as your backup), and every new graph is born on TepinDB. The SQLite
+driver remains only as a migration source.
 
 ## Migrating a repository
 
@@ -67,6 +67,16 @@ through TepinDB's in-driver sidecar, so `npx tepindb` — or any other tool —
 can inspect a live store without stopping anything. (Semantic search from
 the slim `npx` client is not wired yet; keyword queries and document reads
 are.)
+
+One caveat since 0.9.0: raw-file inspection reads plaintext only while the
+store is unencrypted. History stores are sealed at rest by default, and the
+curated graph can be sealed too (the **At-rest encryption** switches in the
+pane's System panel) — a sealed store still answers every pane, search, and
+MCP surface normally (the daemon holds the key), but `npx tepindb` shows
+ciphertext for titles, bodies, and the other sealed members. Each store
+records its own state in its meta, search ranking is identical either way
+(blind keyword index), and exports always come out as plaintext. Details:
+[SECURITY.md](../SECURITY.md).
 
 ## The single-owner model
 
