@@ -57,6 +57,20 @@ fn say(msg: &str) {
     println!("==> {msg}");
 }
 
+/// A JSON string literal, quotes included. Every hand-rolled JSON writer and
+/// printed snippet goes through this: a Windows binary path (`C:\Users\…`)
+/// interpolated raw into `"…"` is invalid JSON (`\U` is an escape).
+fn json_str(s: &str) -> String {
+    serde_json::Value::String(s.to_string()).to_string()
+}
+
+/// A TOML basic-string literal, quotes included — same Windows-path hazard
+/// as [`json_str`]: raw `C:\Users\…` inside `"…"` is a TOML unicode-escape
+/// error (the issue a Codex field test hit).
+fn toml_str(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 /// Whether the path itself is a symlink (never follows it).
 pub(crate) fn is_symlink(p: &Path) -> bool {
     fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink())
@@ -219,7 +233,7 @@ impl Setup {
                     && t.split('"').nth(1).is_some_and(is_prerename_bin)
                 {
                     repaired = true;
-                    return format!("command = \"{}\"", self.bin);
+                    return format!("command = {}", toml_str(&self.bin));
                 }
                 line.to_string()
             })
@@ -234,7 +248,7 @@ impl Setup {
     /// launch cwd is unverified (IDEs mostly) keep the explicit --db.
     fn mcp_args_json(&self, with_db: bool) -> String {
         if with_db {
-            format!("[\"mcp\", \"--db\", \"{}\"]", self.db)
+            format!("[\"mcp\", \"--db\", {}]", json_str(&self.db))
         } else {
             "[\"mcp\"]".to_string()
         }
@@ -242,8 +256,8 @@ impl Setup {
 
     fn mcp_snippet(&self, with_db: bool) -> String {
         format!(
-            "\"engram\": {{ \"command\": \"{}\", \"args\": {} }}",
-            self.bin,
+            "\"engram\": {{ \"command\": {}, \"args\": {} }}",
+            json_str(&self.bin),
             self.mcp_args_json(with_db)
         )
     }
@@ -277,8 +291,8 @@ impl Setup {
         fs::write(
             &path,
             format!(
-                "{{\n  \"mcpServers\": {{\n    \"engram\": {{\n      \"command\": \"{}\",\n      \"args\": {}\n    }}\n  }}\n}}\n",
-                self.bin,
+                "{{\n  \"mcpServers\": {{\n    \"engram\": {{\n      \"command\": {},\n      \"args\": {}\n    }}\n  }}\n}}\n",
+                json_str(&self.bin),
                 self.mcp_args_json(with_db)
             ),
         )?;
@@ -421,8 +435,8 @@ impl Setup {
             }
             let mut s = current;
             s.push_str(&format!(
-                "\n# Engram — durable project memory (db resolves per-repo against the cwd)\n[mcp_servers.engram]\ncommand = \"{}\"\nargs = [\"mcp\"]\n",
-                self.bin
+                "\n# Engram — durable project memory (db resolves per-repo against the cwd)\n[mcp_servers.engram]\ncommand = {}\nargs = [\"mcp\"]\n",
+                toml_str(&self.bin)
             ));
             fs::write(&path, s)?;
             say(
@@ -753,16 +767,18 @@ impl Setup {
                     "{label}: {rel} exists — add this to its \"mcp\" block manually:"
                 ));
                 println!(
-                    "    \"engram\": {{ \"type\": \"local\", \"command\": [\"{}\", \"mcp\", \"--db\", \"{}\"], \"enabled\": true }}",
-                    self.bin, self.db
+                    "    \"engram\": {{ \"type\": \"local\", \"command\": [{}, \"mcp\", \"--db\", {}], \"enabled\": true }}",
+                    json_str(&self.bin),
+                    json_str(&self.db)
                 );
             }
         } else {
             fs::write(
                 &path,
                 format!(
-                    "{{\n  \"mcp\": {{\n    \"engram\": {{\n      \"type\": \"local\",\n      \"command\": [\"{}\", \"mcp\", \"--db\", \"{}\"],\n      \"enabled\": true\n    }}\n  }}\n}}\n",
-                    self.bin, self.db
+                    "{{\n  \"mcp\": {{\n    \"engram\": {{\n      \"type\": \"local\",\n      \"command\": [{}, \"mcp\", \"--db\", {}],\n      \"enabled\": true\n    }}\n  }}\n}}\n",
+                    json_str(&self.bin),
+                    json_str(&self.db)
                 ),
             )?;
             say(&format!("{label}: wrote {rel}"));
@@ -819,6 +835,71 @@ mod tests {
             "other sections untouched"
         );
         assert!(s.repaired_codex_toml(&fixed).is_none(), "idempotent");
+    }
+
+    /// The Windows field bug (2026-08-30): a raw `C:\Users\…` interpolated
+    /// into a double-quoted TOML or JSON string is an invalid escape (`\U`),
+    /// and Codex refused its whole config. Every writer and printed snippet
+    /// must emit paths through an escaping encoder, and the emitted document
+    /// must parse back to the exact path.
+    #[test]
+    fn windows_paths_survive_every_config_encoding() {
+        let bin = r"C:\Users\apl20\AppData\Local\Engram\bin\engram-alpha.exe";
+        let db = r"C:\Users\apl20\proj\.engram\graph.tepin";
+        let tmp = std::env::temp_dir().join(format!("engram-setup-win-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        let s = Setup {
+            repo: tmp.clone(),
+            bin: bin.into(),
+            db: db.into(),
+            variant: "relaxed".into(),
+            mcp_only: true,
+        };
+
+        // The string encoders round-trip through real parsers.
+        assert_eq!(
+            serde_json::from_str::<String>(&json_str(bin)).unwrap(),
+            bin,
+            "json_str must produce a parseable JSON literal"
+        );
+        assert_eq!(
+            toml_str(bin),
+            r#""C:\\Users\\apl20\\AppData\\Local\\Engram\\bin\\engram-alpha.exe""#,
+            "toml_str escapes every backslash"
+        );
+
+        // mcpServers writers (claude/gemini/devin/bob shape): the written
+        // file is valid JSON and the paths come back byte-identical.
+        s.write_mcp_servers("mcp.json", "test", true).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(tmp.join("mcp.json")).unwrap())
+                .expect("written mcpServers config parses");
+        assert_eq!(v["mcpServers"]["engram"]["command"], bin);
+        assert_eq!(v["mcpServers"]["engram"]["args"][2], db);
+
+        // opencode/kilo shape.
+        s.wire_mcp_array("opencode.json", "test").unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(tmp.join("opencode.json")).unwrap())
+                .expect("written mcp-array config parses");
+        assert_eq!(v["mcp"]["engram"]["command"][0], bin);
+        assert_eq!(v["mcp"]["engram"]["command"][3], db);
+
+        // The printed manual-add snippet is itself valid JSON.
+        let snippet = format!("{{{}}}", s.mcp_snippet(true));
+        let v: serde_json::Value = serde_json::from_str(&snippet).expect("snippet parses as JSON");
+        assert_eq!(v["engram"]["command"], bin);
+
+        // The codex TOML repair writes an escaped command line.
+        let raw = "[mcp_servers.engram]\ncommand = \"/old/engram\"\n";
+        let fixed = s.repaired_codex_toml(raw).unwrap();
+        assert!(
+            fixed.contains(&format!("command = {}", toml_str(bin))),
+            "repair must escape the Windows path: {fixed}"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     #[test]
