@@ -1574,7 +1574,15 @@ impl Engine {
     /// Add a node and embed it (full-field composition) in one step. Trust is computed
     /// from timestamps at read time; user-authored nodes are approved by
     /// construction (the store stamps `approved_at`).
-    pub fn add_node(&self, mut n: NewNode) -> Result<Node> {
+    pub fn add_node(&self, n: NewNode) -> Result<Node> {
+        self.add_node_opts(n, true)
+    }
+
+    /// `enforce_required_fields: false` is reserved for engine-minted notes
+    /// (the tombstone a hard delete leaves): a required custom field is a
+    /// contract for authors, and must never be able to veto a user's delete.
+    /// Provided values are still validated either way.
+    fn add_node_opts(&self, mut n: NewNode, enforce_required_fields: bool) -> Result<Node> {
         self.check_node_type(&n.node_type)?;
         let cfg = self.store.config();
         // Worklist-role types are live items from birth — the write boundary
@@ -1602,7 +1610,7 @@ impl Engine {
         if n.fields.as_ref().is_some_and(|f| f.is_empty()) {
             n.fields = None;
         }
-        self.check_fields(&n.node_type, n.fields.as_ref())?;
+        self.check_fields_ext(&n.node_type, n.fields.as_ref(), enforce_required_fields)?;
         let node = self.store.add_node(n)?;
         self.embed_node(&node)?;
         self.audit_node("created", None, Some(&node))?;
@@ -1639,6 +1647,15 @@ impl Engine {
         &self,
         node_type: &NodeType,
         fields: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) -> Result<()> {
+        self.check_fields_ext(node_type, fields, true)
+    }
+
+    fn check_fields_ext(
+        &self,
+        node_type: &NodeType,
+        fields: Option<&serde_json::Map<String, serde_json::Value>>,
+        enforce_required: bool,
     ) -> Result<()> {
         let cfg = self.store.config();
         let empty = serde_json::Map::new();
@@ -1698,7 +1715,7 @@ impl Engine {
         }
         let missing: Vec<&str> = applicable
             .iter()
-            .filter(|f| f.required && !fields.contains_key(&f.name))
+            .filter(|f| enforce_required && f.required && !fields.contains_key(&f.name))
             .map(|f| f.name.as_str())
             .collect();
         if !missing.is_empty() {
@@ -1942,21 +1959,26 @@ impl Engine {
             }
             _ => {}
         }
-        let tombstone = self.add_node(NewNode {
-            node_type: NodeType::parse(&ts_type)?,
-            title: format!("Removed: {}", victim.title),
-            body: Some(body),
-            created_at: None,
-            durability: ts_def.durability,
-            source: Source::User,
-            session_id: None,
-            status: None,
-            code_refs: Vec::new(),
-            tags: Vec::new(),
-            version: None,
-            props: None,
-            fields: None,
-        })?;
+        // The mint skips required-field enforcement: deletion isn't
+        // authoring, and field config must never veto a user's delete.
+        let tombstone = self.add_node_opts(
+            NewNode {
+                node_type: NodeType::parse(&ts_type)?,
+                title: format!("Removed: {}", victim.title),
+                body: Some(body),
+                created_at: None,
+                durability: ts_def.durability,
+                source: Source::User,
+                session_id: None,
+                status: None,
+                code_refs: Vec::new(),
+                tags: Vec::new(),
+                version: None,
+                props: None,
+                fields: None,
+            },
+            false,
+        )?;
         let removed = self.delete_node(id)?;
         Ok((removed, Some(tombstone)))
     }

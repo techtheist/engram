@@ -118,6 +118,8 @@ Each field has:
   [Recall & capture](./recall-and-capture.md#search-that-carries-its-context).
 - **Required** — writes of applicable types that omit the field are refused,
   with an error that teaches the full roster so the assistant self-corrects.
+  (One deliberate exception: the tombstone a hard delete mints is
+  engine-authored, so a required field can never veto your delete.)
 - **Applies to** — limit the field to certain types, or leave it on all.
 - **Indexed** — the value joins search (embedded with the note and in the
   keyword channel). Tepin-backed graphs only.
