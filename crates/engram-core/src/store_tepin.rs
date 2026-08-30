@@ -20,6 +20,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::config::{GraphConfig, PolicyConfig};
 use crate::rag::DEFAULT_EMBED_MODEL;
+use crate::seal::{EncryptionState, SEALED_PLACEHOLDER, SealKey, is_sealed};
 use crate::store::{SNIPPET_CLOSE, SNIPPET_OPEN, Store, normalize_tags, now};
 use crate::types::*;
 use crate::{Error, Result};
@@ -30,9 +31,10 @@ const SUSPECTS: &str = "suspects";
 const AUDIT: &str = "audit";
 const META: &str = "meta";
 
-/// The keyword/vector text fields — the same composition the SQLite FTS
-/// mirror and `EMBED_COMPOSITION` v2 index.
-const NODE_FIELDS: [&str; 4] = ["title", "body", "tags", "code_refs"];
+/// The single synthetic keyword field (0.9.0): the node's searchable token
+/// stream — identity tokens on a plaintext store, keyed HMAC digests on a
+/// sealed one. See `TepinStore::kw_field`.
+const KW_FIELD: &str = "_kw";
 
 /// Whether a graph path belongs to this driver (`.tepin` by convention;
 /// the migration writes `graph.tepin` next to the old `graph.db`).
@@ -48,6 +50,13 @@ pub struct TepinStore {
     /// The parsed per-graph configuration, cached at open and refreshed by
     /// `set_graph_config` — trust hydration reads it on every document.
     cfg: RwLock<Arc<GraphConfig>>,
+    /// This store's recorded at-rest state (0.9.0), read from its own meta
+    /// at open — every write consults it, so the file can never desync.
+    enc: RwLock<EncryptionState>,
+    /// The machine sealing key, loaded lazily when the state needs it. None
+    /// with a non-plaintext state = key unavailable: reads render the
+    /// placeholder, writes stay plaintext (never corrupt).
+    key: RwLock<Option<Arc<SealKey>>>,
 }
 
 impl TepinStore {
@@ -63,9 +72,13 @@ impl TepinStore {
         let store = Self {
             db,
             cfg: RwLock::new(Arc::new(GraphConfig::default())),
+            enc: RwLock::new(EncryptionState::Plaintext),
+            key: RwLock::new(None),
         };
         configure(store.db())?;
         store.reload_config()?;
+        store.load_encryption()?;
+        store.ensure_keyword_fields()?;
         Ok(store)
     }
 
@@ -73,9 +86,12 @@ impl TepinStore {
         let store = Self {
             db: Db::open_in_memory()?,
             cfg: RwLock::new(Arc::new(GraphConfig::default())),
+            enc: RwLock::new(EncryptionState::Plaintext),
+            key: RwLock::new(None),
         };
         configure(store.db())?;
         store.reload_config()?;
+        store.ensure_keyword_fields()?;
         Ok(store)
     }
 
@@ -127,14 +143,292 @@ impl TepinStore {
     }
 
     fn write_node(&self, node: &Node, _exists: bool) -> Result<()> {
-        self.db().upsert(NODES, node_doc(node)?)?;
+        self.db().upsert(NODES, self.doc_for_node(node)?)?;
         Ok(())
+    }
+
+    /// The graph's indexed custom-field names, cloned out of the cached
+    /// config — their values join the `_kw` keyword text.
+    fn indexed_names(&self) -> Vec<String> {
+        self.config()
+            .indexed_field_names()
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The BM25/keyword source is ONE synthetic field, `_kw` (0.9.0): the
+    /// node's searchable token stream, identity tokens on a plaintext store
+    /// and keyed HMAC digests on a sealed one. One field in BOTH states =
+    /// one code path, and BM25 statistics (term frequencies, doc lengths)
+    /// are identical by construction. Re-registering rebuilds the index —
+    /// the tepin analog of `ensure_fts`.
+    fn ensure_keyword_fields(&self) -> Result<()> {
+        let fields = [KW_FIELD];
+        let infos = self.db().collections()?;
+        let ok = infos
+            .iter()
+            .find(|c| c.name == NODES)
+            .is_some_and(|c| c.manual_vectors && c.embed == fields);
+        if !ok {
+            self.db().set_manual_vectors(NODES, &fields)?;
+        }
+        Ok(())
+    }
+
+    // ---- at-rest sealing (0.9.0) ----------------------------------------
+
+    /// Read this store's recorded state from its own meta and load the key
+    /// when the state needs one. Called at open; never at `open_in_memory`
+    /// (tests must not touch the keyring).
+    fn load_encryption(&self) -> Result<()> {
+        let state = Store::kv_get(self, "encryption_state")?
+            .as_deref()
+            .and_then(EncryptionState::parse)
+            .unwrap_or(EncryptionState::Plaintext);
+        *self.enc.write().unwrap() = state;
+        if state != EncryptionState::Plaintext && self.seal_key().is_none() {
+            *self.key.write().unwrap() = SealKey::load_or_create().map(Arc::new);
+        }
+        Ok(())
+    }
+
+    fn enc_state(&self) -> EncryptionState {
+        *self.enc.read().unwrap()
+    }
+
+    fn seal_key(&self) -> Option<Arc<SealKey>> {
+        self.key.read().unwrap().clone()
+    }
+
+    /// Inject a key without touching the keyring — tests only.
+    pub fn set_seal_key_for_tests(&self, key: SealKey) {
+        *self.key.write().unwrap() = Some(Arc::new(key));
+    }
+
+    /// Seal one string for storage under the current state (no-op on a
+    /// plaintext store or without a key — never corrupt).
+    fn seal_write(&self, s: &str) -> String {
+        match (self.enc_state().writes_sealed(), self.seal_key()) {
+            (true, Some(k)) => k.seal(s),
+            _ => s.to_string(),
+        }
+    }
+
+    /// Open one stored string for a reader: plaintext passes through, a
+    /// sealed blob decrypts, and a blob we can't open renders the
+    /// placeholder — never garbage, never an error.
+    fn unseal_read(&self, s: &str) -> String {
+        if !is_sealed(s) {
+            return s.to_string();
+        }
+        self.seal_key()
+            .and_then(|k| k.unseal(s))
+            .unwrap_or_else(|| SEALED_PLACEHOLDER.to_string())
+    }
+
+    /// The `_kw` token stream for a node: tokens of title/body/tags/
+    /// code_refs plus the values of indexed custom fields, run through the
+    /// state's term transform (identity or keyed HMAC).
+    fn kw_field(&self, n: &Node) -> String {
+        let mut text = n.title.clone();
+        if let Some(b) = &n.body {
+            text.push(' ');
+            text.push_str(b);
+        }
+        if !n.tags.is_empty() {
+            text.push(' ');
+            text.push_str(&n.tags.join(" "));
+        }
+        if !n.code_refs.is_empty() {
+            text.push(' ');
+            text.push_str(&n.code_refs.join(" "));
+        }
+        if let Some(fields) = &n.fields {
+            for name in self.indexed_names() {
+                if let Some(v) = fields.get(&name) {
+                    text.push(' ');
+                    match v {
+                        Value::String(s) => text.push_str(s),
+                        other => text.push_str(&other.to_string()),
+                    }
+                }
+            }
+        }
+        self.kw_transform_tokens(tokenize(&text))
+    }
+
+    /// Transform already-tokenized terms for the keyword index / a query:
+    /// identity on plaintext, keyed HMAC digests when writes seal.
+    fn kw_transform_tokens(&self, tokens: Vec<String>) -> String {
+        match (self.enc_state().writes_sealed(), self.seal_key()) {
+            (true, Some(k)) => tokens
+                .iter()
+                .map(|t| k.kw_token(t))
+                .collect::<Vec<_>>()
+                .join(" "),
+            _ => tokens.join(" "),
+        }
+    }
+
+    /// Node → stored document. Beside the serde image: computed members
+    /// stripped, `_id` stamped, the `_kw` keyword stream attached, and —
+    /// when the state seals writes — title/body sealed and the structured
+    /// members (tags, code_refs, fields, props) folded into sealed JSON
+    /// strings. `node_from_doc` reverses all of it.
+    fn doc_for_node(&self, n: &Node) -> Result<Value> {
+        let mut doc = serde_json::to_value(n)?;
+        let obj = doc.as_object_mut().expect("node serializes to an object");
+        obj.remove("trust");
+        obj.remove("stale");
+        obj.insert("_id".into(), json!(n.id));
+        obj.insert(KW_FIELD.into(), json!(self.kw_field(n)));
+        if self.enc_state().writes_sealed() && self.seal_key().is_some() {
+            obj.insert("title".into(), json!(self.seal_write(&n.title)));
+            if let Some(b) = &n.body {
+                obj.insert("body".into(), json!(self.seal_write(b)));
+            }
+            for member in ["tags", "code_refs", "fields", "props"] {
+                if let Some(v) = obj.get(member).filter(|v| !v.is_null()) {
+                    let raw = serde_json::to_string(v)?;
+                    obj.insert(member.into(), json!(self.seal_write(&raw)));
+                }
+            }
+        }
+        Ok(doc)
+    }
+
+    /// Stored document → node: sealed members open before deserialization
+    /// (their JSON types differ sealed vs plain), then trust hydrates.
+    fn node_from_doc(&self, mut doc: Value, policy: &PolicyConfig) -> Result<Node> {
+        if let Some(obj) = doc.as_object_mut() {
+            for member in ["title", "body"] {
+                if let Some(Value::String(s)) = obj.get(member)
+                    && is_sealed(s)
+                {
+                    let open = self.unseal_read(s);
+                    obj.insert(member.into(), json!(open));
+                }
+            }
+            for member in ["tags", "code_refs", "fields", "props"] {
+                if let Some(Value::String(s)) = obj.get(member)
+                    && is_sealed(s)
+                {
+                    match self
+                        .seal_key()
+                        .and_then(|k| k.unseal(s))
+                        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                    {
+                        Some(restored) => {
+                            obj.insert(member.into(), restored);
+                        }
+                        // Unopenable (no key): drop the member so serde's
+                        // defaults apply — empty lists, absent maps.
+                        None => {
+                            obj.remove(member);
+                        }
+                    }
+                }
+            }
+        }
+        let mut n: Node = serde_json::from_value(doc)?;
+        n.trust = crate::policy::trust(&n.trust_inputs(), now(), policy);
+        n.stale = crate::policy::is_stale(n.trust, policy);
+        Ok(n)
+    }
+
+    /// Edge → stored document (the free-text `note` seals like a body).
+    fn doc_for_edge(&self, e: &Edge) -> Result<Value> {
+        let mut doc = serde_json::to_value(e)?;
+        doc["_id"] = json!(e.id);
+        if let Some(note) = &e.note
+            && self.enc_state().writes_sealed()
+        {
+            doc["note"] = json!(self.seal_write(note));
+        }
+        Ok(doc)
+    }
+
+    fn edge_from_doc(&self, mut doc: Value) -> Result<Edge> {
+        if let Some(Value::String(s)) = doc.get("note")
+            && is_sealed(s)
+        {
+            let open = self.unseal_read(s);
+            doc["note"] = json!(open);
+        }
+        Ok(serde_json::from_value(doc)?)
+    }
+
+    /// Seal/unseal an audit row's payload members (`title`, `before`,
+    /// `after` — the before/after images carry full node JSON, which would
+    /// otherwise leak every sealed node's plaintext history).
+    fn audit_doc_recode(&self, mut doc: Value) -> Result<Value> {
+        let Some(obj) = doc.as_object_mut() else {
+            return Ok(doc);
+        };
+        for member in ["title", "before", "after"] {
+            let Some(v) = obj.get(member).filter(|v| !v.is_null()) else {
+                continue;
+            };
+            // Open whatever is there first…
+            let open: Value = match v {
+                Value::String(s) if is_sealed(s) => match self.seal_key().and_then(|k| k.unseal(s))
+                {
+                    Some(raw) => {
+                        if member == "title" {
+                            json!(raw)
+                        } else {
+                            serde_json::from_str(&raw).unwrap_or(Value::Null)
+                        }
+                    }
+                    None => continue, // can't open — leave the row as-is
+                },
+                other => other.clone(),
+            };
+            // …then re-store it under the current state.
+            let stored = if self.enc_state().writes_sealed() && self.seal_key().is_some() {
+                let raw = match &open {
+                    Value::String(s) if member == "title" => s.clone(),
+                    other => serde_json::to_string(other)?,
+                };
+                json!(self.seal_write(&raw))
+            } else {
+                open
+            };
+            obj.insert(member.into(), stored);
+        }
+        Ok(doc)
+    }
+
+    /// Audit row read path: open sealed members for the reader.
+    fn audit_from_doc(&self, mut doc: Value) -> Result<AuditEntry> {
+        if let Some(obj) = doc.as_object_mut() {
+            if let Some(Value::String(s)) = obj.get("title")
+                && is_sealed(s)
+            {
+                let open = self.unseal_read(s);
+                obj.insert("title".into(), json!(open));
+            }
+            for member in ["before", "after"] {
+                if let Some(Value::String(s)) = obj.get(member)
+                    && is_sealed(s)
+                {
+                    let restored = self
+                        .seal_key()
+                        .and_then(|k| k.unseal(s))
+                        .and_then(|raw| serde_json::from_str(&raw).ok())
+                        .unwrap_or(Value::Null);
+                    obj.insert(member.into(), restored);
+                }
+            }
+        }
+        Ok(serde_json::from_value(doc)?)
     }
 
     fn edges_matching(&self, field: &str, id: &str) -> Result<Vec<Edge>> {
         self.find_docs(EDGES, &json!({ field: id }))?
             .into_iter()
-            .map(doc_edge)
+            .map(|d| self.edge_from_doc(d))
             .collect()
     }
 
@@ -162,9 +456,9 @@ fn configure(db: &Db) -> Result<()> {
     let infos = db.collections()?;
     let info = |name: &str| infos.iter().find(|c| c.name == name);
 
-    let nodes_ok = info(NODES).is_some_and(|c| c.manual_vectors && c.embed == NODE_FIELDS);
+    let nodes_ok = info(NODES).is_some_and(|c| c.manual_vectors && c.embed == [KW_FIELD]);
     if !nodes_ok {
-        db.set_manual_vectors(NODES, &NODE_FIELDS)?;
+        db.set_manual_vectors(NODES, &[KW_FIELD])?;
     }
     for field in ["from_id", "to_id"] {
         if !info(EDGES).is_some_and(|c| c.indexes.iter().any(|i| i == field)) {
@@ -239,6 +533,10 @@ impl Store for TepinStore {
     fn set_graph_config(&self, json: &str) -> Result<()> {
         self.set_meta_str("graph_config", json)?;
         *self.cfg.write().unwrap() = Arc::new(GraphConfig::from_stored(Some(json)));
+        // A changed indexed-field set re-registers the keyword fields (tepin
+        // rebuilds the BM25 index); existing docs re-hoist on their next
+        // write — the engine re-embeds them in the same gesture.
+        self.ensure_keyword_fields()?;
         Ok(())
     }
 
@@ -259,6 +557,68 @@ impl Store for TepinStore {
                 Ok(())
             }
         }
+    }
+
+    fn kv_get(&self, key: &str) -> Result<Option<String>> {
+        self.meta_str(key)
+    }
+
+    fn kv_set(&self, key: &str, value: &str) -> Result<()> {
+        self.set_meta_str(key, value)
+    }
+
+    fn encryption_state(&self) -> EncryptionState {
+        self.enc_state()
+    }
+
+    fn set_encryption_state(&self, state: EncryptionState) -> Result<()> {
+        if state != EncryptionState::Plaintext && self.seal_key().is_none() {
+            *self.key.write().unwrap() = SealKey::load_or_create().map(Arc::new);
+            if state.writes_sealed() && self.seal_key().is_none() {
+                return Err(Error::Config(
+                    "no encryption key available — both the OS keyring and the \
+                     ~/.engram/history.key fallback failed"
+                        .into(),
+                ));
+            }
+        }
+        // Persist FIRST: a crash right after leaves the recorded state ahead
+        // of the rows, which the mid-flight states are built to tolerate.
+        self.set_meta_str("encryption_state", state.as_str())?;
+        *self.enc.write().unwrap() = state;
+        Ok(())
+    }
+
+    fn reseal_all(&self, progress: &mut dyn FnMut(usize, usize)) -> Result<usize> {
+        // Reading opens whatever is sealed; writing re-stores under the
+        // CURRENT state — one pass serves both directions, is idempotent
+        // (double-seal is guarded), and survives being killed anywhere.
+        let nodes = self.all_nodes()?;
+        let edges = self.all_edges()?;
+        let audits = self.find_docs(AUDIT, &json!({}))?;
+        let total = nodes.len() + edges.len() + audits.len();
+        let mut done = 0usize;
+        for n in &nodes {
+            self.write_node(n, true)?;
+            done += 1;
+            progress(done, total);
+        }
+        for e in &edges {
+            self.db().update(EDGES, &e.id, self.doc_for_edge(e)?)?;
+            done += 1;
+            progress(done, total);
+        }
+        for doc in audits {
+            let Some(id) = doc["_id"].as_str().map(str::to_string) else {
+                done += 1;
+                continue;
+            };
+            let recoded = self.audit_doc_recode(doc)?;
+            self.db().update(AUDIT, &id, recoded)?;
+            done += 1;
+            progress(done, total);
+        }
+        Ok(total)
     }
 
     fn reset_vectors(&self, _dim: usize) -> Result<()> {
@@ -337,6 +697,11 @@ impl Store for TepinStore {
             tags: normalize_tags(&n.tags),
             version: n.version,
             props: n.props,
+            fields: n
+                .fields
+                .as_ref()
+                .filter(|f| !f.is_empty())
+                .map(crate::redact::scrub_fields),
         };
         self.write_node(&node, false)?;
         self.get_node(&id)?.ok_or(Error::NotFound(id))
@@ -344,7 +709,7 @@ impl Store for TepinStore {
 
     fn get_node(&self, id: &str) -> Result<Option<Node>> {
         self.get_doc(NODES, id)?
-            .map(|d| doc_node(d, &self.policy()))
+            .map(|d| self.node_from_doc(d, &self.policy()))
             .transpose()
     }
 
@@ -378,6 +743,11 @@ impl Store for TepinStore {
         }
         if let Some(v) = p.version {
             node.version = Some(v);
+        }
+        // REPLACE semantics by contract: the engine already resolved any
+        // merge intent (empty map = clear all custom fields).
+        if let Some(v) = p.fields {
+            node.fields = (!v.is_empty()).then(|| crate::redact::scrub_fields(&v));
         }
         // A deliberate update is re-validation: it confirms the node (the
         // unapproved trust anchor) and clears any evidence demotion.
@@ -493,6 +863,7 @@ impl Store for TepinStore {
         node.title = crate::redact::scrub(&node.title);
         node.body = node.body.as_deref().map(crate::redact::scrub);
         node.tags = normalize_tags(&node.tags);
+        node.fields = node.fields.as_ref().map(crate::redact::scrub_fields);
         let exists = self.get_doc(NODES, &node.id)?.is_some();
         self.write_node(&node, exists)
     }
@@ -503,7 +874,7 @@ impl Store for TepinStore {
             .into_iter()
             .map({
                 let policy = self.policy();
-                move |d| doc_node(d, &policy)
+                move |d| self.node_from_doc(d, &policy)
             })
             .collect::<Result<_>>()?;
         out.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
@@ -555,12 +926,14 @@ impl Store for TepinStore {
             valid_until: None,
             status: e.status,
         };
-        self.db().insert(EDGES, edge_doc(&edge)?)?;
+        self.db().insert(EDGES, self.doc_for_edge(&edge)?)?;
         self.get_edge(&id)?.ok_or(Error::NotFound(id))
     }
 
     fn get_edge(&self, id: &str) -> Result<Option<Edge>> {
-        self.get_doc(EDGES, id)?.map(doc_edge).transpose()
+        self.get_doc(EDGES, id)?
+            .map(|d| self.edge_from_doc(d))
+            .transpose()
     }
 
     fn update_edge(&self, id: &str, p: EdgePatch) -> Result<Edge> {
@@ -582,7 +955,7 @@ impl Store for TepinStore {
         if let Some(v) = p.strength {
             edge.strength = Some(v);
         }
-        self.db().update(EDGES, id, edge_doc(&edge)?)?;
+        self.db().update(EDGES, id, self.doc_for_edge(&edge)?)?;
         self.get_edge(id)?
             .ok_or_else(|| Error::NotFound(id.to_string()))
     }
@@ -597,7 +970,7 @@ impl Store for TepinStore {
     }
 
     fn upsert_edge(&self, e: &Edge) -> Result<()> {
-        self.db().upsert(EDGES, edge_doc(e)?)?;
+        self.db().upsert(EDGES, self.doc_for_edge(e)?)?;
         Ok(())
     }
 
@@ -612,7 +985,7 @@ impl Store for TepinStore {
     fn all_edges(&self) -> Result<Vec<Edge>> {
         self.find_docs(EDGES, &json!({}))?
             .into_iter()
-            .map(doc_edge)
+            .map(|d| self.edge_from_doc(d))
             .collect()
     }
 
@@ -628,15 +1001,16 @@ impl Store for TepinStore {
             node.title = crate::redact::scrub(&node.title);
             node.body = node.body.as_deref().map(crate::redact::scrub);
             node.tags = normalize_tags(&node.tags);
+            node.fields = node.fields.as_ref().map(crate::redact::scrub_fields);
             ops.push(BatchOp::Upsert {
                 collection: NODES.into(),
-                doc: node_doc(&node)?,
+                doc: self.doc_for_node(&node)?,
             });
         }
         for e in edges {
             ops.push(BatchOp::Upsert {
                 collection: EDGES.into(),
-                doc: edge_doc(e)?,
+                doc: self.doc_for_edge(e)?,
             });
         }
         if !ops.is_empty() {
@@ -657,7 +1031,7 @@ impl Store for TepinStore {
                 ops.push(BatchOp::Update {
                     collection: NODES.into(),
                     id: id.clone(),
-                    doc: node_doc(&node)?,
+                    doc: self.doc_for_node(&node)?,
                 });
             }
         }
@@ -674,10 +1048,14 @@ impl Store for TepinStore {
         if terms.is_empty() {
             return Ok(Vec::new());
         }
+        // The stored `_kw` stream went through the state's term transform;
+        // the query takes the identical transform, so BM25 scores match the
+        // plaintext ranking exactly (0.9.0 blind index).
+        let kw_query = self.kw_transform_tokens(terms.clone());
         // Over-fetch: archived/off-type hits fall out below.
         let raw = self
             .db()
-            .keyword_search(Some(NODES), query, limit * 4 + 16)?;
+            .keyword_search(Some(NODES), &kw_query, limit * 4 + 16)?;
         let mut out = Vec::new();
         for hit in raw {
             let Some(node) = self.get_node(&hit.id)? else {
@@ -853,7 +1231,7 @@ impl Store for TepinStore {
                 doc: json!({ "_id": "audit_seq", "value": seq }),
             },
         };
-        let mut doc = serde_json::to_value(e)?;
+        let mut doc = self.audit_doc_recode(serde_json::to_value(e)?)?;
         doc["seq"] = json!(seq);
         // Zero-padded seq as _id keeps journal rows naturally sorted.
         doc["_id"] = json!(format!("{seq:012}"));
@@ -880,7 +1258,7 @@ impl Store for TepinStore {
         let mut entries: Vec<AuditEntry> = self
             .find_docs(AUDIT, &filter)?
             .into_iter()
-            .map(|doc| Ok(serde_json::from_value(doc)?))
+            .map(|doc| self.audit_from_doc(doc))
             .collect::<Result<_>>()?;
         let total = entries.len() as i64;
         entries.sort_by_key(|e| std::cmp::Reverse(e.seq));
@@ -933,33 +1311,6 @@ fn no_collection_is_empty<T: Default>(r: tepindb::Result<T>) -> Result<T> {
 
 // ---- document mapping ----------------------------------------------------
 
-fn node_doc(n: &Node) -> Result<Value> {
-    let mut doc = serde_json::to_value(n)?;
-    let obj = doc.as_object_mut().expect("node serializes to an object");
-    // Computed at read time, never stored.
-    obj.remove("trust");
-    obj.remove("stale");
-    obj.insert("_id".into(), json!(n.id));
-    Ok(doc)
-}
-
-fn doc_node(doc: Value, policy: &PolicyConfig) -> Result<Node> {
-    let mut n: Node = serde_json::from_value(doc)?;
-    n.trust = crate::policy::trust(&n.trust_inputs(), now(), policy);
-    n.stale = crate::policy::is_stale(n.trust, policy);
-    Ok(n)
-}
-
-fn edge_doc(e: &Edge) -> Result<Value> {
-    let mut doc = serde_json::to_value(e)?;
-    doc["_id"] = json!(e.id);
-    Ok(doc)
-}
-
-fn doc_edge(doc: Value) -> Result<Edge> {
-    Ok(serde_json::from_value(doc)?)
-}
-
 fn doc_suspect(doc: Value) -> Result<Suspect> {
     Ok(serde_json::from_value(doc)?)
 }
@@ -980,11 +1331,25 @@ fn tokenize(q: &str) -> Vec<String> {
 /// terms, clip a ~12-word window around the first match, and mark matching
 /// words with the sentinel pair the pane/MCP already understand.
 fn make_snippet(node: &Node, terms: &[String]) -> String {
+    let custom = node
+        .fields
+        .as_ref()
+        .map(|f| {
+            f.values()
+                .map(|v| match v {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default();
     let fields = [
         node.title.clone(),
         node.body.clone().unwrap_or_default(),
         node.tags.join(" "),
         node.code_refs.join(" "),
+        custom,
     ];
     let matches_in = |text: &str| tokenize(text).iter().filter(|t| terms.contains(t)).count();
     let best = fields

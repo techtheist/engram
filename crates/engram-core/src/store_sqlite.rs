@@ -148,6 +148,10 @@ impl SqliteStore {
         if !column_exists(conn, "nodes", "props")? {
             conn.execute_batch("ALTER TABLE nodes ADD COLUMN props TEXT;")?;
         }
+        // Custom fields (0.9.0): user-defined first-class values.
+        if !column_exists(conn, "nodes", "fields")? {
+            conn.execute_batch("ALTER TABLE nodes ADD COLUMN fields TEXT;")?;
+        }
         // Local cortex (v0.5.0): suspects carry an optional NLI hint.
         if !column_exists(conn, "suspects", "nli_label")? {
             conn.execute_batch(
@@ -320,6 +324,14 @@ impl Store for SqliteStore {
         }
     }
 
+    fn kv_get(&self, key: &str) -> Result<Option<String>> {
+        meta_get(&self.conn, key)
+    }
+
+    fn kv_set(&self, key: &str, value: &str) -> Result<()> {
+        meta_set(&self.conn, key, value)
+    }
+
     fn set_embed_model(&self, model: &EmbedModelId) -> Result<()> {
         meta_set(&self.conn, "embed_model", &serde_json::to_string(model)?)
     }
@@ -375,8 +387,8 @@ impl Store for SqliteStore {
             "INSERT INTO nodes
                (id, type, title, body, durability, source, session_id,
                 created_at, valid_from, valid_until, status, code_refs, tags, last_seen,
-                approved_at, version, props)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+                approved_at, version, props, fields)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
             params![
                 id,
                 n.node_type.as_str(),
@@ -396,6 +408,10 @@ impl Store for SqliteStore {
                 (n.source == Source::User).then_some(created),
                 n.version,
                 n.props.as_ref().map(serde_json::to_string).transpose()?,
+                n.fields
+                    .as_ref()
+                    .map(|f| serde_json::to_string(&crate::redact::scrub_fields(f)))
+                    .transpose()?,
             ],
         )?;
         // Trust anchors at created_at until a deliberate act confirms the node.
@@ -449,6 +465,14 @@ impl Store for SqliteStore {
         if let Some(v) = p.version {
             sets.push("version=?");
             vals.push(Box::new(v));
+        }
+        // REPLACE semantics by contract: the engine already resolved any
+        // merge intent against the stored node (see NodePatch::fields).
+        if let Some(v) = p.fields {
+            sets.push("fields=?");
+            vals.push(Box::new(serde_json::to_string(
+                &crate::redact::scrub_fields(&v),
+            )?));
         }
         // A deliberate update is re-validation: it confirms the node (the
         // unapproved trust anchor) and clears any evidence demotion. This —
@@ -556,8 +580,8 @@ impl Store for SqliteStore {
             "INSERT INTO nodes
                (id, type, title, body, durability, source, session_id,
                 created_at, valid_from, valid_until, status, code_refs, tags, last_seen,
-                approved_at, confirmed_at, demoted_at, trust_override, version, props)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)
+                approved_at, confirmed_at, demoted_at, trust_override, version, props, fields)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)
              ON CONFLICT(id) DO UPDATE SET
                type=excluded.type, title=excluded.title, body=excluded.body,
                durability=excluded.durability, source=excluded.source,
@@ -567,7 +591,7 @@ impl Store for SqliteStore {
                tags=excluded.tags, last_seen=excluded.last_seen,
                approved_at=excluded.approved_at, confirmed_at=excluded.confirmed_at,
                demoted_at=excluded.demoted_at, trust_override=excluded.trust_override,
-               version=excluded.version, props=excluded.props",
+               version=excluded.version, props=excluded.props, fields=excluded.fields",
             params![
                 n.id,
                 n.node_type.as_str(),
@@ -589,6 +613,10 @@ impl Store for SqliteStore {
                 n.trust_override,
                 n.version,
                 n.props.as_ref().map(serde_json::to_string).transpose()?,
+                n.fields
+                    .as_ref()
+                    .map(|f| serde_json::to_string(&crate::redact::scrub_fields(f)))
+                    .transpose()?,
             ],
         )?;
         Ok(())
@@ -1111,7 +1139,7 @@ impl Store for SqliteStore {
             .ontology
             .types
             .iter()
-            .filter(|t| t.roles.anchor)
+            .filter(|t| t.roles.anchor || t.roles.tombstone)
             .map(|t| t.name.as_str())
             .collect();
         let exclude = if anchors.is_empty() {
@@ -1282,7 +1310,7 @@ const VEC_MAX_K: i64 = 4096;
 
 const NODE_SELECT: &str = "SELECT id, type, title, body, durability, source, session_id, \
      created_at, valid_from, valid_until, status, code_refs, last_seen, approved_at, tags, \
-     confirmed_at, demoted_at, trust_override, version, props FROM nodes";
+     confirmed_at, demoted_at, trust_override, version, props, fields FROM nodes";
 
 const EDGE_SELECT: &str = "SELECT id, type, from_id, to_id, source, created_at, \
      confidence, strength, note, valid_from, valid_until, status FROM edges WHERE id=?1";
@@ -1360,6 +1388,12 @@ fn row_to_node(row: &Row, policy: &PolicyConfig) -> rusqlite::Result<Node> {
         props: match row.get::<_, Option<String>>(19)? {
             Some(s) => Some(serde_json::from_str(&s).map_err(|e| {
                 rusqlite::Error::FromSqlConversionFailure(19, Type::Text, Box::new(e))
+            })?),
+            None => None,
+        },
+        fields: match row.get::<_, Option<String>>(20)? {
+            Some(s) => Some(serde_json::from_str(&s).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(20, Type::Text, Box::new(e))
             })?),
             None => None,
         },

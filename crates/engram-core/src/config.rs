@@ -12,9 +12,9 @@
 //! edges stay sentence-shaped, and exactly one supersession verb plus one
 //! contradiction verb must exist (they are what make the graph active).
 //!
-//! `GraphConfig::default()` reproduces the shipped 8-type/7-verb ontology and
-//! today's constants exactly — a graph with no stored config behaves
-//! identically to 0.6.x.
+//! `GraphConfig::default()` reproduces the shipped 9-type/7-verb ontology
+//! (8 since 0.6.x, plus Tombstone since 0.9.0) and today's constants exactly —
+//! a graph with no stored config always runs the current shipped defaults.
 
 use serde::{Deserialize, Serialize};
 
@@ -36,7 +36,107 @@ pub struct GraphConfig {
     pub versioning: VersioningConfig,
     #[serde(default)]
     pub history: HistoryConfig,
+    /// User-defined custom fields on notes (0.9.0): first-class values beside
+    /// `created_at`/`tags`, per-graph, enforced at the engine write boundary.
+    /// Empty (the default) = the feature is invisible.
+    #[serde(default)]
+    pub fields: Vec<FieldDef>,
 }
+
+/// One user-defined field on notes (0.9.0). Definitions live in the graph's
+/// config (edited in the pane / `PUT /config` — like the ontology, never over
+/// MCP); *values* live on each node's `fields` map and are validated at the
+/// engine write boundary, so every surface gets the same contract.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FieldDef {
+    /// Storage + wire key: lowercase snake_case, 1..=32 chars, unique, never
+    /// one of the built-in node field names (validation enforces all of it).
+    pub name: String,
+    /// Pane display label; empty = render the name.
+    #[serde(default)]
+    pub label: String,
+    /// Value kind: text | number | bool | date | enum | url.
+    pub kind: FieldKind,
+    /// The allowed values when `kind` is `enum` (must be non-empty then).
+    #[serde(default)]
+    pub values: Vec<String>,
+    /// Refuse writes of applicable types that omit this field.
+    #[serde(default)]
+    pub required: bool,
+    /// Type names this field applies to; empty = every type.
+    #[serde(default)]
+    pub applies_to: Vec<String>,
+    /// Join the search index — the value is embedded with the note and enters
+    /// the keyword channel. Tepin-backed graphs only (the sqlite driver is a
+    /// legacy migration source and ignores it).
+    #[serde(default)]
+    pub indexed: bool,
+    /// Render `name: value` on this note's brief lines.
+    #[serde(default)]
+    pub show_in_brief: bool,
+}
+
+/// What a custom field's value must be. `date` accepts a `"YYYY-MM-DD"` day,
+/// an ISO instant string, or unix seconds; `url` a `scheme://` string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FieldKind {
+    Text,
+    Number,
+    Bool,
+    Date,
+    Enum,
+    Url,
+}
+
+impl FieldKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FieldKind::Text => "text",
+            FieldKind::Number => "number",
+            FieldKind::Bool => "bool",
+            FieldKind::Date => "date",
+            FieldKind::Enum => "enum",
+            FieldKind::Url => "url",
+        }
+    }
+}
+
+/// Built-in node field names a custom field may never shadow: every serde key
+/// of [`crate::types::Node`] plus the computed/response-level keys the API
+/// attaches (`born_in`, `archived`, `pinned`, and the `fields` container
+/// itself). Collision would make a node's JSON ambiguous.
+pub const RESERVED_FIELD_NAMES: &[&str] = &[
+    "id",
+    "type",
+    "title",
+    "body",
+    "durability",
+    "source",
+    "session_id",
+    "created_at",
+    "valid_from",
+    "valid_until",
+    "status",
+    "last_seen",
+    "confirmed_at",
+    "approved_at",
+    "demoted_at",
+    "trust_override",
+    "trust",
+    "stale",
+    "code_refs",
+    "tags",
+    "version",
+    "props",
+    "fields",
+    "born_in",
+    "archived",
+    "pinned",
+    "score",
+    "snippet",
+    "neighbors",
+];
 
 /// The history layer (0.8.4): the daemon harvests coding-assistant chat
 /// transcripts into a sibling `history.tepin` store. Every knob here is a
@@ -194,6 +294,12 @@ pub struct TypeRoles {
     /// aren't release artifacts).
     #[serde(default = "default_true")]
     pub versioned: bool,
+    /// A deletion marker: records that knowledge was deliberately removed so
+    /// it isn't re-learned (Tombstone in the shipped set). Tombstones sit out
+    /// the conflict scan and answer candidacy; a tombstone `replaces` its
+    /// victim, letting the existing supersession machinery archive it.
+    #[serde(default)]
+    pub tombstone: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -599,7 +705,7 @@ pub struct Preset {
     pub config: GraphConfig,
 }
 
-/// The curated preset shelf. `engram` is the default 8-type product-building
+/// The curated preset shelf. `engram` is the default 9-type product-building
 /// set every graph is born with; the others reshape the ontology for a
 /// different kind of work. All satisfy the hard invariants by construction
 /// (asserted by test).
@@ -662,6 +768,18 @@ pub fn presets() -> Vec<Preset> {
                     Durability::Volatile,
                     TypeRoles {
                         worklist: true,
+                        ..TypeRoles::plain(0.0)
+                    },
+                    hidden_brief(),
+                ),
+                tdef(
+                    "Retraction",
+                    15,
+                    "withdrawn — this no longer holds",
+                    Durability::Stable,
+                    TypeRoles {
+                        tombstone: true,
+                        highlight: false,
                         ..TypeRoles::plain(0.0)
                     },
                     hidden_brief(),
@@ -784,12 +902,125 @@ pub fn presets() -> Vec<Preset> {
         ..GraphConfig::default()
     };
 
+    let general = GraphConfig {
+        ontology: OntologyConfig {
+            preset: "general".into(),
+            types: vec![
+                tdef(
+                    "Fact",
+                    217,
+                    "something true about this world",
+                    Durability::Stable,
+                    TypeRoles::plain(0.03),
+                    shown_brief(8, 140),
+                ),
+                tdef(
+                    "Note",
+                    292,
+                    "anything worth keeping",
+                    Durability::Episodic,
+                    TypeRoles::plain(0.0),
+                    shown_brief(10, 140),
+                ),
+                tdef(
+                    "Idea",
+                    142,
+                    "a possibility to explore",
+                    Durability::Episodic,
+                    TypeRoles::plain(0.02),
+                    hidden_brief(),
+                ),
+                tdef(
+                    "Task",
+                    199,
+                    "do this later",
+                    Durability::Volatile,
+                    TypeRoles {
+                        worklist: true,
+                        ..TypeRoles::plain(0.0)
+                    },
+                    hidden_brief(),
+                ),
+                tdef(
+                    "Reference",
+                    215,
+                    "an external subject or source",
+                    Durability::Stable,
+                    TypeRoles {
+                        anchor: true,
+                        versioned: false,
+                        ..TypeRoles::plain(0.0)
+                    },
+                    hidden_brief(),
+                ),
+                tdef(
+                    "Tombstone",
+                    15,
+                    "deliberately removed — don't resurrect it",
+                    Durability::Stable,
+                    TypeRoles {
+                        tombstone: true,
+                        highlight: false,
+                        ..TypeRoles::plain(0.0)
+                    },
+                    hidden_brief(),
+                ),
+            ],
+            verbs: vec![
+                vdef("about", "Note about Reference", VerbRoles::default()),
+                vdef(
+                    "because",
+                    "Fact because Note",
+                    VerbRoles {
+                        reason: true,
+                        ..VerbRoles::default()
+                    },
+                ),
+                vdef(
+                    "answers",
+                    "Note answers Task",
+                    VerbRoles {
+                        answer: true,
+                        ..VerbRoles::default()
+                    },
+                ),
+                vdef("builds-on", "Idea builds-on Idea", VerbRoles::default()),
+                vdef(
+                    "replaces",
+                    "Fact replaces Fact",
+                    VerbRoles {
+                        supersession: true,
+                        ..VerbRoles::default()
+                    },
+                ),
+                vdef(
+                    "conflicts-with",
+                    "Note conflicts-with Fact",
+                    VerbRoles {
+                        contradiction: true,
+                        ..VerbRoles::default()
+                    },
+                ),
+                vdef(
+                    "needs",
+                    "Task needs Idea",
+                    VerbRoles {
+                        dependency: true,
+                        ..VerbRoles::default()
+                    },
+                ),
+            ],
+        },
+        ..GraphConfig::default()
+    };
+
     vec![
         Preset {
             id: "engram".into(),
             name: "Engram".into(),
             description: "The shipped product-building set: decisions, principles, cautions, \
-                          problems and their resolutions, insights, intents, code anchors."
+                          problems and their resolutions, insights, intents, code anchors, \
+                          tombstones for removed knowledge."
                 .into(),
             config: GraphConfig::default(),
         },
@@ -797,7 +1028,8 @@ pub fn presets() -> Vec<Preset> {
             id: "research".into(),
             name: "Research".into(),
             description: "For investigation-shaped work: claims with evidence, open questions, \
-                          findings, sources, methods — refutes carries the contradiction role."
+                          findings, sources, methods, retractions — refutes carries the \
+                          contradiction role."
                 .into(),
             config: research,
         },
@@ -809,17 +1041,27 @@ pub fn presets() -> Vec<Preset> {
                 .into(),
             config: minimal,
         },
+        Preset {
+            id: "general".into(),
+            name: "General".into(),
+            description: "An open experimental set for saving almost anything: facts, notes, \
+                          ideas, tasks, references, tombstones — designed to pair with custom \
+                          fields."
+                .into(),
+            config: general,
+        },
     ]
 }
 
 impl TypeRoles {
-    fn plain(rank_prior: f64) -> Self {
+    pub(crate) fn plain(rank_prior: f64) -> Self {
         Self {
             worklist: false,
             anchor: false,
             rank_prior,
             highlight: true,
             versioned: true,
+            tombstone: false,
         }
     }
 }
@@ -908,6 +1150,18 @@ impl Default for OntologyConfig {
                     TypeRoles {
                         anchor: true,
                         versioned: false,
+                        ..TypeRoles::plain(0.0)
+                    },
+                    hidden.clone(),
+                ),
+                t(
+                    "Tombstone",
+                    15,
+                    "deliberately removed — don't resurrect it",
+                    Durability::Stable,
+                    TypeRoles {
+                        tombstone: true,
+                        highlight: false,
                         ..TypeRoles::plain(0.0)
                     },
                     hidden,
@@ -1003,6 +1257,55 @@ impl GraphConfig {
             .collect()
     }
 
+    /// Names of the types carrying the `tombstone` role (deletion markers;
+    /// Tombstone in the shipped set). Zero or more — ontologies without one
+    /// simply have no tombstone behavior.
+    pub fn tombstone_types(&self) -> Vec<&str> {
+        self.ontology
+            .types
+            .iter()
+            .filter(|t| t.roles.tombstone)
+            .map(|t| t.name.as_str())
+            .collect()
+    }
+
+    /// The first type carrying the `tombstone` role, if any — the type a
+    /// delete-with-tombstone gesture mints.
+    pub fn tombstone_type(&self) -> Option<&str> {
+        self.ontology
+            .types
+            .iter()
+            .find(|t| t.roles.tombstone)
+            .map(|t| t.name.as_str())
+    }
+
+    /// The custom-field definition for `name`, if the graph declares it.
+    pub fn field_def(&self, name: &str) -> Option<&FieldDef> {
+        self.fields.iter().find(|f| f.name == name)
+    }
+
+    /// The custom fields that apply to nodes of `type_name` (empty
+    /// `applies_to` = every type).
+    pub fn fields_for(&self, type_name: &str) -> Vec<&FieldDef> {
+        self.fields
+            .iter()
+            .filter(|f| f.applies_to.is_empty() || f.applies_to.iter().any(|t| t == type_name))
+            .collect()
+    }
+
+    /// Names of the custom fields that join the search index, sorted — the
+    /// stable fingerprint the re-embed guard and the keyword index key on.
+    pub fn indexed_field_names(&self) -> Vec<&str> {
+        let mut v: Vec<&str> = self
+            .fields
+            .iter()
+            .filter(|f| f.indexed)
+            .map(|f| f.name.as_str())
+            .collect();
+        v.sort_unstable();
+        v
+    }
+
     /// The one verb carrying the `supersession` role (`replaces` in the
     /// shipped set). Validation guarantees exactly one exists.
     pub fn supersession_verb(&self) -> &str {
@@ -1058,6 +1361,9 @@ impl GraphConfig {
             if t.roles.anchor {
                 roles.push("anchor: a code subject, carries code_refs");
             }
+            if t.roles.tombstone {
+                roles.push("tombstone: marks knowledge deliberately removed — don't resurrect it");
+            }
             out.push_str(&format!(
                 "- {} — \"{}\"; default durability {}{}\n",
                 t.name,
@@ -1065,6 +1371,34 @@ impl GraphConfig {
                 t.durability.as_str(),
                 paren(&roles)
             ));
+        }
+        if !self.fields.is_empty() {
+            out.push_str(
+                "Custom fields (pass as a `fields` object on add_note/update_node, e.g. \
+                 {\"fields\": {\"name\": value}}):\n",
+            );
+            for f in &self.fields {
+                let applies = if f.applies_to.is_empty() {
+                    "every type".to_string()
+                } else {
+                    f.applies_to.join("/")
+                };
+                let mut line = format!(
+                    "- {} ({}{}; on {})",
+                    f.name,
+                    f.kind.as_str(),
+                    if f.required { ", REQUIRED" } else { "" },
+                    applies
+                );
+                if f.kind == FieldKind::Enum {
+                    line.push_str(&format!(" — one of: {}", f.values.join(" | ")));
+                }
+                if !f.label.is_empty() {
+                    line.push_str(&format!(" — \"{}\"", f.label));
+                }
+                line.push('\n');
+                out.push_str(&line);
+            }
         }
         out.push_str("Edge verbs (a triple must read as English):\n");
         for v in &self.ontology.verbs {
@@ -1124,6 +1458,13 @@ impl GraphConfig {
                     t.roles.rank_prior
                 ));
             }
+            // A tombstone is a closed record of a removal — it can't be open
+            // work, and it isn't a live code subject.
+            if t.roles.tombstone && (t.roles.worklist || t.roles.anchor) {
+                return fail(format!(
+                    "type {name}: tombstone can't also carry worklist or anchor"
+                ));
+            }
             validate_section(&t.brief, &format!("type {name} brief"))?;
         }
 
@@ -1174,6 +1515,78 @@ impl GraphConfig {
                 "verb {:?} can't be both supersession and contradiction",
                 v.name
             ));
+        }
+
+        // Custom fields (0.9.0): names must be usable as JSON keys everywhere
+        // a node travels, must never shadow a built-in field, and enum kinds
+        // must actually enumerate something.
+        let mut seen = std::collections::HashSet::new();
+        for f in &self.fields {
+            let name = f.name.as_str();
+            if name.is_empty()
+                || name.len() > 32
+                || !name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                || !name.starts_with(|c: char| c.is_ascii_lowercase())
+            {
+                return fail(format!(
+                    "field name {name:?} must be lowercase snake_case (1..=32 chars, starting with a letter)"
+                ));
+            }
+            if RESERVED_FIELD_NAMES.contains(&name) {
+                return fail(format!(
+                    "field name {name:?} shadows a built-in node field — reserved names: {}",
+                    RESERVED_FIELD_NAMES.join(", ")
+                ));
+            }
+            if !seen.insert(name.to_string()) {
+                return fail(format!("duplicate field name {name:?}"));
+            }
+            if f.label.len() > 64 {
+                return fail(format!("field {name}: label longer than 64 chars"));
+            }
+            match f.kind {
+                FieldKind::Enum => {
+                    if f.values.is_empty() {
+                        return fail(format!("field {name}: enum kind needs at least one value"));
+                    }
+                    let mut vs = std::collections::HashSet::new();
+                    for v in &f.values {
+                        if v.is_empty() || v.len() > 200 {
+                            return fail(format!(
+                                "field {name}: enum value {v:?} out of 1..=200 chars"
+                            ));
+                        }
+                        if !vs.insert(v) {
+                            return fail(format!("field {name}: duplicate enum value {v:?}"));
+                        }
+                    }
+                }
+                _ => {
+                    if !f.values.is_empty() {
+                        return fail(format!(
+                            "field {name}: `values` only makes sense on the enum kind"
+                        ));
+                    }
+                }
+            }
+            let mut ats = std::collections::HashSet::new();
+            for t in &f.applies_to {
+                if self.type_def(t).is_none() {
+                    return fail(format!(
+                        "field {name}: applies_to names unknown type {t:?} — declared types: {}",
+                        types
+                            .iter()
+                            .map(|t| t.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                if !ats.insert(t) {
+                    return fail(format!("field {name}: duplicate applies_to entry {t:?}"));
+                }
+            }
         }
 
         let p = &self.policy;

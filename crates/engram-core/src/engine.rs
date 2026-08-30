@@ -111,11 +111,16 @@ pub struct Engine {
     /// purpose — provenance is a footnote, losing a few entries to a daemon
     /// restart costs a link, never knowledge.
     provenance_lot: std::sync::Mutex<Vec<ParkedProvenance>>,
-    /// The at-rest sealing key, loaded once on first history write/read —
-    /// but only when the daemon opted in (tests and library embedders must
-    /// never touch the OS keychain).
-    sealing_wanted: bool,
-    history_key: std::sync::OnceLock<Option<crate::history::HistoryKey>>,
+    /// Desired at-rest encryption per store — `(graph, history)` — installed
+    /// by the daemon from machine settings (0.9.0). `None` = leave the
+    /// store's own recorded state alone: library engines and tests never
+    /// run migrations or touch the OS keychain.
+    desired_graph_enc: Option<bool>,
+    desired_history_enc: Option<bool>,
+    /// Legacy read fallback: rows sealed by 0.8.x are normally opened by the
+    /// store driver, but any path that meets a sealed string directly loads
+    /// the machine key lazily — only when one is actually seen.
+    legacy_key: std::sync::OnceLock<Option<crate::seal::SealKey>>,
     listeners: Vec<Listener>,
     audit_origin: AuditOrigin,
     /// Binary-side context captured once per process — the enrichment every
@@ -145,8 +150,9 @@ impl Engine {
             history_path: None,
             history: std::sync::Mutex::new(None),
             provenance_lot: std::sync::Mutex::new(Vec::new()),
-            sealing_wanted: false,
-            history_key: std::sync::OnceLock::new(),
+            desired_graph_enc: None,
+            desired_history_enc: None,
+            legacy_key: std::sync::OnceLock::new(),
             listeners: Vec::new(),
             audit_origin: AuditOrigin::default(),
             audit_cwd: std::env::current_dir()
@@ -246,35 +252,29 @@ impl Engine {
         self.history.lock().is_ok_and(|g| g.is_some())
     }
 
-    /// The machine's history sealing key, loaded once per process (keyring,
-    /// then file fallback). `None` = sealing unavailable — writes stay
-    /// plaintext rather than failing, and the backlog pass seals them the
-    /// moment a key exists.
-    /// Opt this engine into at-rest history sealing (serve does; tests and
-    /// library embedders don't, so they never touch the OS keychain).
-    pub fn enable_history_sealing(&mut self) {
-        self.sealing_wanted = true;
+    /// Install the daemon's desired at-rest encryption (0.9.0, from machine
+    /// settings): `Some(true)` = keep that store sealed, `Some(false)` =
+    /// keep it plaintext, `None` = leave its recorded state alone. Replaces
+    /// 0.8.4's `enable_history_sealing` opt-in — the truth now lives in
+    /// each store's own meta, and this is only the daemon's INTENT.
+    pub fn set_desired_encryption(&mut self, graph: Option<bool>, history: Option<bool>) {
+        self.desired_graph_enc = graph;
+        self.desired_history_enc = history;
     }
 
-    fn history_key(&self) -> Option<&crate::history::HistoryKey> {
-        if !self.sealing_wanted {
-            return None;
-        }
-        self.history_key
-            .get_or_init(crate::history::HistoryKey::load_or_create)
-            .as_ref()
-    }
-
-    /// Decrypt one stored history string for a reader. Unsealed strings pass
-    /// through (pre-seal rows, structural fields); an undecryptable blob
-    /// renders as a placeholder, never as garbage.
+    /// Decrypt one stored string for a reader. The store driver normally
+    /// opens sealed rows itself; this is the legacy fallback for strings
+    /// sealed by 0.8.x paths — the key loads lazily, only when a sealed
+    /// string is actually met.
     fn unseal_str(&self, s: &str) -> String {
-        if !crate::history::is_sealed(s) {
+        if !crate::seal::is_sealed(s) {
             return s.to_string();
         }
-        self.history_key()
+        self.legacy_key
+            .get_or_init(crate::seal::SealKey::load_or_create)
+            .as_ref()
             .and_then(|k| k.unseal(s))
-            .unwrap_or_else(|| "[sealed — history key unavailable]".to_string())
+            .unwrap_or_else(|| crate::seal::SEALED_PLACEHOLDER.to_string())
     }
 
     /// Write one node into the history layer and embed it there — the
@@ -282,68 +282,28 @@ impl Engine {
     /// audit row, no change event, no dupe verdicts, no version stamp —
     /// history is records, not knowledge.
     ///
-    /// Order is load-bearing: scrub the plaintext (the store's own scrub
-    /// can't see through a seal), embed the SCRUBBED PLAINTEXT (vectors stay
-    /// deliberately open — documented inversion risk), then seal title+body
-    /// and store. `Ok(None)` when the layer is disabled or closed.
+    /// Sealing is the STORE DRIVER's job since 0.9.0 (its recorded state
+    /// decides); this path scrubs plaintext and embeds the scrubbed
+    /// plaintext — vectors stay deliberately open, the documented inversion
+    /// risk. `Ok(None)` when the layer is disabled or closed.
     pub fn add_history_node(&self, mut n: NewNode) -> Result<Option<Node>> {
         n.title = crate::redact::scrub(&n.title);
         n.body = n.body.as_deref().map(crate::redact::scrub);
-        let plain_title = n.title.clone();
-        let plain_body = n.body.clone();
-        if let Some(key) = self.history_key() {
-            n.title = key.seal(&n.title);
-            n.body = n.body.as_deref().map(|b| key.seal(b));
-        }
         let Some(node) = self.with_history(|s| s.add_node(n)).transpose()? else {
             return Ok(None);
         };
+        // The driver returned the node it stored, opened for us — plaintext.
         let mut texts = vec![embed_text(
-            &plain_title,
-            plain_body.as_deref(),
+            &node.title,
+            node.body.as_deref(),
             &node.tags,
             &node.code_refs,
         )];
-        texts.extend(claim_texts(&plain_title, plain_body.as_deref()));
+        texts.extend(claim_texts(&node.title, node.body.as_deref()));
         let vectors = self.embedder.embed(&texts)?;
         self.with_history(|s| s.upsert_embeddings(&node.id, &vectors))
             .transpose()?;
         Ok(Some(node))
-    }
-
-    /// Seal any plaintext rows a pre-seal daemon (or a keyless period) left
-    /// behind — the re-seal pass the "encryption last" build order requires.
-    /// Vectors are untouched: they were computed from the same plaintext and
-    /// stay open by design. Returns how many nodes were sealed.
-    pub fn seal_history_backlog(&self) -> Result<usize> {
-        let Some(_) = self.history_key() else {
-            return Ok(0);
-        };
-        let nodes = self
-            .with_history(|s| s.all_nodes())
-            .transpose()?
-            .unwrap_or_default();
-        let mut sealed = 0usize;
-        for mut node in nodes {
-            let title_open = !crate::history::is_sealed(&node.title);
-            let body_open = node
-                .body
-                .as_deref()
-                .is_some_and(|b| !crate::history::is_sealed(b));
-            if !title_open && !body_open {
-                continue;
-            }
-            let key = self.history_key().expect("checked above");
-            if title_open {
-                node.title = key.seal(&node.title);
-            }
-            if body_open && let Some(b) = &node.body {
-                node.body = Some(key.seal(b));
-            }
-            self.with_history(|s| s.upsert_node(&node)).transpose()?;
-            sealed += 1;
-        }
-        Ok(sealed)
     }
 
     /// Write one edge into the history layer (`in`/`next`/`born-in` chains).
@@ -487,12 +447,14 @@ impl Engine {
         Ok(n)
     }
 
-    /// Search the history layer: vector-first (no FTS exists over history —
-    /// caution 00bgftfbusll), then the cross-encoder re-scores the candidate
-    /// texts at query time. Scores live on the reranker's scale but are
-    /// NEVER blended with curated scores (the 0.8.1 register lesson) — the
-    /// caller renders these as their own labeled section. Empty when the
-    /// layer is off or `search_fallthrough` gates it at the call site.
+    /// Search the history layer: hybrid since 0.9.0 — vector candidates
+    /// fused with the blind-index BM25 channel (identical sealed or
+    /// plaintext; before 0.9.0 no keyword index existed over history at
+    /// all, caution 00bgftfbusll), then the cross-encoder re-scores the
+    /// candidate texts at query time. Scores live on the reranker's scale
+    /// but are NEVER blended with curated scores (the 0.8.1 register
+    /// lesson) — the caller renders these as their own labeled section.
+    /// Empty when the layer is off or `search_fallthrough` gates it.
     pub fn search_history(
         &self,
         query: &str,
@@ -535,6 +497,46 @@ impl Engine {
                         session_titles.insert(sid.clone(), n.title);
                     }
                 }
+                let mk_hit = |n: &Node, score: f64| {
+                    let p = |k: &str| n.props.as_ref().and_then(|m| m.get(k).cloned());
+                    let session = n.session_id.clone().unwrap_or_default();
+                    crate::history::HistoryHit {
+                        message_id: n.id.clone(),
+                        session_title: session_titles
+                            .get(&session)
+                            .map(|t| self.unseal_str(t))
+                            .unwrap_or_default(),
+                        session,
+                        harness: p("harness").and_then(|v| v.as_str().map(str::to_string)),
+                        role: p("role")
+                            .and_then(|v| v.as_str().map(str::to_string))
+                            .unwrap_or_else(|| "assistant".into()),
+                        turn: p("turn").and_then(|v| v.as_u64()),
+                        timestamp: n.created_at,
+                        snippet: crate::harvest::truncate_words(
+                            &self.unseal_str(n.body.as_deref().unwrap_or(&n.title)),
+                            240,
+                        ),
+                        score,
+                        prior: Vec::new(),
+                    }
+                };
+                // The keyword channel (0.9.0): history finally has BM25 —
+                // the same blind index the curated store runs, identical
+                // sealed or plaintext. Fused with search_hybrid's weights so
+                // both layers rank by one rulebook; scores still NEVER
+                // blend across layers.
+                let pol = self.store.config().policy.clone();
+                let kw_hits = s.search_fts(query, &[], k)?;
+                let kw_max = kw_hits.iter().map(|h| h.score).fold(0.0f64, f64::max);
+                let kw_norm: std::collections::HashMap<String, f64> = kw_hits
+                    .iter()
+                    .filter(|_| kw_max > 0.0)
+                    .map(|h| (h.id.clone(), h.score / kw_max))
+                    .collect();
+                let sem_scaled = |sem: f64| {
+                    ((sem - pol.semantic_floor) / (1.0 - pol.semantic_floor)).clamp(0.0, 1.0)
+                };
                 let mut out = Vec::new();
                 let mut seen = std::collections::HashSet::new();
                 for (id, dist) in s.search_vec(&qv, k)? {
@@ -552,28 +554,29 @@ impl Engine {
                     if !window.contains(n.created_at) {
                         continue;
                     }
-                    let p = |k: &str| n.props.as_ref().and_then(|m| m.get(k).cloned());
-                    let session = n.session_id.clone().unwrap_or_default();
-                    out.push(crate::history::HistoryHit {
-                        message_id: n.id.clone(),
-                        session_title: session_titles
-                            .get(&session)
-                            .map(|t| self.unseal_str(t))
-                            .unwrap_or_default(),
-                        session,
-                        harness: p("harness").and_then(|v| v.as_str().map(str::to_string)),
-                        role: p("role")
-                            .and_then(|v| v.as_str().map(str::to_string))
-                            .unwrap_or_else(|| "assistant".into()),
-                        turn: p("turn").and_then(|v| v.as_u64()),
-                        timestamp: n.created_at,
-                        snippet: crate::harvest::truncate_words(
-                            &self.unseal_str(n.body.as_deref().unwrap_or(&n.title)),
-                            240,
-                        ),
-                        score: (1.0 - dist).clamp(0.0, 1.0),
-                        prior: Vec::new(),
-                    });
+                    let kw = kw_norm.get(&id).copied().unwrap_or(0.0);
+                    let sem = (1.0 - dist).clamp(0.0, 1.0);
+                    let score =
+                        pol.keyword_weight * kw + (1.0 - pol.keyword_weight) * sem_scaled(sem);
+                    out.push(mk_hit(&n, score));
+                }
+                // Keyword-only candidates: matched terms but slipped the
+                // vector net — exactly the class the old vector-only path
+                // could never see.
+                for h in &kw_hits {
+                    if !seen.insert(h.id.clone()) {
+                        continue;
+                    }
+                    let Some(n) = s.get_node(&h.id)? else {
+                        continue;
+                    };
+                    if n.node_type.as_str() != crate::history::MESSAGE_TYPE
+                        || !window.contains(n.created_at)
+                    {
+                        continue;
+                    }
+                    let kw = kw_norm.get(&h.id).copied().unwrap_or(0.0);
+                    out.push(mk_hit(&n, pol.keyword_weight * kw));
                 }
                 Ok(out)
             })
@@ -960,24 +963,14 @@ impl Engine {
     }
 
     /// Replace a history node in place (the harvester's cursor bumps and
-    /// title upgrades live in `Session.props`). Fields arrive plaintext (a
-    /// retitle) or still sealed (a props-only flush) — plaintext gets
-    /// sealed, sealed passes through. Re-embeds only when asked, always
-    /// from plaintext. Returns whether the layer was open to take the write.
+    /// title upgrades live in `Session.props`). A legacy-sealed field
+    /// arriving from an old read path is opened first; storage-level
+    /// sealing is the driver's job. Re-embeds only when asked, always from
+    /// plaintext. Returns whether the layer was open to take the write.
     pub fn upsert_history_node(&self, node: &Node, re_embed: bool) -> Result<bool> {
         let mut stored = node.clone();
-        let plain_title = self.unseal_str(&stored.title);
-        let plain_body = stored.body.as_deref().map(|b| self.unseal_str(b));
-        if let Some(key) = self.history_key() {
-            if !crate::history::is_sealed(&stored.title) {
-                stored.title = key.seal(&stored.title);
-            }
-            if let Some(b) = &stored.body
-                && !crate::history::is_sealed(b)
-            {
-                stored.body = Some(key.seal(b));
-            }
-        }
+        stored.title = self.unseal_str(&stored.title);
+        stored.body = stored.body.as_deref().map(|b| self.unseal_str(b));
         let wrote = self
             .with_history(|s| {
                 s.upsert_node(&stored)?;
@@ -986,12 +979,12 @@ impl Engine {
             .transpose()?;
         if wrote.is_some() && re_embed {
             let mut texts = vec![embed_text(
-                &plain_title,
-                plain_body.as_deref(),
+                &stored.title,
+                stored.body.as_deref(),
                 &stored.tags,
                 &stored.code_refs,
             )];
-            texts.extend(claim_texts(&plain_title, plain_body.as_deref()));
+            texts.extend(claim_texts(&stored.title, stored.body.as_deref()));
             let vectors = self.embedder.embed(&texts)?;
             self.with_history(|s| s.upsert_embeddings(&stored.id, &vectors))
                 .transpose()?;
@@ -1002,7 +995,9 @@ impl Engine {
     /// Reconcile the open handle with `config().history.enabled` — runs on
     /// path install and after every config write, so the pane's toggle takes
     /// effect without a daemon restart. Disabling drops the handle; the file
-    /// stays on disk (delete is a user gesture).
+    /// stays on disk (delete is a user gesture). A freshly-opened store is
+    /// also reconciled with the daemon's desired encryption (0.9.0), which
+    /// seals pre-0.9 plaintext/mixed history stores on first open.
     fn sync_history_store(&self) {
         let Ok(mut slot) = self.history.lock() else {
             return;
@@ -1011,7 +1006,14 @@ impl Engine {
         if enabled && slot.is_none() {
             if let Some(path) = &self.history_path {
                 match crate::history::open_history_store(path) {
-                    Ok(s) => *slot = Some(s),
+                    Ok(s) => {
+                        if let Err(e) =
+                            reconcile_encryption(&*s, self.desired_history_enc, &mut |_, _| {})
+                        {
+                            eprintln!("engram: history encryption reconcile failed: {e}");
+                        }
+                        *slot = Some(s);
+                    }
                     Err(e) => {
                         eprintln!(
                             "engram: couldn't open history store {}: {e}",
@@ -1023,6 +1025,69 @@ impl Engine {
         } else if !enabled && slot.is_some() {
             *slot = None;
         }
+    }
+
+    /// Reconcile the CURATED store with the daemon's desired encryption
+    /// (0.9.0) — run at open, after `ensure_*`. Returns rows reprocessed.
+    pub fn ensure_encryption(&self) -> Result<usize> {
+        reconcile_encryption(self.store.as_ref(), self.desired_graph_enc, &mut |_, _| {})
+    }
+
+    /// The recorded at-rest states — `(curated, history)`; history is `None`
+    /// while the layer is closed. For `/encryption` and doctor.
+    pub fn encryption_states(
+        &self,
+    ) -> (
+        crate::seal::EncryptionState,
+        Option<crate::seal::EncryptionState>,
+    ) {
+        (
+            self.store.encryption_state(),
+            self.with_history(|s| s.encryption_state()),
+        )
+    }
+
+    /// Encrypt or decrypt a whole store NOW — the pane's two switches land
+    /// here (`target`: "graph" | "history"). Runs the full rewrite with
+    /// `progress(done, total)` callbacks, journals the change, and returns
+    /// rows reprocessed. The store's recorded state is the source of truth
+    /// throughout: killed anywhere, the next reconcile finishes the job.
+    pub fn set_store_encryption(
+        &self,
+        target: &str,
+        enable: bool,
+        progress: &mut dyn FnMut(usize, usize),
+    ) -> Result<usize> {
+        let n = match target {
+            "graph" => reconcile_encryption(self.store.as_ref(), Some(enable), progress)?,
+            "history" => self
+                .with_history(|s| reconcile_encryption(s, Some(enable), progress))
+                .transpose()?
+                .ok_or_else(|| {
+                    crate::Error::Config(
+                        "the history layer is not open — enable session recording first".into(),
+                    )
+                })?,
+            other => {
+                return Err(crate::Error::Config(format!(
+                    "unknown encryption target {other:?} — graph | history"
+                )));
+            }
+        };
+        self.audit(
+            "encryption_changed",
+            "graph",
+            "",
+            Some(format!(
+                "{target} → {} ({n} rows reprocessed)",
+                if enable { "sealed" } else { "plaintext" }
+            )),
+            None,
+            None,
+            None,
+        )?;
+        self.notify(ChangeEvent::ConfigChanged);
+        Ok(n)
     }
 
     /// Path-shaped code_refs that don't resolve against the repo root right
@@ -1299,9 +1364,14 @@ impl Engine {
             let qv = self.embedder.embed_one(probe)?;
             // Probes calibrate against the WHOLE graph — a windowed noise
             // sample would fit a line to a slice of history.
-            let mut hits =
-                self.store
-                    .search_hybrid(probe, Some(&qv), &[], 12, Default::default())?;
+            let mut hits = self.store.search_hybrid(
+                probe,
+                Some(&qv),
+                &[],
+                12,
+                Default::default(),
+                &Default::default(),
+            )?;
             if hits.is_empty() {
                 return Ok(0.0);
             }
@@ -1527,6 +1597,12 @@ impl Engine {
         {
             n.version = self.store.current_version()?;
         }
+        // Custom fields (0.9.0): an empty map is the same as none; the full
+        // map is validated here so every surface gets one teaching error.
+        if n.fields.as_ref().is_some_and(|f| f.is_empty()) {
+            n.fields = None;
+        }
+        self.check_fields(&n.node_type, n.fields.as_ref())?;
         let node = self.store.add_node(n)?;
         self.embed_node(&node)?;
         self.audit_node("created", None, Some(&node))?;
@@ -1554,6 +1630,148 @@ impl Engine {
         Ok(())
     }
 
+    /// The custom-fields write boundary (0.9.0): validates the FULL resolved
+    /// map a node will carry — unknown names fail loudly, kinds must match,
+    /// required fields must be present. The error is a teaching error: it
+    /// names the graph's whole field roster and the exact call shape, so an
+    /// agent that has never seen this graph can self-correct in one step.
+    fn check_fields(
+        &self,
+        node_type: &NodeType,
+        fields: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) -> Result<()> {
+        let cfg = self.store.config();
+        let empty = serde_json::Map::new();
+        let fields = fields.unwrap_or(&empty);
+        if cfg.fields.is_empty() {
+            if fields.is_empty() {
+                return Ok(());
+            }
+            return Err(crate::Error::Config(
+                "this graph declares no custom fields — drop the `fields` object \
+                 (definitions are a user gesture: pane Settings or PUT /config)"
+                    .into(),
+            ));
+        }
+        let applicable = cfg.fields_for(node_type.as_str());
+        let roster = || {
+            let lines: Vec<String> = applicable
+                .iter()
+                .map(|f| {
+                    format!(
+                        "{} ({}{}{})",
+                        f.name,
+                        f.kind.as_str(),
+                        if f.required { ", required" } else { "" },
+                        if f.kind == crate::config::FieldKind::Enum {
+                            format!(": {}", f.values.join(" | "))
+                        } else {
+                            String::new()
+                        }
+                    )
+                })
+                .collect();
+            if lines.is_empty() {
+                format!("no custom fields apply to {}", node_type.as_str())
+            } else {
+                format!(
+                    "fields for {}: {} — pass as {{\"fields\": {{\"name\": value}}}}",
+                    node_type.as_str(),
+                    lines.join("; ")
+                )
+            }
+        };
+        for (name, value) in fields {
+            let Some(def) = applicable.iter().find(|f| f.name == *name) else {
+                return Err(crate::Error::Config(format!(
+                    "unknown custom field {name:?} for type {} — {}",
+                    node_type.as_str(),
+                    roster()
+                )));
+            };
+            if let Err(why) = field_value_ok(def, value) {
+                return Err(crate::Error::Config(format!(
+                    "custom field {name:?}: {why} — {}",
+                    roster()
+                )));
+            }
+        }
+        let missing: Vec<&str> = applicable
+            .iter()
+            .filter(|f| f.required && !fields.contains_key(&f.name))
+            .map(|f| f.name.as_str())
+            .collect();
+        if !missing.is_empty() {
+            return Err(crate::Error::Config(format!(
+                "missing required custom field(s) {} for type {} — {}",
+                missing.join(", "),
+                node_type.as_str(),
+                roster()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Resolve a patch's MERGE intent against the stored map: present keys
+    /// overwrite, `null` deletes, absent keys survive. Returns the full
+    /// replacement map the store gets (empty = clear all).
+    fn resolve_fields_patch(
+        before: Option<&serde_json::Map<String, serde_json::Value>>,
+        patch: &serde_json::Map<String, serde_json::Value>,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        let mut out = before.cloned().unwrap_or_default();
+        for (k, v) in patch {
+            if v.is_null() {
+                out.remove(k);
+            } else {
+                out.insert(k.clone(), v.clone());
+            }
+        }
+        out
+    }
+
+    /// The bitemporal-search boundary (0.9.0): a `date_field` clock must
+    /// name declared date-kind custom fields, and must travel with a window
+    /// — an unaimed clock filters nothing and would silently return the
+    /// default result while looking like an event-time answer.
+    fn check_clock(&self, filter: &SearchFilter) -> Result<()> {
+        use crate::timespec::TimeClock;
+        let names: Vec<&str> = match &filter.clock {
+            TimeClock::CreatedAt => return Ok(()),
+            TimeClock::Field(name) => vec![name.as_str()],
+            TimeClock::FieldSpan(from, to) => vec![from.as_str(), to.as_str()],
+        };
+        let cfg = self.store.config();
+        for name in names {
+            let ok = cfg
+                .field_def(name)
+                .is_some_and(|f| f.kind == crate::config::FieldKind::Date);
+            if !ok {
+                let dates: Vec<&str> = cfg
+                    .fields
+                    .iter()
+                    .filter(|f| f.kind == crate::config::FieldKind::Date)
+                    .map(|f| f.name.as_str())
+                    .collect();
+                return Err(crate::Error::Config(format!(
+                    "date_field {name:?} is not a declared date-kind custom field — {}",
+                    if dates.is_empty() {
+                        "this graph declares none (definitions: pane Settings / PUT /config)"
+                            .to_string()
+                    } else {
+                        format!("this graph's date fields: {}", dates.join(", "))
+                    }
+                )));
+            }
+        }
+        if filter.window.is_open() {
+            return Err(crate::Error::Config(
+                "date_field needs a window — pass after and/or before to aim it".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Same boundary for edge verbs: a triple can only use a verb this
     /// graph's ontology declares.
     fn check_edge_type(&self, t: &EdgeType) -> Result<()> {
@@ -1576,15 +1794,38 @@ impl Engine {
     /// Patch a node and re-embed if any embedded field changed (title, body,
     /// tags, code_refs). Any update refreshes `last_seen` (the store stamps
     /// it): edited knowledge is in-use knowledge.
-    pub fn update_node(&self, id: &str, patch: NodePatch) -> Result<Node> {
+    pub fn update_node(&self, id: &str, mut patch: NodePatch) -> Result<Node> {
         if let Some(t) = &patch.node_type {
             self.check_node_type(t)?;
         }
         let touches_text = patch.title.is_some()
             || patch.body.is_some()
             || patch.tags.is_some()
-            || patch.code_refs.is_some();
+            || patch.code_refs.is_some()
+            || patch.fields.is_some();
         let before = self.store.get_node(id)?;
+        // Custom fields (0.9.0): the patch is MERGE intent (null deletes a
+        // key). Resolve it against the stored node, validate the result —
+        // against the patched-to type on a retype — and hand the store the
+        // full replacement map. A retype alone re-validates too: the new
+        // type's required fields must already be satisfied.
+        if patch.fields.is_some() || patch.node_type.is_some() {
+            let stored = before.as_ref().and_then(|b| b.fields.as_ref());
+            let resolved = match &patch.fields {
+                Some(p) => Self::resolve_fields_patch(stored, p),
+                None => stored.cloned().unwrap_or_default(),
+            };
+            let target_type = patch
+                .node_type
+                .clone()
+                .or_else(|| before.as_ref().map(|b| b.node_type.clone()));
+            if let Some(t) = &target_type {
+                self.check_fields(t, Some(&resolved))?;
+            }
+            if patch.fields.is_some() {
+                patch.fields = Some(resolved);
+            }
+        }
         let node = self.store.update_node(id, patch)?;
         if touches_text {
             self.embed_node(&node)?;
@@ -1662,6 +1903,62 @@ impl Engine {
             self.notify(ChangeEvent::NodeDeleted(id.to_string()));
         }
         Ok(removed)
+    }
+
+    /// Hard delete that leaves a trace: mints a tombstone-role note recording
+    /// what was removed and why, then cascades the victim (0.9.0 — before
+    /// this, deletion was the one memory operation that left nothing behind,
+    /// so an agent could re-learn a deliberately killed fact). User-only,
+    /// like delete itself. When the ontology declares no tombstone type this
+    /// degrades to a plain delete — the config decides, never the caller.
+    ///
+    /// The tombstone carries no edge to the victim: the victim is gone and
+    /// edges never dangle. The victim's identity lives in the tombstone's
+    /// body (and the audit journal keeps the full pre-image, as for any
+    /// delete).
+    pub fn delete_node_with_tombstone(
+        &self,
+        id: &str,
+        reason: Option<&str>,
+    ) -> Result<(bool, Option<Node>)> {
+        let Some(victim) = self.store.get_node(id)? else {
+            return Ok((false, None));
+        };
+        let cfg = self.store.config();
+        let Some(ts_type) = cfg.tombstone_type().map(str::to_string) else {
+            return Ok((self.delete_node(id)?, None));
+        };
+        let ts_def = cfg.type_def(&ts_type).expect("tombstone_type is declared");
+        let mut body = format!(
+            "Deleted {} {:?} (id {}).",
+            victim.node_type.as_str(),
+            victim.title,
+            victim.id
+        );
+        match reason {
+            Some(r) if !r.trim().is_empty() => {
+                body.push_str("\n\n**Why:** ");
+                body.push_str(r.trim());
+            }
+            _ => {}
+        }
+        let tombstone = self.add_node(NewNode {
+            node_type: NodeType::parse(&ts_type)?,
+            title: format!("Removed: {}", victim.title),
+            body: Some(body),
+            created_at: None,
+            durability: ts_def.durability,
+            source: Source::User,
+            session_id: None,
+            status: None,
+            code_refs: Vec::new(),
+            tags: Vec::new(),
+            version: None,
+            props: None,
+            fields: None,
+        })?;
+        let removed = self.delete_node(id)?;
+        Ok((removed, Some(tombstone)))
     }
 
     pub fn get_node(&self, id: &str) -> Result<Option<Node>> {
@@ -2024,7 +2321,81 @@ impl Engine {
         )?;
         self.notify(ChangeEvent::ConfigChanged);
         self.sync_history_store();
+        // A changed indexed-field set rewrites + re-embeds affected storage
+        // (cheap no-op when the fingerprint is unchanged).
+        self.ensure_field_index()?;
         Ok(())
+    }
+
+    /// Keep the search index in line with the graph's INDEXED custom fields
+    /// (0.9.0), returning how many nodes were reprocessed. The store meta
+    /// carries a fingerprint of the indexed-field set; when it drifts, every
+    /// node is rewritten (re-hoisting the tepin keyword fields) and
+    /// re-embedded (the composition gains/loses the `name: value` lines).
+    /// Skipped under a fake embedder over a non-empty graph, like the other
+    /// re-embed guards — the fingerprint stays unstamped, so the next real
+    /// open finishes the job.
+    pub fn ensure_field_index(&self) -> Result<usize> {
+        const FP_KEY: &str = "indexed_fields_fp";
+        let fp = self.store.config().indexed_field_names().join(",");
+        if self.store.kv_get(FP_KEY)?.unwrap_or_default() == fp {
+            return Ok(0);
+        }
+        let nodes = self.store.all_nodes()?;
+        if self.embedder.is_fake() && !nodes.is_empty() {
+            return Ok(0);
+        }
+        for n in &nodes {
+            self.store.upsert_node(n)?;
+            self.embed_node(n)?;
+        }
+        self.store.kv_set(FP_KEY, &fp)?;
+        Ok(nodes.len())
+    }
+
+    /// Rename a custom field AND move every stored value with it — the
+    /// field-migration gesture, mirroring [`Engine::rename_type`]. Returns
+    /// how many nodes carried the field.
+    pub fn rename_field(&self, from: &str, to: &str) -> Result<u64> {
+        if from == to {
+            return Err(crate::Error::Config("rename needs a new name".into()));
+        }
+        let mut cfg = (*self.store.config()).clone();
+        let def = cfg
+            .fields
+            .iter_mut()
+            .find(|f| f.name == from)
+            .ok_or_else(|| crate::Error::Config(format!("unknown field {from:?}")))?;
+        def.name = to.to_string();
+        cfg.validate()?;
+        // Move the values first (idempotent on re-run), then persist the
+        // config — same ordering rationale as rename_type.
+        let mut moved = 0u64;
+        for node in self.store.all_nodes()? {
+            let Some(fields) = &node.fields else { continue };
+            if !fields.contains_key(from) {
+                continue;
+            }
+            let mut next = fields.clone();
+            if let Some(v) = next.remove(from) {
+                next.insert(to.to_string(), v);
+            }
+            let mut node = node;
+            node.fields = Some(next);
+            self.store.upsert_node(&node)?;
+            moved += 1;
+        }
+        self.set_graph_config(&cfg)?;
+        self.audit(
+            "field_renamed",
+            "graph",
+            "",
+            Some(format!("{from} → {to} ({moved} nodes carried the field)")),
+            None,
+            None,
+            None,
+        )?;
+        Ok(moved)
     }
 
     /// Rename a node type AND bulk-retype every stored node of it — the
@@ -2164,14 +2535,20 @@ impl Engine {
         for t in types {
             self.check_node_type(t)?;
         }
+        self.check_clock(filter)?;
         let qv = self.embedder.embed_one(query)?;
         let fetch = match &self.reranker {
             Some(_) => (limit * 3).clamp(12, 50),
             None => limit,
         };
-        let mut hits = self
-            .store
-            .search_hybrid(query, Some(&qv), types, fetch, filter.window)?;
+        let mut hits = self.store.search_hybrid(
+            query,
+            Some(&qv),
+            types,
+            fetch,
+            filter.window,
+            &filter.clock,
+        )?;
         if let Some(reranker) = &self.reranker
             && !hits.is_empty()
         {
@@ -2283,6 +2660,21 @@ impl Engine {
         during_version: Option<&str>,
         order: Option<&str>,
     ) -> Result<SearchFilter> {
+        self.time_filter_clocked(after, before, during_version, order, None)
+    }
+
+    /// [`Engine::time_filter`] with the bitemporal clock selector (0.9.0):
+    /// `date_field` re-aims the window at a date-kind custom field, or a
+    /// `from..to` pair with interval-overlap semantics. Validated here so an
+    /// unreadable selector is an ERROR, never a dropped filter.
+    pub fn time_filter_clocked(
+        &self,
+        after: Option<&str>,
+        before: Option<&str>,
+        during_version: Option<&str>,
+        order: Option<&str>,
+        date_field: Option<&str>,
+    ) -> Result<SearchFilter> {
         let mut window = crate::timespec::window(after, before, crate::store::now())?;
         if let Some(v) = during_version.map(str::trim).filter(|v| !v.is_empty()) {
             let Some(release) = self.version_window(v)? else {
@@ -2308,7 +2700,19 @@ impl Engine {
             })?,
             None => crate::timespec::SearchOrder::default(),
         };
-        Ok(SearchFilter { window, order })
+        let clock = match date_field.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(sel) => crate::timespec::TimeClock::parse_selector(sel).ok_or_else(|| {
+                crate::Error::Config(format!(
+                    "date_field {sel:?} must be a field name or a from..to pair"
+                ))
+            })?,
+            None => crate::timespec::TimeClock::CreatedAt,
+        };
+        Ok(SearchFilter {
+            window,
+            order,
+            clock,
+        })
     }
 
     /// Calibrated delivery, verdict face: how the assistant should hold a
@@ -2920,7 +3324,7 @@ impl Engine {
                     break 'assemble;
                 }
                 for n in handoff.iter().take(bc.handoff.cap) {
-                    let line = node_line(n, bc.handoff.excerpt);
+                    let line = node_line_cfg(n, bc.handoff.excerpt, Some(&cfg));
                     if !push_line(&mut out, &line) {
                         break 'assemble;
                     }
@@ -3060,7 +3464,7 @@ impl Engine {
                 break 'assemble;
             }
             for n in recent {
-                let line = node_line(&n, bc.recent.excerpt);
+                let line = node_line_cfg(&n, bc.recent.excerpt, Some(&cfg));
                 if !push_line(&mut out, &line) {
                     break 'assemble;
                 }
@@ -3094,7 +3498,7 @@ impl Engine {
                 break 'assemble;
             }
             for n in open.iter().take(bc.open.cap) {
-                let line = node_line(n, bc.open.excerpt);
+                let line = node_line_cfg(n, bc.open.excerpt, Some(&cfg));
                 if !push_line(&mut out, &line) {
                     break 'assemble;
                 }
@@ -3136,7 +3540,7 @@ impl Engine {
                 }
                 let shown = nodes.len();
                 for n in nodes {
-                    let line = node_line(&n, excerpt);
+                    let line = node_line_cfg(&n, excerpt, Some(&cfg));
                     if !push_line(&mut out, &line) {
                         break 'assemble;
                     }
@@ -3254,6 +3658,7 @@ impl Engine {
             &[],
             limit.clamp(4, 16),
             Default::default(),
+            &Default::default(),
         )?;
         let mut nodes = Vec::new();
         for h in &hits {
@@ -3438,12 +3843,13 @@ impl Engine {
                 let Some(candidate) = self.store.get_node(&id)? else {
                     continue;
                 };
-                // Answer candidates by role: any non-worklist, non-anchor
-                // type can settle an open item (Resolution/Decision/Insight
-                // and the canon types in the shipped set).
+                // Answer candidates by role: any non-worklist, non-anchor,
+                // non-tombstone type can settle an open item (Resolution/
+                // Decision/Insight and the canon types in the shipped set —
+                // a removal marker never answers open work).
                 let can_answer = cfg
                     .type_def(candidate.node_type.as_str())
-                    .is_some_and(|t| !t.roles.worklist && !t.roles.anchor);
+                    .is_some_and(|t| !t.roles.worklist && !t.roles.anchor && !t.roles.tombstone);
                 if candidate.valid_until.is_some() || !can_answer {
                     continue;
                 }
@@ -3919,12 +4325,20 @@ impl Engine {
     /// store on every normal write, the history store for harvested nodes
     /// (same composition, so history search rides the same pipeline).
     fn embed_node_into(&self, store: &dyn Store, node: &Node) -> Result<()> {
-        let mut texts = vec![embed_text(
+        let mut composed = embed_text(
             &node.title,
             node.body.as_deref(),
             &node.tags,
             &node.code_refs,
-        )];
+        );
+        // Indexed custom fields (0.9.0) ride the node-level vector; the
+        // per-graph fingerprint guard re-embeds when the indexed set changes.
+        let fields_text = field_embed_text(&store.config(), node);
+        if !fields_text.is_empty() {
+            composed.push('\n');
+            composed.push_str(&fields_text);
+        }
+        let mut texts = vec![composed];
         texts.extend(claim_texts(&node.title, node.body.as_deref()));
         let vectors = self.embedder.embed(&texts)?;
         store.upsert_embeddings(&node.id, &vectors)
@@ -4002,6 +4416,34 @@ impl Engine {
         self.store.set_embed_version(EMBED_COMPOSITION)?;
         Ok(nodes.len())
     }
+}
+
+/// Drive one store from its recorded encryption state to the desired one
+/// (0.9.0). `None` desired = hands off (library engines and tests never
+/// migrate or touch the keyring). The mid-flight state persists BEFORE the
+/// rewrite, so new writes already conform and a crash resumes cleanly.
+fn reconcile_encryption(
+    store: &dyn Store,
+    desired: Option<bool>,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<usize> {
+    use crate::seal::EncryptionState as S;
+    let target = match desired {
+        Some(true) => S::Sealed,
+        Some(false) => S::Plaintext,
+        None => return Ok(0),
+    };
+    if store.encryption_state() == target {
+        return Ok(0);
+    }
+    store.set_encryption_state(if target == S::Sealed {
+        S::Sealing
+    } else {
+        S::Unsealing
+    })?;
+    let n = store.reseal_all(progress)?;
+    store.set_encryption_state(target)?;
+    Ok(n)
 }
 
 /// Appended to the brief when the graph is empty, so a cold start reads as an
@@ -4139,6 +4581,81 @@ fn embed_text(title: &str, body: Option<&str>, tags: &[String], code_refs: &[Str
     text
 }
 
+/// The `name: value` lines a node's INDEXED custom fields contribute to its
+/// embedding (0.9.0). Per-graph, so it rides beside [`embed_text`] rather
+/// than inside it: the global [`EMBED_COMPOSITION`] stays honest for graphs
+/// without indexed fields, and the per-graph fingerprint guard
+/// ([`Engine::ensure_field_index`]) re-embeds when a graph's set changes.
+fn field_embed_text(cfg: &crate::config::GraphConfig, node: &Node) -> String {
+    let Some(fields) = &node.fields else {
+        return String::new();
+    };
+    let mut out = String::new();
+    for f in cfg.fields.iter().filter(|f| f.indexed) {
+        if let Some(v) = fields.get(&f.name) {
+            let text = match v {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&format!("{}: {}", f.name, text));
+        }
+    }
+    out
+}
+
+/// Does `value` satisfy a field definition's kind? Values are scalars only —
+/// arrays/objects are refused for every kind, so redaction, hoisting, and
+/// the pane can all treat them as displayable atoms.
+fn field_value_ok(def: &crate::config::FieldDef, value: &serde_json::Value) -> Result2<(), String> {
+    use crate::config::FieldKind::*;
+    use serde_json::Value;
+    match def.kind {
+        Text => match value {
+            Value::String(_) => Ok(()),
+            _ => Err("expected a string".into()),
+        },
+        Url => match value {
+            Value::String(s) if s.contains("://") => Ok(()),
+            Value::String(_) => Err("expected a URL (scheme://…)".into()),
+            _ => Err("expected a URL string".into()),
+        },
+        Number => match value {
+            Value::Number(_) => Ok(()),
+            _ => Err("expected a number".into()),
+        },
+        Bool => match value {
+            Value::Bool(_) => Ok(()),
+            _ => Err("expected true or false".into()),
+        },
+        Date => match value {
+            Value::Number(n) if n.is_i64() => Ok(()),
+            Value::String(s)
+                if s.len() >= 10
+                    && s.as_bytes()[..4].iter().all(u8::is_ascii_digit)
+                    && crate::timespec::parse_instant(s, crate::store::now()).is_some() =>
+            {
+                Ok(())
+            }
+            Value::String(_) => {
+                Err("expected \"YYYY-MM-DD\", an ISO instant, or unix seconds".into())
+            }
+            _ => Err("expected a date string or unix seconds".into()),
+        },
+        Enum => match value {
+            Value::String(s) if def.values.iter().any(|v| v == s) => Ok(()),
+            Value::String(s) => Err(format!("{s:?} is not one of: {}", def.values.join(" | "))),
+            _ => Err("expected one of the declared enum values (a string)".into()),
+        },
+    }
+}
+
+/// Local alias so [`field_value_ok`] can return a plain-string error without
+/// colliding with the crate-wide `Result`.
+type Result2<T, E> = std::result::Result<T, E>;
+
 /// Longest excerpt a brief line carries. Word-boundary cut, so lines read as
 /// prose, not as a mid-token truncation. Tuned down from 240 on the dogfood
 /// graph: at 240 the budget died mid-Cautions; ~140 still carries the leading
@@ -4151,6 +4668,16 @@ pub const EXCERPT_CHARS: usize = 140;
 /// the assistant can act on it directly (`get_node`, `traverse`,
 /// `update_node`) without a `search` round-trip.
 pub fn node_line(n: &Node, excerpt_max: usize) -> String {
+    node_line_cfg(n, excerpt_max, None)
+}
+
+/// [`node_line`] with the graph's config in hand: custom fields flagged
+/// `show_in_brief` render as `{name: value; …}` before the excerpt (0.9.0).
+pub fn node_line_cfg(
+    n: &Node,
+    excerpt_max: usize,
+    cfg: Option<&crate::config::GraphConfig>,
+) -> String {
     let mut line = format!("- {} [{} {}", n.title, n.node_type.as_str(), n.id);
     if let Some(version) = n.version.as_deref() {
         line.push(' ');
@@ -4167,6 +4694,27 @@ pub fn node_line(n: &Node, excerpt_max: usize) -> String {
         line.push_str(" STALE");
     }
     line.push(']');
+    if let Some(cfg) = cfg
+        && let Some(fields) = &n.fields
+    {
+        let shown: Vec<String> = cfg
+            .fields
+            .iter()
+            .filter(|f| f.show_in_brief)
+            .filter_map(|f| {
+                fields.get(&f.name).map(|v| {
+                    let text = match v {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    format!("{}: {}", f.name, text)
+                })
+            })
+            .collect();
+        if !shown.is_empty() {
+            line.push_str(&format!(" {{{}}}", shown.join("; ")));
+        }
+    }
     if let Some(body) = n.body.as_deref().filter(|b| !b.is_empty()) {
         line.push_str(" — ");
         line.push_str(&excerpt_words(&body.replace('\n', " "), excerpt_max));
@@ -4199,15 +4747,21 @@ fn excerpt_words(text: &str, max: usize) -> String {
 /// whole timeline in relevance order — which is exactly what every caller
 /// before this existed asked for, so [`Engine::search`] stays a thin wrapper
 /// and no existing behavior moves.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchFilter {
     pub window: crate::timespec::TimeWindow,
     pub order: crate::timespec::SearchOrder,
+    /// Which clock the window reads (0.9.0): `created_at` by default, or a
+    /// date-kind custom field / `from..to` field span — bitemporal search
+    /// for graphs that declare an event clock (historic imports).
+    pub clock: crate::timespec::TimeClock,
 }
 
 impl SearchFilter {
     /// Does this filter change anything? Used to keep the unfiltered path
-    /// identical rather than merely equivalent.
+    /// identical rather than merely equivalent. A non-default clock always
+    /// travels with a window (validated at search time), so the window test
+    /// covers it.
     pub fn is_default(&self) -> bool {
         self.window.is_open() && !self.order.is_temporal()
     }

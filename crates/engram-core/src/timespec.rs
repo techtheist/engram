@@ -75,6 +75,61 @@ impl TimeWindow {
     }
 }
 
+/// Which clock a search window reads (0.9.0 bitemporal search). The default
+/// is the CAPTURE clock (`created_at` — when the knowledge entered the
+/// graph); a date-kind custom field re-aims the same `after`/`before`
+/// grammar at the EVENT clock the graph's owner declared ("when was this
+/// true", not "when was this written") — the historic-import case.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum TimeClock {
+    /// `created_at` — the capture clock, today's behavior.
+    #[default]
+    CreatedAt,
+    /// One date-kind custom field: a node matches when its value falls in
+    /// the window; nodes without the field can't answer an event-time
+    /// question and drop out.
+    Field(String),
+    /// A `from..to` pair of date-kind custom fields with interval-OVERLAP
+    /// semantics: a node matches when its validity span intersects the
+    /// window. An absent `from` reads "since forever", an absent `to`
+    /// "still valid"; a node with neither drops out.
+    FieldSpan(String, String),
+}
+
+impl TimeClock {
+    /// Parse the API's `date_field` selector: a field name, or `from..to`.
+    /// Field EXISTENCE and kind are the engine's write-boundary-style check,
+    /// where the graph's config is known — this is shape only.
+    pub fn parse_selector(s: &str) -> Option<Self> {
+        let s = s.trim();
+        if s.is_empty() {
+            return None;
+        }
+        match s.split_once("..") {
+            Some((from, to)) if !from.trim().is_empty() && !to.trim().is_empty() => Some(
+                Self::FieldSpan(from.trim().to_string(), to.trim().to_string()),
+            ),
+            Some(_) => None,
+            None => Some(Self::Field(s.to_string())),
+        }
+    }
+
+    pub fn is_created_at(&self) -> bool {
+        matches!(self, Self::CreatedAt)
+    }
+}
+
+/// A custom-field value as an instant: unix seconds pass through, a date
+/// string resolves through the same grammar the window bounds use. `None` =
+/// absent or unreadable (an unreadable stored value simply can't match).
+pub fn field_instant(value: Option<&serde_json::Value>, now_ts: i64) -> Option<i64> {
+    match value? {
+        serde_json::Value::Number(n) => n.as_i64(),
+        serde_json::Value::String(s) => parse_instant(s, now_ts),
+        _ => None,
+    }
+}
+
 /// How a caller wants results ordered. Relevance is the default everywhere;
 /// the other two are explicit handles, never inferred from the query text.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

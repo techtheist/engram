@@ -34,13 +34,17 @@ again with `project` set to your workspace's absolute path: it rebinds this \
 session and returns THAT project's brief. `search` before non-trivial work. \
 Capture decisions silently as they happen — a feature request usually hides one. \
 Node types (this graph's actual set: `describe_ontology`): Decision, Principle, \
-Caution, Problem, Resolution, Insight, Intent, Anchor. \
+Caution, Problem, Resolution, Insight, Intent, Anchor, Tombstone (a record \
+that knowledge was deliberately removed — don't resurrect it). \
 Edge verbs: about, because, answers, builds-on, replaces, conflicts-with, needs \
 — \"from <verb> to\" must read as a sentence. \
 Call shapes: add_note {\"type\": \"Decision\", \"title\": \"...\", \"body\": \
 \"...\"}; then link {\"from\": \"<new-id>\", \"to\": \"<other-id>\", \"type\": \
 \"because\"}. add_notes {\"notes\": [<add_note items>]} carries NO links — \
 create first, link the returned ids in a second pass. \
+If describe_ontology lists custom fields, pass {\"fields\": {\"name\": value}} \
+on add_note/update_node (update merges; null deletes); refusals teach the \
+roster — follow them. \
 Every write's response is a verdict, not a receipt: {matched, created: false} \
 = near-duplicate (merge via `update_node`; several notes with the same \
 knowledge → `merge_nodes`); `warnings` = landed near contradicted/superseded \
@@ -413,7 +417,9 @@ impl Engram {
         stale (verify first), and 1-hop neighbors (conflicts/replaces first). \
         Temporal questions: scope with `after`/`before`/`during_version` \
         (the daemon resolves relative phrases — never compute dates yourself) \
-        and `order` (chronological = how it developed, recent = current value)."
+        and `order` (chronological = how it developed, recent = current value); \
+        `date_field` aims the window at a date-kind custom field (event time) \
+        instead of created_at (capture time)."
     )]
     async fn search(
         &self,
@@ -442,14 +448,27 @@ impl Engram {
         // One grammar for both layers (0.8.7): the filter is resolved once,
         // against the graph's own version journal, and then applies to
         // whichever layer the scope selects.
+        // The event-clock selector (0.9.0) reads curated custom fields —
+        // history messages carry none, so it can't aim at that layer.
+        if scope == "history"
+            && a.date_field
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty())
+        {
+            return Err(ErrorData::invalid_params(
+                "date_field applies to curated memory — history has no custom fields".to_string(),
+                None,
+            ));
+        }
         let filter = {
             let guard = engine.lock().unwrap();
             guard
-                .time_filter(
+                .time_filter_clocked(
                     a.after.as_deref(),
                     a.before.as_deref(),
                     a.during_version.as_deref(),
                     a.order.as_deref(),
+                    a.date_field.as_deref(),
                 )
                 .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?
         };
@@ -495,9 +514,13 @@ impl Engram {
             if guard.config().history.search_fallthrough && guard.history_open() {
                 drop(guard);
                 let history = {
+                    // History has no custom fields: the fall-through reads
+                    // the same window on the capture clock.
+                    let mut hf = filter.clone();
+                    hf.clock = Default::default();
                     let guard = self.mcp(&engine);
                     guard
-                        .search_history_filtered(&a.query, limit, &filter)
+                        .search_history_filtered(&a.query, limit, &hf)
                         .map_err(map_err)?
                 };
                 if !history.is_empty() {
@@ -662,7 +685,7 @@ impl Engram {
 
     #[tool(description = "Create a memory node: {type, title} required (types: \
         Decision | Principle | Caution | Problem | Resolution | Insight | \
-        Intent | Anchor), body/tags optional; edges go through `link`, never \
+        Intent | Anchor | Tombstone), body/tags optional; edges go through `link`, never \
         inline. The response is a verdict, not a receipt — act on it: \
         {matched, created: false} = near-duplicate, merge via update_node \
         (nli_label=contradiction = a NEGATED duplicate — read it first, \
@@ -715,6 +738,7 @@ impl Engram {
                 tags: a.tags,
                 version: a.version,
                 props: None,
+                fields: a.fields,
             })
             .map_err(map_err)?;
         Ok(match outcome {
@@ -1096,6 +1120,7 @@ impl Engram {
             valid_until: None,
             code_refs: a.code_refs,
             tags: a.tags,
+            fields: a.fields,
         };
         let engine = self.engine_for(&a.project)?;
         let engram_core::CheckedUpdate {
@@ -2348,6 +2373,14 @@ struct SearchArgs {
     types: Vec<String>,
     #[serde(default)]
     limit: Option<usize>,
+    /// Bitemporal search (0.9.0): aim `after`/`before` at a date-kind CUSTOM
+    /// field instead of created_at — the event clock for historic imports.
+    /// A single field name ("event_date") matches values inside the window;
+    /// a "from..to" pair ("effective_from..effective_to") matches nodes
+    /// whose validity span OVERLAPS the window. Needs after and/or before;
+    /// declared fields: describe_ontology.
+    #[serde(default)]
+    date_field: Option<String>,
     /// Progressive disclosure: "compact" = id/type/title/score/trust only
     /// (cheapest — start here when scanning), "snippet" (default) = compact
     /// plus matched snippet and 1-hop neighbors, "full" = snippet plus the
@@ -2498,13 +2531,19 @@ struct TraverseArgs {
 #[serde(deny_unknown_fields)]
 #[schemars(inline)]
 struct AddNoteArgs {
-    /// Node type — the default ontology's 8: Decision | Principle | Caution |
-    /// Problem | Resolution | Insight | Intent | Anchor (this graph's actual
-    /// set: describe_ontology).
+    /// Node type — the default ontology's 9: Decision | Principle | Caution |
+    /// Problem | Resolution | Insight | Intent | Anchor | Tombstone (this
+    /// graph's actual set: describe_ontology).
     #[serde(rename = "type")]
     node_type: String,
     /// One-sentence summary, the claim itself (required; detail goes in body).
     title: String,
+    /// Custom field values, when this graph declares custom fields —
+    /// {"name": value} against the definitions describe_ontology lists
+    /// (kinds, required flags, enum vocabularies). Unknown names and wrong
+    /// kinds are refused with the full roster.
+    #[serde(default)]
+    fields: Option<serde_json::Map<String, serde_json::Value>>,
     #[serde(default)]
     body: Option<String>,
     #[serde(default)]
@@ -2564,7 +2603,7 @@ struct LinkArgs {
 #[schemars(inline)]
 struct UpdateArgs {
     id: String,
-    /// Reclassify the node (one of the 8 canonical types).
+    /// Reclassify the node (one of the 9 canonical types).
     #[serde(default, rename = "type")]
     node_type: Option<String>,
     #[serde(default)]
@@ -2583,6 +2622,11 @@ struct UpdateArgs {
     /// Set or correct the node's captured-at version (version tracking).
     #[serde(default)]
     version: Option<String>,
+    /// Custom field values, MERGED into the node's existing ones: present
+    /// keys overwrite, a null value deletes that key, absent keys survive.
+    /// Definitions (kinds, required, enum vocabularies): describe_ontology.
+    #[serde(default)]
+    fields: Option<serde_json::Map<String, serde_json::Value>>,
     /// Omit = current project; a name, id, or the project's directory =
     /// that project; "home".
     #[serde(default)]
@@ -2628,7 +2672,7 @@ struct UpdateNodesArgs {
 
 #[derive(Deserialize, JsonSchema)]
 struct ListNodesArgs {
-    /// Filter to these node types (default: all 8).
+    /// Filter to these node types (default: all 9).
     #[serde(default)]
     types: Vec<String>,
     /// Filter Problems/Intents by status: open | resolved | obsolete.
@@ -2815,6 +2859,14 @@ fn tidy(v: &mut serde_json::Value) {
                     && EPOCH_BAND.contains(&ts)
                 {
                     *val = Value::String(engram_core::timespec::iso_instant(ts));
+                } else if k == "fields" && val.is_object() {
+                    // Custom-field values are user-shaped data, not API
+                    // metadata: a numeric field that happens to be named
+                    // like a timestamp key must come back exactly as
+                    // stored. Only null pruning applies inside.
+                    if let Value::Object(fields) = val {
+                        fields.retain(|_, fv| !fv.is_null());
+                    }
                 } else {
                     tidy(val);
                 }
@@ -2850,6 +2902,7 @@ mod tidy_tests {
             "turn": 55,
             "score": 0.73,
             "edges": [{"strength": null, "valid_from": 1787409403_i64, "note": "kept"}],
+            "fields": {"timestamp": 1787409403_i64, "ts": 42, "gone": null},
         });
         tidy(&mut v);
         let o = v.as_object().unwrap();
@@ -2863,6 +2916,15 @@ mod tidy_tests {
         assert!(!e.contains_key("strength"), "pruning recurses");
         assert_eq!(e["valid_from"], "2026-08-22T14:36:43Z");
         assert_eq!(e["note"], "kept");
+        // Custom-field values are user data: a numeric field that happens to
+        // share a timestamp key name must come back exactly as stored.
+        let f = v["fields"].as_object().unwrap();
+        assert_eq!(
+            f["timestamp"], 1787409403_i64,
+            "never ISO-ified inside fields"
+        );
+        assert_eq!(f["ts"], 42);
+        assert!(!f.contains_key("gone"), "null values still prune");
     }
 }
 
@@ -3083,6 +3145,7 @@ mod tests {
             .add_note(Parameters(AddNoteArgs {
                 version: None,
                 created_at: None,
+                fields: None,
                 node_type: "Decision".into(),
                 title: "Adopt SQLite WAL".into(),
                 body: Some("concurrent reads".into()),
@@ -3138,6 +3201,89 @@ pub(crate) mod tool_tests {
     }
 
     #[tokio::test]
+    async fn custom_fields_ride_add_note_and_refusals_teach_the_roster() {
+        let engine = Engine::new(
+            SqliteStore::open_in_memory().unwrap(),
+            Box::new(FakeEmbedder::default()),
+        );
+        let cfg = engram_core::GraphConfig {
+            fields: vec![engram_core::config::FieldDef {
+                name: "priority".into(),
+                label: String::new(),
+                kind: engram_core::config::FieldKind::Enum,
+                values: vec!["low".into(), "high".into()],
+                required: true,
+                applies_to: vec!["Decision".into()],
+                indexed: false,
+                show_in_brief: false,
+            }],
+            ..engram_core::GraphConfig::default()
+        };
+        engine.set_graph_config(&cfg).unwrap();
+        let s = Engram::new(engine);
+
+        // Refusal without the required field is a teaching error: it names
+        // the roster, the vocabulary, and the call shape.
+        let err = s
+            .add_note(Parameters(note("pick a queue")))
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("priority"), "{msg}");
+        assert!(msg.contains("low | high"), "{msg}");
+        assert!(msg.contains("fields"), "{msg}");
+
+        // The valid write persists and the value comes back on get_node.
+        let created = s
+            .add_note(Parameters(AddNoteArgs {
+                fields: Some(
+                    [("priority".to_string(), serde_json::json!("high"))]
+                        .into_iter()
+                        .collect(),
+                ),
+                ..note("pick a queue")
+            }))
+            .await
+            .unwrap();
+        let id = id_of(&created);
+        let fetched = s
+            .get_node(Parameters(GetNodeArgs {
+                id: id.clone(),
+                parents: None,
+                children: None,
+                project: None,
+            }))
+            .await
+            .unwrap();
+        assert!(text_of(&fetched).contains("priority"), "field key surfaces");
+        assert!(text_of(&fetched).contains("high"), "field value surfaces");
+
+        // update_node merges: null deletes are refused here because the
+        // field is required — the teaching error again.
+        let err = s
+            .update_node(Parameters(UpdateArgs {
+                id: id.clone(),
+                node_type: None,
+                title: None,
+                body: None,
+                durability: None,
+                status: None,
+                code_refs: None,
+                tags: None,
+                version: None,
+                fields: Some(
+                    [("priority".to_string(), serde_json::Value::Null)]
+                        .into_iter()
+                        .collect(),
+                ),
+                project: None,
+            }))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("missing required"), "{err}");
+    }
+
+    #[tokio::test]
     async fn add_note_dates_historical_knowledge() {
         let s = server();
         let created = s
@@ -3180,6 +3326,7 @@ pub(crate) mod tool_tests {
         AddNoteArgs {
             version: None,
             created_at: None,
+            fields: None,
             node_type: "Decision".into(),
             title: title.into(),
             body: Some("shared body".into()),
@@ -3216,6 +3363,7 @@ pub(crate) mod tool_tests {
         let id = id_of(
             &s.add_note(Parameters(AddNoteArgs {
                 created_at: None,
+                fields: None,
                 tags: vec!["Phase 1".into(), "UI".into()],
                 ..note("tagged decision")
             }))
@@ -3258,6 +3406,7 @@ pub(crate) mod tool_tests {
             &s.add_note(Parameters(AddNoteArgs {
                 version: None,
                 created_at: None,
+                fields: None,
                 node_type: "Principle".into(),
                 title: "local first".into(),
                 body: None,
@@ -3279,6 +3428,7 @@ pub(crate) mod tool_tests {
             &s.add_note(Parameters(AddNoteArgs {
                 version: None,
                 created_at: None,
+                fields: None,
                 node_type: "Insight".into(),
                 title: "wal mode matters".into(),
                 body: None,
@@ -3423,6 +3573,7 @@ pub(crate) mod tool_tests {
         let old = id_of(
             &s.add_note(Parameters(AddNoteArgs {
                 created_at: None,
+                fields: None,
                 body: Some("cookie sessions".into()),
                 ..note("auth v1")
             }))
@@ -3432,6 +3583,7 @@ pub(crate) mod tool_tests {
         let new = id_of(
             &s.add_note(Parameters(AddNoteArgs {
                 created_at: None,
+                fields: None,
                 body: Some("oauth device flow".into()),
                 ..note("auth v2")
             }))
@@ -3475,6 +3627,7 @@ pub(crate) mod tool_tests {
         let s = server();
         s.add_note(Parameters(AddNoteArgs {
             created_at: None,
+            fields: None,
             code_refs: vec!["Cargo.toml".into(), "src/vanished.rs".into()],
             ..note("refs moved")
         }))
@@ -3520,17 +3673,20 @@ pub(crate) mod tool_tests {
                 notes: vec![
                     AddNoteArgs {
                         created_at: None,
+                        fields: None,
                         body: Some("the full body that an export must not lose".into()),
                         ..note("store data in sqlite")
                     },
                     AddNoteArgs {
                         created_at: None,
+                        fields: None,
                         node_type: "Caution".into(),
                         tags: vec!["hygiene".into()],
                         ..note("never trust a relative db path")
                     },
                     AddNoteArgs {
                         created_at: None,
+                        fields: None,
                         body: Some("the full body that an export must not lose".into()),
                         ..note("store data in sqlite")
                     },
@@ -3605,6 +3761,7 @@ pub(crate) mod tool_tests {
             status: None,
             code_refs: None,
             tags: None,
+            fields: None,
             project: None,
         };
         let res = s
@@ -3681,6 +3838,7 @@ pub(crate) mod tool_tests {
                     tags: vec![],
                     version: None,
                     props: Some(props),
+                    fields: None,
                 })
                 .unwrap()
                 .unwrap();
@@ -3777,6 +3935,7 @@ pub(crate) mod tool_tests {
                         tags: vec![],
                         version: None,
                         props: Some(props),
+                        fields: None,
                     })
                     .unwrap()
                     .unwrap();
@@ -3903,6 +4062,7 @@ pub(crate) mod tool_tests {
                         tags: vec![],
                         version: None,
                         props: Some(props),
+                        fields: None,
                     })
                     .unwrap()
                     .unwrap();
@@ -3979,6 +4139,7 @@ pub(crate) mod tool_tests {
                         tags: vec![],
                         version: None,
                         props: Some(props),
+                        fields: None,
                     })
                     .unwrap()
                     .unwrap();
@@ -3995,6 +4156,7 @@ pub(crate) mod tool_tests {
                 session_id: None,
                 version: None,
                 created_at: None,
+                fields: None,
                 project: None,
             })
             .unwrap();
@@ -4151,6 +4313,7 @@ mod project_tests {
             .add_note(Parameters(AddNoteArgs {
                 version: None,
                 created_at: None,
+                fields: None,
                 node_type: "Decision".into(),
                 title: "fan out".into(),
                 body: None,
@@ -4210,6 +4373,7 @@ mod suspect_tests {
         let mk = |t: &str, ty: &str| AddNoteArgs {
             version: None,
             created_at: None,
+            fields: None,
             node_type: ty.into(),
             title: t.into(),
             body: None,
@@ -4277,6 +4441,7 @@ mod suspect_tests {
         let mk = |t: &str, ty: &str| AddNoteArgs {
             version: None,
             created_at: None,
+            fields: None,
             node_type: ty.into(),
             title: t.into(),
             body: None,
@@ -4452,6 +4617,7 @@ mod scoped_transport_tests {
                 code_refs: vec![],
                 tags: vec![],
                 props: None,
+                fields: None,
             })
             .unwrap();
         }
@@ -4746,6 +4912,7 @@ mod push_and_params_tests {
         let a = writer
             .add_note(Parameters(AddNoteArgs {
                 created_at: None,
+                fields: None,
                 ..note("zzz retry policy: exponential backoff")
             }))
             .await
@@ -4753,6 +4920,7 @@ mod push_and_params_tests {
         let b = writer
             .add_note(Parameters(AddNoteArgs {
                 created_at: None,
+                fields: None,
                 ..note("qqq retry policy: never retry anything")
             }))
             .await
@@ -4841,6 +5009,7 @@ mod push_and_params_tests {
         let s = server();
         s.add_note(Parameters(AddNoteArgs {
             created_at: None,
+            fields: None,
             body: Some("a body with plenty of retrieval detail inside it".into()),
             ..note("progressive disclosure subject")
         }))
@@ -4897,6 +5066,7 @@ mod push_and_params_tests {
         let hubnode = s
             .add_note(Parameters(AddNoteArgs {
                 created_at: None,
+                fields: None,
                 ..note("zzz the well connected hub node")
             }))
             .await
@@ -4904,12 +5074,14 @@ mod push_and_params_tests {
         let spoke = s
             .add_note(Parameters(AddNoteArgs {
                 created_at: None,
+                fields: None,
                 ..note("qqq a spoke node with one link")
             }))
             .await
             .unwrap();
         s.add_note(Parameters(AddNoteArgs {
             created_at: None,
+            fields: None,
             ..note("xxx an island nobody linked or tagged")
         }))
         .await

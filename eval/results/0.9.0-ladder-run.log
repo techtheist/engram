@@ -1,0 +1,158 @@
+   Compiling digest v0.10.7
+   Compiling sha2 v0.10.9
+   Compiling hmac v0.12.1
+   Compiling engram-core v0.8.13 (/Users/techtheist/IdeaProjects/engram/crates/engram-core)
+   Compiling engram-eval v0.8.13 (/Users/techtheist/IdeaProjects/engram/eval)
+    Finished `release` profile [optimized] target(s) in 12.96s
+     Running `target/release/engram-eval --ladder`
+engram-eval — offline retrieval suite
+runtime: embedder=bge-small-en-v1.5  reranker=jina-reranker-v1-turbo-en  nli=deberta-v3-small-tasksource-nli  seed=1  limit=10
+corpus:  bodies ~748 chars, 1.06 edges/node — profiled from the real graph
+asked:   decision=1 caution=1 principle=1 problem=1 insight=1 (an assumption, not a measurement)
+
+graph 10 facts (10 tested + 0 distractors), 10 edges / 30 questions / 2 controls
+  curated-3000 holds 10 of 10 facts at a 3000-token budget (100% of the graph)
+  curated-30000 holds 10 of 10 facts at a 30000-token budget (100% of the graph)
+  arm            standing tok/query  focus  noise    R@1    R@5    MRR    lex   para  obliq   twin     FP    sep  graph
+  chance                0      2317   0.10   0.90   0.13   0.50   0.31   0.50   0.50   0.50   0.07   1.00   0.50   0.00
+  grep                  0      1996   0.12   0.87   0.70   0.90   0.78   1.00   1.00   0.70   0.00   0.50   1.00   0.00
+  rag                   0      1488   0.16   0.83   0.83   1.00   0.90   1.00   1.00   1.00   0.00   1.00   1.00   0.00
+  engram-hybrid       754       123   0.70   0.27   0.80   1.00   0.88   1.00   1.00   1.00   0.00   0.00   1.00   0.00
+  engram-full         754       123   0.70   0.27   0.80   1.00   0.88   1.00   1.00   1.00   0.00   0.00   1.00   0.00
+  curated-3000        850       850   0.10   0.90   1.00   1.00   1.00   1.00   1.00   1.00   0.00   1.00   0.50   0.00
+  curated-30000       850       850   0.10   0.90   1.00   1.00   1.00   1.00   1.00   1.00   0.00   1.00   0.50   0.00
+  whole-file         2318      2318   0.10   0.90   1.00   1.00   1.00   1.00   1.00   1.00   0.00   1.00   0.50   0.00
+  weighted recall@5: chance 0.50  grep 0.97  rag 1.00  engram-hybrid 1.00  engram-full 1.00  curated-3000 1.00  curated-30000 1.00  whole-file 1.00  
+  best retrieving arm: engram-full at 1.000
+  nli deberta-v3-small-tasksource-nli — 30 pairs, accuracy 0.60, mean confidence 0.56
+      entailment     precision 0.00  recall 0.00  support 10
+      neutral        precision 0.47  recall 0.80  support 10
+      contradiction  precision 0.77  recall 1.00  support 10
+
+graph 100 facts (100 tested + 0 distractors), 106 edges / 300 questions / 25 controls
+  curated-3000 holds 37 of 100 facts at a 3000-token budget (37% of the graph)
+  curated-30000 holds 100 of 100 facts at a 30000-token budget (100% of the graph)
+  arm            standing tok/query  focus  noise    R@1    R@5    MRR    lex   para  obliq   twin     FP    sep  graph
+  chance                0      2518   0.09   0.99   0.01   0.05   0.03   0.04   0.04   0.06   0.02   1.00   0.50   0.00
+  grep                  0      2547   0.10   0.90   0.72   0.84   0.77   1.00   1.00   0.52   0.00   1.00   0.80   0.00
+  rag                   0      2295   0.12   0.88   0.81   0.96   0.87   1.00   1.00   0.87   0.00   1.00   0.92   0.00
+  engram-hybrid      3051       198   0.63   0.36   0.80   0.94   0.85   1.00   1.00   0.82   0.00   0.92   0.81   0.02
+  engram-full        3051       198   0.63   0.36   0.80   0.95   0.86   1.00   1.00   0.85   0.00   0.92   0.81   0.02
+  curated-3000       2998      2998   0.03   0.99   0.37   0.37   0.37   0.37   0.37   0.37   0.00   1.00   0.50   0.00
+  curated-30000      8409      8409   0.01   0.99   1.00   1.00   1.00   1.00   1.00   1.00   0.00   1.00   0.50   0.00
+  whole-file        25184     25184   0.01   0.99   1.00   1.00   1.00   1.00   1.00   1.00   0.00   1.00   0.50   0.00
+  weighted recall@5: chance 0.04  grep 0.95  rag 0.99  engram-hybrid 0.98  engram-full 0.98  curated-3000 0.37  curated-30000 1.00  whole-file 1.00  
+  best retrieving arm: rag at 0.987
+  engram and rag tie at 0% oblique questions (assumed 10%)
+  nli deberta-v3-small-tasksource-nli — 300 pairs, accuracy 0.61, mean confidence 0.57
+      entailment     precision 0.25  recall 0.02  support 100
+      neutral        precision 0.47  recall 0.82  support 100
+      contradiction  precision 0.84  recall 1.00  support 100
+
+graph 200 facts (200 tested + 0 distractors), 212 edges / 600 questions / 50 controls
+  curated-3000 holds 36 of 200 facts at a 3000-token budget (18% of the graph)
+  curated-30000 holds 200 of 200 facts at a 30000-token budget (100% of the graph)
+  arm            standing tok/query  focus  noise    R@1    R@5    MRR    lex   para  obliq   twin     FP    sep  graph
+  chance                0      2527   0.09   0.99   0.00   0.02   0.01   0.02   0.01   0.03   0.01   1.00   0.50   0.00
+  grep                  0      2687   0.10   0.91   0.69   0.78   0.73   1.00   1.00   0.33   0.00   0.98   0.78   0.00
+  rag                   0      2480   0.11   0.89   0.77   0.92   0.83   1.00   0.98   0.77   0.00   1.00   0.87   0.00
+  engram-hybrid      3054       239   0.59   0.42   0.75   0.90   0.81   1.00   0.99   0.70   0.00   0.92   0.77   0.02
+  engram-full        3054       239   0.59   0.42   0.75   0.91   0.82   1.00   0.99   0.74   0.00   0.92   0.77   0.02
+  curated-3000       2930      2930   0.03   0.99   0.18   0.18   0.18   0.18   0.18   0.18   0.00   1.00   0.50   0.00
+  curated-30000     16882     16882   0.00   1.00   1.00   1.00   1.00   1.00   1.00   1.00   0.00   1.00   0.50   0.00
+  whole-file        50421     50421   0.00   1.00   1.00   1.00   1.00   1.00   1.00   1.00   0.00   1.00   0.50   0.00
+  weighted recall@5: chance 0.02  grep 0.93  rag 0.97  engram-hybrid 0.97  engram-full 0.97  curated-3000 0.18  curated-30000 1.00  whole-file 1.00  
+  best retrieving arm: engram-full at 0.972
+  engram and rag tie at 7% oblique questions (assumed 10%)
+  nli deberta-v3-small-tasksource-nli — 300 pairs, accuracy 0.63, mean confidence 0.57 (budget cut 300 of 600)
+      entailment     precision 0.40  recall 0.02  support 100
+      neutral        precision 0.49  recall 0.86  support 100
+      contradiction  precision 0.85  recall 1.00  support 100
+
+graph 500 facts (500 tested + 0 distractors), 530 edges / 1500 questions / 125 controls
+  curated-3000 holds 36 of 500 facts at a 3000-token budget (7% of the graph)
+  curated-30000 holds 356 of 500 facts at a 30000-token budget (71% of the graph)
+  arm            standing tok/query  focus  noise    R@1    R@5    MRR    lex   para  obliq   twin     FP    sep  graph
+  chance                0      2519   0.09   1.00   0.00   0.01   0.01   0.02   0.00   0.01   0.01   1.00   0.50   0.00
+  grep                  0      2733   0.10   0.92   0.67   0.72   0.69   1.00   1.00   0.15   0.00   1.00   0.75   0.00
+  rag                   0      2586   0.10   0.90   0.73   0.87   0.79   1.00   0.97   0.62   0.00   1.00   0.80   0.00
+  engram-hybrid      3036       269   0.56   0.47   0.73   0.85   0.78   1.00   0.99   0.57   0.00   1.00   0.77   0.02
+  engram-full        3036       269   0.56   0.47   0.73   0.86   0.78   1.00   0.99   0.60   0.00   1.00   0.77   0.02
+  curated-3000       2946      2946   0.03   1.00   0.07   0.07   0.07   0.07   0.07   0.07   0.00   1.00   0.50   0.00
+  curated-30000     29976     29976   0.00   1.00   0.71   0.71   0.71   0.71   0.71   0.71   0.00   1.00   0.50   0.00
+  whole-file       125819    125819   0.00   1.00   1.00   1.00   1.00   1.00   1.00   1.00   0.00   1.00   0.50   0.00
+  weighted recall@5: chance 0.01  grep 0.92  rag 0.95  engram-hybrid 0.95  engram-full 0.95  curated-3000 0.07  curated-30000 0.71  whole-file 1.00  
+  best retrieving arm: engram-full at 0.955
+  engram and rag tie at 12% oblique questions (assumed 10%)
+  nli deberta-v3-small-tasksource-nli — 300 pairs, accuracy 0.60, mean confidence 0.58 (budget cut 300 of 1500)
+      entailment     precision 0.29  recall 0.02  support 100
+      neutral        precision 0.46  recall 0.79  support 100
+      contradiction  precision 0.81  recall 1.00  support 100
+
+graph 1000 facts (1000 tested + 0 distractors), 1060 edges / 3000 questions / 250 controls
+  curated-3000 holds 36 of 1000 facts at a 3000-token budget (4% of the graph)
+  curated-30000 holds 367 of 1000 facts at a 30000-token budget (37% of the graph)
+  arm            standing tok/query  focus  noise    R@1    R@5    MRR    lex   para  obliq   twin     FP    sep  graph
+  chance                0      2524   0.09   1.00   0.00   0.00   0.00   0.01   0.00   0.01   0.00   1.00   0.50   0.00
+  grep                  0      2742   0.10   0.93   0.65   0.69   0.67   1.00   1.00   0.08   0.00   1.00   0.75   0.00
+  rag                   0      2705   0.10   0.91   0.69   0.82   0.74   1.00   0.95   0.51   0.00   1.00   0.81   0.00
+  engram-hybrid      3081       286   0.54   0.52   0.70   0.81   0.75   1.00   0.99   0.42   0.00   1.00   0.76   0.02
+  engram-full        3081       286   0.54   0.52   0.70   0.82   0.75   1.00   0.99   0.45   0.00   1.00   0.76   0.02
+  curated-3000       2947      2947   0.03   1.00   0.04   0.04   0.04   0.04   0.04   0.04   0.00   1.00   0.50   0.00
+  curated-30000     29927     29927   0.00   1.00   0.37   0.37   0.37   0.37   0.37   0.37   0.00   1.00   0.50   0.00
+  whole-file       252319    252319   0.00   1.00   1.00   1.00   1.00   1.00   1.00   1.00   0.00   1.00   0.50   0.00
+  weighted recall@5: chance 0.00  grep 0.91  rag 0.93  engram-hybrid 0.94  engram-full 0.94  curated-3000 0.04  curated-30000 0.37  whole-file 1.00  
+  best retrieving arm: engram-full at 0.942
+  engram and rag tie at 20% oblique questions (assumed 10%)
+  nli deberta-v3-small-tasksource-nli — 300 pairs, accuracy 0.60, mean confidence 0.58 (budget cut 300 of 3000)
+      entailment     precision 0.20  recall 0.02  support 100
+      neutral        precision 0.46  recall 0.79  support 100
+      contradiction  precision 0.83  recall 1.00  support 100
+
+graph 1500 facts (1500 tested + 0 distractors), 1590 edges / 4500 questions / 375 controls
+  curated-3000 holds 36 of 1500 facts at a 3000-token budget (2% of the graph)
+  curated-30000 holds 368 of 1500 facts at a 30000-token budget (25% of the graph)
+  arm            standing tok/query  focus  noise    R@1    R@5    MRR    lex   para  obliq   twin     FP    sep  graph
+  chance                0      2517   0.08   1.00   0.00   0.00   0.00   0.00   0.00   0.00   0.00   1.00   0.50   0.00
+  grep                  0      2739   0.10   0.93   0.64   0.68   0.66   1.00   1.00   0.05   0.00   1.00   0.75   0.00
+  rag                   0      2721   0.10   0.91   0.66   0.79   0.72   1.00   0.93   0.45   0.00   1.00   0.79   0.00
+  engram-hybrid      3042       297   0.52   0.55   0.68   0.78   0.73   1.00   0.99   0.36   0.00   1.00   0.76   0.02
+  engram-full        3042       297   0.52   0.55   0.69   0.79   0.73   1.00   0.99   0.39   0.00   1.00   0.76   0.02
+  curated-3000       2944      2944   0.03   1.00   0.02   0.02   0.02   0.02   0.02   0.02   0.00   1.00   0.50   0.00
+  curated-30000     29997     29997   0.00   1.00   0.25   0.25   0.25   0.25   0.25   0.25   0.00   1.00   0.50   0.00
+  whole-file       377898    377898   0.00   1.00   1.00   1.00   1.00   1.00   1.00   1.00   0.00   1.00   0.50   0.00
+  weighted recall@5: chance 0.00  grep 0.90  rag 0.91  engram-hybrid 0.93  engram-full 0.93  curated-3000 0.02  curated-30000 0.25  whole-file 1.00  
+  best retrieving arm: engram-full at 0.934
+  engram and rag tie at 27% oblique questions (assumed 10%)
+  nli deberta-v3-small-tasksource-nli — 300 pairs, accuracy 0.60, mean confidence 0.57 (budget cut 300 of 4500)
+      entailment     precision 0.20  recall 0.02  support 100
+      neutral        precision 0.46  recall 0.78  support 100
+      contradiction  precision 0.83  recall 1.00  support 100
+
+reading it: `standing` is what the arm costs every session before a question
+is asked; `tok/query` is what it delivers per question. `focus` is the share
+of the delivered tokens that were the answer, when it arrived at all —
+attention is the budget, and everything delivered beyond the answer spends
+it. A dump can score recall 1.00 and focus 0.00x on the same run; that pair
+of numbers is the difference between present and readable. `noise` is the
+share of delivered records that were NOT the answer, counting a miss as
+all-noise and an empty return as zero — the one column where declining to
+answer scores better than guessing. `obliq` is recall on
+questions that never name their subject — the column meaning has to win.
+`FP` is the share of questions with no written answer that still got one;
+`sep` is how well any confidence threshold could have told those apart
+(0.5 = not at all, 1.0 = perfectly). `graph` is the share of questions
+whose answer was reachable ONLY through a neighbour — engram-full minus
+engram-hybrid is what the edges bought.
+
+engram-eval — the ladder: recall@5 by graph size
+    graph  asked    curated-3000   curated-30000            grep             rag   engram-hybrid
+       10     30            1.00            1.00            0.90            1.00            1.00
+      100    300            0.37            1.00            0.84            0.96            0.94
+      200    600            0.18            1.00            0.78            0.92            0.90
+      500   1500            0.07            0.71            0.72            0.87            0.85
+     1000   3000            0.04            0.37            0.69            0.82            0.81
+     1500   4500            0.02            0.25            0.68            0.79            0.78
+  curated-3000 falls behind retrieval at 100 notes (0.37 vs 0.94, holding 37 of 100)
+  curated-30000 falls behind retrieval at 500 notes (0.71 vs 0.85, holding 356 of 500)
+EVAL-EXIT=0

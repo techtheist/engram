@@ -633,6 +633,7 @@ fn new_node(f: &Fact) -> NewNode {
         tags: vec![],
         version: None,
         props: None,
+        fields: None,
     }
 }
 

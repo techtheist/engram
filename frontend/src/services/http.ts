@@ -2,6 +2,7 @@ import type { StreamHandlers } from '@/types/api'
 import type {
     AgentSettings,
     AnsweredHint,
+    EncryptionStatus,
     AuditPage,
     StaleTriage,
     AuditSweep,
@@ -152,7 +153,13 @@ export const api = {
     patchEdge: (id: string, patch: Record<string, unknown>) =>
         request<GraphEdge>(`/edges/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
 
-    deleteNode: (id: string) => request<void>(`/nodes/${id}`, { method: 'DELETE' }),
+    deleteNode: (id: string, opts?: { tombstone?: boolean; reason?: string }) => {
+        const q = new URLSearchParams()
+        if (opts?.tombstone) q.set('tombstone', 'true')
+        if (opts?.reason) q.set('reason', opts.reason)
+        const qs = q.toString()
+        return request<void>(`/nodes/${id}${qs ? `?${qs}` : ''}`, { method: 'DELETE' })
+    },
 
     /** Pending suspected conflicts from the local scan. */
     suspects: () => request<SuspectView[]>('/conflicts/suspects'),
@@ -225,6 +232,20 @@ export const api = {
         }),
     renameVerb: (from: string, to: string) =>
         request<{ renamed: number }>('/config/rename-verb', {
+            method: 'POST',
+            body: JSON.stringify({ from, to }),
+        }),
+    /** At-rest encryption status: desired switches, per-store state, job progress (0.9.0). */
+    encryption: () => request<EncryptionStatus>('/encryption'),
+    /** Flip one machine-global encryption switch and migrate the current project's store. */
+    setEncryption: (target: 'graph' | 'history', enabled: boolean) =>
+        request<{ started: boolean }>('/encryption', {
+            method: 'POST',
+            body: JSON.stringify({ target, enabled }),
+        }),
+    /** Rename a custom field, moving every stored value with it (0.9.0). */
+    renameField: (from: string, to: string) =>
+        request<{ renamed: number }>('/config/rename-field', {
             method: 'POST',
             body: JSON.stringify({ from, to }),
         }),

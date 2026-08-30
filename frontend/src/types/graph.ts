@@ -41,6 +41,8 @@ export interface GraphNode {
     tags: string[]
     /** Project version this node was captured at (version tracking). */
     version?: string | null
+    /** Custom field values (0.9.0), keyed by the config's FieldDef names. */
+    fields?: Record<string, unknown> | null
 }
 
 /** POST /nodes payload — the pane creates user-sourced nodes. */
@@ -53,6 +55,8 @@ export interface NewNode {
     status?: NodeStatus
     code_refs?: string[]
     tags?: string[]
+    /** Custom field values (0.9.0). */
+    fields?: Record<string, unknown>
 }
 
 /** POST /edges payload. */
@@ -206,6 +210,30 @@ export interface AgentSettings {
      *  setting is unset or the project left the registry). */
     default_agent_project_name?: string | null
     default_agent_project_root?: string | null
+    /** At-rest encryption switches (0.9.0); absent on older daemons. */
+    encrypt_graph?: boolean
+    encrypt_history?: boolean
+}
+
+/** One store's side of `GET /encryption` (0.9.0). */
+export interface EncryptionSide {
+    /** The machine-global switch. */
+    desired: boolean
+    /** The store's own recorded state; null while a migration runs (the job
+     *  carries the story) or the store is closed. */
+    state: 'plaintext' | 'sealing' | 'sealed' | 'unsealing' | null
+    job: {
+        running: boolean
+        done?: number
+        total?: number
+        error?: string | null
+    }
+}
+
+/** `GET /encryption`: the two switches, each store's state, job progress. */
+export interface EncryptionStatus {
+    graph: EncryptionSide
+    history: EncryptionSide
 }
 
 export interface SystemInfo {
@@ -455,6 +483,8 @@ export interface TypeRoles {
     highlight: boolean
     /** Binds to the current working version when tracking is on. */
     versioned: boolean
+    /** A deletion marker: records deliberately removed knowledge (0.9.0). */
+    tombstone: boolean
 }
 
 export interface BriefSectionCfg {
@@ -478,6 +508,28 @@ export interface TypeDef {
     roles: TypeRoles
     /** This type's canon section in the brief. */
     brief: BriefSectionCfg
+}
+
+/** What a custom field's value must be (0.9.0). */
+export type FieldKind = 'text' | 'number' | 'bool' | 'date' | 'enum' | 'url'
+
+/** One user-defined custom field on notes — mirrors engram_core::config::FieldDef. */
+export interface FieldDef {
+    /** Storage + wire key: lowercase snake_case, unique, never a built-in name. */
+    name: string
+    /** Pane display label; empty = render the name. */
+    label: string
+    kind: FieldKind
+    /** The allowed values when kind is 'enum'. */
+    values: string[]
+    /** Refuse writes of applicable types that omit this field. */
+    required: boolean
+    /** Type names this field applies to; empty = every type. */
+    applies_to: string[]
+    /** Join the search index (embedding + keyword; tepin-backed graphs). */
+    indexed: boolean
+    /** Render `name: value` on this note's brief lines. */
+    show_in_brief: boolean
 }
 
 export interface VerbRoles {
@@ -628,6 +680,8 @@ export interface GraphConfig {
     brief: BriefConfig
     versioning: { enabled: boolean }
     history: HistoryConfig
+    /** User-defined custom fields on notes (0.9.0). */
+    fields: FieldDef[]
 }
 
 /** One curated ontology template (GET /config/presets). */

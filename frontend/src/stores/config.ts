@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { api } from '@/services/api'
-import type { ConfigPreset, GraphConfig, TypeDef, VerbDef, VerbRoles } from '@/types/graph'
+import type { ConfigPreset, FieldDef, GraphConfig, TypeDef, VerbDef, VerbRoles } from '@/types/graph'
 
 /**
  * The per-graph configuration (PLAN §7D): the ontology (types + verbs with
@@ -36,6 +36,8 @@ export const useConfigStore = defineStore('config', () => {
     const worklistTypes = computed(() =>
         types.value.filter((t) => t.roles.worklist).map((t) => t.name),
     )
+    /** The type a delete-with-tombstone mints; undefined = no tombstone behavior. */
+    const tombstoneType = computed(() => types.value.find((t) => t.roles.tombstone)?.name)
 
     /** Below this computed trust a node is stale (policy-tunable). */
     const staleTrust = computed(() => cfg.value?.policy.stale_trust ?? 0.3)
@@ -158,6 +160,8 @@ export const useConfigStore = defineStore('config', () => {
         c.history.harnesses.kilo ??= true
         c.history.harnesses.antigravity ??= true
         c.history.harnesses.bob ??= true
+        // Custom fields (0.9.0): older cores serve no section — no fields.
+        c.fields ??= []
         return c
     }
 
@@ -189,6 +193,20 @@ export const useConfigStore = defineStore('config', () => {
         return renamed
     }
 
+    /** Rename a custom field, moving every stored value with it (0.9.0). */
+    async function renameField(from: string, to: string): Promise<number> {
+        const { renamed } = await api.renameField(from, to)
+        await load()
+        return renamed
+    }
+
+    /** The custom fields that apply to nodes of `type` (empty applies_to = all). */
+    function fieldsFor(type: string): FieldDef[] {
+        return (cfg.value?.fields ?? []).filter(
+            (f) => f.applies_to.length === 0 || f.applies_to.includes(type),
+        )
+    }
+
     return {
         cfg,
         presets,
@@ -202,6 +220,7 @@ export const useConfigStore = defineStore('config', () => {
         contradictionVerb,
         reasonVerb,
         worklistTypes,
+        tombstoneType,
         staleTrust,
         accent,
         edgeColor,
@@ -215,5 +234,7 @@ export const useConfigStore = defineStore('config', () => {
         save,
         renameType,
         renameVerb,
+        renameField,
+        fieldsFor,
     }
 })

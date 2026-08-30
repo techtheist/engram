@@ -327,11 +327,34 @@ export const api: EngramApi = {
         if (v) v.name = to
         return ok({ renamed })
     },
+    renameField: (from, to) => {
+        const p = engine.state()
+        let renamed = 0
+        for (const [id, n] of p.nodes) {
+            const f = n.fields as Record<string, unknown> | null | undefined
+            if (f && from in f) {
+                const next = { ...f, [to]: f[from] }
+                delete next[from]
+                p.nodes.set(id, { ...n, fields: next })
+                renamed += 1
+            }
+        }
+        const d = (p.config.fields ?? []).find((x) => x.name === from)
+        if (d) d.name = to
+        return ok({ renamed })
+    },
 
     installSkill: () => unavailable('Installing the capture skill'),
 
     models: () => ok(models as unknown as ModelSelection),
     applyModel: () => unavailable('Downloading and swapping a model'),
+
+    encryption: () =>
+        ok({
+            graph: { desired: false, state: 'plaintext' as const, job: { running: false } },
+            history: { desired: true, state: null, job: { running: false } },
+        }),
+    setEncryption: () => unavailable('Encrypting or decrypting a store'),
 
     // Machine-level settings, served from a tab-local variable: the control
     // works in the demo, nothing persists past the tab.

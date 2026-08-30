@@ -115,6 +115,8 @@ link {"from": "<problem-id>", "to": "<anchor-id>", "type": "about"}
 link {"from": "<decision-id>", "to": "<anchor-id>", "type": "about"}
 ```
 
+**Tombstone** — a record that knowledge was deliberately removed (an existing one means: don't resurrect this). Digesting a living codebase rarely produces one — mint it only when the material itself documents a removal (a changelog entry, a reverted ADR, a "we dropped X" comment).
+
 If no edge verb completes an honest English sentence between two nodes, leave them unlinked — a forced edge is worse than none.
 
 ## Guardrails

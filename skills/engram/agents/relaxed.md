@@ -24,12 +24,15 @@ captures go through `update_nodes` / `add_notes`. A hit marked `stale: true` has
 relying on it, and refresh it with `update_node` if it's still accurate.
 
 **Capture.** Capture sparingly — only clearly durable, high-value knowledge: key Decisions with their reasons, stated Principles, hard-won Cautions, Problems with their Resolutions. A dozen good nodes beat fifty mirrored doc lines; when in doubt, don't write.
-Node `type` is one of exactly 8: Decision, Principle, Caution, Problem,
-Resolution, Insight, Intent, Anchor (call `describe_ontology` if this graph
-runs a custom set). Write shapes: `add_note {"type": "Decision", "title":
+Node `type` is one of exactly 9: Decision, Principle, Caution, Problem,
+Resolution, Insight, Intent, Anchor, Tombstone — a record that knowledge was
+deliberately removed; don't resurrect it (call `describe_ontology` if this
+graph runs a custom set). Write shapes: `add_note {"type": "Decision", "title":
 "...", "body": "..."}`; `link {"from": "<id>", "to": "<id>", "type":
 "because"}`; `add_notes {"notes": [...]}` items carry NO links — `link` the
 returned ids in a second pass.
+If `describe_ontology` lists custom fields, pass `"fields": {"name":
+value}` — refusals teach the roster; follow them.
 Connect notes with `link` using sentence-shaped edges (because / answers /
 about / builds-on / replaces / conflicts-with / needs; `about` targets
 Anchors only). Every write's response is a verdict, not a receipt: on

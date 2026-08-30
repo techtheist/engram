@@ -445,6 +445,7 @@ impl Harvester {
                 tags: vec![],
                 version: None,
                 props: Some(message_props(&ev, cache.count)),
+                fields: None,
             })?;
             let Some(node) = node else {
                 return Ok(false); // layer closed mid-sweep — retry later
@@ -506,14 +507,9 @@ impl Harvester {
         if !self.primed.insert(pid.to_string()) {
             return Ok(());
         }
-        // First touch per process: seal whatever a pre-seal daemon (or a
-        // keyless period) left plaintext. No-op once the store is sealed.
-        match engine.seal_history_backlog() {
-            Ok(0) => {}
-            Ok(n) => eprintln!("engram: harvest: sealed {n} pre-existing history node(s)"),
-            Err(e) => eprintln!("engram: harvest: seal backlog: {e}"),
-        }
-        // And recover provenance a restart dropped: the parking lot is
+        // Sealing is the store's own recorded state since 0.9.0 — the
+        // encryption reconcile at store open replaced the old backlog pass.
+        // Recover provenance a restart dropped: the parking lot is
         // in-memory, so recent notes without a born-in edge re-park here.
         match engine.repark_recent_provenance(24 * 3600) {
             Ok(0) | Err(_) => {}
@@ -602,6 +598,7 @@ fn create_session(
             // on — a plain provenance stamp, like curated nodes get.
             version: engine.current_version().ok().flatten(),
             props: Some(props.clone()),
+            fields: None,
         })?
         .ok_or_else(|| crate::Error::Io("history layer closed".into()))?;
 

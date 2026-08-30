@@ -344,8 +344,8 @@ export const useGraphStore = defineStore('graph', () => {
         edges.value = next
     }
 
-    async function remove(id: string): Promise<void> {
-        await api.deleteNode(id)
+    async function remove(id: string, opts?: { tombstone?: boolean; reason?: string }): Promise<void> {
+        await api.deleteNode(id, opts)
         dropNode(id) // SSE also emits node_deleted; dropping twice is harmless
     }
 

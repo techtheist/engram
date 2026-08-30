@@ -89,6 +89,18 @@ pub struct AppState {
     /// Per-session already-injected node ids for /refs/match — the ambient
     /// hook's dedupe memory (bounded; evicted wholesale when it grows).
     refs_seen: Mutex<HashMap<String, std::collections::HashSet<String>>>,
+    /// Running encrypt/decrypt migrations (0.9.0), keyed `{project}:{target}`
+    /// — the poll target behind the pane's progress loader.
+    enc_jobs: Arc<Mutex<HashMap<String, EncJob>>>,
+}
+
+/// One whole-store encrypt/decrypt migration's observable state.
+#[derive(Clone, Default)]
+struct EncJob {
+    done: Arc<std::sync::atomic::AtomicUsize>,
+    total: Arc<std::sync::atomic::AtomicUsize>,
+    running: Arc<std::sync::atomic::AtomicBool>,
+    error: Arc<Mutex<Option<String>>>,
 }
 
 // ---- process census (process-model refactor) -----------------------------
@@ -430,6 +442,7 @@ impl AppState {
             skill_admin: None,
             runtime: None,
             refs_seen: Mutex::new(HashMap::new()),
+            enc_jobs: Arc::default(),
         }
     }
 
@@ -628,6 +641,7 @@ fn api_router(state: Arc<AppState>) -> Router {
         )
         .route("/shutdown", post(shutdown_core))
         .route("/settings", get(get_settings).post(post_settings))
+        .route("/encryption", get(get_encryption).post(post_encryption))
         .route("/models", get(models_describe).post(models_apply))
         .route("/projects", get(list_projects).post(register_project))
         .route("/projects/{id}", axum::routing::delete(unregister_project))
@@ -672,6 +686,7 @@ fn api_router(state: Arc<AppState>) -> Router {
         .route("/config/presets", get(config_presets))
         .route("/version", get(get_version).put(put_version))
         .route("/config/rename-type", post(rename_type))
+        .route("/config/rename-field", post(rename_field))
         .route("/config/rename-verb", post(rename_verb))
         .route("/skills/install", post(skills_install))
         .route("/refs/match", get(refs_match))
@@ -1033,6 +1048,135 @@ async fn shutdown_core(
 
 /// One settings reply: the stored selector plus, when it resolves, the
 /// project's current name/root so the pane can render it without a join.
+#[derive(Deserialize)]
+struct EncryptionBody {
+    /// "graph" | "history".
+    target: String,
+    enabled: bool,
+}
+
+fn enc_job_key(scope: &Scope, target: &str) -> String {
+    format!("{}:{target}", scope.0.as_deref().unwrap_or("@current"))
+}
+
+fn enc_job_view(job: Option<&EncJob>) -> serde_json::Value {
+    use std::sync::atomic::Ordering;
+    match job {
+        Some(j) => json!({
+            "running": j.running.load(Ordering::Relaxed),
+            "done": j.done.load(Ordering::Relaxed),
+            "total": j.total.load(Ordering::Relaxed),
+            "error": j.error.lock().unwrap().clone(),
+        }),
+        None => json!({ "running": false }),
+    }
+}
+
+/// At-rest encryption status (0.9.0): the machine-level desired switches,
+/// each store's OWN recorded state, and any running migration's progress.
+/// While a migration runs the engine mutex is busy, so this reads the job's
+/// atomics instead of blocking behind it — cheap enough to poll.
+async fn get_encryption(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let settings = engram_core::settings::load();
+    let jobs = state.enc_jobs.lock().unwrap().clone();
+    let graph_job = jobs.get(&enc_job_key(&scope, "graph"));
+    let history_job = jobs.get(&enc_job_key(&scope, "history"));
+    let busy = |j: Option<&EncJob>| {
+        j.is_some_and(|j| j.running.load(std::sync::atomic::Ordering::Relaxed))
+    };
+    let (graph_state, history_state) = if busy(graph_job) || busy(history_job) {
+        (None, None) // the job view carries the story; don't block on the engine
+    } else {
+        let engine = state.engine_arc(&scope)?;
+        let (g, h) = engine.lock().unwrap().encryption_states();
+        (Some(g), h.map(Some).unwrap_or(None))
+    };
+    Ok(Json(json!({
+        "graph": {
+            "desired": settings.encrypt_graph,
+            "state": graph_state.map(|s| s.as_str()),
+            "job": enc_job_view(graph_job),
+        },
+        "history": {
+            "desired": settings.encrypt_history,
+            "state": history_state.map(|s| s.as_str()),
+            "job": enc_job_view(history_job),
+        },
+    })))
+}
+
+/// Flip one of the two machine-global encryption switches (0.9.0) and start
+/// migrating the CURRENT project's store in the background — poll
+/// `GET /encryption` for progress. Other projects converge at their next
+/// daemon open (they read the same settings). Refused while a migration for
+/// the same target is already running.
+async fn post_encryption(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+    Json(body): Json<EncryptionBody>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    use std::sync::atomic::Ordering;
+    if !matches!(body.target.as_str(), "graph" | "history") {
+        return Err(AppError::Core(Error::Config(format!(
+            "unknown encryption target {:?} — graph | history",
+            body.target
+        ))));
+    }
+    let key = enc_job_key(&scope, &body.target);
+    {
+        let jobs = state.enc_jobs.lock().unwrap();
+        if jobs
+            .get(&key)
+            .is_some_and(|j| j.running.load(Ordering::Relaxed))
+        {
+            return Err(AppError::Core(Error::Config(
+                "an encryption migration is already running for this target — wait for it".into(),
+            )));
+        }
+    }
+    // The switch is machine-global; the migration below applies it to the
+    // current project immediately.
+    let mut settings = engram_core::settings::load();
+    match body.target.as_str() {
+        "graph" => settings.encrypt_graph = body.enabled,
+        _ => settings.encrypt_history = body.enabled,
+    }
+    engram_core::settings::save(&settings)?;
+
+    let engine = state.engine_arc(&scope)?;
+    let job = EncJob {
+        running: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        ..EncJob::default()
+    };
+    state.enc_jobs.lock().unwrap().insert(key, job.clone());
+    let (target, enabled) = (body.target.clone(), body.enabled);
+    tokio::task::spawn_blocking(move || {
+        let result = {
+            let mut guard = engine.lock().unwrap();
+            guard.set_desired_encryption(
+                Some(settings.encrypt_graph),
+                Some(settings.encrypt_history),
+            );
+            let done = job.done.clone();
+            let total = job.total.clone();
+            guard.set_store_encryption(&target, enabled, &mut |d, t| {
+                done.store(d, Ordering::Relaxed);
+                total.store(t, Ordering::Relaxed);
+            })
+        };
+        if let Err(e) = result {
+            *job.error.lock().unwrap() = Some(e.to_string());
+        }
+        job.running.store(false, Ordering::Relaxed);
+    });
+    Ok(Json(
+        json!({ "started": true, "target": body.target, "enabled": body.enabled }),
+    ))
+}
+
 fn settings_view(s: &engram_core::settings::Settings) -> serde_json::Value {
     let resolved = s
         .default_agent_project
@@ -1042,6 +1186,8 @@ fn settings_view(s: &engram_core::settings::Settings) -> serde_json::Value {
         "default_agent_project": s.default_agent_project,
         "default_agent_project_name": resolved.as_ref().map(|e| e.name.clone()),
         "default_agent_project_root": resolved.map(|e| e.root),
+        "encrypt_graph": s.encrypt_graph,
+        "encrypt_history": s.encrypt_history,
     })
 }
 
@@ -1244,15 +1390,37 @@ async fn patch_node(
     Ok(Json(node))
 }
 
+#[derive(Deserialize, Default)]
+struct DeleteNodeParams {
+    /// Leave a tombstone-role note recording the removal (0.9.0). Ignored —
+    /// a plain delete — when the graph's ontology declares no tombstone type.
+    #[serde(default)]
+    tombstone: bool,
+    /// Why the node was removed; lands in the tombstone's body.
+    #[serde(default)]
+    reason: Option<String>,
+}
+
 async fn delete_node(
     State(state): State<Arc<AppState>>,
     scope: Scope,
     Path(id): Path<String>,
-) -> Result<StatusCode, AppError> {
+    Query(params): Query<DeleteNodeParams>,
+) -> Result<Response, AppError> {
     let engine = state.engine_arc(&scope)?;
+    if params.tombstone {
+        let (removed, tombstone) =
+            pane(&engine).delete_node_with_tombstone(&id, params.reason.as_deref())?;
+        if !removed {
+            return Err(AppError::NotFound);
+        }
+        return Ok(
+            Json(serde_json::json!({ "deleted": true, "tombstone": tombstone })).into_response(),
+        );
+    }
     let removed = pane(&engine).delete_node(&id)?;
     if removed {
-        Ok(StatusCode::NO_CONTENT)
+        Ok(StatusCode::NO_CONTENT.into_response())
     } else {
         Err(AppError::NotFound)
     }
@@ -1347,11 +1515,21 @@ async fn search(
         return Ok(Json(json!({ "hits": hits, "skipped": skipped })));
     }
     let engine = state.engine_arc(&scope)?;
-    let filter = engine.lock().unwrap().time_filter(
+    if p.scope.as_deref() == Some("history")
+        && p.date_field
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty())
+    {
+        return Err(AppError::Core(Error::Config(
+            "date_field applies to curated memory — history has no custom fields".into(),
+        )));
+    }
+    let filter = engine.lock().unwrap().time_filter_clocked(
         p.after.as_deref(),
         p.before.as_deref(),
         p.during_version.as_deref(),
         p.order.as_deref(),
+        p.date_field.as_deref(),
     )?;
     if p.scope.as_deref() == Some("history") {
         let hits = engine
@@ -1983,6 +2161,18 @@ async fn rename_type(
     Ok(Json(json!({ "renamed": renamed })))
 }
 
+/// Rename a custom field, moving every stored value with it (0.9.0) — the
+/// field analog of rename-type.
+async fn rename_field(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+    Json(p): Json<RenameParams>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    let renamed = pane(&engine).rename_field(&p.from, &p.to)?;
+    Ok(Json(json!({ "renamed": renamed })))
+}
+
 /// Rename an edge verb and bulk-retype its stored edges.
 async fn rename_verb(
     State(state): State<Arc<AppState>>,
@@ -2029,6 +2219,10 @@ struct SearchParams {
     during_version: Option<String>,
     /// "relevance" (default) | "chronological" | "recent".
     order: Option<String>,
+    /// Bitemporal search (0.9.0): a date-kind custom field ("event_date")
+    /// or a "from..to" pair with interval-overlap semantics — aims the
+    /// after/before window at the graph's event clock instead of created_at.
+    date_field: Option<String>,
 }
 
 /// A bare time window for the browsing endpoints (0.8.7) — same grammar as

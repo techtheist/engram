@@ -1,11 +1,19 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import SidePanel from '@/components/common/SidePanel.vue'
+import ToggleSwitch from '@/components/common/ToggleSwitch.vue'
 import { api } from '@/services/api'
 import { useSystemInfo } from '@/composables/useSystemInfo'
 import { useProjectsStore } from '@/stores/projects'
-import type { AgentSettings, ModelRoleInfo, ModelSelection, ProjectInfo, SystemInfo } from '@/types/graph'
+import type {
+    AgentSettings,
+    EncryptionStatus,
+    ModelRoleInfo,
+    ModelSelection,
+    ProjectInfo,
+    SystemInfo,
+} from '@/types/graph'
 
 /**
  * Settings → System info: the daemon-side half of `engram-alpha doctor`,
@@ -49,6 +57,7 @@ async function reload(): Promise<void> {
         // control instead of breaking the panel.
         agentSettings.value = await api.settings().catch(() => null)
         agentPick.value = agentSettings.value?.default_agent_project ?? ''
+        encStatus.value = await api.encryption().catch(() => null)
     } catch (e) {
         error.value = e instanceof Error ? e.message : String(e)
         info.value = null
@@ -80,6 +89,69 @@ async function applyAgentDefault(): Promise<void> {
     } finally {
         agentSaving.value = false
     }
+}
+
+// ---- at-rest encryption (0.9.0): two machine-global switches ---------------
+
+const encStatus = ref<EncryptionStatus | null>(null)
+const encNote = ref<Record<string, string>>({})
+let encPoll: ReturnType<typeof setInterval> | null = null
+
+const encBusy = computed(
+    () =>
+        encStatus.value != null &&
+        (encStatus.value.graph.job.running || encStatus.value.history.job.running),
+)
+
+async function toggleEncryption(target: 'graph' | 'history', enabled: boolean): Promise<void> {
+    encNote.value[target] = ''
+    try {
+        await api.setEncryption(target, enabled)
+        encNote.value[target] = enabled ? 'encrypting…' : 'decrypting…'
+        startEncPoll()
+    } catch (e) {
+        encNote.value[target] = e instanceof Error ? e.message : String(e)
+        encStatus.value = await api.encryption().catch(() => encStatus.value)
+    }
+}
+
+function startEncPoll(): void {
+    stopEncPoll()
+    encPoll = setInterval(() => {
+        void (async () => {
+            const status = await api.encryption().catch(() => null)
+            if (!status) return
+            encStatus.value = status
+            if (!status.graph.job.running && !status.history.job.running) {
+                stopEncPoll()
+                for (const target of ['graph', 'history'] as const) {
+                    const job = status[target].job
+                    if (job.error) {
+                        encNote.value[target] = `failed: ${job.error}`
+                    } else if (encNote.value[target]) {
+                        encNote.value[target] =
+                            status[target].state === 'sealed'
+                                ? 'done — the store is encrypted at rest'
+                                : 'done — the store is plaintext again'
+                    }
+                }
+            }
+        })()
+    }, 700)
+}
+
+function stopEncPoll(): void {
+    if (encPoll != null) {
+        clearInterval(encPoll)
+        encPoll = null
+    }
+}
+
+onUnmounted(stopEncPoll)
+
+function encProgress(side: { job: { done?: number; total?: number } }): string {
+    const { done = 0, total = 0 } = side.job
+    return total > 0 ? `${Math.round((done / total) * 100)}%` : '…'
 }
 
 // ---- model selection (PLAN §7A): pick per role, custom by URL --------------
@@ -484,6 +556,48 @@ function wiringStatus(w: { wired: boolean; prerename: boolean }): { status: Stat
             </div>
         </section>
 
+        <!-- At-rest encryption (0.9.0): two machine-global switches. Each
+             store records its own state in its meta; a toggle migrates the
+             current project immediately and other projects converge at
+             their next daemon open. Hidden against an older daemon. -->
+        <section v-if="encStatus" class="block">
+            <h3 class="block-title">At-rest encryption</h3>
+            <p class="pick-hint">
+                Field-level XChaCha20 over titles, bodies, tags, custom fields, edge notes and the
+                audit journal; key in your OS keystore. Search works identically either way (blind
+                keyword index). Vectors stay open by design; exports are plaintext by intent. An
+                encrypted graph can't be inspected with <code>npx tepindb</code>.
+            </p>
+            <div class="enc-row">
+                <ToggleSwitch
+                    :model-value="encStatus.graph.desired"
+                    label="Encrypt graph"
+                    title="Seal the curated graph store at rest (default off — costs npx tepindb inspectability)"
+                    :disabled="encBusy"
+                    @update:model-value="(v: boolean) => toggleEncryption('graph', v)"
+                />
+                <span v-if="encStatus.graph.job.running" class="enc-progress">
+                    {{ encProgress(encStatus.graph) }}
+                </span>
+                <span v-else-if="encStatus.graph.state" class="enc-state">{{ encStatus.graph.state }}</span>
+            </div>
+            <p v-if="encNote.graph" class="pick-note">{{ encNote.graph }}</p>
+            <div class="enc-row">
+                <ToggleSwitch
+                    :model-value="encStatus.history.desired"
+                    label="Encrypt history"
+                    title="Seal recorded session transcripts at rest (default on since 0.8.4)"
+                    :disabled="encBusy"
+                    @update:model-value="(v: boolean) => toggleEncryption('history', v)"
+                />
+                <span v-if="encStatus.history.job.running" class="enc-progress">
+                    {{ encProgress(encStatus.history) }}
+                </span>
+                <span v-else-if="encStatus.history.state" class="enc-state">{{ encStatus.history.state }}</span>
+            </div>
+            <p v-if="encNote.history" class="pick-note">{{ encNote.history }}</p>
+        </section>
+
         <section class="block">
             <h3 class="block-title">Assistants on this machine</h3>
             <dl class="rows">
@@ -855,5 +969,23 @@ function wiringStatus(w: { wired: boolean; prerename: boolean }): { status: Stat
 .forget:hover {
     color: var(--node-problem);
     border-color: color-mix(in srgb, var(--node-problem) 55%, transparent);
+}
+
+.enc-row {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    margin-top: 0.5rem;
+}
+
+.enc-progress {
+    font-size: var(--text-caption);
+    font-variant-numeric: tabular-nums;
+    color: var(--interactive-primary);
+}
+
+.enc-state {
+    font-size: var(--text-caption);
+    color: var(--text-tertiary);
 }
 </style>

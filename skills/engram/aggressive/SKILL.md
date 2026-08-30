@@ -99,6 +99,7 @@ Capture **liberally**:
 - **Problem** + **Resolution** — anything non-trivial that went wrong and how it got solved.
 - **Insight** — every non-obvious realization worth carrying forward.
 - **Intent** — every TODO / deferred idea worth surviving the session.
+- **Tombstone** — whenever something is deliberately removed or killed without a successor (a feature, a decision, a dependency), record what died and why so no future session re-learns it. An existing Tombstone means: *don't resurrect this*.
 
 **Decisions are not opt-in.** Every real decision gets captured — the user never has to say "remember this". And most decisions arrive disguised as feature requests: "add a login page" is a feature, but *sessions in httpOnly cookies rather than localStorage* is a Decision made while building it. At every stopping point ask: *what did I just choose, and why?* If alternatives existed and you picked one for a reason, that's a node.
 
@@ -110,9 +111,10 @@ Capture **liberally**:
 ## How to write
 
 1. **Avoid duplicates — proportionally.** On a small graph, or right after you've already searched/recalled the area, write directly: `add_note` self-checks similarity and returns `{ matched, created: false }` instead of duping — then `update_node` the match. **Search first when the graph has grown large or the topic is plausibly already covered.**
-2. **Pick the type** from the list above. Don't invent types — there are exactly 8: `Decision`, `Principle`, `Caution`, `Problem`, `Resolution`, `Insight`, `Intent`, `Anchor`. *(0.7+: a graph can run a **customized ontology** — renamed types, different verbs. If the brief opens by teaching one, or a write is refused with "unknown node type", call `describe_ontology` and use *that* vocabulary: the graph defines its ontology, not this skill. Reshaping it is the user's gesture — the pane's Settings or `GET/PUT /config` over HTTP; never write config yourself.)*
-3. **Title**: a short, declarative label. **Body**: the reasoning in 1–3 sentences — the *why*, not a transcript.
-4. **Link it.** Edges must read as an English sentence: subject → verb → object. Use:
+2. **Pick the type** from the list above. Don't invent types — there are exactly 9: `Decision`, `Principle`, `Caution`, `Problem`, `Resolution`, `Insight`, `Intent`, `Anchor`, `Tombstone`. *(0.7+: a graph can run a **customized ontology** — renamed types, different verbs. If the brief opens by teaching one, or a write is refused with "unknown node type", call `describe_ontology` and use *that* vocabulary: the graph defines its ontology, not this skill. Reshaping it is the user's gesture — the pane's Settings or `GET/PUT /config` over HTTP; never write config yourself.)*
+3. **Custom fields (0.9.0).** If the brief or `describe_ontology` lists custom fields, pass them as `"fields": {"name": value}` on `add_note`/`update_node` (update MERGES: present keys overwrite, `null` deletes). A refusal for a missing/unknown field is a teaching error — it names the full roster and vocabulary; follow it exactly. Field *definitions* are the user's gesture (pane Settings), never yours.
+4. **Title**: a short, declarative label. **Body**: the reasoning in 1–3 sentences — the *why*, not a transcript.
+5. **Link it.** Edges must read as an English sentence: subject → verb → object. Use:
    - `because` — Decision/Caution **because** Principle (the reason).
    - `answers` — Resolution **answers** Problem (then close the Problem — see Maintenance).
    - `about` — any node **about** an Anchor. **Anchors only** — never point `about` at another node type.
@@ -121,14 +123,14 @@ Capture **liberally**:
    - `conflicts-with` — when two nodes contradict. **High value — always create this** when you notice a contradiction.
    - `needs` — Intent **needs** Decision (a dependency/blocker).
    - If you can't complete the sentence with one of these verbs, don't link. An honestly unlinked node beats a forced edge.
-5. **Anchors at write time.** Anchors are free-text subjects ("auth flow", "the RAG layer"). The moment a batch contains two or three notes on one subject, create/reuse the Anchor and attach them with `about` — anchors never accrue by themselves, and unanchored clusters are what makes the pane unreadable later. Optionally pass `code_refs` (repo-relative paths or responsibilities, **never** line numbers; path-shaped refs get drift-checked, so keep them real).
-6. **The write response is a verdict, not a receipt — act on it in the same turn:**
+6. **Anchors at write time.** Anchors are free-text subjects ("auth flow", "the RAG layer"). The moment a batch contains two or three notes on one subject, create/reuse the Anchor and attach them with `about` — anchors never accrue by themselves, and unanchored clusters are what makes the pane unreadable later. Optionally pass `code_refs` (repo-relative paths or responsibilities, **never** line numbers; path-shaped refs get drift-checked, so keep them real).
+7. **The write response is a verdict, not a receipt — act on it in the same turn:**
    - `{ matched, created: false }` — a same-type near-duplicate exists. Merge into it with `update_node`; never re-add.
    - `warnings` — your note landed near a node that is `in-active-conflict` or `superseded`. Read the flagged node: align with the canon, or record the disagreement deliberately (`conflicts-with` / `replaces`).
    - `suspects` — the write queued unlinked look-alike pairs, returned so *you* judge them now with `resolve_suspect`: they contradict → `conflict`, **and say so in chat** ("heads-up: this contradicts a standing decision — *\<title\>*") — that alert is the one exception to silent capture; your note is the fresher claim → `replaces`; fine together → `dismiss`, then add the real edge if one fits (`answers`, `about`).
    - `canon` — NLI verdicts from nearby existing knowledge: `supports` means the canon already backs your text (link it — `because` / `builds-on` — instead of leaving the reinforcement implicit); `contradicts` means canon disputes it (read the flagged node; if the disagreement is real, `conflicts-with` and tell the user).
    An unhandled verdict is how graphs rot: unjudged suspects pile up in the next session's brief and become someone else's archaeology.
-7. **Repair mislinks.** A wrong edge (bad verb, wrong endpoints) is yours to fix: `unlink` deletes it; `update_edge` changes its status (`resolved`/`dismissed` for settled conflicts), note, or confidence.
+8. **Repair mislinks.** A wrong edge (bad verb, wrong endpoints) is yours to fix: `unlink` deletes it; `update_edge` changes its status (`resolved`/`dismissed` for settled conflicts), note, or confidence.
 
 ## Example flows — imitate these
 
@@ -157,7 +159,7 @@ update_node {"id": "<problem-id>", "status": "resolved"}
 
 ## Durability — let it default
 
-Usually let durability default from the type (Principle/Decision/Caution/Anchor → `stable`; Problem/Resolution/Insight → `episodic`; Intent → `volatile`). Don't *override* durability to `volatile` on your own — types that default there (Intent) are the only volatile notes you create unasked.
+Usually let durability default from the type (Principle/Decision/Caution/Anchor/Tombstone → `stable`; Problem/Resolution/Insight → `episodic`; Intent → `volatile`). Don't *override* durability to `volatile` on your own — types that default there (Intent) are the only volatile notes you create unasked.
 
 ## Trust & staleness
 

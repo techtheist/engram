@@ -23,6 +23,7 @@ fn new_node(t: NodeType, title: &str, body: &str) -> NewNode {
         tags: vec![],
         version: None,
         props: None,
+        fields: None,
     }
 }
 
@@ -37,6 +38,7 @@ fn node_type_roundtrip() {
         NodeType::Insight,
         NodeType::Intent,
         NodeType::Anchor,
+        NodeType::Tombstone,
     ] {
         assert_eq!(NodeType::parse(t.as_str()).unwrap(), t);
     }
@@ -412,7 +414,14 @@ fn vector_knn_finds_nearest() {
 
     let q = e.embed_one("alpha").unwrap();
     let hits = s
-        .search_hybrid("", Some(&q), &[], 2, Default::default())
+        .search_hybrid(
+            "",
+            Some(&q),
+            &[],
+            2,
+            Default::default(),
+            &Default::default(),
+        )
         .unwrap();
     assert_eq!(
         hits.first().unwrap().id,
@@ -1425,6 +1434,7 @@ fn import_backfills_confirmed_at_like_the_migration() {
         tags: vec![],
         version: None,
         props: None,
+        fields: None,
     };
     e.import(ExportGraph {
         version: EXPORT_VERSION,
@@ -1823,6 +1833,7 @@ fn legacy_uuid_ids_shrink_with_edges_and_embeddings_intact() {
         tags: vec![],
         version: None,
         props: None,
+        fields: None,
     };
     let b_node = Node {
         id: uuid_b.clone(),
@@ -3380,7 +3391,14 @@ fn store_battery(s: &dyn Store, backend: &str) {
     assert!(knn[0].1 < knn[1].1, "distances ascend");
     assert_eq!(s.embedding_of(&a.id).unwrap().unwrap().len(), 384);
     let hybrid = s
-        .search_hybrid("journaling", Some(&va), &[], 5, Default::default())
+        .search_hybrid(
+            "journaling",
+            Some(&va),
+            &[],
+            5,
+            Default::default(),
+            &Default::default(),
+        )
         .unwrap();
     assert_eq!(hybrid[0].id, a.id);
 
@@ -4186,6 +4204,7 @@ fn tepin_import_is_idempotent_at_volume() {
         stale: false,
         version: None,
         props: None,
+        fields: None,
         code_refs: vec![],
         tags: vec!["bulk".into()],
     };
@@ -4330,6 +4349,7 @@ fn tepin_embed_model_swap_keeps_writes_working() {
         tags: vec![],
         version: None,
         props: None,
+        fields: None,
     };
     e.store().import_raw(&[orphan], &[]).unwrap();
     assert!(e.store().embedding_of("00gaplessnode").unwrap().is_none());
@@ -4974,6 +4994,7 @@ fn custom_ontology() -> GraphConfig {
                 rank_prior: 0.05,
                 highlight: true,
                 versioned: true,
+                tombstone: false,
             },
             brief: crate::config::BriefSection {
                 show: true,
@@ -4992,6 +5013,7 @@ fn custom_ontology() -> GraphConfig {
                 rank_prior: 0.0,
                 highlight: true,
                 versioned: true,
+                tombstone: false,
             },
             brief: crate::config::BriefSection {
                 show: false,
@@ -5010,6 +5032,7 @@ fn custom_ontology() -> GraphConfig {
                 rank_prior: 0.0,
                 highlight: false,
                 versioned: false,
+                tombstone: false,
             },
             brief: crate::config::BriefSection {
                 show: false,
@@ -5458,7 +5481,7 @@ fn rename_verb_bulk_retypes_edges_and_keeps_roles() {
 #[test]
 fn shipped_presets_are_valid_and_complete() {
     let shelf = crate::config::presets();
-    assert_eq!(shelf.len(), 3);
+    assert_eq!(shelf.len(), 4);
     assert_eq!(shelf[0].id, "engram");
     assert_eq!(shelf[0].config, GraphConfig::default());
     for p in &shelf {
@@ -5471,6 +5494,659 @@ fn shipped_presets_are_valid_and_complete() {
             p.id
         );
     }
+    // The 0.9.0 tombstone role: every preset except minimal carries a
+    // deletion-marker type (minimal stays ceremony-free by design).
+    for id in ["engram", "research", "general"] {
+        let p = shelf.iter().find(|p| p.id == id).unwrap();
+        assert!(
+            p.config.ontology.types.iter().any(|t| t.roles.tombstone),
+            "preset {id} has no tombstone type"
+        );
+    }
+    assert_eq!(
+        GraphConfig::default().tombstone_type(),
+        Some("Tombstone"),
+        "the default ontology's deletion marker"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 0.9.0: the tombstone role — deletion finally leaves a trace.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// 0.9.0: custom fields — definitions, write-boundary enforcement, merge.
+// ---------------------------------------------------------------------------
+
+fn fdef(name: &str, kind: crate::config::FieldKind) -> crate::config::FieldDef {
+    crate::config::FieldDef {
+        name: name.into(),
+        label: String::new(),
+        kind,
+        values: vec![],
+        required: false,
+        applies_to: vec![],
+        indexed: false,
+        show_in_brief: false,
+    }
+}
+
+/// A config declaring one field of every kind, with `priority` required on
+/// Decisions only.
+fn fields_config() -> GraphConfig {
+    use crate::config::FieldKind::*;
+    GraphConfig {
+        fields: vec![
+            crate::config::FieldDef {
+                values: vec!["low".into(), "high".into()],
+                required: true,
+                applies_to: vec!["Decision".into()],
+                ..fdef("priority", Enum)
+            },
+            fdef("effort_days", Number),
+            fdef("reviewed", Bool),
+            fdef("due", Date),
+            fdef("ticket", Url),
+            fdef("owner", Text),
+        ],
+        ..GraphConfig::default()
+    }
+}
+
+fn jmap(pairs: &[(&str, serde_json::Value)]) -> serde_json::Map<String, serde_json::Value> {
+    pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.clone()))
+        .collect()
+}
+
+#[test]
+fn every_reserved_field_name_is_refused() {
+    for name in crate::config::RESERVED_FIELD_NAMES {
+        let cfg = GraphConfig {
+            fields: vec![fdef(name, crate::config::FieldKind::Text)],
+            ..GraphConfig::default()
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("shadows a built-in"),
+            "{name} must be reserved, got: {err}"
+        );
+    }
+}
+
+#[test]
+fn field_def_shapes_are_validated() {
+    use crate::config::FieldKind::*;
+    let cases: Vec<(crate::config::FieldDef, &str)> = vec![
+        (fdef("BadCase", Text), "snake_case"),
+        (fdef("9starts_digit", Text), "snake_case"),
+        (fdef("has-dash", Text), "snake_case"),
+        (fdef("", Text), "snake_case"),
+        (fdef(&"x".repeat(33), Text), "snake_case"),
+        (fdef("no_values_enum", Enum), "at least one value"),
+        (
+            crate::config::FieldDef {
+                values: vec!["a".into()],
+                ..fdef("values_on_text", Text)
+            },
+            "only makes sense on the enum kind",
+        ),
+        (
+            crate::config::FieldDef {
+                applies_to: vec!["NoSuchType".into()],
+                ..fdef("bad_target", Text)
+            },
+            "unknown type",
+        ),
+        (
+            crate::config::FieldDef {
+                label: "y".repeat(65),
+                ..fdef("long_label", Text)
+            },
+            "label longer",
+        ),
+        (
+            crate::config::FieldDef {
+                values: vec!["a".into(), "a".into()],
+                ..fdef("dup_enum", Enum)
+            },
+            "duplicate enum value",
+        ),
+    ];
+    for (def, needle) in cases {
+        let cfg = GraphConfig {
+            fields: vec![def],
+            ..GraphConfig::default()
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains(needle), "wanted {needle:?} in: {err}");
+    }
+    // Duplicate names across defs.
+    let cfg = GraphConfig {
+        fields: vec![fdef("twice", Text), fdef("twice", Number)],
+        ..GraphConfig::default()
+    };
+    assert!(
+        cfg.validate()
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate field name")
+    );
+}
+
+#[test]
+fn write_boundary_enforces_kinds_required_and_unknown_names() {
+    let e = engine();
+    e.set_graph_config(&fields_config()).unwrap();
+
+    // Missing required on the applicable type: a teaching error naming the
+    // roster and the call shape.
+    let err = e
+        .add_node(new_node(NodeType::Decision, "pick a queue", "x"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("missing required"), "{err}");
+    assert!(err.contains("priority"), "{err}");
+    assert!(
+        err.contains("low | high"),
+        "the enum vocabulary teaches: {err}"
+    );
+    assert!(err.contains("\"fields\""), "the call shape teaches: {err}");
+
+    // The required field doesn't apply to other types.
+    let mut n = new_node(NodeType::Insight, "no priority needed", "x");
+    n.fields = None;
+    e.add_node(n).unwrap();
+
+    // Unknown name, wrong kinds, bad enum value, bad date, bad url.
+    let bad: Vec<(serde_json::Map<String, serde_json::Value>, &str)> = vec![
+        (
+            jmap(&[("nonsense", serde_json::json!("x"))]),
+            "unknown custom field",
+        ),
+        (
+            jmap(&[("effort_days", serde_json::json!("three"))]),
+            "expected a number",
+        ),
+        (
+            jmap(&[("reviewed", serde_json::json!("yes"))]),
+            "expected true or false",
+        ),
+        (
+            jmap(&[("owner", serde_json::json!(7))]),
+            "expected a string",
+        ),
+        (jmap(&[("due", serde_json::json!("soon"))]), "YYYY-MM-DD"),
+        (jmap(&[("ticket", serde_json::json!("JIRA-123"))]), "URL"),
+    ];
+    for (fields, needle) in bad {
+        let mut n = new_node(NodeType::Insight, "probe", "x");
+        n.fields = Some(fields.clone());
+        let err = e.add_node(n).unwrap_err().to_string();
+        assert!(
+            err.contains(needle),
+            "fields {fields:?}: wanted {needle:?} in {err}"
+        );
+    }
+    // Enum vocabulary is enforced (on the type the enum applies to).
+    let mut n = new_node(NodeType::Decision, "probe enum", "x");
+    n.fields = Some(jmap(&[("priority", serde_json::json!("urgent"))]));
+    let err = e.add_node(n).unwrap_err().to_string();
+    assert!(err.contains("not one of"), "{err}");
+
+    // A fully valid write persists every kind, and the values read back.
+    let mut n = new_node(NodeType::Decision, "adopt the queue", "x");
+    n.fields = Some(jmap(&[
+        ("priority", serde_json::json!("high")),
+        ("effort_days", serde_json::json!(2.5)),
+        ("reviewed", serde_json::json!(true)),
+        ("due", serde_json::json!("2026-09-15")),
+        ("ticket", serde_json::json!("https://issues.example/Q-1")),
+        ("owner", serde_json::json!("platform team")),
+    ]));
+    let node = e.add_node(n).unwrap();
+    let stored = e.get_node(&node.id).unwrap().unwrap();
+    let f = stored.fields.as_ref().unwrap();
+    assert_eq!(f["priority"], "high");
+    assert_eq!(f["effort_days"], 2.5);
+    assert_eq!(f["reviewed"], true);
+    assert_eq!(f["due"], "2026-09-15");
+    assert_eq!(f["owner"], "platform team");
+    // Unix-seconds dates are legal too.
+    let mut n = new_node(NodeType::Insight, "epoch date", "x");
+    n.fields = Some(jmap(&[("due", serde_json::json!(1_787_000_000_i64))]));
+    e.add_node(n).unwrap();
+}
+
+#[test]
+fn fields_patch_merges_and_null_deletes() {
+    let e = engine();
+    e.set_graph_config(&fields_config()).unwrap();
+    let mut n = new_node(NodeType::Decision, "merge target", "x");
+    n.fields = Some(jmap(&[
+        ("priority", serde_json::json!("low")),
+        ("owner", serde_json::json!("core team")),
+    ]));
+    let node = e.add_node(n).unwrap();
+
+    // Merge: touch one key, delete another, leave the rest alone.
+    let updated = e
+        .update_node(
+            &node.id,
+            NodePatch {
+                fields: Some(jmap(&[
+                    ("priority", serde_json::json!("high")),
+                    ("owner", serde_json::Value::Null),
+                    ("reviewed", serde_json::json!(true)),
+                ])),
+                ..NodePatch::default()
+            },
+        )
+        .unwrap();
+    let f = updated.fields.as_ref().unwrap();
+    assert_eq!(f["priority"], "high");
+    assert_eq!(f["reviewed"], true);
+    assert!(!f.contains_key("owner"), "null deletes the key");
+
+    // Deleting a REQUIRED field is refused — the resolved map must validate.
+    let err = e
+        .update_node(
+            &node.id,
+            NodePatch {
+                fields: Some(jmap(&[("priority", serde_json::Value::Null)])),
+                ..NodePatch::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("missing required"), "{err}");
+
+    // Retype re-validates against the target type: Insight doesn't carry
+    // `priority` (applies_to Decision only) — the stale key must be cleaned
+    // in the same patch or the retype is refused.
+    let err = e
+        .update_node(
+            &node.id,
+            NodePatch {
+                node_type: Some(NodeType::Insight),
+                ..NodePatch::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("unknown custom field"), "{err}");
+    e.update_node(
+        &node.id,
+        NodePatch {
+            node_type: Some(NodeType::Insight),
+            fields: Some(jmap(&[("priority", serde_json::Value::Null)])),
+            ..NodePatch::default()
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn fields_without_declarations_are_refused() {
+    let e = engine();
+    let mut n = new_node(NodeType::Decision, "no defs here", "x");
+    n.fields = Some(jmap(&[("anything", serde_json::json!("x"))]));
+    let err = e.add_node(n).unwrap_err().to_string();
+    assert!(err.contains("declares no custom fields"), "{err}");
+    // An empty map is the same as none.
+    let mut n = new_node(NodeType::Decision, "empty map fine", "x");
+    n.fields = Some(serde_json::Map::new());
+    assert!(e.add_node(n).unwrap().fields.is_none());
+}
+
+#[test]
+fn rename_field_moves_values_and_config() {
+    let e = engine();
+    e.set_graph_config(&fields_config()).unwrap();
+    let mut n = new_node(NodeType::Insight, "carries owner", "x");
+    n.fields = Some(jmap(&[("owner", serde_json::json!("infra team"))]));
+    let node = e.add_node(n).unwrap();
+    let moved = e.rename_field("owner", "steward").unwrap();
+    assert_eq!(moved, 1);
+    let f = e.get_node(&node.id).unwrap().unwrap().fields.unwrap();
+    assert_eq!(f["steward"], "infra team");
+    assert!(!f.contains_key("owner"));
+    assert!(e.config().field_def("steward").is_some());
+    assert!(e.config().field_def("owner").is_none());
+    // Renaming onto a reserved name is refused by validation.
+    let err = e
+        .rename_field("steward", "created_at")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("shadows a built-in"), "{err}");
+}
+
+#[test]
+fn fields_survive_export_import_and_scrub_secrets() {
+    let e = engine();
+    e.set_graph_config(&fields_config()).unwrap();
+    let mut n = new_node(NodeType::Insight, "with secret field", "x");
+    n.fields = Some(jmap(&[(
+        "owner",
+        serde_json::json!("token ghp_1234567890abcdefghijklmnopqrstuvwxyZZZZ"),
+    )]));
+    let node = e.add_node(n).unwrap();
+    let stored = e.get_node(&node.id).unwrap().unwrap();
+    let owner = stored.fields.as_ref().unwrap()["owner"].as_str().unwrap();
+    assert!(
+        owner.contains("[REDACTED]") && !owner.contains("ghp_"),
+        "text field values pass redaction: {owner}"
+    );
+    // Round-trip through export/import keeps the map.
+    let dump = e.export().unwrap();
+    let e2 = engine();
+    e2.set_graph_config(&fields_config()).unwrap();
+    e2.import(dump).unwrap();
+    let f = e2.get_node(&node.id).unwrap().unwrap().fields.unwrap();
+    assert_eq!(f["owner"].as_str().unwrap(), owner);
+}
+
+#[test]
+fn indexed_fields_reach_keyword_search_on_tepin() {
+    use crate::config::FieldKind;
+    let e = Engine::new(
+        TepinStore::open_in_memory().unwrap(),
+        Box::new(FakeEmbedder::default()),
+    );
+    let cfg = GraphConfig {
+        fields: vec![crate::config::FieldDef {
+            indexed: true,
+            ..fdef("codename", FieldKind::Text)
+        }],
+        ..GraphConfig::default()
+    };
+    e.set_graph_config(&cfg).unwrap();
+    let mut n = new_node(
+        NodeType::Decision,
+        "an unrelated title",
+        "an unrelated body",
+    );
+    n.fields = Some(jmap(&[("codename", serde_json::json!("zanzibar"))]));
+    let node = e.add_node(n).unwrap();
+    let hits = e.store().search_fts("zanzibar", &[], 5).unwrap();
+    assert!(
+        hits.iter().any(|h| h.id == node.id),
+        "keyword search must find the node through its indexed custom field"
+    );
+    // Non-indexed fields stay out of the keyword channel.
+    let mut cfg2 = fields_config();
+    cfg2.fields.push(crate::config::FieldDef {
+        indexed: false,
+        ..fdef("quiet", FieldKind::Text)
+    });
+    let e2 = Engine::new(
+        TepinStore::open_in_memory().unwrap(),
+        Box::new(FakeEmbedder::default()),
+    );
+    e2.set_graph_config(&cfg2).unwrap();
+    let mut n = new_node(NodeType::Insight, "plain title", "plain body");
+    n.fields = Some(jmap(&[("quiet", serde_json::json!("xylophone"))]));
+    let node2 = e2.add_node(n).unwrap();
+    let hits = e2.store().search_fts("xylophone", &[], 5).unwrap();
+    assert!(
+        !hits.iter().any(|h| h.id == node2.id),
+        "non-indexed field values must not enter the keyword index"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 0.9.0: bitemporal search — a date_field clock re-aims the window at the
+// graph's event clock (single field, or a from..to validity span).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn date_field_clock_filters_on_the_event_clock() {
+    use crate::config::FieldKind;
+    let e = engine();
+    let cfg = GraphConfig {
+        fields: vec![
+            fdef("event_date", FieldKind::Date),
+            fdef("effective_from", FieldKind::Date),
+            fdef("effective_to", FieldKind::Date),
+        ],
+        ..GraphConfig::default()
+    };
+    e.set_graph_config(&cfg).unwrap();
+
+    // Historic import: all captured NOW, but the events span years.
+    let mk = |title: &str, fields: &[(&str, serde_json::Value)]| {
+        let mut n = new_node(NodeType::Decision, title, "the payment provider migration");
+        n.fields = Some(jmap(fields));
+        e.add_node(n).unwrap()
+    };
+    let d2019 = mk(
+        "adopted stripe",
+        &[("event_date", serde_json::json!("2019-06-01"))],
+    );
+    let d2023 = mk(
+        "moved to adyen",
+        &[("event_date", serde_json::json!("2023-02-10"))],
+    );
+    let no_date = mk("provider decision undated", &[]);
+
+    let filter = e
+        .time_filter_clocked(
+            Some("2022-01-01"),
+            Some("2024-01-01"),
+            None,
+            None,
+            Some("event_date"),
+        )
+        .unwrap();
+    let hits = e
+        .search_filtered("payment provider migration", &[], 10, &filter)
+        .unwrap();
+    let ids: Vec<&str> = hits.iter().map(|h| h.id.as_str()).collect();
+    assert!(ids.contains(&d2023.id.as_str()), "in-window event matches");
+    assert!(
+        !ids.contains(&d2019.id.as_str()),
+        "out-of-window event drops"
+    );
+    assert!(
+        !ids.contains(&no_date.id.as_str()),
+        "a node without the event field can't answer an event-time question"
+    );
+
+    // The same window on the DEFAULT clock still matches everything —
+    // capture time is now for all three (bitemporal: two clocks, one graph).
+    let capture_filter = e
+        .time_filter_clocked(Some("yesterday"), None, None, None, None)
+        .unwrap();
+    let hits = e
+        .search_filtered("payment provider migration", &[], 10, &capture_filter)
+        .unwrap();
+    assert_eq!(hits.len(), 3, "capture clock sees all three: {hits:?}");
+
+    // Validity spans: overlap semantics, open ends included.
+    let span = |t: &str, from: Option<&str>, to: Option<&str>| {
+        let mut fields: Vec<(&str, serde_json::Value)> = Vec::new();
+        if let Some(f) = from {
+            fields.push(("effective_from", serde_json::json!(f)));
+        }
+        if let Some(f) = to {
+            fields.push(("effective_to", serde_json::json!(f)));
+        }
+        mk(t, &fields)
+    };
+    let ended = span(
+        "stripe contract era",
+        Some("2019-01-01"),
+        Some("2021-12-31"),
+    );
+    let current = span("adyen contract era", Some("2023-01-01"), None);
+    let query_2023 = e
+        .time_filter_clocked(
+            Some("2023-06-01"),
+            Some("2023-06-02"),
+            None,
+            None,
+            Some("effective_from..effective_to"),
+        )
+        .unwrap();
+    let hits = e
+        .search_filtered("payment provider migration contract", &[], 10, &query_2023)
+        .unwrap();
+    let ids: Vec<&str> = hits.iter().map(|h| h.id.as_str()).collect();
+    assert!(
+        ids.contains(&current.id.as_str()),
+        "open-ended span overlaps 'valid at' query: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&ended.id.as_str()),
+        "a span that ended in 2021 is not valid in 2023"
+    );
+}
+
+#[test]
+fn date_field_clock_is_validated_loudly() {
+    use crate::config::FieldKind;
+    let e = engine();
+    let cfg = GraphConfig {
+        fields: vec![
+            fdef("event_date", FieldKind::Date),
+            fdef("owner", FieldKind::Text),
+        ],
+        ..GraphConfig::default()
+    };
+    e.set_graph_config(&cfg).unwrap();
+    let probe = |after: Option<&str>, sel: &str| {
+        let filter = e
+            .time_filter_clocked(after, None, None, None, Some(sel))
+            .unwrap();
+        e.search_filtered("anything", &[], 5, &filter)
+            .unwrap_err()
+            .to_string()
+    };
+    let err = probe(Some("2024-01-01"), "no_such_field");
+    assert!(err.contains("event_date"), "names the date roster: {err}");
+    let err = probe(Some("2024-01-01"), "owner");
+    assert!(
+        err.contains("date-kind"),
+        "a text field can't be a clock: {err}"
+    );
+    let err = probe(None, "event_date");
+    assert!(
+        err.contains("needs a window"),
+        "an unaimed clock is an error: {err}"
+    );
+    let err = e
+        .time_filter_clocked(Some("2024-01-01"), None, None, None, Some("a.."))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("from..to"),
+        "half a pair is a shape error: {err}"
+    );
+}
+
+#[test]
+fn tombstone_role_refuses_worklist_and_anchor() {
+    let mut cfg = GraphConfig::default();
+    let idx = cfg
+        .ontology
+        .types
+        .iter()
+        .position(|t| t.roles.tombstone)
+        .unwrap();
+    cfg.ontology.types[idx].roles.worklist = true;
+    assert!(cfg.validate().is_err(), "tombstone+worklist must fail");
+    cfg.ontology.types[idx].roles.worklist = false;
+    cfg.ontology.types[idx].roles.anchor = true;
+    assert!(cfg.validate().is_err(), "tombstone+anchor must fail");
+    cfg.ontology.types[idx].roles.anchor = false;
+    cfg.validate().unwrap();
+}
+
+#[test]
+fn delete_with_tombstone_records_the_victim_and_reason() {
+    let e = engine();
+    let victim = e
+        .add_node(new_node(
+            NodeType::Decision,
+            "Use the flaky vendor SDK",
+            "It seemed fine at the time.",
+        ))
+        .unwrap();
+    let (removed, tombstone) = e
+        .delete_node_with_tombstone(&victim.id, Some("vendor sunset the SDK"))
+        .unwrap();
+    assert!(removed);
+    let t = tombstone.expect("default ontology has a tombstone type");
+    assert_eq!(t.node_type, NodeType::Tombstone);
+    assert!(t.title.contains("Use the flaky vendor SDK"));
+    let body = t.body.as_deref().unwrap();
+    assert!(body.contains("Decision"), "victim type recorded: {body}");
+    assert!(body.contains(&victim.id), "victim id recorded: {body}");
+    assert!(
+        body.contains("vendor sunset the SDK"),
+        "reason recorded: {body}"
+    );
+    assert_eq!(t.source, Source::User, "delete is a user gesture");
+    assert!(e.get_node(&victim.id).unwrap().is_none(), "victim gone");
+    assert!(e.get_node(&t.id).unwrap().is_some(), "tombstone persists");
+}
+
+#[test]
+fn delete_with_tombstone_degrades_to_plain_delete_without_the_role() {
+    let e = engine();
+    // The minimal preset declares no tombstone type.
+    let minimal = crate::config::presets()
+        .into_iter()
+        .find(|p| p.id == "minimal")
+        .unwrap()
+        .config;
+    let victim = e
+        .add_node(new_node(NodeType::Decision, "short-lived", "x"))
+        .unwrap();
+    // Reshape AFTER the write: Decision no longer exists, but the delete path
+    // must not care about the victim's type — only about the tombstone role.
+    let mut cfg = minimal;
+    cfg.ontology.types.push(crate::config::tdef(
+        "Decision",
+        217,
+        "legacy",
+        Durability::Stable,
+        crate::config::TypeRoles::plain(0.0),
+        crate::config::hidden_brief(),
+    ));
+    e.set_graph_config(&cfg).unwrap();
+    let (removed, tombstone) = e.delete_node_with_tombstone(&victim.id, None).unwrap();
+    assert!(removed);
+    assert!(tombstone.is_none(), "no tombstone type — plain delete");
+    assert!(e.get_node(&victim.id).unwrap().is_none());
+}
+
+#[test]
+fn tombstones_sit_out_the_conflict_scan() {
+    let e = engine();
+    e.add_node(new_node(
+        NodeType::Insight,
+        "The cache uses LRU eviction",
+        "Measured on the live daemon.",
+    ))
+    .unwrap();
+    let t = e
+        .add_node(new_node(
+            NodeType::Tombstone,
+            "Removed: the cache uses LRU eviction",
+            "Deleted Insight — the cache was ripped out entirely.",
+        ))
+        .unwrap();
+    let scannable = e.store().scannable_nodes().unwrap();
+    assert!(
+        scannable.iter().all(|n| n.id != t.id),
+        "tombstone must not be conflict-scan material"
+    );
+    assert!(
+        scannable.iter().any(|n| n.node_type == NodeType::Insight),
+        "ordinary nodes still scan"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -6728,6 +7404,7 @@ fn engine_opens_history_store_beside_the_graph_and_toggles_live() {
                 tags: vec![],
                 version: None,
                 props: None,
+                fields: None,
             })
             .unwrap()
             .id
@@ -7140,6 +7817,7 @@ fn history_search_and_session_listing_take_the_same_time_window() {
             tags: vec![],
             version: None,
             props: Some(props),
+            fields: None,
         })
         .unwrap()
         .unwrap()
@@ -7237,6 +7915,7 @@ fn recent_ordering_folds_restatements_without_ever_cutting_one() {
             tags: vec![],
             version: None,
             props: Some(props),
+            fields: None,
         })
         .unwrap()
         .unwrap()
@@ -7349,6 +8028,7 @@ fn born_in_provenance_parks_and_resolves() {
             tags: vec![],
             version: None,
             props: Some(props),
+            fields: None,
         })
         .unwrap()
         .unwrap()
@@ -7872,33 +8552,42 @@ fn history_sealing_end_to_end() {
             tags: vec![],
             version: None,
             props: Some(props),
+            fields: None,
         })
         .unwrap()
         .unwrap()
     };
-    // Pre-seal era: no sealing opt-in yet.
+    // Pre-encryption era: the store's own recorded state is plaintext.
     let plain_era = mk(&e, "written before the key existed", "user", 0);
-    assert!(!is_sealed(
-        &e.with_history(|s| s.get_node(&plain_era.id).unwrap().unwrap().title)
-            .unwrap()
-    ));
+    assert_eq!(
+        e.with_history(|s| s.encryption_state()).unwrap(),
+        crate::seal::EncryptionState::Plaintext
+    );
 
-    // The daemon opts in; new writes seal, the backlog pass seals the rest.
-    e.enable_history_sealing();
+    // 0.9.0: flip the STORE to sealed — the migration reprocesses the
+    // backlog, every later write conforms, and readers still see prose
+    // because the driver opens sealed rows itself.
+    assert!(
+        e.set_store_encryption("history", true, &mut |_, _| {})
+            .unwrap()
+            >= 1
+    );
+    assert_eq!(
+        e.with_history(|s| s.encryption_state()).unwrap(),
+        crate::seal::EncryptionState::Sealed
+    );
     let sealed_era = mk(&e, "written after sealing turned on", "assistant", 1);
-    let stored = e
+    let read_back = e
         .with_history(|s| s.get_node(&sealed_era.id).unwrap().unwrap())
         .unwrap();
-    assert!(is_sealed(&stored.title), "{}", stored.title);
-    assert!(is_sealed(stored.body.as_deref().unwrap()));
-    assert_eq!(e.seal_history_backlog().unwrap(), 1, "the pre-seal row");
-    assert_eq!(e.seal_history_backlog().unwrap(), 0, "idempotent");
-    let resealed = e
-        .with_history(|s| s.get_node(&plain_era.id).unwrap().unwrap())
-        .unwrap();
-    assert!(is_sealed(&resealed.title));
+    assert!(
+        !is_sealed(&read_back.title) && read_back.title.contains("after sealing"),
+        "the driver opens sealed rows for readers: {}",
+        read_back.title
+    );
 
-    // Readers decrypt in memory: messages, search snippets.
+    // Readers decrypt in memory: messages, search snippets — and the
+    // keyword channel works over the sealed store (blind index).
     let msgs = e.history_messages("seal-sess").unwrap();
     assert_eq!(msgs.len(), 2);
     assert!(msgs.iter().any(|m| m.text.contains("before the key")));
@@ -7909,12 +8598,256 @@ fn history_sealing_end_to_end() {
         hits.iter().all(|h| !h.snippet.contains("enc1:")),
         "snippets are prose, not blobs: {hits:?}"
     );
+    let kw = e
+        .with_history(|s| s.search_fts("sealing turned", &[], 5))
+        .unwrap()
+        .unwrap();
+    assert!(
+        kw.iter().any(|h| h.id == sealed_era.id),
+        "BM25 finds terms through the blind index: {kw:?}"
+    );
+
+    // At rest it is REALLY sealed: a reopen where no key exists renders the
+    // placeholder, never plaintext, never garbage.
+    let history_db = crate::history::history_store_path(&db);
+    drop(e);
+    unsafe {
+        std::env::set_var("ENGRAM_HOME", tmp.join("keyless"));
+    }
+    {
+        let s = crate::store::open_store(&history_db).unwrap();
+        let node = s.get_node(&plain_era.id).unwrap().unwrap();
+        assert!(
+            node.title.contains("unavailable"),
+            "no key → placeholder: {}",
+            node.title
+        );
+    }
+
+    // Key restored: prose again — then decrypt the whole store and verify
+    // the file is readable with no key at all.
+    unsafe {
+        std::env::set_var("ENGRAM_HOME", tmp.join("enghome"));
+    }
+    {
+        let mut e = Engine::with_store(
+            crate::store::open_store(&db).unwrap(),
+            Box::new(FakeEmbedder::default()),
+        );
+        e.set_history_path(history_db.clone());
+        enable_history(&e);
+        let back = e
+            .with_history(|s| s.get_node(&plain_era.id).unwrap().unwrap())
+            .unwrap();
+        assert!(back.title.contains("before the key"), "{}", back.title);
+        e.set_store_encryption("history", false, &mut |_, _| {})
+            .unwrap();
+        assert_eq!(
+            e.with_history(|s| s.encryption_state()).unwrap(),
+            crate::seal::EncryptionState::Plaintext
+        );
+    }
+    unsafe {
+        std::env::set_var("ENGRAM_HOME", tmp.join("keyless2"));
+    }
+    {
+        let s = crate::store::open_store(&history_db).unwrap();
+        let node = s.get_node(&sealed_era.id).unwrap().unwrap();
+        assert!(
+            node.title.contains("after sealing"),
+            "decrypted store reads keyless: {}",
+            node.title
+        );
+    }
 
     unsafe {
         std::env::remove_var("ENGRAM_KEYRING");
         std::env::remove_var("ENGRAM_HOME");
     }
     std::fs::remove_dir_all(&tmp).ok();
+}
+
+// ---------------------------------------------------------------------------
+// 0.9.0: graph-store encryption — parity, migration, resume.
+// ---------------------------------------------------------------------------
+
+/// A tepin engine with an injected ephemeral key — no keyring, no disk.
+fn sealed_capable_engine() -> Engine {
+    let store = TepinStore::open_in_memory().unwrap();
+    store.set_seal_key_for_tests(crate::seal::SealKey::ephemeral().unwrap());
+    Engine::new(store, Box::new(FakeEmbedder::default()))
+}
+
+fn seed_corpus(e: &Engine) -> Vec<Node> {
+    let rows = [
+        (
+            "Adopt sqlite for the ledger",
+            "write-ahead logging keeps readers unblocked",
+        ),
+        (
+            "The ledger flushes hourly",
+            "a cron task drains the sqlite queue into cold storage",
+        ),
+        (
+            "Postgres was rejected",
+            "operational burden outweighed the gains for a single node",
+        ),
+        (
+            "Retry with jitter",
+            "fixed one-second retries hammered the API during incidents",
+        ),
+        (
+            "The exporter owns backoff",
+            "retry policy lives beside the queue, not in callers",
+        ),
+    ];
+    rows.iter()
+        .map(|(t, b)| e.add_node(new_node(NodeType::Decision, t, b)).unwrap())
+        .collect()
+}
+
+#[test]
+fn bm25_ranking_is_identical_sealed_and_plaintext() {
+    let plain = sealed_capable_engine();
+    let sealed = sealed_capable_engine();
+    seed_corpus(&plain);
+    seed_corpus(&sealed);
+    sealed
+        .set_store_encryption("graph", true, &mut |_, _| {})
+        .unwrap();
+    for query in [
+        "sqlite ledger",
+        "retry jitter backoff",
+        "postgres operational burden",
+        "hourly flush cron",
+        "nothing matches this at all zzz",
+    ] {
+        let a: Vec<(String, String)> = plain
+            .store()
+            .search_fts(query, &[], 10)
+            .unwrap()
+            .into_iter()
+            .map(|h| (h.title, format!("{:.9}", h.score)))
+            .collect();
+        let b: Vec<(String, String)> = sealed
+            .store()
+            .search_fts(query, &[], 10)
+            .unwrap()
+            .into_iter()
+            .map(|h| (h.title, format!("{:.9}", h.score)))
+            .collect();
+        assert_eq!(a, b, "BM25 must be bit-identical for {query:?}");
+    }
+}
+
+#[test]
+fn graph_encryption_round_trip_preserves_everything() {
+    let e = sealed_capable_engine();
+    let nodes = seed_corpus(&e);
+    let edge = e
+        .add_edge(NewEdge {
+            edge_type: EdgeType::Because,
+            from_id: nodes[0].id.clone(),
+            to_id: nodes[2].id.clone(),
+            source: Source::Claude,
+            note: Some("the ops-burden analysis".into()),
+            confidence: None,
+            strength: None,
+            status: None,
+        })
+        .unwrap();
+
+    let before_export = e.export().unwrap();
+    let mut seen = 0;
+    e.set_store_encryption("graph", true, &mut |done, total| {
+        assert!(done <= total);
+        seen = done;
+    })
+    .unwrap();
+    assert!(seen > 0, "progress callbacks fire");
+    assert_eq!(
+        e.store().encryption_state(),
+        crate::seal::EncryptionState::Sealed
+    );
+
+    // Every read surface still sees prose: nodes, edges, audit, exports.
+    let n = e.get_node(&nodes[0].id).unwrap().unwrap();
+    assert_eq!(n.title, "Adopt sqlite for the ledger");
+    assert_eq!(
+        n.body.as_deref(),
+        Some("write-ahead logging keeps readers unblocked")
+    );
+    let edges = e.store().edges_out(&nodes[0].id).unwrap();
+    assert_eq!(edges[0].note.as_deref(), Some("the ops-burden analysis"));
+    let page = e.store().audit_page(None, None, 100).unwrap();
+    assert!(
+        page.entries
+            .iter()
+            .any(|a| a.title.as_deref() == Some("Adopt sqlite for the ledger")),
+        "audit rows open for readers"
+    );
+    let after_export = e.export().unwrap();
+    assert_eq!(
+        serde_json::json!(before_export.nodes),
+        serde_json::json!(after_export.nodes),
+        "exports decrypt — a user export is plaintext by intent"
+    );
+
+    // Decrypt restores the recorded state and everything still reads.
+    e.set_store_encryption("graph", false, &mut |_, _| {})
+        .unwrap();
+    assert_eq!(
+        e.store().encryption_state(),
+        crate::seal::EncryptionState::Plaintext
+    );
+    let n = e.get_node(&nodes[0].id).unwrap().unwrap();
+    assert_eq!(n.title, "Adopt sqlite for the ledger");
+    let _ = edge;
+}
+
+#[test]
+fn interrupted_migration_resumes_from_the_recorded_state() {
+    let e = sealed_capable_engine();
+    seed_corpus(&e);
+    // Simulate a crash mid-migration: the state advanced to `sealing` but
+    // the rewrite never ran. Readers must already cope, and a reconcile
+    // toward the same target must finish the job.
+    e.store()
+        .set_encryption_state(crate::seal::EncryptionState::Sealing)
+        .unwrap();
+    let n = e.store().all_nodes().unwrap();
+    assert_eq!(n.len(), 5, "mixed rows read fine mid-flight");
+    let reprocessed = e
+        .set_store_encryption("graph", true, &mut |_, _| {})
+        .unwrap();
+    assert!(reprocessed >= 5);
+    assert_eq!(
+        e.store().encryption_state(),
+        crate::seal::EncryptionState::Sealed
+    );
+    // Idempotent: converging again touches nothing.
+    assert_eq!(
+        e.set_store_encryption("graph", true, &mut |_, _| {})
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn sealed_graph_search_hybrid_still_delivers() {
+    let e = sealed_capable_engine();
+    let nodes = seed_corpus(&e);
+    e.set_store_encryption("graph", true, &mut |_, _| {})
+        .unwrap();
+    let hits = e.search("retry jitter during incidents", &[], 5).unwrap();
+    assert!(
+        hits.iter().any(|h| h.id == nodes[3].id),
+        "hybrid search over a sealed store finds the note: {hits:?}"
+    );
+    assert!(
+        hits.iter().all(|h| !h.title.contains("enc1:")),
+        "delivered hits are prose"
+    );
 }
 
 /// Perf receipt probe (run manually: cargo test --release history_codec_receipt -- --ignored --nocapture).

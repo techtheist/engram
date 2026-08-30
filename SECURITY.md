@@ -21,21 +21,26 @@ and they are protected differently on purpose:
 
 | | curated graph (`graph.tepin`) | session history (`history.tepin`) |
 |---|---|---|
-| **Redacted on write** | yes — its *only* content protection | yes, before sealing |
-| **Encrypted at rest** | **no** | **yes** (XChaCha20-Poly1305) |
+| **Redacted on write** | yes | yes, before sealing |
+| **Encrypted at rest** | **optional, off by default** (0.9.0) | **yes, on by default** (XChaCha20-Poly1305) |
 | **You can read it** | yes — that is the point | only through the pane/tools |
 
-The curated graph is **redacted but not encrypted**, because it exists to be
-inspected: you read it in the pane, you edit it, you delete from it, and
-`npx tepindb` can open it. Encrypting it would buy at-rest protection at the
-cost of the inspectability the whole product is built on. Its content
-protection is therefore redaction plus OS file permissions plus your disk
-encryption — and, more than either, the fact that a human curates it.
+Since 0.9.0 both layers run the SAME sealing machinery, behind two switches
+in the pane's System panel (`~/.engram/settings.json`). Each store records
+its actual state **in its own meta**, so the daemon can never disagree with
+the file on disk; flipping a switch migrates the whole store with a progress
+loader, and a migration killed halfway resumes at the next open.
 
-The history layer is **redacted *and* encrypted**, because nobody curates a
-transcript. It records raw conversation you never reviewed, in bulk, so it
-cannot rely on your judgment the way the graph does and gets a cipher instead
-(details below). Recording is opt-in for exactly this reason.
+The curated graph defaults to **redacted but not encrypted**, because it
+exists to be inspected: you read it in the pane, you edit it, you delete
+from it, and `npx tepindb` can open it. Sealing it is your call — it buys
+at-rest protection at the cost of that raw-file inspectability (the pane
+still reads everything: the daemon holds the key).
+
+The history layer defaults to **redacted *and* encrypted**, because nobody
+curates a transcript. It records raw conversation you never reviewed, in
+bulk, so it cannot rely on your judgment the way the graph does and gets a
+cipher instead (details below). Recording is opt-in for exactly this reason.
 
 **Secrets in memory.** Every write — titles, bodies, imports, and history
 plaintext before it is sealed — runs a server-side redaction pass
@@ -79,7 +84,7 @@ recommended).
 more: message and session **text is sealed** — zstd-compressed, then
 encrypted with XChaCha20-Poly1305 under a per-machine 256-bit key minted on
 first need and stored in the OS keystore (macOS Keychain / Windows credential
-store / Linux secret-service), with a `~/.engram/history.key` (0600) fallback
+store / Linux secret-service), with a `~/.engram/history.key` (0600) fallback (the pre-0.9.0 name, kept — one machine key seals both layers)
 for headless machines (`ENGRAM_KEYRING=off` forces the file). Honest scope:
 
 - **Protects**: copied `.tepin` files, backups, stolen disks without FDE,
@@ -92,9 +97,14 @@ for headless machines (`ENGRAM_KEYRING=off` forces the file). Honest scope:
   that recover the *gist* of a message, not its text; sealing them would
   break vector-first retrieval. Stated here so nobody mistakes the layer for
   more than it is.
-- **No keyword index over history text**: history search is vector-first, and
-  candidate text is decrypted in memory at query time only. (The index would
-  otherwise persist exactly the plaintext the seal protects.)
+- **The keyword index is blind** (0.9.0): BM25 terms on a sealed store are
+  keyed HMAC-SHA256 digests, never words — term statistics survive (so
+  ranking is bit-identical to plaintext, and history finally has a keyword
+  channel at all), while the index holds no vocabulary. Candidate text is
+  still decrypted in memory at query time only.
+- **What seals** (both layers): titles, bodies, tags, code refs, custom
+  field values, edge notes, and the audit journal's before/after images.
+  Sealed exports still come out as plaintext — an export is a user gesture.
 - Redaction runs on the plaintext **before** sealing — secrets never reach
   the store, encrypted or not.
 
@@ -114,11 +124,10 @@ over HTTPS from their recorded Hugging Face URLs into `~/.cache/engram/`.
 
 ## Known gaps (tracked, in the open)
 
-- **The curated graph is not encrypted at rest.** 0.8.4 sealed the history
-  layer (see above) — the deliberately-scoped first step of the app-level
-  encryption thread. The curated store still relies on OS permissions and
-  disk encryption (FileVault/LUKS/BitLocker); extending sealing to it is a
-  separate decision (it would cost the pane's `npx tepindb` inspectability).
+- **The curated graph is plaintext unless you flip the switch.** 0.9.0 made
+  graph sealing available (System panel), but the default stays off for
+  inspectability — a store that was never sealed still relies on OS
+  permissions and disk encryption (FileVault/LUKS/BitLocker).
 - **Deleted history can linger in freed pages.** Hard-deleting a session (or
   wiping the layer) removes the rows, but the storage engine's freed pages
   aren't scrubbed — the same caveat already documented for curated hard

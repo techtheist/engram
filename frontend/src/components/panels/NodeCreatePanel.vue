@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
+import FieldInput from '@/components/common/FieldInput.vue'
 import SidePanel from '@/components/common/SidePanel.vue'
 import TagEditor from '@/components/common/TagEditor.vue'
 import { onProjectSwitch } from '@/composables/onProjectSwitch'
@@ -26,7 +27,11 @@ const draft = reactive({
     body: '',
     durability: 'stable' as Durability,
     tags: [] as string[],
+    fields: {} as Record<string, unknown>,
 })
+
+/** Custom-field definitions applying to the picked type. */
+const fieldDefs = computed(() => config.fieldsFor(draft.type))
 
 // Picking a type re-seeds the ontology's default durability; the user can
 // still override.
@@ -44,6 +49,7 @@ function reset(): void {
     draft.body = ''
     draft.durability = 'stable'
     draft.tags = []
+    draft.fields = {}
     error.value = null
 }
 
@@ -55,6 +61,9 @@ async function save(): Promise<void> {
     busy.value = true
     error.value = null
     try {
+        const fields = Object.fromEntries(
+            Object.entries(draft.fields).filter(([, v]) => v !== undefined),
+        )
         const created = await store.createNode({
             type: draft.type,
             title: draft.title.trim(),
@@ -63,6 +72,7 @@ async function save(): Promise<void> {
             // Worklist-role types are live items from birth.
             status: config.typeDef(draft.type)?.roles.worklist ? 'open' : undefined,
             tags: draft.tags,
+            fields: Object.keys(fields).length > 0 ? fields : undefined,
         })
         open.value = false
         reset()
@@ -132,6 +142,16 @@ function close(): void {
         Tags
         <TagEditor v-model="draft.tags" />
     </label>
+
+    <div v-if="fieldDefs.length" class="fields-block">
+        <span class="edit-label">Custom fields</span>
+        <FieldInput
+            v-for="d in fieldDefs"
+            :key="d.name"
+            v-model="draft.fields[d.name]"
+            :def="d"
+        />
+    </div>
 
     <p v-if="error" class="error">{{ error }}</p>
 
@@ -208,6 +228,12 @@ function close(): void {
     background-color: var(--surface-sunken);
     color: var(--text-primary);
     font-size: var(--text-body-sm);
+}
+
+.fields-block {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
 }
 
 .error {

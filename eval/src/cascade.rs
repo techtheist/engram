@@ -133,6 +133,7 @@ pub fn cascade(cfg: &Config) -> anyhow::Result<CascadeReport> {
                         tags: vec![],
                         version: None,
                         props: Some(props),
+                        fields: None,
                     })?
                     .ok_or_else(|| anyhow::anyhow!("history layer closed"))?;
                 Ok(node.id)

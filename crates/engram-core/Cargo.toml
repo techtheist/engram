@@ -27,6 +27,11 @@ zstd = "0.13"
 chacha20poly1305 = "0.10"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 base64 = "0.22"
+# Blind keyword index over sealed stores (0.9.0): BM25 terms are keyed
+# HMAC-SHA256 digests, so ranking is bit-identical to plaintext while the
+# index leaks no vocabulary.
+hmac = "0.12"
+sha2 = "0.10"
 fastembed = { version = "5.17.2", optional = true }
 # The NLI layer runs on the same ONNX/tokenizer stack fastembed already
 # links — versions pinned to fastembed 5.17.2's own, so one runtime is built.

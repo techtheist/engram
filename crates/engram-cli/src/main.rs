@@ -1234,12 +1234,15 @@ fn open_engine(db: &Path, models: &Models) -> engram_core::Result<Engine> {
     if let Some(root) = root {
         engine.set_repo_root(root);
     }
+    // At-rest encryption (0.9.0): the daemon's desired state comes from the
+    // machine settings' two switches (graph off / history on by default);
+    // each store's OWN meta records its actual state and the reconcile
+    // below (plus the history-store open path) converges the two. Library
+    // engines and tests set no desire and never migrate.
+    let machine = engram_core::settings::load();
+    engine.set_desired_encryption(Some(machine.encrypt_graph), Some(machine.encrypt_history));
     // History layer (0.8.4): the sibling store beside the curated one, opened
     // by the engine when the graph's history config is enabled (opt-in).
-    // The daemon opts into at-rest sealing (keyring / file-fallback key);
-    // bodies written before a key existed are sealed by the harvester's
-    // backlog pass.
-    engine.enable_history_sealing();
     engine.set_history_path(engram_core::history::history_store_path(&resolved));
     if let Some(r) = &set.reranker {
         engine.set_reranker(Box::new(r.clone()));
@@ -1262,6 +1265,16 @@ fn open_engine(db: &Path, models: &Models) -> engram_core::Result<Engine> {
         Ok(0) => {}
         Ok(n) => tracing::info!("re-embedded {n} nodes for the current embedding composition"),
         Err(e) => tracing::warn!("embedding-composition upgrade failed: {e}"),
+    }
+    match engine.ensure_field_index() {
+        Ok(0) => {}
+        Ok(n) => tracing::info!("reindexed {n} nodes for the graph's indexed custom fields"),
+        Err(e) => tracing::warn!("custom-field index upgrade failed: {e}"),
+    }
+    match engine.ensure_encryption() {
+        Ok(0) => {}
+        Ok(n) => tracing::info!("encryption reconcile reprocessed {n} rows"),
+        Err(e) => tracing::warn!("encryption reconcile failed: {e}"),
     }
     Ok(engine)
 }

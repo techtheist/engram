@@ -11,7 +11,7 @@ import { humanDays, pct } from '@/constants/trust'
 import { useConfigStore } from '@/stores/config'
 import { useGraphStore } from '@/stores/graph'
 import { api } from '@/services/api'
-import type { Durability, GraphConfig, HistoryStatus, TypeDef, VerbDef } from '@/types/graph'
+import type { Durability, FieldDef, GraphConfig, HistoryStatus, TypeDef, VerbDef } from '@/types/graph'
 
 /**
  * Settings → Graph settings: the ontology redactor (PLAN §7D stage 4).
@@ -206,9 +206,9 @@ const SKILL_OPTIONS = [
 ]
 
 /** Which type/verb is mid-rename (renames bypass the draft: they bulk-retype). */
-const renaming = ref<{ kind: 'type' | 'verb'; from: string; to: string } | null>(null)
+const renaming = ref<{ kind: 'type' | 'verb' | 'field'; from: string; to: string } | null>(null)
 
-function startRename(kind: 'type' | 'verb', from: string): void {
+function startRename(kind: 'type' | 'verb' | 'field', from: string): void {
     renaming.value = { kind, from, to: from }
 }
 
@@ -224,12 +224,13 @@ async function commitRename(): Promise<void> {
         const renamed =
             r.kind === 'type'
                 ? await config.renameType(r.from, r.to.trim())
-                : await config.renameVerb(r.from, r.to.trim())
+                : r.kind === 'verb'
+                  ? await config.renameVerb(r.from, r.to.trim())
+                  : await config.renameField(r.from, r.to.trim())
         resetDraft()
+        const what = r.kind === 'type' ? 'node' : r.kind === 'verb' ? 'edge' : 'node value'
         flash(
-            `Renamed ${r.from} → ${r.to.trim()} — ${renamed} stored ${
-                r.kind === 'type' ? 'node' : 'edge'
-            }${renamed === 1 ? '' : 's'} followed.`,
+            `Renamed ${r.from} → ${r.to.trim()} — ${renamed} stored ${what}${renamed === 1 ? '' : 's'} followed.`,
         )
         renaming.value = null
         void graph.refresh()
@@ -251,7 +252,14 @@ function addType(): void {
         hue: Math.floor(Math.random() * 360),
         thought: 'what this type captures',
         durability: 'episodic',
-        roles: { worklist: false, anchor: false, rank_prior: 0, highlight: true, versioned: true },
+        roles: {
+            worklist: false,
+            anchor: false,
+            rank_prior: 0,
+            highlight: true,
+            versioned: true,
+            tombstone: false,
+        },
         brief: { show: false, cap: 8, excerpt: 140 },
     })
 }
@@ -279,6 +287,73 @@ function swatch(t: TypeDef): string {
 }
 
 // ---- verbs -----------------------------------------------------------------
+
+function addField(): void {
+    if (!draft.value) return
+    draft.value.fields.push({
+        name: nextName('new_field', draft.value.fields.map((f) => f.name)),
+        label: '',
+        kind: 'text',
+        values: [],
+        required: false,
+        applies_to: [],
+        indexed: false,
+        show_in_brief: false,
+    })
+}
+
+function removeField(f: FieldDef): void {
+    if (!draft.value) return
+    // No in-use guard: values on stored nodes stay inert (schemaless) — the
+    // definition is what's removed. Say so instead of silently proceeding.
+    const used = graph.nodeList.filter((n) => n.fields && f.name in n.fields).length
+    if (used > 0) {
+        flash(
+            `"${f.name}" removed from the config — ${used} node${used === 1 ? '' : 's'} still carry a value; it stays stored but hidden until re-declared.`,
+        )
+    }
+    draft.value.fields = draft.value.fields.filter((x) => x !== f)
+}
+
+/** The enum vocabulary as one editable comma-joined line. */
+function valuesLine(f: FieldDef): string {
+    return f.values.join(', ')
+}
+function setValuesLine(f: FieldDef, line: string): void {
+    f.values = line
+        .split(',')
+        .map((v) => v.trim())
+        .filter((v) => v.length > 0)
+}
+
+function toggleAppliesTo(f: FieldDef, type: string): void {
+    if (f.applies_to.includes(type)) {
+        f.applies_to = f.applies_to.filter((t) => t !== type)
+    } else {
+        f.applies_to = [...f.applies_to, type]
+    }
+}
+
+/** The built-in node fields, for the reference block — the whole picture
+ *  beside the custom ones. */
+const BUILT_IN_FIELDS: Array<{ name: string; kind: string; what: string }> = [
+    { name: 'id', kind: 'id', what: 'stable node id, assigned at creation' },
+    { name: 'type', kind: 'enum', what: "one of this graph's node types" },
+    { name: 'title', kind: 'text', what: 'one-sentence summary — the claim itself' },
+    { name: 'body', kind: 'text', what: 'the reasoning; markdown' },
+    { name: 'durability', kind: 'enum', what: 'stable | episodic | volatile — how knowledge ages' },
+    { name: 'source', kind: 'enum', what: 'user | claude — who wrote it' },
+    { name: 'tags', kind: 'list', what: 'free-form slice labels' },
+    { name: 'code_refs', kind: 'list', what: 'repo-relative paths, drift-checked' },
+    { name: 'status', kind: 'enum', what: 'open | resolved | obsolete on worklist types' },
+    { name: 'created_at', kind: 'date', what: 'when the knowledge was captured' },
+    { name: 'confirmed_at', kind: 'date', what: 'last deliberate re-validation' },
+    { name: 'approved_at', kind: 'date', what: 'last explicit user approval' },
+    { name: 'valid_until', kind: 'date', what: 'set = archived (superseded or decayed)' },
+    { name: 'version', kind: 'text', what: 'project version captured at (version tracking)' },
+    { name: 'session_id', kind: 'text', what: 'the session that wrote it' },
+    { name: 'trust', kind: 'number', what: 'computed at read time — never stored' },
+]
 
 function addVerb(): void {
     if (!draft.value) return
@@ -560,6 +635,11 @@ const kneeCliff = computed({
                         title="A code subject: carries code refs, excluded from the conflict scan, renders muted"
                     />
                     <ToggleChip
+                        v-model="t.roles.tombstone"
+                        label="tombstone"
+                        title="A deletion marker: records deliberately removed knowledge so it isn't re-learned; sits out the conflict scan; delete offers to mint one"
+                    />
+                    <ToggleChip
                         v-model="t.roles.highlight"
                         label="highlight"
                         title="Off renders this type muted (gray-toned) everywhere"
@@ -677,6 +757,124 @@ const kneeCliff = computed({
                 </div>
             </article>
             <button class="mini add" type="button" @click="addVerb">+ add verb</button>
+        </section>
+
+        <section class="block">
+            <h3 class="block-title">Custom fields</h3>
+            <p class="hint">
+                Your own first-class values on every note — enforced at write time for every
+                surface (assistant writes included), beside the built-ins below. A
+                <span class="mono">required</span> field refuses writes that omit it;
+                <span class="mono">indexed</span> puts the value into search.
+            </p>
+            <details class="builtin-ref">
+                <summary>Built-in fields (the whole picture)</summary>
+                <table class="builtin-table">
+                    <tbody>
+                        <tr v-for="b in BUILT_IN_FIELDS" :key="b.name">
+                            <td class="mono">{{ b.name }}</td>
+                            <td class="mono dim">{{ b.kind }}</td>
+                            <td>{{ b.what }}</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <p class="hint">
+                    Custom field names can't shadow any of these — Save refuses the collision.
+                </p>
+            </details>
+            <article v-for="f in draft.fields" :key="f.name" class="card">
+                <header class="card-head">
+                    <template v-if="renaming?.kind === 'field' && renaming.from === f.name">
+                        <input
+                            v-model="renaming.to"
+                            class="edit-input rename-input"
+                            type="text"
+                            :aria-label="`New name for ${f.name}`"
+                            @keydown.enter="commitRename"
+                            @keydown.escape="renaming = null"
+                        />
+                        <button class="mini" type="button" :disabled="busy" @click="commitRename">rename</button>
+                        <button class="mini ghost" type="button" @click="renaming = null">cancel</button>
+                    </template>
+                    <template v-else>
+                        <span class="card-name mono">{{ f.name }}</span>
+                        <span class="spacer" />
+                        <button
+                            class="mini ghost"
+                            type="button"
+                            :disabled="dirty || busy"
+                            :title="dirty ? 'Save or revert your edits first — renames apply immediately' : 'Rename and move every stored value with it'"
+                            @click="startRename('field', f.name)"
+                        >
+                            rename
+                        </button>
+                        <button class="mini ghost danger" type="button" @click="removeField(f)">remove</button>
+                    </template>
+                </header>
+                <div class="field-rows">
+                    <label class="row-label">
+                        Label
+                        <input
+                            v-model="f.label"
+                            class="edit-input grow"
+                            type="text"
+                            :placeholder="f.name"
+                            :aria-label="`${f.name} display label`"
+                        />
+                    </label>
+                    <label class="row-label">
+                        Kind
+                        <select v-model="f.kind" class="edit-input" :aria-label="`${f.name} kind`">
+                            <option value="text">text</option>
+                            <option value="number">number</option>
+                            <option value="bool">bool</option>
+                            <option value="date">date</option>
+                            <option value="enum">enum</option>
+                            <option value="url">url</option>
+                        </select>
+                    </label>
+                    <label v-if="f.kind === 'enum'" class="row-label">
+                        Values
+                        <input
+                            :value="valuesLine(f)"
+                            class="edit-input grow"
+                            type="text"
+                            placeholder="low, medium, high"
+                            :aria-label="`${f.name} enum values`"
+                            @change="setValuesLine(f, ($event.target as HTMLInputElement).value)"
+                        />
+                    </label>
+                </div>
+                <div class="checks">
+                    <ToggleChip
+                        v-model="f.required"
+                        label="required"
+                        title="Writes of applicable types that omit this field are refused"
+                    />
+                    <ToggleChip
+                        v-model="f.indexed"
+                        label="indexed"
+                        title="The value joins search — embedded with the note and in the keyword channel"
+                    />
+                    <ToggleChip
+                        v-model="f.show_in_brief"
+                        label="in brief"
+                        title="Render name: value on this note's brief lines"
+                    />
+                </div>
+                <div class="checks applies">
+                    <span class="dim applies-label">applies to{{ f.applies_to.length === 0 ? ' (all types)' : '' }}:</span>
+                    <ToggleChip
+                        v-for="t in draft.ontology.types"
+                        :key="t.name"
+                        :model-value="f.applies_to.includes(t.name)"
+                        :label="t.name"
+                        :title="`Limit ${f.name} to ${t.name} notes — no selection = every type`"
+                        @update:model-value="toggleAppliesTo(f, t.name)"
+                    />
+                </div>
+            </article>
+            <button class="mini add" type="button" @click="addField">+ add field</button>
         </section>
 
         <section class="block">
@@ -1180,5 +1378,51 @@ const kneeCliff = computed({
 .modal-actions {
     display: flex;
     justify-content: flex-end;
+}
+
+.builtin-ref {
+    margin: 0.4rem 0 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 0.4rem 0.7rem;
+}
+
+.builtin-ref summary {
+    cursor: pointer;
+    font-size: var(--text-caption);
+    color: var(--text-secondary);
+}
+
+.builtin-table {
+    width: 100%;
+    margin-top: 0.5rem;
+    border-collapse: collapse;
+    font-size: var(--text-caption);
+}
+
+.builtin-table td {
+    padding: 0.2rem 0.6rem 0.2rem 0;
+    vertical-align: top;
+    color: var(--text-secondary);
+}
+
+.builtin-table td:first-child {
+    color: var(--text-primary);
+    white-space: nowrap;
+}
+
+.field-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.dim {
+    color: var(--text-secondary);
+}
+
+.applies-label {
+    font-size: var(--text-caption);
+    align-self: center;
 }
 </style>

@@ -77,6 +77,25 @@ pub fn scrub(text: &str) -> String {
     out
 }
 
+/// Scrub a custom-fields map (0.9.0): every string value gets the same
+/// title/body treatment; numbers, bools and nulls pass through (nothing to
+/// scrub, and rewriting them would corrupt their declared kind). Values are
+/// scalars by write-boundary validation, so no recursion is needed.
+pub fn scrub_fields(
+    fields: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    fields
+        .iter()
+        .map(|(k, v)| {
+            let v = match v {
+                serde_json::Value::String(s) => serde_json::Value::String(scrub(s)),
+                other => other.clone(),
+            };
+            (k.clone(), v)
+        })
+        .collect()
+}
+
 /// A segment shorter than this carries no usable entropy signal: Shannon
 /// bits/char is bounded by log2(len), so an 8-character segment cannot reach
 /// the threshold even when every character differs. Short segments therefore

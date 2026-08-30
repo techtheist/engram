@@ -102,6 +102,7 @@ name_type!(NodeType, "NodeType" {
     Insight => "Insight",
     Intent => "Intent",
     Anchor => "Anchor",
+    Tombstone => "Tombstone",
 });
 
 name_type!(EdgeType, "EdgeType" {
@@ -187,6 +188,7 @@ pub struct Node {
     pub trust: f64,
     #[serde(default)]
     pub stale: bool,
+    #[serde(default)]
     pub code_refs: Vec<String>,
     /// Free-form slice labels (PLAN §10 tags): how the user cuts the graph
     /// (phases, concerns) — orthogonal to Anchors, which say what code a note
@@ -205,6 +207,12 @@ pub struct Node {
     /// ontology never writes it, and no default surface reads it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub props: Option<serde_json::Map<String, serde_json::Value>>,
+    /// User-defined custom field values (0.9.0), keyed by the graph config's
+    /// [`crate::config::FieldDef`] names — first-class like `tags`, validated
+    /// at the engine write boundary against the declared kinds. Absent =
+    /// the graph declares no fields, or this node predates them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fields: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl Node {
@@ -252,6 +260,10 @@ pub struct NewNode {
     /// MCP; only the history harvester writes it.
     #[serde(default)]
     pub props: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Custom field values — see [`Node::fields`]. Validated (kinds, required,
+    /// unknown names) at the engine write boundary.
+    #[serde(default)]
+    pub fields: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -277,6 +289,12 @@ pub struct NodePatch {
     pub code_refs: Option<Vec<String>>,
     #[serde(default)]
     pub tags: Option<Vec<String>>,
+    /// Custom field values. MERGE intent at the API/engine level: present
+    /// keys overwrite, a `null` value deletes that key, absent keys survive.
+    /// The engine resolves the merge against the stored node and hands the
+    /// store a full replacement map — store drivers only ever see REPLACE.
+    #[serde(default)]
+    pub fields: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

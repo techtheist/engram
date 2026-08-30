@@ -4,6 +4,7 @@ import { onClickOutside } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import MarkdownView from '@/components/common/MarkdownView.vue'
 import SidePanel from '@/components/common/SidePanel.vue'
+import FieldInput from '@/components/common/FieldInput.vue'
 import TagEditor from '@/components/common/TagEditor.vue'
 import { useConfigStore } from '@/stores/config'
 import { BADGE_TIPS, explainTrust } from '@/constants/trust'
@@ -90,6 +91,10 @@ const missingRefs = computed(() =>
 
 const busy = ref(false)
 const confirmingDelete = ref(false)
+// Delete leaves a tombstone-role note by default (0.9.0) — off only when the
+// user unticks it, moot when the ontology declares no tombstone type.
+const leaveTombstone = ref(true)
+const tombstoneReason = ref('')
 
 // --- trust actions (trust v2: approve ladder, pin, […] menu) ---------------
 
@@ -136,7 +141,34 @@ const NODE_TYPES = computed(() => config.typeNames)
 const DURABILITIES = ['stable', 'episodic', 'volatile']
 
 const editing = ref(false)
-const draft = reactive({ title: '', body: '', type: '', durability: '', tags: [] as string[] })
+const draft = reactive({
+    title: '',
+    body: '',
+    type: '',
+    durability: '',
+    tags: [] as string[],
+    fields: {} as Record<string, unknown>,
+})
+
+/** The custom-field definitions that apply to the node's (or, while editing,
+ *  the draft's) type. */
+const fieldDefs = computed(() =>
+    config.fieldsFor(editing.value ? draft.type : (selected.value?.type ?? '')),
+)
+
+/** Read-view rows: declared fields that carry a value on this node. */
+const fieldRows = computed(() => {
+    const values = selected.value?.fields
+    if (!values) return []
+    return config
+        .fieldsFor(selected.value?.type ?? '')
+        .filter((d) => d.name in values)
+        .map((d) => ({
+            def: d,
+            label: d.label !== '' ? d.label : d.name,
+            value: values[d.name],
+        }))
+})
 
 // Selecting another node must never carry a stale draft onto it.
 watch(
@@ -156,6 +188,7 @@ function startEdit(): void {
     draft.type = selected.value.type
     draft.durability = selected.value.durability
     draft.tags = [...selected.value.tags]
+    draft.fields = { ...(selected.value.fields ?? {}) }
     editing.value = true
 }
 
@@ -163,13 +196,26 @@ async function saveEdit(): Promise<void> {
     if (!selected.value) return
     busy.value = true
     try {
-        await store.patchNode(selected.value.id, {
+        const patch: Record<string, unknown> = {
             title: draft.title,
             body: draft.body,
             type: draft.type,
             durability: draft.durability,
             tags: draft.tags,
-        })
+        }
+        // Custom fields ride as a MERGE patch: cleared keys become null
+        // (delete), set keys overwrite. Only sent when the graph has defs.
+        if (config.cfg?.fields.length) {
+            const fields: Record<string, unknown> = {}
+            for (const key of Object.keys(selected.value.fields ?? {})) {
+                if (draft.fields[key] === undefined) fields[key] = null
+            }
+            for (const [key, value] of Object.entries(draft.fields)) {
+                if (value !== undefined) fields[key] = value
+            }
+            if (Object.keys(fields).length > 0) patch.fields = fields
+        }
+        await store.patchNode(selected.value.id, patch)
         editing.value = false
     } finally {
         busy.value = false
@@ -268,8 +314,13 @@ async function remove(): Promise<void> {
     if (!selected.value) return
     busy.value = true
     try {
-        await store.remove(selected.value.id)
+        const withTombstone = leaveTombstone.value && config.tombstoneType != null
+        await store.remove(selected.value.id, {
+            tombstone: withTombstone,
+            reason: withTombstone ? tombstoneReason.value.trim() || undefined : undefined,
+        })
         confirmingDelete.value = false
+        tombstoneReason.value = ''
     } finally {
         busy.value = false
     }
@@ -322,6 +373,15 @@ function close(): void {
                 Tags
                 <TagEditor v-model="draft.tags" />
             </label>
+            <div v-if="fieldDefs.length" class="fields-edit">
+                <span class="edit-label">Custom fields</span>
+                <FieldInput
+                    v-for="d in fieldDefs"
+                    :key="d.name"
+                    v-model="draft.fields[d.name]"
+                    :def="d"
+                />
+            </div>
             <div class="edit-actions">
                 <button class="btn" type="button" :disabled="busy || !draft.title.trim()" @click="saveEdit">
                     Save
@@ -360,6 +420,21 @@ function close(): void {
         <div v-if="selected.tags.length && !editing" class="tag-row">
             <span v-for="t in selected.tags" :key="t" class="tag-chip">#{{ t }}</span>
         </div>
+
+        <dl v-if="fieldRows.length && !editing" class="fields-view">
+            <template v-for="row in fieldRows" :key="row.def.name">
+                <dt :title="row.def.name">{{ row.label }}</dt>
+                <dd>
+                    <a
+                        v-if="row.def.kind === 'url' && typeof row.value === 'string'"
+                        :href="row.value"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                    >{{ row.value }}</a>
+                    <template v-else>{{ row.value }}</template>
+                </dd>
+            </template>
+        </dl>
 
         <MarkdownView v-if="selected.body && !editing" :content="selected.body" class="body" />
 
@@ -574,6 +649,20 @@ function close(): void {
             </div>
 
             <template v-if="confirmingDelete">
+                <div v-if="config.tombstoneType" class="tombstone-opt">
+                    <label class="tombstone-check">
+                        <input v-model="leaveTombstone" type="checkbox" :disabled="busy" />
+                        Leave a {{ config.tombstoneType }} (records what was removed, so it isn't re-learned)
+                    </label>
+                    <input
+                        v-if="leaveTombstone"
+                        v-model="tombstoneReason"
+                        class="tombstone-reason"
+                        type="text"
+                        placeholder="Why is this being removed? (optional)"
+                        :disabled="busy"
+                    />
+                </div>
                 <button class="btn danger" type="button" :disabled="busy" @click="remove">
                     Confirm delete
                 </button>
@@ -1078,5 +1167,56 @@ function close(): void {
 .btn.danger-text {
     color: var(--node-problem);
     border-color: transparent;
+}
+
+.fields-edit {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.fields-view {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.25rem 0.8rem;
+    margin: 0;
+    font-size: var(--text-caption);
+}
+
+.fields-view dt {
+    color: var(--text-secondary);
+}
+
+.fields-view dd {
+    margin: 0;
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+}
+
+.tombstone-opt {
+    flex-basis: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-bottom: 0.4rem;
+}
+
+.tombstone-check {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: var(--text-caption);
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.tombstone-reason {
+    width: 100%;
+    padding: 0.4rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: var(--text-caption);
 }
 </style>

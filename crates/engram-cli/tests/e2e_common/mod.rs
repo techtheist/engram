@@ -53,7 +53,10 @@ impl Sandbox {
             .env("HOME", self.root.join("home"))
             .env("XDG_CONFIG_HOME", self.root.join("home/.config"))
             .env("ENGRAM_HTTP_PORT", self.port.to_string())
-            .env("ENGRAM_UPDATE_CHECK", "0");
+            .env("ENGRAM_UPDATE_CHECK", "0")
+            // The sealing key must come from the sandboxed file fallback —
+            // a keyring hit would prompt (macOS) or leak state between runs.
+            .env("ENGRAM_KEYRING", "off");
         c
     }
 

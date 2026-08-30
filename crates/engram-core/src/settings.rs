@@ -17,16 +17,42 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result, registry};
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     /// Registered project (stored as its stable id) an otherwise-unbindable
     /// agent session gets. `None` = the home graph (today's behavior).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_agent_project: Option<String>,
+    /// At-rest encryption for CURATED graph stores (0.9.0). Off by default:
+    /// a sealed graph costs `npx tepindb` inspectability, so sealing it is
+    /// an explicit choice. Machine-global — each store converges at its
+    /// next open; the pane's toggle migrates the current project at once.
+    #[serde(default)]
+    pub encrypt_graph: bool,
+    /// At-rest encryption for HISTORY stores (0.9.0). On by default — the
+    /// history layer has been sealed-by-default since 0.8.4; this switch
+    /// just makes the (previously daemon-internal) opt-in visible.
+    #[serde(default = "default_true")]
+    pub encrypt_history: bool,
     /// Settings this binary doesn't know about (a newer one's) ride along
     /// unharmed through a load-edit-save cycle.
     #[serde(flatten)]
     pub rest: serde_json::Map<String, serde_json::Value>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            default_agent_project: None,
+            encrypt_graph: false,
+            encrypt_history: true,
+            rest: serde_json::Map::new(),
+        }
+    }
 }
 
 /// `~/.engram/settings.json` (`ENGRAM_HOME` override honored, like the

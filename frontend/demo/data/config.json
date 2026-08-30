@@ -12,7 +12,8 @@
                     "anchor": false,
                     "rank_prior": 0.025,
                     "highlight": true,
-                    "versioned": true
+                    "versioned": true,
+                    "tombstone": false
                 },
                 "brief": {
                     "show": true,
@@ -30,7 +31,8 @@
                     "anchor": false,
                     "rank_prior": 0.02,
                     "highlight": true,
-                    "versioned": true
+                    "versioned": true,
+                    "tombstone": false
                 },
                 "brief": {
                     "show": true,
@@ -41,14 +43,15 @@
             {
                 "name": "Caution",
                 "hue": 38,
-                "thought": "watch out \u2014 this bites",
+                "thought": "watch out — this bites",
                 "durability": "stable",
                 "roles": {
                     "worklist": false,
                     "anchor": false,
                     "rank_prior": 0.025,
                     "highlight": true,
-                    "versioned": true
+                    "versioned": true,
+                    "tombstone": false
                 },
                 "brief": {
                     "show": true,
@@ -66,7 +69,8 @@
                     "anchor": false,
                     "rank_prior": 0.0,
                     "highlight": true,
-                    "versioned": true
+                    "versioned": true,
+                    "tombstone": false
                 },
                 "brief": {
                     "show": false,
@@ -84,7 +88,8 @@
                     "anchor": false,
                     "rank_prior": 0.0,
                     "highlight": true,
-                    "versioned": true
+                    "versioned": true,
+                    "tombstone": false
                 },
                 "brief": {
                     "show": false,
@@ -102,7 +107,8 @@
                     "anchor": false,
                     "rank_prior": 0.02,
                     "highlight": true,
-                    "versioned": true
+                    "versioned": true,
+                    "tombstone": false
                 },
                 "brief": {
                     "show": false,
@@ -120,7 +126,8 @@
                     "anchor": false,
                     "rank_prior": 0.0,
                     "highlight": true,
-                    "versioned": true
+                    "versioned": true,
+                    "tombstone": false
                 },
                 "brief": {
                     "show": false,
@@ -131,14 +138,15 @@
             {
                 "name": "Anchor",
                 "hue": 215,
-                "thought": "what this is about \u2014 a code subject",
+                "thought": "what this is about — a code subject",
                 "durability": "stable",
                 "roles": {
                     "worklist": false,
                     "anchor": true,
                     "rank_prior": 0.0,
                     "highlight": true,
-                    "versioned": true
+                    "versioned": true,
+                    "tombstone": false
                 },
                 "brief": {
                     "show": false,
@@ -307,5 +315,6 @@
         },
         "exclude_paths": [],
         "search_fallthrough": true
-    }
+    },
+    "fields": []
 }

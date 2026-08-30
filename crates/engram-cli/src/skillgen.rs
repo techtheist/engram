@@ -94,6 +94,9 @@ fn type_line(t: &TypeDef) -> String {
     if t.roles.anchor {
         line.push_str(" A code-subject label: carries `code_refs` as its identity; attach related notes to it rather than writing prose about files.");
     }
+    if t.roles.tombstone {
+        line.push_str(" A deletion marker: records that knowledge was deliberately removed so nobody re-learns it — write one when something is killed on purpose, and treat an existing one as \"don't resurrect this\".");
+    }
     line
 }
 
@@ -294,7 +297,7 @@ mod tests {
         assert!(text.contains("`supersedes`"));
         assert!(!text.contains("**Principle**"), "renamed types never leak");
         assert!(text.contains("describe_ontology"));
-        assert!(text.contains("exactly 8: Rule, Decision"));
+        assert!(text.contains("exactly 9: Rule, Decision"));
         // Policy numbers ride in as plain words.
         assert!(text.contains("starts at 50%"));
         assert!(text.contains("~6 months"));

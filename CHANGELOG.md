@@ -3,6 +3,98 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
+## v0.9.0
+
+### Deletion leaves a trace
+
+- **Tombstones (new `tombstone` type role).** Knowledge that is deliberately
+  removed can now be *recorded as removed* instead of vanishing: the default
+  ontology gains a ninth type, **Tombstone** ("deliberately removed — don't
+  resurrect it"), the research preset gains **Retraction**, and any custom
+  type can carry the role. Tombstone-role types sit out the conflict scan
+  and answer candidacy, never decay (stable), and a tombstone `replaces` its
+  victim through the ordinary supersession machinery when the victim still
+  exists.
+- **Hard delete can mint one.** The pane's delete now offers "leave a
+  Tombstone" (on by default, with an optional reason) —
+  `DELETE /nodes/{id}?tombstone=true&reason=…` records the victim's type,
+  title, and id in a tombstone before the cascade, so a future session
+  can't innocently re-learn what a person deliberately killed. Plain delete
+  is unchanged, and graphs whose ontology declares no tombstone type keep
+  the old behavior exactly.
+- **A fourth preset: General.** An open experimental set for saving almost
+  anything — Fact, Note, Idea, Task, Reference, Tombstone — designed to
+  pair with 0.9.0's custom fields.
+
+### Custom fields
+
+- **Your own first-class values on every note.** A graph can now declare
+  custom fields — `text` / `number` / `bool` / `date` / `enum` / `url`,
+  required or optional, scoped to some types or all — and every note
+  carries them in a `fields` map beside `tags` and `created_at`.
+  Definitions live in the graph config (pane **Settings → Graph settings →
+  Custom fields**, or `PUT /config`); values are validated at the engine
+  write boundary, so the pane, HTTP, and MCP all get the same contract.
+  Reserved built-in names (`title`, `created_at`, …) can never be shadowed.
+- **The assistant teaches itself.** `describe_ontology` lists the graph's
+  field definitions with kinds and enum vocabularies; `add_note`/
+  `update_node` accept a `fields` object (update MERGES — `null` deletes a
+  key); and a refused write answers with a teaching error naming the full
+  roster and exact call shape, so an agent that has never seen the graph
+  self-corrects in one step.
+- **Optional search integration.** A field flagged `indexed` joins the
+  note's embedding and the keyword channel (tepin-backed graphs); the
+  indexed set is fingerprinted, so changing it re-indexes and re-embeds
+  exactly once. `show_in_brief` renders `name: value` on brief lines.
+- **Bitemporal search.** `date_field` on `search` (and `GET /search`) aims
+  the existing `after`/`before` grammar at a date-kind custom field — the
+  EVENT clock — instead of `created_at`, the capture clock. A single field
+  (`"event_date"`) matches values inside the window; a `"from..to"` pair
+  (`"effective_from..effective_to"`) matches nodes whose validity span
+  overlaps it, with absent ends reading as unbounded. Built for historic
+  imports, where everything is captured today but happened over years; an
+  unknown or non-date field, or a clock without a window, is a loud error,
+  never a dropped filter.
+- **Renames carry data.** `POST /config/rename-field` (and the pane's
+  rename gesture) moves every stored value with the definition, like
+  renaming a type.
+
+### At-rest encryption, two switches
+
+- **Encrypt graph / Encrypt history** (System panel): field-level
+  zstd→XChaCha20-Poly1305 over titles, bodies, tags, code refs, custom
+  field values, edge notes, and the audit journal's before/after images,
+  under the machine key in your OS keystore. Graph defaults **off** (a
+  sealed graph costs `npx tepindb` inspectability), history defaults **on**
+  — formalizing what the daemon has done since 0.8.4. Flipping a switch
+  migrates the whole store with a progress loader
+  (`POST /encryption` + polled `GET /encryption`); a migration killed
+  halfway is crash-safe and resumes at the next open.
+- **The store self-describes.** Each store records its actual encryption
+  state in its OWN meta (`plaintext | sealing | sealed | unsealing`), so
+  the daemon can never desync from the `.tepin` file; the settings file
+  only carries your *intent*, and every store converges at open. The old
+  daemon-internal history opt-in (`enable_history_sealing`) is gone —
+  legacy sealed history stores are recognized and finished automatically.
+- **BM25 is identical either way — and history finally has it.** The
+  keyword index is now a *blind index*: one synthetic `_kw` token stream
+  per node, identity tokens on a plaintext store and keyed HMAC-SHA256
+  digests on a sealed one. Term frequencies and document lengths — all
+  BM25 reads — are preserved exactly (a golden test asserts bit-identical
+  rankings), while a sealed index holds no vocabulary. The same channel
+  gives the history layer its first keyword search, fused with vector
+  candidates using the curated layer's own weights.
+- **Honest scope, unchanged:** embedding vectors stay open (documented
+  inversion risk — gist, not text), exports are plaintext by intent, and
+  redaction still runs before anything reaches either store. SECURITY.md
+  carries the full rewritten two-layer table.
+- **The receipt:** the full eval ladder (10 → 1500 notes, real embeddings)
+  re-measured on the `_kw` keyword path reproduces the 0.8.10 note-register
+  baselines **to the digit** at every rung (100: R@5 0.94 / oblique 0.82 /
+  198 tok; 1500: R@5 0.78 / oblique 0.36 / 297 tok) —
+  `eval/results/0.9.0-ladder-run.log`. Sealed-state parity is asserted
+  separately by the bit-identical-BM25 golden test.
+
 ## v0.8.13
 
 ### Locks that actually release — and write tools a small model can drive

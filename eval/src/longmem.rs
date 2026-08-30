@@ -701,6 +701,7 @@ fn run_question(
                 tags: vec![],
                 version: None,
                 props: None,
+                fields: None,
             })?;
             sid_of.insert(node.id, sid.clone());
             flat_turns.push((sid.clone(), content.to_string()));
@@ -926,6 +927,7 @@ mod tests {
             tags: vec![],
             version: None,
             props: None,
+            fields: None,
         };
         let n = engine.add_node(note("statement")).unwrap();
         assert_eq!(n.node_type.as_str(), "statement");

@@ -120,6 +120,41 @@ pub trait Store: Send {
     fn current_version(&self) -> Result<Option<String>>;
     fn set_current_version(&self, version: Option<&str>) -> Result<()>;
 
+    /// Free-form store-level string facts in the same meta table the typed
+    /// ones above use (0.9.0: the indexed-fields fingerprint; encryption
+    /// state). Namespaced by the caller; travels with `migrate` like the
+    /// rest of meta.
+    fn kv_get(&self, key: &str) -> Result<Option<String>>;
+    fn kv_set(&self, key: &str, value: &str) -> Result<()>;
+
+    /// This store's recorded at-rest encryption state (0.9.0), read from its
+    /// OWN meta at open and cached — the file self-describes, so the daemon
+    /// can never desync from the `.tepin` on disk. The legacy SQLite driver
+    /// is always plaintext.
+    fn encryption_state(&self) -> crate::seal::EncryptionState {
+        crate::seal::EncryptionState::Plaintext
+    }
+
+    /// Persist a new encryption state (loading/minting the machine key when
+    /// entering a sealed-writes state). TepinDB-only — the SQLite driver is
+    /// a legacy migration source and refuses.
+    fn set_encryption_state(&self, _state: crate::seal::EncryptionState) -> Result<()> {
+        Err(crate::Error::Config(
+            "at-rest encryption requires the TepinDB backend — this store migrates to .tepin at \
+             the next daemon open"
+                .into(),
+        ))
+    }
+
+    /// Rewrite every node, edge, and audit row under the CURRENT state — the
+    /// whole-store encrypt/decrypt pass. Idempotent and crash-resumable
+    /// (readers tolerate mixed rows); `progress(done, total)` fires per row.
+    fn reseal_all(&self, _progress: &mut dyn FnMut(usize, usize)) -> Result<usize> {
+        Err(crate::Error::Config(
+            "at-rest encryption requires the TepinDB backend".into(),
+        ))
+    }
+
     /// The parsed configuration this graph runs on — cached at open (stored
     /// document, or the shipped defaults; corrupt reads as defaults) and
     /// refreshed by [`Store::set_graph_config`]. Every behavior knob the
@@ -364,8 +399,10 @@ pub trait Store: Send {
             || self.edges_in(a)?.iter().any(|e| e.from_id == b))
     }
 
-    /// Active non-anchor nodes — the conflict scan's iteration set (anchor-
-    /// role labels are similar by nature, not by contradiction).
+    /// Active non-anchor, non-tombstone nodes — the conflict scan's iteration
+    /// set (anchor-role labels are similar by nature, not by contradiction;
+    /// a tombstone contradicts its victim by DESIGN — that's its job, not a
+    /// conflict to surface).
     fn scannable_nodes(&self) -> Result<Vec<Node>> {
         let cfg = self.config();
         let mut out: Vec<Node> = self
@@ -375,7 +412,7 @@ pub trait Store: Send {
                 n.valid_until.is_none()
                     && !cfg
                         .type_def(n.node_type.as_str())
-                        .is_some_and(|t| t.roles.anchor)
+                        .is_some_and(|t| t.roles.anchor || t.roles.tombstone)
             })
             .collect();
         sort_newest_first(&mut out);
@@ -471,6 +508,7 @@ pub trait Store: Send {
         types: &[NodeType],
         limit: usize,
         window: crate::timespec::TimeWindow,
+        clock: &crate::timespec::TimeClock,
     ) -> Result<Vec<SearchHit>> {
         use std::collections::HashMap;
 
@@ -521,11 +559,12 @@ pub trait Store: Send {
             if !types.is_empty() && !types.contains(&node.node_type) {
                 continue;
             }
-            // The window reads created_at — when the knowledge was CAPTURED.
-            // Not confirmed_at: "what did we decide in July" asks when the
-            // decision was made, and a node reconfirmed last week is still
-            // July's decision.
-            if !window.contains(node.created_at) {
+            // By default the window reads created_at — when the knowledge
+            // was CAPTURED. Not confirmed_at: "what did we decide in July"
+            // asks when the decision was made, and a node reconfirmed last
+            // week is still July's decision. A `date_field` clock (0.9.0)
+            // re-aims the same window at a user-declared EVENT clock.
+            if !clock_contains(&node, &window, clock) {
                 continue;
             }
             let kw = keyword.get(&id).copied().unwrap_or(0.0);
@@ -667,6 +706,35 @@ pub trait Store: Send {
 
 /// Newest first by (created_at, id) — ids are time-sortable, so the id
 /// tie-break matches insertion order across backends.
+/// Does `node` fall inside `window` on the given clock (0.9.0 bitemporal
+/// search)? On the default clock this is `window.contains(created_at)`; a
+/// field clock reads the node's date-kind custom field(s) instead — a node
+/// without the field(s) can't answer an event-time question and never
+/// matches. Span semantics are interval overlap against a half-open window,
+/// with absent ends reading as unbounded validity.
+pub(crate) fn clock_contains(
+    node: &Node,
+    window: &crate::timespec::TimeWindow,
+    clock: &crate::timespec::TimeClock,
+) -> bool {
+    use crate::timespec::{TimeClock, field_instant};
+    let field = |name: &str| field_instant(node.fields.as_ref().and_then(|f| f.get(name)), now());
+    match clock {
+        TimeClock::CreatedAt => window.contains(node.created_at),
+        TimeClock::Field(name) => field(name).is_some_and(|t| window.contains(t)),
+        TimeClock::FieldSpan(from, to) => {
+            let starts_before_end = |s: i64| window.before.is_none_or(|b| s < b);
+            let ends_after_start = |e: i64| window.after.is_none_or(|a| e >= a);
+            match (field(from), field(to)) {
+                (None, None) => false,
+                (Some(s), None) => starts_before_end(s),
+                (None, Some(e)) => ends_after_start(e),
+                (Some(s), Some(e)) => starts_before_end(s) && ends_after_start(e),
+            }
+        }
+    }
+}
+
 fn sort_newest_first(nodes: &mut [Node]) {
     nodes.sort_by(|a, b| (b.created_at, &b.id).cmp(&(a.created_at, &a.id)));
 }
