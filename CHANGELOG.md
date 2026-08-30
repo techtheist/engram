@@ -92,8 +92,49 @@ body of its GitHub Release (draft-release.yml lifts it automatically).
   re-measured on the `_kw` keyword path reproduces the 0.8.10 note-register
   baselines **to the digit** at every rung (100: R@5 0.94 / oblique 0.82 /
   198 tok; 1500: R@5 0.78 / oblique 0.36 / 297 tok) —
-  `eval/results/0.9.0-ladder-run.log`. Sealed-state parity is asserted
-  separately by the bit-identical-BM25 golden test.
+  `eval/results/0.9.0-ladder-run.log` — and the post-tune stack re-measured
+  on 0.9.0 keeps the honest-FP story (FP 0.00 at 100, 0.02 at 1500; recall
+  and attention rows match the 0.8.10 posttune receipt) —
+  `eval/results/posttune-0.9.0-100-1500.log`. The one honest delta: at 1500
+  the self-calibrated weak line fits 0.878 where 0.8.10 fits 0.898 on the
+  same day and corpus (honest FP 0.01 → 0.02, i.e. 4 → 7 of 375 controls) —
+  the single `_kw` stream normalizes BM25 slightly differently than
+  per-field scoring, deep candidates shuffle, and the dial re-fits as
+  designed; top-rank metrics are untouched at every rung. Sealed-state
+  parity is asserted separately by the bit-identical-BM25 golden test.
+
+### Fixes and hardening
+
+- **The installer stops wiring things unasked.** `install.sh` / `install.ps1`
+  used to run auto-detect setup right after fetching the binary — and the
+  one-liner is often pasted in `$HOME`, scattering project files and
+  touching global assistant configs nobody asked for. Both installers now
+  install the binary and stop; passing `--cli`/`-Cli` remains the explicit
+  opt-in. The onboarding nudge moved to where the context is right:
+  `serve` names exactly what it found and hands you the command —
+  *"found codex, gemini — installed but not connected to Engram in this
+  repo; wire them: `engram-alpha setup --cli codex,gemini`"*.
+- **Windows: config writers escape paths.** `setup` interpolated the binary
+  path raw into hand-rolled TOML and JSON — on Windows,
+  `command = "C:\Users\…"` is an invalid escape and Codex refused its whole
+  `config.toml` (field report). Every writer and printed snippet (codex
+  TOML, `.mcp.json`-shaped files, opencode/kilo, devin, bob) now emits
+  paths through real string encoders, with a Windows-path round-trip test
+  over each shape.
+- **A required custom field can no longer veto a hard delete.** The
+  tombstone a delete mints is engine-authored: it skips required-field
+  enforcement (values, when present, are still validated) — a
+  required-on-all-types field used to make "delete with tombstone" error
+  out. An *authored* Tombstone note still owes its required fields.
+- **Test depth on the seams.** ~20 new tests where 0.9.0 meets the old
+  machinery: write verdicts, suspects, brief, merge, timeline, redaction,
+  and delete-with-tombstone over a *sealed* store; indexed fields and the
+  bitemporal clock through the blind index; desired-encryption reconcile at
+  open plus keyless reads (placeholders, never plaintext, never an error);
+  imports into a sealed store; pre-0.9 export and config shapes; the
+  version handshake's unsuccessful branches (unparsable/dev versions never
+  fight, corrupt or stale `daemon.json` never blocks serve) as unit tests
+  and two new e2e journeys.
 
 ## v0.8.13
 

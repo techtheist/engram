@@ -46,10 +46,20 @@ session-diverse delivery) changed nothing they weren't supposed to. The
 | chance | 0 | 2517 | 0.08 | 1.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 1.00 |
 | grep | 0 | 2739 | 0.10 | 0.93 | 0.64 | 0.68 | 1.00 | 1.00 | 0.05 | 1.00 |
 | rag (pure vectors) | 0 | 2721 | 0.10 | 0.91 | 0.66 | 0.79 | 1.00 | 0.93 | 0.45 | 1.00 |
-| **engram** | 3042 | **297** | **0.52** | **0.55** | **0.69** | 0.79 | 1.00 | **0.99** | 0.39 | **0.01** |
+| **engram** | 3042 | **297** | **0.52** | **0.55** | **0.69** | 0.79 | 1.00 | **0.99** | 0.39 | **0.01**† |
 | curated-file 3k | 2944 | 2944 | 0.03 | 1.00 | 0.02 | 0.02 | 0.02 | 0.02 | 0.02 | 1.00 |
 | curated-file 30k | 29997 | 29997 | 0.00 | 1.00 | 0.25 | 0.25 | 0.25 | 0.25 | 0.25 | 1.00 |
 | whole-file | 377898 | 377898 | 0.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+
+† The engram FP cell is the **post-tune recommendation regime**
+(`--posttune`, receipt above) — the verdict layer, not the floor. A raw
+`--ladder` run prints FP **1.00 for the engram arms too** at this size, and
+always has (the 0.8.0 baseline row below says exactly that): the score
+populations overlap too much for any hard floor, which is why the "likely
+not in memory" line exists. If your ladder rerun shows engram FP 1.00,
+nothing broke — you're reading the pre-verdict number; rerun with
+`--ladder --posttune --sizes 100,1500` (the ladder preset carries the
+0-distractor, every-type corpus these receipts use) to reproduce this cell.
 
 (Column glossary: **standing** — tokens paid every session before any
 question, e.g. an always-in-context file; **tok/query** — text the assistant
@@ -112,7 +122,7 @@ the trims work hardest:
 | chance | 0 | 2518 | 0.09 | 0.99 | 0.01 | 0.05 | 0.04 | 0.04 | 0.06 | 1.00 |
 | grep | 0 | 2547 | 0.10 | 0.90 | 0.72 | 0.84 | 1.00 | 1.00 | 0.52 | 1.00 |
 | rag (pure vectors) | 0 | 2295 | 0.12 | 0.88 | 0.81 | 0.96 | 1.00 | 1.00 | 0.87 | 1.00 |
-| **engram** | 3051 | **198** | **0.63** | **0.36** | 0.80 | 0.95 | 1.00 | 1.00 | 0.85 | **0.00** |
+| **engram** | 3051 | **198** | **0.63** | **0.36** | 0.80 | 0.95 | 1.00 | 1.00 | 0.85 | **0.00**† |
 | curated-file 3k | 2998 | 2998 | 0.03 | 0.99 | 0.37 | 0.37 | 0.37 | 0.37 | 0.37 | 1.00 |
 | curated-file 30k | 8409 | 8409 | 0.01 | 0.99 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
 | whole-file | 25184 | 25184 | 0.01 | 0.99 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
