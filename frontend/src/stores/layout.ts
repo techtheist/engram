@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
 
-export type LayoutMode = 'skyline' | 'nebula' | 'archipelago' | 'orbit'
+export type LayoutMode = 'skyline' | 'archipelago' | 'orbit'
 
 export interface LayoutOption {
     id: LayoutMode
@@ -10,17 +10,18 @@ export interface LayoutOption {
 }
 
 /**
- * The four arrangements of the canvas. Skyline is the default: reasoning
- * chains read left→right in layers, components packed into rows. The other
- * three trade the grid for structure: Nebula is one global physics cloud,
- * Archipelago runs the same physics per community so clusters become
- * separated islands, Orbit is geometric — hubs with their satellites in
- * rings. All physics modes share a flow force: a source drifts left of its
- * target, matching the out-right / in-left node handles.
+ * The three arrangements of the canvas (a fourth, Nebula — one global
+ * physics cloud — was removed in 0.9.0: an unstructured cloud never read
+ * well; `initialLayout` falls a saved choice back to the default). Skyline
+ * is the default: reasoning chains read left→right in layers, components
+ * packed into rows. The other two trade the grid for structure: Archipelago
+ * runs physics per community so clusters become separated islands, Orbit is
+ * geometric — hubs with their satellites in rings. Physics shares a flow
+ * force: a source drifts left of its target, matching the out-right /
+ * in-left node handles.
  */
 export const LAYOUTS: LayoutOption[] = [
     { id: 'skyline', label: 'Skyline', hint: 'layered left→right, packed rows' },
-    { id: 'nebula', label: 'Nebula', hint: 'one force-directed cloud' },
     { id: 'archipelago', label: 'Archipelago', hint: 'community islands, physics inside' },
     { id: 'orbit', label: 'Orbit', hint: 'hubs with satellites in rings' },
 ]

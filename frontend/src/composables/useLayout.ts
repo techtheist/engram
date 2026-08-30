@@ -211,9 +211,9 @@ function normalized(positions: Map<string, XY>): Placed {
     return { positions: out, w: maxX - minX, h: maxY - minY }
 }
 
-// --- Nebula: force-directed particle cloud --------------------------------
+// --- Shared force physics (Archipelago islands, Orbit halos) ---------------
 
-interface NebulaNode extends SimulationNodeDatum {
+interface SimNode extends SimulationNodeDatum {
     id: string
 }
 
@@ -231,7 +231,7 @@ const CHARGE = -900
 const CHARGE_MAX_DISTANCE = 2200
 const CENTER_PULL = 0.03
 /** d3's default alpha schedule converges in ~300 ticks; run it synchronously. */
-const NEBULA_TICKS = 300
+const SIM_TICKS = 300
 /** Flow gravity: how far right of its source a target wants to sit, and how
  * hard the nudge is. Node handles are out-right / in-left, so edges read
  * left→right when this wins. */
@@ -245,7 +245,7 @@ const FLOW_STRENGTH = 0.7
  * of being imposed as ranks. Registered after forceLink, which has already
  * resolved the links' endpoints into node objects.
  */
-function forceFlow(links: SimulationLinkDatum<NebulaNode>[]) {
+function forceFlow(links: SimulationLinkDatum<SimNode>[]) {
     function force(alpha: number): void {
         for (const l of links) {
             const s = l.source
@@ -278,12 +278,12 @@ function simulate(
 ): Map<string, XY> {
     if (nodes.length === 0) return new Map()
 
-    const simNodes: NebulaNode[] = nodes.map((n) => {
+    const simNodes: SimNode[] = nodes.map((n) => {
         const o = pin?.get(n.id)
         return o ? { id: n.id, x: o.x, y: o.y, fx: o.x, fy: o.y } : { id: n.id }
     })
     const ids = new Set(nodes.map((n) => n.id))
-    const links: SimulationLinkDatum<NebulaNode>[] = edges
+    const links: SimulationLinkDatum<SimNode>[] = edges
         .filter((e) => ids.has(e.from_id) && ids.has(e.to_id))
         .map((e) => ({ source: e.from_id, target: e.to_id }))
 
@@ -296,7 +296,7 @@ function simulate(
     const sim = forceSimulation(simNodes)
         .force(
             'link',
-            forceLink<NebulaNode, SimulationLinkDatum<NebulaNode>>(links)
+            forceLink<SimNode, SimulationLinkDatum<SimNode>>(links)
                 .id((n) => n.id)
                 .distance(LINK_DISTANCE)
                 .strength(BOND_STRENGTH),
@@ -309,20 +309,11 @@ function simulate(
         .force('x', forceX(0).strength(CENTER_PULL))
         .force('y', forceY(0).strength(Math.min(CENTER_PULL * aspect, 0.12)))
         .stop()
-    for (let i = 0; i < NEBULA_TICKS; i++) sim.tick()
+    for (let i = 0; i < SIM_TICKS; i++) sim.tick()
 
     const result = new Map<string, XY>()
     for (const n of simNodes) result.set(n.id, { x: n.x ?? 0, y: n.y ?? 0 })
     return result
-}
-
-/** Nebula: one global physics cloud. Hand-placed nodes are pinned. */
-function layoutNebula(
-    nodes: GraphNode[],
-    edges: GraphEdge[],
-    overrides: Map<string, XY>,
-): Map<string, XY> {
-    return simulate(nodes, edges, overrides)
 }
 
 // --- Archipelago: community islands, physics inside ------------------------
@@ -436,7 +427,7 @@ function affinityOrder(islands: Island[], edges: GraphEdge[]): Placed[] {
 /**
  * Archipelago: clusters become separated islands so their members rest
  * against siblings only. Connected components — and communities inside the
- * big ones — each run the Nebula physics alone, then the island boxes are
+ * big ones — each run the shared physics alone, then the island boxes are
  * skyline-packed with wide water between them, in affinity order so islands
  * that share edges sit close. Edges between islands stretch across the
  * water: those are the graph's weak ties, worth seeing.
@@ -577,8 +568,8 @@ function layoutOrbit(nodes: GraphNode[], edges: GraphEdge[]): Map<string, XY> {
 
 /**
  * Lay the graph out in the chosen mode — Skyline (layered, packed; the
- * default), Nebula (one physics cloud), Archipelago (community islands), or
- * Orbit (hub-and-spoke rings). Hand-dragged positions always win in all.
+ * default), Archipelago (community islands), or Orbit (hub-and-spoke
+ * rings). Hand-dragged positions always win in all.
  */
 export function layoutGraph(
     nodes: GraphNode[],
@@ -587,13 +578,11 @@ export function layoutGraph(
     mode: LayoutMode = 'skyline',
 ): Map<string, XY> {
     const result =
-        mode === 'nebula'
-            ? layoutNebula(nodes, edges, overrides)
-            : mode === 'archipelago'
-              ? layoutArchipelago(nodes, edges)
-              : mode === 'orbit'
-                ? layoutOrbit(nodes, edges)
-                : layoutSkyline(nodes, edges)
+        mode === 'archipelago'
+            ? layoutArchipelago(nodes, edges)
+            : mode === 'orbit'
+              ? layoutOrbit(nodes, edges)
+              : layoutSkyline(nodes, edges)
 
     for (const [id, o] of overrides) {
         if (result.has(id)) result.set(id, o)

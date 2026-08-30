@@ -13,7 +13,6 @@ import type { ExportGraph } from '@/types/graph'
 
 const LAYOUT_GLYPH: Record<LayoutMode, string> = {
     skyline: '▦',
-    nebula: '✦',
     archipelago: '⁂',
     orbit: '◉',
 }

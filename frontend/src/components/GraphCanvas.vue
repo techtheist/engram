@@ -110,8 +110,8 @@ const positions = computed(() =>
     layoutGraph(visibleNodeList.value, visibleEdgeList.value, overrides.value, layout.current),
 )
 
-// Switching Skyline ↔ Nebula rearranges everything — re-fit so the user
-// lands on the new shape instead of an empty corner of the old one.
+// Switching layouts rearranges everything — re-fit so the user lands on
+// the new shape instead of an empty corner of the old one.
 watch(
     () => layout.current,
     async () => {
