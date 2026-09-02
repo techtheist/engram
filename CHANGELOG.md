@@ -3,6 +3,76 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
+## v0.9.1
+
+### The pane stops looking foreign
+
+- **Every dropdown is ours now.** All ten native `<select>` elements in the
+  pane are replaced by a `SelectMenu` component — a styled trigger with a
+  body-teleported listbox, keyboard navigable, flipping upward when it runs
+  out of room below. The native popup is unstyleable and looked like a
+  different application on Windows; nothing about the pane's chrome should
+  depend on which OS is rendering it.
+- **The ontology type card holds its shape at narrow widths.** The
+  Durability / Rank prior row wraps instead of pushing the stepper out of
+  the card, and the brief **cap** and **excerpt** steppers moved onto a row
+  of their own so they never trail the end of a wrapped line of role
+  toggles.
+
+### Bob runs the brief
+
+- **`setup --cli bob` installs a lifecycle hook.** Bob IDE 2.0.2 and
+  BobShell 2.0.1 run Claude-Code-shaped lifecycle hooks out of
+  `.bob/settings.json`, and a SessionStart hook's plain stdout becomes model
+  context — no envelope, unlike Devin. Setup now writes the portable brief
+  script under `.bob/hooks/` and registers it (`sh`-prefixed,
+  workspace-relative, explicit 30s timeout), so a Bob session opens with the
+  project's canon already in hand. A settings file Engram didn't write is
+  never edited: the snippet is printed for you to paste, as with every other
+  harness. `docs/getting-started.md` gains the row and the support matrix
+  the upgrade.
+
+### Documentation screenshots regenerate themselves
+
+- **`scripts/screenshots.sh`.** The images under `.screenshots/` are now
+  produced by driving the browser demo with headless Chromium:
+  `frontend/scripts/shots/shots.mjs` is the manifest (one entry per PNG —
+  viewport, seeded theme and layout, the click sequence that stages it, and
+  what to clip), `run.mjs` the driver. Reproducibility rests on a frozen
+  clock (the demo resolves its relative ages at load), layouts that are
+  deterministic by construction, and motion switched off before the shutter.
+  Nine shots regenerate and seven are new — node detail, the ontology type
+  card, custom fields, the Memory Lens brief, the System panel, the history
+  screen, and a claim check with its receipts — while the standalone,
+  VS Code and JetBrains shots stay hand-made. The feature shots now show the
+  demo's invented Lantern graph instead of this repository's own working
+  notes: every image in the docs is one a reader can reproduce at
+  <https://techtheist.github.io/engram/demo/>.
+- **The demo caught up with 0.9.0.** Staging the shots showed the demo
+  lagging the product: its graph config declared no custom fields (it now
+  ships an `impact` enum and a `tracker` url, with values on three notes),
+  no note carried the Tombstone type, and the System fixture still reported
+  0.8.1. The Pages demo now demonstrates what 0.9.0 shipped.
+
+### Fixes and hardening
+
+- **Calendar arithmetic can't wrap.** Month and year shifts in `timespec`
+  are checked: an absurd count (`"600000 months ago"`) reads as "not a
+  time" and errors, where it could previously produce a wrapped instant and
+  silently search the wrong window.
+- **The seal key file is born 0600.** It is created with its permissions
+  rather than `chmod`'d after the fact, closing the window where a
+  freshly-written key sat readable.
+- **A documentation sweep against the code.** Thirteen fixes across the
+  README, `SECURITY.md`, `docs/{getting-started,storage,multi-project}.md`
+  and the plugin README: `graph.db` as the default store (it is
+  `graph.tepin`), `home.db` → `home.tepin`, the installer described as
+  wiring repositories (it stops after fetching the binary since 0.9.0), the
+  eight node types (nine since Tombstone), stale agent rosters, the CORS
+  allowlist listed as a gap when it shipped, and the plugin README's binary
+  name. `docs/pane.md` also gains a section for the session-history screen,
+  the one pane screen that had none.
+
 ## v0.9.0
 
 ### Deletion leaves a trace
