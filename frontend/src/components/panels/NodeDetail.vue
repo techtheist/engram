@@ -3,6 +3,7 @@ import { computed, reactive, ref, useTemplateRef, watch } from 'vue'
 import { onClickOutside } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import MarkdownView from '@/components/common/MarkdownView.vue'
+import SelectMenu from '@/components/common/SelectMenu.vue'
 import SidePanel from '@/components/common/SidePanel.vue'
 import FieldInput from '@/components/common/FieldInput.vue'
 import TagEditor from '@/components/common/TagEditor.vue'
@@ -139,6 +140,11 @@ const applyTrustOverride = () =>
 
 const NODE_TYPES = computed(() => config.typeNames)
 const DURABILITIES = ['stable', 'episodic', 'volatile']
+const typeOptions = computed(() => NODE_TYPES.value.map((t) => ({ value: t, label: t })))
+const durabilityOptions = DURABILITIES.map((d) => ({ value: d, label: d }))
+const verbOptions = computed(() =>
+    config.verbNames.map((v) => ({ value: v, label: v, color: config.edgeColor(v) })),
+)
 
 const editing = ref(false)
 const draft = reactive({
@@ -224,8 +230,8 @@ async function saveEdit(): Promise<void> {
 
 // --- connection editing (PLAN §10 pane CRUD: retype/delete from the list) --
 
-async function retypeEdge(edge: GraphEdge, event: Event): Promise<void> {
-    const type = (event.target as HTMLSelectElement).value as EdgeType
+async function retypeEdge(edge: GraphEdge, picked: string): Promise<void> {
+    const type = picked as EdgeType
     if (type === edge.type) return
     busy.value = true
     try {
@@ -358,15 +364,11 @@ function close(): void {
             <div class="edit-row">
                 <label class="edit-label">
                     Type
-                    <select v-model="draft.type" class="edit-select">
-                        <option v-for="t in NODE_TYPES" :key="t" :value="t">{{ t }}</option>
-                    </select>
+                    <SelectMenu v-model="draft.type" :options="typeOptions" aria-label="Type" block />
                 </label>
                 <label class="edit-label">
                     Durability
-                    <select v-model="draft.durability" class="edit-select">
-                        <option v-for="d in DURABILITIES" :key="d" :value="d">{{ d }}</option>
-                    </select>
+                    <SelectMenu v-model="draft.durability" :options="durabilityOptions" aria-label="Durability" block />
                 </label>
             </div>
             <label class="edit-label">
@@ -458,16 +460,16 @@ function close(): void {
                     <span class="rel-dir" :style="{ color: config.edgeColor(r.edge.type) }">
                         {{ r.dir === 'out' ? '→' : '←' }}
                     </span>
-                    <select
-                        class="rel-select"
-                        :value="r.edge.type"
+                    <SelectMenu
+                        size="sm"
+                        :model-value="r.edge.type"
+                        :options="verbOptions"
                         :disabled="busy"
-                        :style="{ color: config.edgeColor(r.edge.type) }"
+                        :color="config.edgeColor(r.edge.type)"
+                        aria-label="Connection verb"
                         title="Change the connection verb"
-                        @change="retypeEdge(r.edge, $event)"
-                    >
-                        <option v-for="t in config.verbNames" :key="t" :value="t">{{ t }}</option>
-                    </select>
+                        @update:model-value="retypeEdge(r.edge, $event)"
+                    />
                     <button class="relation" type="button" @click="store.select(r.otherId)">
                         <span class="rel-target">{{ r.otherTitle }}</span>
                     </button>
@@ -753,15 +755,6 @@ function close(): void {
     color: var(--text-tertiary);
 }
 
-.edit-select {
-    padding: 0.5rem 0.7rem;
-    border-radius: var(--radius-md);
-    border: 1px solid var(--border-default);
-    background-color: var(--surface-sunken);
-    color: var(--text-primary);
-    font-size: var(--text-body-sm);
-}
-
 .edit-actions {
     display: flex;
     gap: 0.6rem;
@@ -936,17 +929,6 @@ function close(): void {
     flex: none;
     font-size: var(--text-caption);
     font-weight: 600;
-}
-
-.rel-select {
-    flex: none;
-    padding: 0.3rem 0.4rem;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--border-subtle);
-    background-color: transparent;
-    font-size: var(--text-caption);
-    font-weight: 600;
-    cursor: pointer;
 }
 
 .rel-delete {

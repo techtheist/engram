@@ -739,13 +739,75 @@ impl Setup {
     /// This writes the project-level file only (the safe default for a per-repo
     /// setup). To wire globally: add the entry to `~/.bob/mcp.json` (IDE) or
     /// `~/.bob/mcp_settings.json` (BobShell) by hand.
-    /// Bob has no agent-harness hooks, so the AGENTS.md instruction block
-    /// (which Bob's /init flow reads) carries the recall discipline.
+    ///
+    /// Since Bob IDE 2.0.2 / BobShell 2.0.1 both run lifecycle hooks from
+    /// project-level `.bob/settings.json` (global: `~/.bob/settings/
+    /// settings.json`), Claude-Code-shaped config, and a SessionStart hook's
+    /// plain stdout becomes model context — so the portable brief script runs
+    /// directly, no envelope wrapper. The AGENTS.md instruction block (which
+    /// Bob's /init flow reads) still carries the recall discipline for
+    /// pre-2.0.2 installs.
     fn wire_bob(&self) -> anyhow::Result<()> {
         // Bob keeps --db: the IDE's MCP launch cwd is not verified to be the
         // project root (and BobShell is unverified live altogether).
         self.write_mcp_servers(".bob/mcp.json", "bob", true)?;
+        if !self.mcp_only {
+            self.install_bob_brief_hook()?;
+        }
         self.write_instructions("AGENTS.md")
+    }
+
+    /// The Bob SessionStart hook: the portable brief script under
+    /// `.bob/hooks/` and its registration in `.bob/settings.json`. A foreign
+    /// settings file is never rewritten — the snippet is printed instead
+    /// (same policy as Claude's settings.json). The command is `sh`-prefixed
+    /// and workspace-relative (Bob runs hooks with the workspace as cwd —
+    /// the field-verified invocation shape), so a lost exec bit can't kill
+    /// it; timeout is explicit because Bob's 10s default is tight when the
+    /// CLI fallback path has to open the store itself.
+    fn install_bob_brief_hook(&self) -> anyhow::Result<()> {
+        let hooks_dir = self.repo.join(".bob/hooks");
+        fs::create_dir_all(&hooks_dir)?;
+        let script = hooks_dir.join("engram-brief.sh");
+        fs::write(&script, SESSION_BRIEF_HOOK)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
+        }
+
+        let registration = r#"{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh .bob/hooks/engram-brief.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
+"#;
+        let settings = self.repo.join(".bob/settings.json");
+        if settings.exists() {
+            let current = fs::read_to_string(&settings)?;
+            if current.contains("engram-brief") {
+                say("bob: .bob/settings.json already runs the brief hook — leaving it");
+            } else {
+                say("bob: .bob/settings.json exists — merge the SessionStart hook from:");
+                println!("{registration}");
+            }
+            return Ok(());
+        }
+        fs::write(&settings, registration)?;
+        say(
+            "bob: brief hook installed (.bob/hooks + settings.json — needs Bob IDE 2.0.2+ / BobShell 2.0.1+)",
+        );
+        Ok(())
     }
 
     /// opencode.json / kilo.json share the {"mcp": {..., "type": "local"}} shape.
@@ -898,6 +960,74 @@ mod tests {
             fixed.contains(&format!("command = {}", toml_str(bin))),
             "repair must escape the Windows path: {fixed}"
         );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// The Bob brief hook installer's three branches: a fresh repo gets the
+    /// script (executable) plus a parseable Claude-Code-shaped registration
+    /// with the `sh`-prefixed workspace-relative command and an explicit
+    /// timeout; a re-run leaves an already-wired file byte-identical; a
+    /// foreign `.bob/settings.json` is never rewritten (the snippet is
+    /// printed instead) while the script is still installed.
+    #[test]
+    fn bob_brief_hook_installs_once_and_never_clobbers_foreign_settings() {
+        let tmp = std::env::temp_dir().join(format!("engram-setup-bob-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        let s = Setup {
+            repo: tmp.clone(),
+            bin: "/new/engram-alpha".into(),
+            db: tmp
+                .join(".engram/graph.tepin")
+                .to_string_lossy()
+                .into_owned(),
+            variant: "relaxed".into(),
+            mcp_only: false,
+        };
+
+        s.install_bob_brief_hook().unwrap();
+        let script = tmp.join(".bob/hooks/engram-brief.sh");
+        assert_eq!(
+            fs::read_to_string(&script).unwrap(),
+            SESSION_BRIEF_HOOK,
+            "bob runs the portable script verbatim — no envelope wrapper"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_ne!(
+                fs::metadata(&script).unwrap().permissions().mode() & 0o111,
+                0,
+                "script is executable"
+            );
+        }
+        let settings = tmp.join(".bob/settings.json");
+        let first = fs::read_to_string(&settings).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&first).expect("registration parses");
+        let hook = &v["hooks"]["SessionStart"][0]["hooks"][0];
+        assert_eq!(hook["type"], "command");
+        assert_eq!(hook["command"], "sh .bob/hooks/engram-brief.sh");
+        assert!(
+            hook["timeout"].as_u64().is_some_and(|t| t > 10),
+            "timeout must be explicit and above Bob's 10s default"
+        );
+
+        // Re-run: already wired, untouched.
+        s.install_bob_brief_hook().unwrap();
+        assert_eq!(fs::read_to_string(&settings).unwrap(), first, "idempotent");
+
+        // Foreign settings: preserved byte-for-byte, script still installed.
+        let foreign = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo bye"}]}]}}"#;
+        fs::write(&settings, foreign).unwrap();
+        fs::remove_file(&script).unwrap();
+        s.install_bob_brief_hook().unwrap();
+        assert_eq!(
+            fs::read_to_string(&settings).unwrap(),
+            foreign,
+            "foreign file untouched"
+        );
+        assert!(script.exists(), "script installed regardless");
 
         let _ = fs::remove_dir_all(&tmp);
     }

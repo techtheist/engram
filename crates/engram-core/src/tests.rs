@@ -4505,6 +4505,13 @@ fn timespec_month_and_year_shifts_use_calendar_arithmetic() {
         parse_instant("1 month ago", day("2026-03-15") + 9 * 3600).unwrap(),
         day("2026-02-15") + 9 * 3600
     );
+    // An absurd count is unreadable, not a wrapped instant or a panic — the
+    // calendar path is checked like the fixed-unit path already was.
+    assert_eq!(parse_instant("9223372036854775807 months ago", t0), None);
+    assert_eq!(parse_instant("9223372036854775807 years ago", t0), None);
+    assert_eq!(parse_instant("9223372036854775807 weeks ago", t0), None);
+    assert_eq!(parse_instant("last 99999999 years", t0), None);
+    assert!(parse_instant("last 1000 years", t0).is_some());
 }
 
 #[test]

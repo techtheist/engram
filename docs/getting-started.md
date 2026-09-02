@@ -72,12 +72,13 @@ engram-alpha setup --cli kilo --skill aggressive
 
 | `--cli` | MCP registration | Capture instructions |
 |---|---|---|
-| `claude` *(default)* | `.mcp.json` | `.claude/skills/engram/SKILL.md` (three intensities via `--skill`) |
+| `claude` *(default)* | `.mcp.json` | `.claude/skills/engram/SKILL.md` (three intensities via `--skill`) + the `SessionStart` brief and file-read-match hooks in `.claude/hooks/`, registered in `.claude/settings.json` |
 | `codex` | `~/.codex/config.toml` (global — shared by the CLI **and** the Codex/ChatGPT desktop app; launch `codex` from the repo root, and for the app pin `cwd` or an absolute `--db` in the entry) | `AGENTS.md` + `.codex/skills/` + a `SessionStart` brief hook in `.codex/hooks.json` (Codex trust-gates project hooks — run `/hooks` inside codex once to approve it) |
 | `gemini` | `.gemini/settings.json` | `GEMINI.md` |
 | `opencode` | `opencode.json` | `AGENTS.md` |
 | `kilo` | `kilo.json` | `AGENTS.md` |
 | `antigravity` | `.agents/mcp_config.json` | `AGENTS.md` |
+| `bob` | `.bob/mcp.json` (project-level, explicit `--db` — Bob IDE and BobShell share it; to wire globally add the entry to `~/.bob/mcp.json` or `~/.bob/mcp_settings.json` by hand) | `AGENTS.md` + a `SessionStart` brief hook in `.bob/settings.json` (Bob IDE 2.0.2+ / BobShell 2.0.1+ run lifecycle hooks; older Bobs still get briefed through `AGENTS.md`) |
 | `windsurf` | `${XDG_CONFIG_HOME:-~/.config}/devin/mcp_config.json` **and** `~/.devin/mcp_config.json` (global — Windsurf/Cascade reads one machine-wide config, but which file depends on the plugin generation, so setup writes the same db-less entry into both; the server follows your open workspace via MCP roots) | `AGENTS.md` + `.windsurf/rules/engram.md` (an `always_on` rule that binds the session first — Windsurf has no hooks) + `.windsurf/skills/` |
 | `devin` | `.devin/mcp_config.local.json` (project-local, highest-precedence tier, explicit `--db`; git-ignored — it carries personal absolute paths) | `AGENTS.md` + `.devin/skills/` + a `SessionStart` hook in `.devin/hooks.v1.json` that injects the brief |
 
@@ -119,7 +120,7 @@ that harness's transcripts.
 | OpenCode | ✓ | — | — | ✓ |
 | Kilo Code | ✓ | — | — | ✓ * |
 | Antigravity | ✓ | — | — | ✓ |
-| Bob (IDE + Shell) | ✓ | — | — | ✓ |
+| Bob (IDE + Shell) | ✓ | ✓ auto (hook — IDE 2.0.2+ / Shell 2.0.1+) | — | ✓ |
 | Windsurf / Cascade | ✓ ** | — | — | — *** |
 | Devin CLI | ✓ | ✓ auto (hook) | — | — |
 
@@ -157,7 +158,8 @@ integration (the history-sealing key): `sudo apt install libdbus-1-dev
 pkg-config` or your distribution's equivalent.
 
 Installer options: `--skill relaxed|normal|aggressive` (default relaxed),
-`--bin-only` to skip repo wiring, `ENGRAM_VERSION=vX.Y.Z` to pin a version.
+`--bin-only` (accepted for compatibility — binary-only is now the default),
+`ENGRAM_VERSION=vX.Y.Z` to pin a version.
 
 ## Your first session
 
@@ -180,11 +182,11 @@ engram-alpha update
 
 checks the latest release, verifies its checksum, and swaps the binary in
 place (a no-op when already current; `--version vX.Y.Z` pins). Re-running the
-install one-liner does the same thing and is always safe — repo wiring is
-idempotent. Coming from **v0.3.0 or older**, when the binary was named
-`engram`: both paths work — `engram update` lands on the current version via
-the v0.4.x transition assets, and the installer swaps the old binary and
-re-points your MCP wiring automatically.
+install one-liner does the same thing and is always safe — it touches
+nothing but the binary. Coming from **v0.3.0 or older**, when the binary was
+named `engram`: both paths work — `engram update` lands on the current version
+via the v0.4.x transition assets, the installer removes the old binary, and
+re-running `engram-alpha setup` re-points your MCP wiring (idempotent).
 
 After an update, restart the daemon (`engram-alpha stop`, then `serve`) and
 reconnect your assistant's MCP session (`/mcp` in Claude Code) so both run

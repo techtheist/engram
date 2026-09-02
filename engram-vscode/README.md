@@ -17,8 +17,8 @@ your AI assistant reads from and writes to over MCP. Decisions, cautions,
 problems, and insights surface and update live as you work.
 
 One memory, every agent: the backend speaks MCP, so **Claude Code, Codex (CLI and desktop app),
-Gemini CLI, OpenCode, Kilo, and Google Antigravity** all share the same per-repo graph (wire them
-with `install.sh --cli …`) — a decision captured by one assistant is recalled
+Gemini CLI, OpenCode, Kilo, Google Antigravity, Bob, Windsurf, and Devin CLI** all share the same per-repo graph (wire them
+with `engram-alpha setup --cli …`) — a decision captured by one assistant is recalled
 by the next.
 
 <!-- Absolute URL on purpose: this README is also the Marketplace listing,
@@ -33,9 +33,9 @@ by the next.
   curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh | sh
   ```
 
-  This installs the `engram-alpha` binary (checksum-verified, into `~/.local/bin`),
-  writes the workspace `.mcp.json` for Claude Code, and installs the capture
-  skill. On Windows, run the same command inside WSL2 — it installs the native
+  This installs the `engram-alpha` binary (checksum-verified, into `~/.local/bin`)
+  and nothing else; `engram-alpha setup` from the project root writes the
+  workspace `.mcp.json` for Claude Code and installs the capture skill. On Windows, run the same command inside WSL2 — it installs the native
   `engram-alpha.exe`. The pane and status bar connect to the daemon at
   `http://127.0.0.1:8787` (configurable via `engram.daemonUrl`).
 
@@ -49,8 +49,8 @@ by the next.
 
 ### MCP for Claude Code
 
-The install script above already writes `.mcp.json`. If you skipped it (or
-installed the binary another way), run **Engram: Configure MCP for Claude Code**
+`engram-alpha setup` writes `.mcp.json`. If you haven't run it (or installed
+the binary another way), run **Engram: Configure MCP for Claude Code**
 to add an `engram` server to the workspace `.mcp.json` (it merges, never
 clobbers other servers):
 

@@ -1,8 +1,9 @@
 # Storage & TepinDB
 
-Your memory is a file inside your repository — `.engram/graph.db` (SQLite)
-or `.engram/graph.tepin` ([TepinDB](https://github.com/tepindb/tepindb)) —
-git-ignored, portable, and yours. No cloud, no accounts; the canonical
+Your memory is a file inside your repository — `.engram/graph.tepin`
+([TepinDB](https://github.com/tepindb/tepindb)), or `.engram/graph.db`
+(SQLite) on a repository that hasn't migrated yet — git-ignored, portable,
+and yours. No cloud, no accounts; the canonical
 interchange format is JSON export/import, not a binary blob.
 
 ## Two backends, one behavior

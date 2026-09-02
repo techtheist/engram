@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
+import SelectMenu from '@/components/common/SelectMenu.vue'
 import { useConfigStore } from '@/stores/config'
 import type { GraphConfig } from '@/types/graph'
 
@@ -37,6 +38,7 @@ const options = computed(() => {
 })
 
 const chosen = computed(() => options.value.find((p) => p.id === choice.value))
+const ontologyOptions = computed(() => options.value.map((p) => ({ value: p.id, label: p.name })))
 const dirty = computed(() => choice.value !== current.value)
 
 async function apply(): Promise<void> {
@@ -73,9 +75,7 @@ async function apply(): Promise<void> {
 
     <div v-if="options.length" class="ontology">
         <label class="ontology-label" for="empty-ontology">Ontology</label>
-        <select id="empty-ontology" v-model="choice" class="ontology-select">
-            <option v-for="p in options" :key="p.id" :value="p.id">{{ p.name }}</option>
-        </select>
+        <SelectMenu id="empty-ontology" v-model="choice" :options="ontologyOptions" aria-label="Ontology" />
         <button v-if="dirty" class="save" type="button" :disabled="busy" @click="apply">
             {{ busy ? 'Saving…' : 'Save' }}
         </button>
@@ -128,17 +128,6 @@ async function apply(): Promise<void> {
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--text-tertiary);
-}
-
-.ontology-select {
-    padding: 0.4rem 0.8rem;
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-md);
-    background: var(--surface-elevated);
-    color: var(--text-primary);
-    font: inherit;
-    font-size: var(--text-body-sm);
-    cursor: pointer;
 }
 
 .save {

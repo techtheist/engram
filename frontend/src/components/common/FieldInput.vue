@@ -4,6 +4,7 @@
 // distinguish "cleared" from a real value.
 import { computed } from 'vue'
 import type { FieldDef } from '@/types/graph'
+import SelectMenu from '@/components/common/SelectMenu.vue'
 
 const props = defineProps<{ def: FieldDef; modelValue: unknown }>()
 const emit = defineEmits<{ (e: 'update:modelValue', v: unknown): void }>()
@@ -35,8 +36,12 @@ function onBool(e: Event): void {
     emit('update:modelValue', (e.target as HTMLInputElement).checked)
 }
 
-function onEnum(e: Event): void {
-    const raw = (e.target as HTMLSelectElement).value
+const enumOptions = computed(() => [
+    { value: '', label: '—' },
+    ...(props.def.values ?? []).map((v) => ({ value: v, label: v })),
+])
+
+function onEnum(raw: string): void {
     emit('update:modelValue', raw === '' ? undefined : raw)
 }
 </script>
@@ -80,16 +85,14 @@ function onEnum(e: Event): void {
         :aria-label="label"
         @change="onBool"
     />
-    <select
+    <SelectMenu
         v-else
-        class="control"
-        :value="text"
+        :model-value="text"
+        :options="enumOptions"
         :aria-label="label"
-        @change="onEnum"
-    >
-        <option value="">—</option>
-        <option v-for="v in def.values" :key="v" :value="v">{{ v }}</option>
-    </select>
+        block
+        @update:model-value="onEnum"
+    />
 </label>
 </template>
 

@@ -9,7 +9,7 @@ Wire the current repository to Engram. The plugin already provides the capture s
    ```sh
    curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh | sh -s -- --bin-only
    ```
-   (`--bin-only` matters: the installer's default repo wiring would duplicate what this plugin ships.) If they decline, stop and point them at https://github.com/techtheist/engram#install.
+   (The installer only fetches the binary — `--bin-only` is accepted for compatibility and makes that explicit; repo wiring is step 2.) If they decline, stop and point them at https://github.com/techtheist/engram#install.
 
 2. **Wire the repo.** From the repository root:
    ```sh

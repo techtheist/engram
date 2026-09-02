@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import SelectMenu from '@/components/common/SelectMenu.vue'
 import SidePanel from '@/components/common/SidePanel.vue'
 import ToggleSwitch from '@/components/common/ToggleSwitch.vue'
 import { api } from '@/services/api'
@@ -71,8 +72,17 @@ async function reload(): Promise<void> {
 const agentSettings = ref<AgentSettings | null>(null)
 /** The dropdown's value: a project id, or '' for the home graph. */
 const agentPick = ref('')
+const agentOptions = computed(() => [
+    { value: '', label: 'home graph (default)' },
+    ...projects.value.filter((p) => !p.home).map((p) => ({ value: p.id, label: p.name })),
+])
 const agentSaving = ref(false)
 const agentNote = ref('')
+
+function onAgentPick(v: string): void {
+    agentPick.value = v
+    void applyAgentDefault()
+}
 
 async function applyAgentDefault(): Promise<void> {
     agentSaving.value = true
@@ -167,6 +177,13 @@ const applying = ref<string | null>(null)
 const applyNote = ref<Record<string, string>>({})
 
 const roles = computed<ModelRoleInfo[]>(() => selection.value?.roles ?? [])
+
+function presetOptions(r: ModelRoleInfo): { value: string; label: string }[] {
+    return [
+        ...r.presets.map((p) => ({ value: p.name, label: `${p.name}${p.name === r.default ? ' (default)' : ''}` })),
+        { value: 'custom', label: 'custom — by URL…' },
+    ]
+}
 
 function syncPicks(): void {
     for (const r of roles.value) {
@@ -451,12 +468,14 @@ function wiringStatus(w: { wired: boolean; prerename: boolean }): { status: Stat
                 <div v-for="r in roles" :key="r.role" class="pick">
                     <label class="pick-role" :for="`model-pick-${r.role}`">{{ r.role }}</label>
                     <div class="pick-body">
-                        <select :id="`model-pick-${r.role}`" v-model="picks[r.role]" class="pick-select">
-                            <option v-for="p in r.presets" :key="p.name" :value="p.name">
-                                {{ p.name }}{{ p.name === r.default ? ' (default)' : '' }}
-                            </option>
-                            <option value="custom">custom — by URL…</option>
-                        </select>
+                        <SelectMenu
+                            :id="`model-pick-${r.role}`"
+                            :model-value="picks[r.role] ?? ''"
+                            :options="presetOptions(r)"
+                            :aria-label="`${r.role} model`"
+                            block
+                            @update:model-value="picks[r.role] = $event"
+                        />
                         <template v-if="picks[r.role] === 'custom'">
                             <input
                                 v-model="customName[r.role]"
@@ -535,18 +554,15 @@ function wiringStatus(w: { wired: boolean; prerename: boolean }): { status: Stat
             <div class="pick">
                 <label class="pick-role" for="agent-default-pick">binds to</label>
                 <div class="pick-body">
-                    <select
+                    <SelectMenu
                         id="agent-default-pick"
-                        v-model="agentPick"
-                        class="pick-select"
+                        :model-value="agentPick"
+                        :options="agentOptions"
                         :disabled="agentSaving"
-                        @change="applyAgentDefault"
-                    >
-                        <option value="">home graph (default)</option>
-                        <option v-for="p in projects.filter((p) => !p.home)" :key="p.id" :value="p.id">
-                            {{ p.name }}
-                        </option>
-                    </select>
+                        aria-label="Default agent project"
+                        block
+                        @update:model-value="onAgentPick"
+                    />
                     <p class="pick-hint">
                         Agents that can't reveal their folder connect here. Applies to new
                         sessions — already-connected ones keep their project.
@@ -807,7 +823,6 @@ function wiringStatus(w: { wired: boolean; prerename: boolean }): { status: Stat
     min-width: 0;
 }
 
-.pick-select,
 .pick-input {
     width: 100%;
     padding: 0.35rem 0.6rem;

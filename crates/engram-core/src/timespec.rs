@@ -280,14 +280,28 @@ fn shift_back(now_ts: i64, n: i64, unit: Unit) -> Option<i64> {
     if fixed > 0 {
         return n.checked_mul(fixed).map(|d| now_ts - d);
     }
-    let months = if unit == Unit::Year { n * 12 } else { n };
+    // Calendar arithmetic is checked like the fixed-unit path above: an
+    // absurd count ("9223372036854775807 months ago") is "not a time I can
+    // read", never a wrapped instant or a panic.
+    let months = if unit == Unit::Year {
+        n.checked_mul(12)?
+    } else {
+        n
+    };
+    if months > MAX_CALENDAR_MONTHS {
+        return None;
+    }
     let secs_into_day = now_ts.rem_euclid(DAY);
     let (y, m, d) = civil_from_days(now_ts.div_euclid(DAY));
-    let total = y * 12 + (m - 1) - months;
+    let total = (y * 12 + (m - 1)).checked_sub(months)?;
     let (ny, nm) = (total.div_euclid(12), total.rem_euclid(12) + 1);
     let nd = d.min(days_in_month(ny, nm));
     Some(days_from_civil(ny, nm, nd) * DAY + secs_into_day)
 }
+
+/// Farthest a calendar shift may reach: a million years, well inside the
+/// range Hinnant's day arithmetic stays exact and far beyond any project.
+const MAX_CALENDAR_MONTHS: i64 = 12_000_000;
 
 /// The start of the calendar period `now_ts` sits in. Weeks start Monday —
 /// the ISO convention, and the one a working week matches.

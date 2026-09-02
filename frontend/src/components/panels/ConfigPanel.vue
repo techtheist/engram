@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import HueRail from '@/components/common/HueRail.vue'
 import SegmentedControl from '@/components/common/SegmentedControl.vue'
+import SelectMenu from '@/components/common/SelectMenu.vue'
 import SidePanel from '@/components/common/SidePanel.vue'
 import StepperInput from '@/components/common/StepperInput.vue'
 import ToggleChip from '@/components/common/ToggleChip.vue'
@@ -198,6 +199,7 @@ const DURABILITY_OPTIONS: { value: Durability; label: string }[] = [
     { value: 'stable', label: 'Stable' },
     { value: 'volatile', label: 'Volatile' },
 ]
+const FIELD_KIND_OPTIONS = ['text', 'number', 'bool', 'date', 'enum', 'url'].map((k) => ({ value: k, label: k }))
 
 const SKILL_OPTIONS = [
     { value: 'relaxed', label: 'relaxed' },
@@ -605,22 +607,26 @@ const kneeCliff = computed({
                     />
                 </label>
 
-                <div class="row-label">
-                    Durability
-                    <SegmentedControl
-                        v-model="t.durability"
-                        :options="DURABILITY_OPTIONS"
-                        :aria-label="`${t.name} durability`"
-                    />
+                <div class="row-label wrap">
+                    <span class="row-group">
+                        Durability
+                        <SegmentedControl
+                            v-model="t.durability"
+                            :options="DURABILITY_OPTIONS"
+                            :aria-label="`${t.name} durability`"
+                        />
+                    </span>
                     <span class="spacer" />
-                    Rank prior
-                    <StepperInput
-                        v-model="t.roles.rank_prior"
-                        :step="0.01"
-                        :max="0.5"
-                        :decimals="2"
-                        :aria-label="`${t.name} rank prior`"
-                    />
+                    <span class="row-group">
+                        Rank prior
+                        <StepperInput
+                            v-model="t.roles.rank_prior"
+                            :step="0.01"
+                            :max="0.5"
+                            :decimals="2"
+                            :aria-label="`${t.name} rank prior`"
+                        />
+                    </span>
                 </div>
 
                 <div class="checks">
@@ -824,14 +830,7 @@ const kneeCliff = computed({
                     </label>
                     <label class="row-label">
                         Kind
-                        <select v-model="f.kind" class="edit-input" :aria-label="`${f.name} kind`">
-                            <option value="text">text</option>
-                            <option value="number">number</option>
-                            <option value="bool">bool</option>
-                            <option value="date">date</option>
-                            <option value="enum">enum</option>
-                            <option value="url">url</option>
-                        </select>
+                        <SelectMenu v-model="f.kind" :options="FIELD_KIND_OPTIONS" :aria-label="`${f.name} kind`" />
                     </label>
                     <label v-if="f.kind === 'enum'" class="row-label">
                         Values
@@ -1229,6 +1228,20 @@ const kneeCliff = computed({
     gap: 0.6rem;
     font-size: var(--text-caption);
     color: var(--text-tertiary);
+}
+
+/* A row whose controls can't all share one line at panel width wraps
+   instead of pushing the trailing control out of the card. */
+.row-label.wrap {
+    flex-wrap: wrap;
+    row-gap: 0.5rem;
+}
+
+.row-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    white-space: nowrap;
 }
 
 .edit-input {

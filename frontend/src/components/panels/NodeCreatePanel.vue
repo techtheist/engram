@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import FieldInput from '@/components/common/FieldInput.vue'
+import SelectMenu from '@/components/common/SelectMenu.vue'
 import SidePanel from '@/components/common/SidePanel.vue'
 import TagEditor from '@/components/common/TagEditor.vue'
 import { onProjectSwitch } from '@/composables/onProjectSwitch'
@@ -20,6 +21,7 @@ const busy = ref(false)
 const error = ref<string | null>(null)
 
 const DURABILITIES: Durability[] = ['stable', 'episodic', 'volatile']
+const durabilityOptions = DURABILITIES.map((d) => ({ value: d, label: d }))
 
 const draft = reactive({
     type: (config.typeNames[0] ?? 'Decision') as NodeType,
@@ -133,9 +135,7 @@ function close(): void {
 
     <label class="edit-label">
         Durability
-        <select v-model="draft.durability" class="edit-select">
-            <option v-for="d in DURABILITIES" :key="d" :value="d">{{ d }}</option>
-        </select>
+        <SelectMenu v-model="draft.durability" :options="durabilityOptions" aria-label="Durability" block />
     </label>
 
     <label class="edit-label">
@@ -219,15 +219,6 @@ function close(): void {
     gap: 0.3rem;
     font-size: var(--text-caption);
     color: var(--text-tertiary);
-}
-
-.edit-select {
-    padding: 0.5rem 0.7rem;
-    border-radius: var(--radius-md);
-    border: 1px solid var(--border-default);
-    background-color: var(--surface-sunken);
-    color: var(--text-primary);
-    font-size: var(--text-body-sm);
 }
 
 .fields-block {

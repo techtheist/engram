@@ -153,6 +153,25 @@
                     "cap": 8,
                     "excerpt": 140
                 }
+            },
+            {
+                "name": "Tombstone",
+                "hue": 15,
+                "thought": "deliberately removed — don't resurrect it",
+                "durability": "stable",
+                "roles": {
+                    "worklist": false,
+                    "anchor": false,
+                    "rank_prior": 0.0,
+                    "highlight": false,
+                    "versioned": true,
+                    "tombstone": true
+                },
+                "brief": {
+                    "show": false,
+                    "cap": 8,
+                    "excerpt": 140
+                }
             }
         ],
         "verbs": [

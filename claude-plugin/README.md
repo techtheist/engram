@@ -7,7 +7,7 @@ One install wires Claude Code for [Engram](https://github.com/techtheist/engram)
 /plugin install engram@engram
 ```
 
-Then, in each repository you want remembered: `/engram:setup` (installs the `engram` binary if needed, git-ignores `.engram/`, registers the MCP server). `/engram:pane` opens the graph UI.
+Then, in each repository you want remembered: `/engram:setup` (installs the `engram-alpha` binary if needed, git-ignores `.engram/`, registers the MCP server). `/engram:pane` opens the graph UI.
 
 ## What's inside
 

@@ -42,9 +42,9 @@ Pass `session_id: "digest-<YYYY-MM-DD>"` explicitly on **every** `add_note` / `a
 
 Ingested nodes start **provisional at 50% trust** like any Claude-authored node and earn trust only through later reconfirmation or user approval. Never `approve_node` your own ingest, and never present digested content as settled canon.
 
-## The eight node types — worked examples
+## The eight authored node types — worked examples
 
-One example per type; each also teaches one feature of the graph. **The shapes are load-bearing**: copy the example, replace the content with your project's fact, and keep everything else — type names, edge verbs, durabilities, and statuses are exactly as written here (there are only 8 types and 7 verbs; inventing others fails the write). *(0.7+: if this graph runs a customized ontology — the write errors with "unknown node type", or the brief teaches different names — call `describe_ontology` and translate these examples into that vocabulary; the roles map 1:1.)*
+One example per type; each also teaches one feature of the graph. **The shapes are load-bearing**: copy the example, replace the content with your project's fact, and keep everything else — type names, edge verbs, durabilities, and statuses are exactly as written here (the shipped ontology has 9 types and 7 verbs — the ninth, Tombstone, marks knowledge the user deliberately deleted and is never authored by a digest; inventing others fails the write). *(0.7+: if this graph runs a customized ontology — the write errors with "unknown node type", or the brief teaches different names — call `describe_ontology` and translate these examples into that vocabulary; the roles map 1:1.)*
 
 **Principle** — a stable conviction the project keeps honoring. Teaches: `durability`, and that principles are what `because` edges point at.
 

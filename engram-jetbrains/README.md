@@ -15,8 +15,8 @@ assistant reads from and writes to over MCP. Decisions, cautions, problems, and
 insights surface and update live as you work.
 
 One memory, every agent: the backend speaks MCP, so **Claude Code, Codex (CLI and desktop app),
-Gemini CLI, OpenCode, Kilo, and Google Antigravity** all share the same per-repo graph (wire them
-with `install.sh --cli …`) — a decision captured by one assistant is recalled
+Gemini CLI, OpenCode, Kilo, Google Antigravity, Bob, Windsurf, and Devin CLI** all share the same per-repo graph (wire them
+with `engram-alpha setup --cli …`) — a decision captured by one assistant is recalled
 by the next.
 
 ![Engram tool window in IntelliJ IDEA: the graph pane docked right, updating live while Claude Code works in the terminal](../.screenshots/engram-alpha-jetbrains.png)
@@ -38,7 +38,8 @@ by the next.
    curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh | sh
    ```
    This installs the `engram-alpha` binary (checksum-verified, into `~/.local/bin`)
-   and wires the repo for Claude Code (`.mcp.json` + the capture skill). On
+   and nothing else; `engram-alpha setup` from the project root wires the repo
+   (`.mcp.json` + the capture skill for Claude Code; auto-detects the rest). On
    Windows, run the same command inside WSL2 — it installs the native
    `engram-alpha.exe`. Then start the daemon:
    ```sh

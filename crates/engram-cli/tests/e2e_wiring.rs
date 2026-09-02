@@ -9,16 +9,16 @@ mod e2e_common;
 use e2e_common::*;
 use std::process::Command;
 
-/// `setup --cli devin,codex,windsurf` writes the whole adapter surface, and
-/// the installed skills/instructions are the CURRENT generation — the 0.8.13
-/// keyword-JSON teaching, not a stale embed.
+/// `setup --cli devin,codex,windsurf,bob` writes the whole adapter surface,
+/// and the installed skills/instructions are the CURRENT generation — the
+/// 0.8.13 keyword-JSON teaching, not a stale embed.
 #[test]
 fn setup_writes_wiring_and_current_generation_skills() {
     let sb = Sandbox::new("setupgen", 19400);
     let proj = sb.project("alpha");
 
     let out = sb
-        .cmd(&["setup", "--cli", "devin,codex,windsurf"], &proj)
+        .cmd(&["setup", "--cli", "devin,codex,windsurf,bob"], &proj)
         .output()
         .unwrap();
     assert!(out.status.success(), "setup failed: {out:?}");
@@ -65,11 +65,13 @@ fn setup_writes_wiring_and_current_generation_skills() {
         assert!(agents.contains(marker), "AGENTS.md misses {marker:?}");
     }
 
-    // Hooks: devin + codex share the envelope wrapper; both registrations
-    // point at it.
+    // Hooks: devin + codex share the envelope wrapper; bob runs the portable
+    // script directly (plain-stdout SessionStart, Bob IDE 2.0.2+). All three
+    // registrations point at their script.
     for (script, registration) in [
         (".devin/hooks/engram-brief.sh", ".devin/hooks.v1.json"),
         (".codex/hooks/engram-brief.sh", ".codex/hooks.json"),
+        (".bob/hooks/engram-brief.sh", ".bob/settings.json"),
     ] {
         assert!(proj.join(script).exists(), "{script} missing");
         assert!(
@@ -80,6 +82,27 @@ fn setup_writes_wiring_and_current_generation_skills() {
         );
     }
     assert!(proj.join(".codex/skills/engram/SKILL.md").exists());
+
+    // Bob: the registration is valid Claude-Code-shaped JSON (event → group
+    // → command hooks), and the MCP config keeps its explicit --db.
+    let bob: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(proj.join(".bob/settings.json")).unwrap())
+            .unwrap();
+    assert!(
+        bob["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+            .as_str()
+            .is_some_and(|c| c.contains("engram-brief.sh")),
+        "bob settings.json misses the SessionStart command"
+    );
+    let bob_mcp: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(proj.join(".bob/mcp.json")).unwrap())
+            .unwrap();
+    assert!(
+        bob_mcp["mcpServers"]["engram"]["args"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|v| v == "--db")),
+        "bob mcp.json keeps the explicit --db"
+    );
 
     // Windsurf: the always_on rule (no hooks there) + skills.
     let rule = std::fs::read_to_string(proj.join(".windsurf/rules/engram.md")).unwrap();

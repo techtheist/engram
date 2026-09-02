@@ -39,7 +39,7 @@ project's graph; it only forgets the address.
 
 ## The home graph
 
-`~/.engram/home.db` is a normal Engram graph for knowledge that was never
+`~/.engram/home.tepin` is a normal Engram graph for knowledge that was never
 project-scoped: your global principles, standing preferences, cross-cutting
 cautions. Its canon rides along in every project's session brief. Tell your
 assistant *"remember this globally"* and it lands there.

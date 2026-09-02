@@ -9,7 +9,7 @@
 - **Rust** backend (rmcp, rusqlite bundled, sqlite-vec, fastembed, tepindb) — no Node runtime dep. **Vue 3.5 + TS + Vite + Bun**, Pinia, Tailwind 4, Vue Flow; `bun run lint` / `lint:style` in `frontend/`.
 - Embeddings/models **local-only**; **no LLM in the daemon, ever** (encoder-only mechanisms); models nominate, people judge.
 - **Retrieval changes cite a measured `eval/` run or they don't ship** (since 0.8.0).
-- **8 node types / 7 sentence-shaped verbs** on the default ontology; no new types, no `relates_to`; durability governs staleness; high-value edges are `replaces`/`conflicts-with`. Per-graph ontology/policy config exists since 0.7.0, but THIS repo's graph stays on the default ontology permanently.
+- **9 node types (8 + Tombstone since 0.9.0) / 7 sentence-shaped verbs** on the default ontology; no new types, no `relates_to`; durability governs staleness; high-value edges are `replaces`/`conflicts-with`. Per-graph ontology/policy config exists since 0.7.0, but THIS repo's graph stays on the default ontology permanently.
 - **Hard delete is user-only** (pane); MCP deliberately has no delete/register/pin tools. Writes are silent; transparency is the pane. One workspace version for every crate, stamped from the tag; `claude-plugin/.claude-plugin/plugin.json` must match (test-enforced).
 - Multi-user & repo sync: **out of scope permanently** (future enterprise product). Dogfood on the **aggressive** skill variant (relaxed is the user default). Eval ladder max **1500 notes**.
 

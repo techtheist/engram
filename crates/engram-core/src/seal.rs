@@ -131,11 +131,26 @@ impl SealKey {
             let _ = std::fs::create_dir_all(dir);
         }
         let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
-        if std::fs::write(&path, b64).is_err() {
+        // Born 0600: the mode is set at create time, so there is no window
+        // where the key sits on disk under the umask's default before a
+        // chmod catches up.
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let Ok(mut f) = opts.open(&path) else {
+            return false;
+        };
+        if std::io::Write::write_all(&mut f, b64.as_bytes()).is_err() {
             return false;
         }
         #[cfg(unix)]
         {
+            // An existing file keeps its old mode through OpenOptions; make
+            // the tightening unconditional.
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
         }

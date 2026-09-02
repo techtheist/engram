@@ -14,7 +14,10 @@ external interfaces. The MCP endpoints (`/mcp`, `/projects/{id}/mcp`)
 validate the `Host` header against loopback (rmcp's default), which blocks
 DNS-rebinding attacks against them. The `engram-alpha mcp` bridge and the
 brief hook talk only to a core they have discovered through engram's own
-daemon files and verified over `/health` — never to an arbitrary port.
+daemon files and verified over `/health` — never to an arbitrary port. The
+REST API's CORS layer is an origin allowlist — loopback origins and the IDE
+webview pseudo-origins the pane embeds under; any other page in your browser
+is refused.
 
 **Two layers, two protections.** Engram stores your knowledge in two places,
 and they are protected differently on purpose:
@@ -132,10 +135,6 @@ over HTTPS from their recorded Hugging Face URLs into `~/.cache/engram/`.
   wiping the layer) removes the rows, but the storage engine's freed pages
   aren't scrubbed — the same caveat already documented for curated hard
   deletes. Sealed rows reduce this to ciphertext residue.
-- **Permissive CORS on the localhost API.** Any page in your browser can
-  currently call the daemon's REST API. Hardening to an origin allowlist
-  (localhost + the IDE webview origins the pane embeds under) is scheduled
-  before release; `/mcp` is already loopback-`Host`-validated.
 - **No local authentication.** Any process on your machine can use the API —
   consistent with the single-user local trust model, but stated plainly.
 - **Model files are not checksum-pinned.** Unlike the binary self-update,
