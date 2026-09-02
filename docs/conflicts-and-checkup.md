@@ -32,7 +32,7 @@ Beyond finding what the graph *says*, the **Checkup** panel asks whether it
 entailment / neutral / contradiction) over your own knowledge: zero tokens,
 fully offline.
 
-<img src="../.screenshots/engram-alpha-checkup-feature.png" width="243" alt="The Checkup panel: sweeps above a claim check that returns CONTRADICTS with receipts">
+<img src="../.screenshots/engram-alpha-checkup-feature.png" width="243" alt="The Checkup panel: the deep sweeps and the NLI scoreboard"> <img src="../.screenshots/engram-alpha-claim-check-feature.png" width="243" alt="A claim check answered with receipts: CONTRADICTS, SUPPORTS and SILENT sections, each naming the nodes behind the verdict">
 
 Type a claim and the canon answers with receipts. A real run against this
 repository's graph: the claim *"graph is cloud saved"* comes back

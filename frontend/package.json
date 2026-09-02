@@ -15,6 +15,7 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "lint:style": "stylelint \"src/**/*.{css,vue}\" \"demo/**/*.vue\"",
+    "shots": "node scripts/shots/run.mjs",
     "lint:style:fix": "stylelint \"src/**/*.{css,vue}\" \"demo/**/*.vue\" --fix"
   },
   "dependencies": {
@@ -42,6 +43,7 @@
     "eslint": "^10.6.0",
     "eslint-plugin-vue": "^10.9.2",
     "npm-run-all2": "^9.0.2",
+    "playwright": "^1.62.1",
     "postcss-html": "^1.8.1",
     "stylelint": "^17.14.0",
     "stylelint-config-standard": "^40.0.0",

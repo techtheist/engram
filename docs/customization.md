@@ -20,6 +20,8 @@ effect. Nothing changes until you save; **Revert** discards the draft.
 
 ### Node types
 
+<img src="../.screenshots/engram-alpha-ontology-feature.png" width="300" alt="A node type card in the redactor: name, hue rail, thought, durability, rank prior, the role chips, and the brief cap and excerpt">
+
 Each type is a card. You control:
 
 - **Name** — what the assistant writes (`Decision`, `Claim`, `Rule`, …).
@@ -106,6 +108,8 @@ values on every note, beside the built-ins (`title`, `tags`, `created_at`,
 …). The redactor's **Custom fields** section defines them, and includes a
 built-in-fields reference so you can see the whole picture; a custom name
 can never shadow a built-in one (Save refuses the collision).
+
+<img src="../.screenshots/engram-alpha-custom-fields-feature.png" width="300" alt="The Custom fields section: an enum field and a url field, each with its kind, flags and the types it applies to">
 
 Each field has:
 

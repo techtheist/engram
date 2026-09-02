@@ -335,5 +335,26 @@
         "exclude_paths": [],
         "search_fallthrough": true
     },
-    "fields": []
+    "fields": [
+        {
+            "name": "impact",
+            "label": "Impact",
+            "kind": "enum",
+            "values": ["low", "medium", "high"],
+            "required": false,
+            "applies_to": ["Decision", "Problem"],
+            "indexed": true,
+            "show_in_brief": true
+        },
+        {
+            "name": "tracker",
+            "label": "Tracker link",
+            "kind": "url",
+            "values": [],
+            "required": false,
+            "applies_to": ["Problem", "Intent"],
+            "indexed": false,
+            "show_in_brief": false
+        }
+    ]
 }

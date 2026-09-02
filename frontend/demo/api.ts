@@ -174,7 +174,7 @@ export const api: EngramApi = {
     system: () => {
         const p = engine.state(LAUNCH)
         const info: SystemInfo = {
-            version: '0.8.1',
+            version: '0.9.0',
             daemon: { pid: 4821, uptime_secs: 7326, repo_root: '/Users/you/code/lantern' },
             store: {
                 db: '/Users/you/code/lantern/.engram/graph.tepin',
@@ -217,12 +217,12 @@ export const api: EngramApi = {
                 { agent: 'codex', wired: true, prerename: false },
                 { agent: 'gemini', wired: false, prerename: false },
             ],
-            // The 0.8.8 process census — the core plus two light MCP bridges,
+            // The 0.9.0 process census — the core plus two light MCP bridges,
             // so the demo shows the Processes section populated.
             processes: {
                 core: {
                     pid: 4821,
-                    version: '0.8.8',
+                    version: '0.9.0',
                     started_at: Math.floor(Date.now() / 1000) - 7326,
                     home: '/Users/you/.engram',
                 },

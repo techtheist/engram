@@ -10,6 +10,11 @@ bun run build:demo          # → frontend/dist-demo/
 ENGRAM_DEMO=1 bun run dev   # the demo with hot reload
 ```
 
+The demo is also the stage for the documentation screenshots: everything in
+`.screenshots/` except the standalone, VS Code and JetBrains shots is
+generated from this build by `scripts/screenshots.sh`, so the docs show a
+pane anyone can click through — and never this repo's own working notes.
+
 ## How the swap works
 
 `vite.config.ts` aliases two specifiers when `ENGRAM_DEMO=1`:

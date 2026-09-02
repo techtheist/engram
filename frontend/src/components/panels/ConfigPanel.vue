@@ -661,22 +661,23 @@ const kneeCliff = computed({
                         label="brief section"
                         title="Give this type its own canon section in the brief"
                     />
-                    <template v-if="t.brief.show">
-                        <span class="check">
-                            cap
-                            <StepperInput v-model="t.brief.cap" :max="100" :aria-label="`${t.name} brief cap`" />
-                        </span>
-                        <span class="check">
-                            excerpt
-                            <StepperInput
-                                v-model="t.brief.excerpt"
-                                :min="20"
-                                :max="2000"
-                                :step="10"
-                                :aria-label="`${t.name} brief excerpt chars`"
-                            />
-                        </span>
-                    </template>
+                </div>
+
+                <div v-if="t.brief.show" class="checks brief-nums">
+                    <span class="check">
+                        cap
+                        <StepperInput v-model="t.brief.cap" :max="100" :aria-label="`${t.name} brief cap`" />
+                    </span>
+                    <span class="check">
+                        excerpt
+                        <StepperInput
+                            v-model="t.brief.excerpt"
+                            :min="20"
+                            :max="2000"
+                            :step="10"
+                            :aria-label="`${t.name} brief excerpt chars`"
+                        />
+                    </span>
                 </div>
             </article>
             <button class="mini add" type="button" @click="addType">+ add type</button>
@@ -1266,6 +1267,10 @@ const kneeCliff = computed({
     flex-wrap: wrap;
     align-items: center;
     gap: 0.4rem 0.9rem;
+}
+
+.brief-nums {
+    padding-left: 0.15rem;
 }
 
 .check {

@@ -42,6 +42,8 @@ export interface SeedNode {
     code_refs?: string[]
     version?: string
     session?: string
+    /** Values for the graph's custom fields (see `demo/data/config.json`). */
+    fields?: Record<string, unknown>
 }
 
 export interface SeedEdge {
@@ -211,6 +213,7 @@ export const LANTERN_NODES: SeedNode[] = [
         tags: ['tech-decision'],
         code_refs: ['src-tauri/'],
         version: '0.3.0',
+        fields: { impact: 'high' },
     },
     {
         key: 'd-sqlite',
@@ -488,6 +491,7 @@ export const LANTERN_NODES: SeedNode[] = [
         days: 26,
         tags: ['sync', 'reader'],
         version: '0.5.0',
+        fields: { impact: 'high', tracker: 'https://issues.lantern.example/214' },
     },
     {
         key: 'pr-cold-start',
@@ -500,6 +504,7 @@ export const LANTERN_NODES: SeedNode[] = [
         days: 26,
         tags: ['search', 'perf'],
         version: '0.5.0',
+        fields: { impact: 'medium', tracker: 'https://issues.lantern.example/221' },
     },
     {
         key: 'pr-resize-flicker',
@@ -709,6 +714,20 @@ export const LANTERN_NODES: SeedNode[] = [
         days: 9,
         session: 'mcp-00b6tbeta40r',
         tags: ['sync', 'ux'],
+        version: '0.5.0',
+    },
+
+    // A deletion that left a trace: the note is gone, the fact that it was
+    // removed on purpose is not.
+    {
+        key: 't-reading-cloud',
+        type: 'Tombstone',
+        title: 'Removed: the cloud reading-position sync design',
+        body: 'Three notes described a hosted position-sync service, written before the local-first rule was settled. Deleted on purpose after the folder-replication decision landed — the design is not coming back, so do not re-derive it from an old branch.',
+        durability: 'stable',
+        source: 'user',
+        days: 20,
+        tags: ['sync', 'tech-decision'],
         version: '0.5.0',
     },
 ]

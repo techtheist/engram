@@ -67,6 +67,22 @@ picker. An empty graph is the one moment a
 choice lives where you meet it — pick one, press Save, and every later write
 speaks that vocabulary.
 
+## Sessions, as they were recorded
+
+The third screen of the topbar toggle is the **History** screen — the
+optional [session-history layer](./storage.md), off until you turn it on. Its
+harvester reads your assistants' own transcripts into a sibling store (sealed
+at rest by default), and the screen reads them back: every recorded session
+in the left rail with its harness, date and turn count, the conversation
+itself beside it, and **Delete session** for anything that shouldn't have
+been kept.
+
+![The History screen: recorded sessions in the left rail, one session's transcript open beside it](../.screenshots/engram-alpha-history-feature.png)
+
+Transcripts never enter the graph. They stay a labeled fall-through under
+search, and the link runs both ways: a note carries the session it was born
+in, and a session lists the notes born in it.
+
 ## Tags and filters
 
 Nodes carry free-form tags, settable by you in the pane or by the assistant
@@ -92,8 +108,11 @@ capturing, and you filter by it when reviewing.
 ## Edit everything by hand
 
 The graph is yours, not a read-only visualization of what the AI did.
+Selecting a node opens everything the graph knows about it — badges, tags,
+custom field values, body, links, and the session it was born in — with
+every one of them editable in place.
 
-<img src="../.screenshots/engram-alpha-add-memory-feature.png" width="198" alt="The New memory dialog">
+<img src="../.screenshots/engram-alpha-node-detail-feature.png" width="290" alt="A note open in the detail drawer: type pill, version, durability, source, status and trust badges, tags, custom field values, body, and the provenance block naming the session it was born in"> <img src="../.screenshots/engram-alpha-add-memory-feature.png" width="198" alt="The New memory dialog">
 
 - **Create** nodes from the **+ New** drawer — type, title, markdown body,
   durability, tags, and any [custom fields](./customization.md#custom-fields)
@@ -142,6 +161,8 @@ chain through the `timeline` tool: *"how did the auth decision evolve"* is
 one call, with dates.
 
 ## Settings → System
+
+<img src="../.screenshots/engram-alpha-system-feature.png" width="280" alt="The System panel: version and uptime, the process census, the graph store's backend and integrity, and the three local models with their paths">
 
 The System panel is the daemon's self-report: binary version and uptime,
 store backend and integrity, the loaded

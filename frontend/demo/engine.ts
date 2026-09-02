@@ -163,6 +163,7 @@ function seedNode(s: SeedNode, now: number): GraphNode {
         code_refs: s.code_refs ?? [],
         tags: s.tags ?? [],
         version: s.version ?? null,
+        fields: s.fields ?? null,
     }
 }
 

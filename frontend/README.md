@@ -18,3 +18,12 @@ bun run lint         # ESLint
 bun run lint:style   # Stylelint
 bun run build        # type-check + production build
 ```
+
+## Documentation screenshots
+
+The images in `.screenshots/` are generated from the browser demo by
+[`scripts/screenshots.sh`](../scripts/screenshots.sh) — headless Chromium
+drives the demo build and clips one PNG per shot. Re-run it whenever the pane
+changes shape; [`scripts/shots/README.md`](./scripts/shots/README.md) covers
+the manifest, what keeps the images reproducible, and the three shots that
+stay hand-made.
