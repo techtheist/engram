@@ -19,7 +19,7 @@ Each type answers a different question about the project:
 | **Insight** | A non-obvious realization worth carrying forward |
 | **Intent** | A TODO or deferred idea that should survive the session |
 | **Anchor** | A code subject other nodes attach to — *"the RAG layer"* |
-| **Tombstone** | A record that knowledge was deliberately removed — *"we dropped the vendor SDK, don't resurrect it"* |
+| **Tombstone** | A record that knowledge was deliberately removed — *"we dropped the vendor SDK, don't resurrect it"*. Not the same as superseded: a superseded note has a successor to follow; a tombstoned one must not come back |
 
 The Problem → Resolution pair is where memory pays off most visibly: the
 second time your assistant meets a flaky build step or a library quirk, the

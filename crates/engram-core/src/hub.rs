@@ -748,6 +748,7 @@ impl Hub {
                     };
                     report.supports.extend(tag(foreign.supports));
                     report.contradicts.extend(tag(foreign.contradicts));
+                    report.retracted.extend(tag(foreign.retracted));
                     report.silent.extend(tag(foreign.silent));
                 }
                 Err(e) => skipped.push(format!("{name}: {e}")),

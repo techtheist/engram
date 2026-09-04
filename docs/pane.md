@@ -123,10 +123,16 @@ every one of them editable in place.
 - **Edit, retype, re-anchor** any node in place — custom field values
   included; retype or delete edges from the node's connection list.
 - **Hard-delete is user-only** by design: the assistant can supersede
-  knowledge, but only you can destroy it. Since 0.9.0 the delete confirm
-  offers to **leave a Tombstone** (on by default, with an optional reason) —
-  a record of what was removed and why, so no future session innocently
-  re-learns it.
+  knowledge — and since 0.9.2 bury it behind a Tombstone of its own — but
+  only you can destroy it. The delete confirm offers to **leave a
+  Tombstone** (on by default, with an optional reason) — a record of what
+  was removed and why, so no future session innocently re-learns it. By
+  default the Tombstone **keeps the removed text** (body, tags, code refs),
+  which is what lets a later rewrite of the same content land on it and
+  draw the assistant's `tombstoned` warning; untick that to purge the text
+  and keep only what was removed and why. The victim's `about` edges move
+  onto the Tombstone, so the removal stays attached to the code subject it
+  happened under.
 
 ## The Review drawer
 

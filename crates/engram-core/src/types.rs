@@ -545,13 +545,22 @@ pub struct ClaimVerdict {
 }
 
 /// The canon's answer to "is this claim true here": which nodes support it,
-/// which contradict it, and which are merely nearby but silent. A gap (all
-/// silent) is a capture opportunity, not an error.
+/// which contradict it, which record it as deliberately removed, and which
+/// are merely nearby but silent. A gap (all silent) is a capture
+/// opportunity, not an error.
 #[derive(Debug, Clone, Serialize)]
 pub struct ClaimReport {
     pub claim: String,
     pub supports: Vec<ClaimVerdict>,
     pub contradicts: Vec<ClaimVerdict>,
+    /// Tombstone-role hits (0.9.2): the claim lands on knowledge a person
+    /// deliberately removed. Not an NLI verdict — a tombstone's text
+    /// ("Removed: X") is not a shape the model reads reliably, so these are
+    /// sorted out by role before judging and carry the retrieval score as
+    /// `entailment`, with neutral/contradiction zeroed. Empty when the
+    /// ontology declares no tombstone type.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retracted: Vec<ClaimVerdict>,
     pub silent: Vec<ClaimVerdict>,
 }
 
@@ -702,15 +711,21 @@ pub struct TagStat {
     pub last_used: i64,
 }
 
-/// Attached to a write result when the new text lands near contradicted or
-/// superseded knowledge — the pull-based version of PLAN §7's conflict push.
+/// Attached to a write result when the new text lands near contradicted,
+/// superseded, or tombstoned knowledge — the pull-based version of PLAN §7's
+/// conflict push.
 #[derive(Debug, Clone, Serialize)]
 pub struct WriteWarning {
     pub id: String,
     pub title: String,
-    /// "in-active-conflict" | "superseded"
+    /// "in-active-conflict" | "superseded" | "tombstoned"
     pub reason: String,
     pub similarity: f64,
+    /// For `tombstoned` (0.9.2): the tombstone's own account of what was
+    /// removed and why, so the writer reads the reason without a second
+    /// call. Absent on the other reasons.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// One row of the append-only audit journal (PLAN §10): a node/edge mutation

@@ -1929,14 +1929,26 @@ impl Engine {
     /// like delete itself. When the ontology declares no tombstone type this
     /// degrades to a plain delete — the config decides, never the caller.
     ///
-    /// The tombstone carries no edge to the victim: the victim is gone and
-    /// edges never dangle. The victim's identity lives in the tombstone's
-    /// body (and the audit journal keeps the full pre-image, as for any
-    /// delete).
+    /// `keep_text` (0.9.2, the pane's default) carries the victim's body,
+    /// tags, and code_refs into the tombstone. A 0.9.0 mint embedded only
+    /// the victim's title plus the reason, so a paraphrase of the buried
+    /// CONTENT landed nowhere near it and the `tombstoned` write warning had
+    /// nothing to fire on — the marker guarded the headline, not the
+    /// knowledge. Off is the purge shape: identity and reason only, for a
+    /// delete whose point is that the text goes away (the audit journal
+    /// keeps the pre-image either way, as for any delete).
+    ///
+    /// The tombstone takes over the victim's live edges to anchor-role
+    /// nodes (`about` a code subject): the removal stays attached to the
+    /// place it happened, so a traversal from the anchor meets the tombstone
+    /// where it used to meet the victim. Every other edge cascades with the
+    /// victim — "Removed: X because P" is not a sentence, and edges never
+    /// dangle. The victim's identity lives in the tombstone's body.
     pub fn delete_node_with_tombstone(
         &self,
         id: &str,
         reason: Option<&str>,
+        keep_text: bool,
     ) -> Result<(bool, Option<Node>)> {
         let Some(victim) = self.store.get_node(id)? else {
             return Ok((false, None));
@@ -1959,6 +1971,20 @@ impl Engine {
             }
             _ => {}
         }
+        let (tags, code_refs) = if keep_text {
+            if let Some(text) = victim
+                .body
+                .as_deref()
+                .map(str::trim)
+                .filter(|b| !b.is_empty())
+            {
+                body.push_str("\n\n**Removed text:** ");
+                body.push_str(text);
+            }
+            (victim.tags.clone(), victim.code_refs.clone())
+        } else {
+            (Vec::new(), Vec::new())
+        };
         // The mint skips required-field enforcement: deletion isn't
         // authoring, and field config must never veto a user's delete.
         let tombstone = self.add_node_opts(
@@ -1971,14 +1997,34 @@ impl Engine {
                 source: Source::User,
                 session_id: None,
                 status: None,
-                code_refs: Vec::new(),
-                tags: Vec::new(),
+                code_refs,
+                tags,
                 version: None,
                 props: None,
                 fields: None,
             },
             false,
         )?;
+        // Rehome the victim's live anchor edges before the cascade takes
+        // them. Same contract as merge's rehoming: the edge keeps its id and
+        // timestamps — the connection moved, it didn't recur.
+        for edge in self.store.edges_out(&victim.id)? {
+            if edge.valid_until.is_some() {
+                continue;
+            }
+            let Some(target) = self.store.get_node(&edge.to_id)? else {
+                continue;
+            };
+            if !is_anchor(&cfg, &target) {
+                continue;
+            }
+            let before = edge.clone();
+            let mut moved = edge;
+            moved.from_id = tombstone.id.clone();
+            self.store.upsert_edge(&moved)?;
+            self.audit_edge("updated", Some(&before), Some(&moved))?;
+            self.notify(ChangeEvent::EdgeUpdated(moved));
+        }
         let removed = self.delete_node(id)?;
         Ok((removed, Some(tombstone)))
     }
@@ -2944,7 +2990,11 @@ impl Engine {
             let Some(node) = self.store.get_node(&id)? else {
                 continue;
             };
-            if node.valid_until.is_some() || is_anchor(&cfg, &node) {
+            // Tombstones are skipped here on purpose: "Removed: X" against
+            // "X" is not a pair the NLI reads reliably, and the write already
+            // carries a `tombstoned` warning for the same neighbor — one
+            // channel per fact, no double report.
+            if node.valid_until.is_some() || is_anchor(&cfg, &node) || is_tombstone(&cfg, &node) {
                 continue;
             }
             examined += 1;
@@ -3241,12 +3291,24 @@ impl Engine {
             .collect())
     }
 
-    /// Nearby nodes that are contradicted (active `conflicts-with`) or
-    /// superseded — returned with writes so the writing assistant notices it
-    /// may be re-treading contested or stale ground (PLAN §7, pull-based).
+    /// Nearby nodes that are contradicted (active `conflicts-with`),
+    /// superseded, or tombstoned — returned with writes so the writing
+    /// assistant notices it may be re-treading contested, stale, or
+    /// deliberately killed ground (PLAN §7, pull-based).
+    ///
+    /// `tombstoned` (0.9.2) is the write-path half of the tombstone role:
+    /// before it, a tombstone was findable but guarded nothing — it is
+    /// active (so never `superseded`), sits out the conflict scan (so never
+    /// `in-active-conflict`), and the near-duplicate match is same-type, so
+    /// a Decision re-deriving a tombstoned Decision sailed through. The
+    /// check is role-based and cross-type on purpose: the shape of the
+    /// resurrection doesn't matter, the content does. Superseded says "a
+    /// successor exists — follow it"; tombstoned says "killed without one —
+    /// re-adding is the error".
     fn write_warnings(&self, vec: &[f32], exclude_id: &str) -> Result<Vec<WriteWarning>> {
         let mut warnings = Vec::new();
-        let warn_similarity = self.store.config().policy.warn_similarity;
+        let cfg = self.store.config();
+        let warn_similarity = cfg.policy.warn_similarity;
         for (id, distance) in self.store.search_vec(vec, WRITE_CHECK_K)? {
             if id == exclude_id {
                 continue;
@@ -3258,10 +3320,12 @@ impl Engine {
             let Some(node) = self.store.get_node(&id)? else {
                 continue;
             };
-            let reason = if node.valid_until.is_some() {
-                "superseded"
+            let (reason, note) = if node.valid_until.is_some() {
+                ("superseded", None)
+            } else if is_tombstone(&cfg, &node) {
+                ("tombstoned", tombstone_note(&node))
             } else if self.store.has_active_conflict(&id)? {
-                "in-active-conflict"
+                ("in-active-conflict", None)
             } else {
                 continue;
             };
@@ -3270,6 +3334,7 @@ impl Engine {
                 title: node.title,
                 reason: reason.to_string(),
                 similarity,
+                note,
             });
         }
         Ok(warnings)
@@ -3682,22 +3747,45 @@ impl Engine {
             Default::default(),
             &Default::default(),
         )?;
+        let cfg = self.config();
+        let mut report = ClaimReport {
+            claim: text.to_string(),
+            supports: Vec::new(),
+            contradicts: Vec::new(),
+            retracted: Vec::new(),
+            silent: Vec::new(),
+        };
         let mut nodes = Vec::new();
         for h in &hits {
-            if let Some(n) = self.store.get_node(&h.id)? {
-                nodes.push(n);
+            let Some(n) = self.store.get_node(&h.id)? else {
+                continue;
+            };
+            // A tombstone-role hit is sorted out by ROLE, before the model
+            // sees it (0.9.2): the claim lands on knowledge a person
+            // deliberately removed, and that is a verdict of its own —
+            // "retracted" — not an entailment question. The retrieval score
+            // rides in `entailment` so the bucket still sorts strongest
+            // first; the NLI columns are zero because none ran.
+            if is_tombstone(&cfg, &n) {
+                report.retracted.push(ClaimVerdict {
+                    id: n.id,
+                    node_type: n.node_type,
+                    title: n.title,
+                    trust: n.trust,
+                    stale: n.stale,
+                    entailment: h.score as f32,
+                    neutral: 0.0,
+                    contradiction: 0.0,
+                    project: None,
+                });
+                continue;
             }
+            nodes.push(n);
         }
         let pairs: Vec<(String, String)> =
             nodes.iter().map(|n| (claim(n), text.to_string())).collect();
         let judgments = nli.judge(&pairs)?;
 
-        let mut report = ClaimReport {
-            claim: text.to_string(),
-            supports: Vec::new(),
-            contradicts: Vec::new(),
-            silent: Vec::new(),
-        };
         for (node, j) in nodes.into_iter().zip(judgments) {
             let verdict = ClaimVerdict {
                 id: node.id,
@@ -3745,6 +3833,9 @@ impl Engine {
         });
         report
             .supports
+            .sort_by(|a, b| b.entailment.total_cmp(&a.entailment));
+        report
+            .retracted
             .sort_by(|a, b| b.entailment.total_cmp(&a.entailment));
         Ok(report)
     }
@@ -4117,7 +4208,12 @@ impl Engine {
     /// raised before. Stored newer-first so `replaces` verdicts read forward.
     fn suspects_near(&self, node: &Node, vec: &[f32]) -> Result<usize> {
         let cfg = self.store.config();
-        if is_anchor(&cfg, node) || node.valid_until.is_some() {
+        // Tombstones sit out BOTH sides here, as they do in the sweep's
+        // scannable set: a tombstone resembles its victim by design, and a
+        // suspect between them invites a `replaces` verdict that would
+        // archive the marker. The write path speaks about tombstones through
+        // the `tombstoned` warning instead (0.9.2).
+        if is_anchor(&cfg, node) || is_tombstone(&cfg, node) || node.valid_until.is_some() {
             return Ok(0);
         }
         let mut added = 0;
@@ -4133,6 +4229,7 @@ impl Engine {
                 continue;
             };
             if is_anchor(&cfg, &other)
+                || is_tombstone(&cfg, &other)
                 || other.valid_until.is_some()
                 || self.store.pair_linked(&node.id, &other.id)?
                 || self.store.suspect_between(&node.id, &other.id)?
@@ -4749,6 +4846,30 @@ pub fn node_line_cfg(
 fn is_anchor(cfg: &crate::config::GraphConfig, n: &Node) -> bool {
     cfg.type_def(n.node_type.as_str())
         .is_some_and(|t| t.roles.anchor)
+}
+
+/// Whether a node's type carries the `tombstone` role under this graph's
+/// ontology (a record of deliberately removed knowledge — findable, never
+/// canon, never to be re-derived).
+fn is_tombstone(cfg: &crate::config::GraphConfig, n: &Node) -> bool {
+    cfg.type_def(n.node_type.as_str())
+        .is_some_and(|t| t.roles.tombstone)
+}
+
+/// The tombstone's account of the removal, for riding on a warning: the
+/// body's opening (which the delete mint fills with the victim's identity
+/// and the "**Why:**" line), word-cut so a carried-over victim body doesn't
+/// turn the verdict into a transcript.
+fn tombstone_note(n: &Node) -> Option<String> {
+    const TOMBSTONE_NOTE_CHARS: usize = 280;
+    let body = n.body.as_deref()?.trim();
+    if body.is_empty() {
+        return None;
+    }
+    Some(excerpt_words(
+        &body.replace('\n', " "),
+        TOMBSTONE_NOTE_CHARS,
+    ))
 }
 
 /// Cut text at the last word boundary within `max` chars, appending `…` when

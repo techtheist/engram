@@ -399,8 +399,23 @@ const STRUCT_CAP = 8
             </button>
             <span v-if="sweepNote.claim" class="note">{{ sweepNote.claim }}</span>
             <div v-if="report" class="results">
-                <template v-for="(group, label) in { contradicts: report.contradicts, supports: report.supports, silent: report.silent }" :key="label">
-                    <p v-if="group.length" class="group-label" :class="label">{{ label }}</p>
+                <template
+                    v-for="(group, label) in {
+                        contradicts: report.contradicts,
+                        retracted: report.retracted ?? [],
+                        supports: report.supports,
+                        silent: report.silent,
+                    }"
+                    :key="label"
+                >
+                    <p
+                        v-if="group.length"
+                        class="group-label"
+                        :class="label"
+                        :title="label === 'retracted' ? 'A Tombstone says this was deliberately removed — not live canon' : undefined"
+                    >
+                        {{ label }}
+                    </p>
                     <button
                         v-for="v in group"
                         :key="v.id"
@@ -414,7 +429,7 @@ const STRUCT_CAP = 8
                         <span class="pct">{{ Math.round(Math.max(v.entailment, v.contradiction, v.neutral) * 100) }}%</span>
                     </button>
                 </template>
-                <p v-if="!report.contradicts.length && !report.supports.length" class="note">
+                <p v-if="!report.contradicts.length && !report.supports.length && !report.retracted?.length" class="note">
                     the canon is silent on this — if it matters, it's worth capturing
                 </p>
             </div>
@@ -556,6 +571,10 @@ const STRUCT_CAP = 8
 
 .group-label.supports {
     color: var(--trust-trusted);
+}
+
+.group-label.retracted {
+    color: var(--text-secondary);
 }
 
 .group-label.silent {

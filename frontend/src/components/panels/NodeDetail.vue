@@ -96,6 +96,10 @@ const confirmingDelete = ref(false)
 // user unticks it, moot when the ontology declares no tombstone type.
 const leaveTombstone = ref(true)
 const tombstoneReason = ref('')
+// 0.9.2: the tombstone carries the removed text (body, tags, code refs) so
+// a paraphrase of the buried content still lands on it. Unticked = the
+// purge shape: identity and reason only.
+const keepRemovedText = ref(true)
 
 // --- trust actions (trust v2: approve ladder, pin, […] menu) ---------------
 
@@ -324,9 +328,11 @@ async function remove(): Promise<void> {
         await store.remove(selected.value.id, {
             tombstone: withTombstone,
             reason: withTombstone ? tombstoneReason.value.trim() || undefined : undefined,
+            keepText: withTombstone ? keepRemovedText.value : undefined,
         })
         confirmingDelete.value = false
         tombstoneReason.value = ''
+        keepRemovedText.value = true
     } finally {
         busy.value = false
     }
@@ -664,6 +670,14 @@ function close(): void {
                         placeholder="Why is this being removed? (optional)"
                         :disabled="busy"
                     />
+                    <label
+                        v-if="leaveTombstone"
+                        class="tombstone-check"
+                        title="Carries the body, tags and code refs into the Tombstone, so a rewrite of the removed content is caught — untick to purge the text and keep only what was removed and why"
+                    >
+                        <input v-model="keepRemovedText" type="checkbox" :disabled="busy" />
+                        Keep the removed text in the {{ config.tombstoneType }}
+                    </label>
                 </div>
                 <button class="btn danger" type="button" :disabled="busy" @click="remove">
                     Confirm delete

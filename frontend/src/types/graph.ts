@@ -394,6 +394,13 @@ export interface ClaimReport {
     claim: string
     supports: ClaimVerdict[]
     contradicts: ClaimVerdict[]
+    /**
+     * Tombstone-role hits (0.9.2): the claim lands on knowledge a person
+     * deliberately removed. Sorted out by role before the NLI runs — the
+     * retrieval score rides in `entailment`, the other columns are zero.
+     * Omitted from the wire when empty.
+     */
+    retracted?: ClaimVerdict[]
     silent: ClaimVerdict[]
 }
 

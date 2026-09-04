@@ -55,7 +55,7 @@ The roles you can assign:
 |---|---|---|
 | **worklist** | open/resolved lifecycle; lives in the brief's worklist, never decays while open | Problem, Intent |
 | **anchor** | a code subject; carries `code_refs`, sits out the conflict scan, renders muted | Anchor |
-| **tombstone** | a deletion marker: records deliberately removed knowledge so it isn't re-learned; sits out the conflict scan, and hard delete offers to mint one | Tombstone |
+| **tombstone** | a deletion marker: records deliberately removed knowledge so it isn't re-learned. Findable like any note, but sits out the conflict scan and the suspect queue; a write that lands near one carries a `tombstoned` warning, `check_claim` files it under `retracted`, and hard delete offers to mint one | Tombstone |
 | **highlight** | may be accented on the canvas (off ⇒ always muted) | most types |
 | **rank prior** | a small ranking nudge in search (never touches trust) | Principle, Caution |
 

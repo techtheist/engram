@@ -153,10 +153,13 @@ export const api = {
     patchEdge: (id: string, patch: Record<string, unknown>) =>
         request<GraphEdge>(`/edges/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
 
-    deleteNode: (id: string, opts?: { tombstone?: boolean; reason?: string }) => {
+    deleteNode: (id: string, opts?: { tombstone?: boolean; reason?: string; keepText?: boolean }) => {
         const q = new URLSearchParams()
         if (opts?.tombstone) q.set('tombstone', 'true')
         if (opts?.reason) q.set('reason', opts.reason)
+        // The daemon defaults to carrying the removed text; only the purge
+        // shape is spelled out on the wire.
+        if (opts?.tombstone && opts.keepText === false) q.set('keep_text', 'false')
         const qs = q.toString()
         return request<void>(`/nodes/${id}${qs ? `?${qs}` : ''}`, { method: 'DELETE' })
     },

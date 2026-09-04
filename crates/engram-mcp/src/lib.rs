@@ -47,10 +47,16 @@ on add_note/update_node (update merges; null deletes); refusals teach the \
 roster — follow them. \
 Every write's response is a verdict, not a receipt: {matched, created: false} \
 = near-duplicate (merge via `update_node`; several notes with the same \
-knowledge → `merge_nodes`); `warnings` = landed near contradicted/superseded \
-canon; `suspects` = judge each with `resolve_suspect` (conflict | replaces | \
+knowledge → `merge_nodes`); `warnings` = landed near contradicted/superseded/\
+tombstoned canon (`tombstoned` = a person deliberately removed this; do not \
+re-add or re-derive it unless the user says so — the warning's `note` says why); \
+`suspects` = judge each with `resolve_suspect` (conflict | replaces | \
 dismiss) NOW and tell the user about genuine contradictions — the one \
 exception to silent capture. Judge the brief's suspected conflicts early too. \
+To retire knowledge yourself (no successor, don't re-learn): add_note a \
+Tombstone \"Removed: <title>\" with the why, then link {\"from\": <tombstone>, \
+\"to\": <victim>, \"type\": \"replaces\"} — the victim is archived, traceably; \
+hard delete stays user-only. \
 Nodes carry computed `trust` and `stale` (verify before relying); only \
 deliberate acts refresh trust — a still-true stale node wants `update_node`. \
 Pinning is user-only; a `replaces` that would archive a pinned node is refused. \
@@ -483,13 +489,23 @@ impl Engram {
                 "history": { "hits": hits, "note": HISTORY_SECTION_NOTE },
             }));
         }
-        let (mut hits, confidence) = {
+        let (mut hits, confidence, tombstoned) = {
             let guard = self.mcp(&engine);
             let hits = guard
                 .search_filtered(&a.query, &types, limit, &filter)
                 .map_err(map_err)?;
             let confidence = guard.search_confidence(&hits);
-            (hits, confidence)
+            // Tombstone-role hits are counted here (0.9.2) so the reply can
+            // say out loud that a hit is a removal record, not live canon —
+            // a compact scan shows only type/title, and "Removed: X" reads
+            // like a memory of X to a caller skimming for X.
+            let cfg = guard.config();
+            let tombstone_types = cfg.tombstone_types();
+            let tombstoned = hits
+                .iter()
+                .filter(|h| tombstone_types.contains(&h.node_type.as_str()))
+                .count();
+            (hits, confidence, tombstoned)
         };
         hits.iter_mut().for_each(debracket);
         let hit_ids: Vec<String> = hits.iter().map(|h| h.id.clone()).collect();
@@ -551,6 +567,16 @@ impl Engram {
             if let Some(n) = note {
                 body["note"] = json!(n);
             }
+        }
+        if tombstoned > 0 {
+            body["tombstone_note"] = json!(format!(
+                "{tombstoned} hit{} carr{} the tombstone role: a record that \
+                 knowledge was deliberately removed, not live canon. Do not \
+                 re-add or re-derive what it names unless the user says so — \
+                 its body says why it was removed.",
+                if tombstoned == 1 { "" } else { "s" },
+                if tombstoned == 1 { "ies" } else { "y" },
+            ));
         }
         self.reply(&body)
     }
@@ -690,9 +716,10 @@ impl Engram {
         {matched, created: false} = near-duplicate, merge via update_node \
         (nli_label=contradiction = a NEGATED duplicate — read it first, \
         likely conflicts-with instead); `warnings` = landed near \
-        contradicted/superseded canon; `missing_code_refs` = fix or drop; \
-        `suspects` = judge each with resolve_suspect now, telling the user \
-        about genuine contradictions.")]
+        contradicted/superseded/tombstoned canon (tombstoned = deliberately \
+        removed — don't re-add unless the user says so); `missing_code_refs` \
+        = fix or drop; `suspects` = judge each with resolve_suspect now, \
+        telling the user about genuine contradictions.")]
     async fn add_note(
         &self,
         Parameters(a): Parameters<AddNoteArgs>,
@@ -1013,9 +1040,11 @@ impl Engram {
 
     #[tool(
         description = "Check a claim against the graph with the local NLI model: \
-        {supports, contradicts, silent}. Use before acting on an assumption; \
-        contradicts-hits are conflicts to surface, all-silent on a real topic \
-        is a gap worth capturing. Verdicts are small-model hints — you judge."
+        {supports, contradicts, retracted, silent}. Use before acting on an \
+        assumption; contradicts-hits are conflicts to surface, retracted = a \
+        Tombstone says this was deliberately removed (don't act on it), \
+        all-silent on a real topic is a gap worth capturing. Verdicts are \
+        small-model hints — you judge."
     )]
     async fn check_claim(
         &self,
@@ -3336,6 +3365,77 @@ pub(crate) mod tool_tests {
             tags: vec![],
             project: None,
         }
+    }
+
+    // 0.9.2: tombstones on the read and write paths — a search that returns
+    // one says so, and a note that re-derives one carries the `tombstoned`
+    // warning with the tombstone's reason.
+    #[tokio::test]
+    async fn search_names_tombstone_hits_and_writes_near_one_warn() {
+        let s = server();
+        s.add_note(Parameters(AddNoteArgs {
+            node_type: "Tombstone".into(),
+            body: Some("Deleted Decision. **Why:** the vendor sunset the SDK.".into()),
+            ..note("Removed: use the vendor SDK for retries")
+        }))
+        .await
+        .unwrap();
+
+        let body = text_of(
+            &s.search(Parameters(SearchArgs {
+                query: "vendor SDK retries".into(),
+                types: vec![],
+                limit: None,
+                project: None,
+                scope: Some("memory".into()),
+                detail: Some("compact".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap(),
+        );
+        assert!(
+            body.contains("tombstone_note") && body.contains("deliberately removed"),
+            "a tombstone hit is named as one: {body}"
+        );
+
+        let plain = text_of(
+            &s.search(Parameters(SearchArgs {
+                query: "nothing like this anywhere".into(),
+                types: vec!["Decision".into()],
+                limit: None,
+                project: None,
+                scope: Some("memory".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap(),
+        );
+        assert!(
+            !plain.contains("tombstone_note"),
+            "no tombstone hit, no note: {plain}"
+        );
+
+        // A Decision restating the dead knowledge creates (different type)
+        // but carries the warning, reason included.
+        let verdict = text_of(
+            &s.add_note(Parameters(AddNoteArgs {
+                body: Some("retries and auth come from the vendor SDK".into()),
+                ..note("use the vendor SDK for retries")
+            }))
+            .await
+            .unwrap(),
+        );
+        // text_of is the Debug rendering, so JSON quotes arrive escaped.
+        assert!(verdict.contains("\\\"created\\\": true"), "{verdict}");
+        assert!(
+            verdict.contains("\\\"reason\\\": \\\"tombstoned\\\"")
+                && verdict.contains("vendor sunset the SDK"),
+            "tombstoned warning with its note: {verdict}"
+        );
+        // And no suspect against the tombstone: a `replaces` verdict there
+        // would archive the marker.
+        assert!(!verdict.contains("\"suspects\""), "{verdict}");
     }
 
     #[tokio::test]

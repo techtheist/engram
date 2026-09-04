@@ -295,9 +295,14 @@ pub struct TypeRoles {
     #[serde(default = "default_true")]
     pub versioned: bool,
     /// A deletion marker: records that knowledge was deliberately removed so
-    /// it isn't re-learned (Tombstone in the shipped set). Tombstones sit out
-    /// the conflict scan and answer candidacy; a tombstone `replaces` its
-    /// victim, letting the existing supersession machinery archive it.
+    /// it isn't re-learned (Tombstone in the shipped set). Tombstones stay
+    /// findable but sit out the conflict scan and answer candidacy; a write
+    /// that lands near one carries a `tombstoned` warning and `check_claim`
+    /// files it under `retracted` (0.9.2). Two ways one comes to exist: an
+    /// authored tombstone `replaces` a still-live victim (the ordinary
+    /// supersession machinery archives it — the assistant's traceable
+    /// "bury"), or the pane's hard delete mints one over a victim that is
+    /// then gone (no edge — the identity lives in the body).
     #[serde(default)]
     pub tombstone: bool,
 }

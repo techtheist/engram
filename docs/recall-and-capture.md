@@ -101,8 +101,13 @@ verdict it must act on:
   **negated duplicate**: the "duplicate" actually says the opposite
   ("use X" vs "don't use X") — flagged distinctly, because blindly merging
   it would corrupt the canon; the right move is a `conflicts-with` edge.
-- **Warning** — the note landed near conflicted or superseded knowledge;
-  the assistant checks the canon before proceeding.
+- **Warning** — the note landed near conflicted, superseded, or
+  **tombstoned** knowledge. For the first two the assistant checks the
+  canon before proceeding. *Tombstoned* is the stricter one: a person
+  deliberately removed this, the warning carries the Tombstone's reason,
+  and the assistant is told not to re-add or re-derive it — superseded means
+  "a successor exists, follow it"; tombstoned means "re-adding this is the
+  error". The write itself is never blocked: models nominate, people judge.
 - **Suspects** — the write queued new look-alike pairs; the assistant judges
   them immediately (see [Conflicts & Checkup](./conflicts-and-checkup.md)),
   and a genuine contradiction is the one thing it surfaces to you out loud.

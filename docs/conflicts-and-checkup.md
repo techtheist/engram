@@ -38,9 +38,12 @@ Type a claim and the canon answers with receipts. A real run against this
 repository's graph: the claim *"graph is cloud saved"* comes back
 **contradicts**, listing the principles that disagree — local-first,
 user-owned — each one click from its full node. A claim the canon *supports*
-lists its backing nodes the same way. And **silent** is an answer too:
-nearby nodes with no verdict means the graph simply doesn't know — usually
-something worth capturing.
+lists its backing nodes the same way. **Retracted** (0.9.2) means a
+Tombstone says the claim was deliberately removed — sorted out by role
+before the model runs, because "Removed: X" against "X" is not a pair it
+reads reliably — so the claim is not something to act on. And **silent** is
+an answer too: nearby nodes with no verdict means the graph simply doesn't
+know — usually something worth capturing.
 
 Above the claim box, one-click sweeps over the whole graph:
 

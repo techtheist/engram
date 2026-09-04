@@ -1399,6 +1399,16 @@ struct DeleteNodeParams {
     /// Why the node was removed; lands in the tombstone's body.
     #[serde(default)]
     reason: Option<String>,
+    /// Carry the victim's body, tags, and code_refs into the tombstone so a
+    /// paraphrase of the removed content still lands near it (0.9.2).
+    /// Default true; `keep_text=false` is the purge shape — identity and
+    /// reason only.
+    #[serde(default = "default_true")]
+    keep_text: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 async fn delete_node(
@@ -1409,8 +1419,11 @@ async fn delete_node(
 ) -> Result<Response, AppError> {
     let engine = state.engine_arc(&scope)?;
     if params.tombstone {
-        let (removed, tombstone) =
-            pane(&engine).delete_node_with_tombstone(&id, params.reason.as_deref())?;
+        let (removed, tombstone) = pane(&engine).delete_node_with_tombstone(
+            &id,
+            params.reason.as_deref(),
+            params.keep_text,
+        )?;
         if !removed {
             return Err(AppError::NotFound);
         }

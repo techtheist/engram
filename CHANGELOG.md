@@ -3,6 +3,50 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
+## v0.9.2
+
+### Tombstones guard the write path
+
+- **A `tombstoned` write warning.** A Tombstone was findable but guarded
+  nothing: it is active (so never `superseded`), it sits out the conflict
+  scan (so never `in-active-conflict`), and the near-duplicate match is
+  same-type, so a Decision re-deriving a tombstoned Decision sailed through.
+  Every write — `add_note`, `add_notes`, `update_node`, `merge_nodes` — now
+  reports any tombstone-role node within the warning similarity, across
+  types, as `{reason: "tombstoned", note: <why it was removed>}`. The write
+  is never blocked: models nominate, people judge. Superseded means *a
+  successor exists, follow it*; tombstoned means *re-adding this is the
+  error* — the server instructions, tool descriptions, and all three skill
+  variants teach the difference.
+- **The delete mint carries the buried content.** The Tombstone a hard
+  delete leaves used to embed only the victim's title plus your reason, so a
+  paraphrase of the removed *content* landed nowhere near it. It now carries
+  the victim's body (`**Removed text:**`), tags, and code refs by default;
+  the pane's delete confirm gains **Keep the removed text** (untick = the
+  purge shape, identity and reason only; `keep_text=false` on
+  `DELETE /nodes/{id}`). The victim's `about` edges move onto the Tombstone
+  — same edge id, the connection moved — so the removal stays attached to
+  the code subject it happened under. Every other edge cascades as before.
+- **Search names its tombstone hits.** A `search` reply with a Tombstone
+  among its hits carries a `tombstone_note`, so a compact scan never reads
+  "Removed: X" as a memory of X.
+- **`check_claim` gains a `retracted` bucket.** Tombstone-role hits are
+  sorted out by role before the NLI runs ("Removed: X" against "X" is not a
+  pair the model reads reliably) and reported as *retracted*: a person
+  deliberately removed this — don't act on the claim. The pane's claim check
+  renders the group; the write-time canon check skips tombstones since the
+  warning already covers them.
+- **Tombstones queue no suspects.** The write-time suspect recorder now
+  skips tombstone-role nodes on both sides, as the sweep always did — a
+  Tombstone resembles its victim by design, and a suspect between them
+  invited a `replaces` verdict that would have archived the marker.
+- **The assistant can bury, traceably.** No new tool: `add_note` a
+  Tombstone titled `Removed: <title>` with the why, then `link` it
+  `replaces` the victim — the victim is archived behind the marker and a
+  later resurrection warns on both records. Hard delete stays user-only.
+  Docs corrected where they implied the delete mint links its victim (it
+  cannot — the victim is gone; the identity lives in the body).
+
 ## v0.9.1
 
 ### The pane stops looking foreign

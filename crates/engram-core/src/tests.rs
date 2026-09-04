@@ -6081,7 +6081,7 @@ fn delete_with_tombstone_records_the_victim_and_reason() {
         ))
         .unwrap();
     let (removed, tombstone) = e
-        .delete_node_with_tombstone(&victim.id, Some("vendor sunset the SDK"))
+        .delete_node_with_tombstone(&victim.id, Some("vendor sunset the SDK"), true)
         .unwrap();
     assert!(removed);
     let t = tombstone.expect("default ontology has a tombstone type");
@@ -6123,7 +6123,9 @@ fn delete_with_tombstone_degrades_to_plain_delete_without_the_role() {
         crate::config::hidden_brief(),
     ));
     e.set_graph_config(&cfg).unwrap();
-    let (removed, tombstone) = e.delete_node_with_tombstone(&victim.id, None).unwrap();
+    let (removed, tombstone) = e
+        .delete_node_with_tombstone(&victim.id, None, true)
+        .unwrap();
     assert!(removed);
     assert!(tombstone.is_none(), "no tombstone type — plain delete");
     assert!(e.get_node(&victim.id).unwrap().is_none());
@@ -6153,6 +6155,341 @@ fn tombstones_sit_out_the_conflict_scan() {
     assert!(
         scannable.iter().any(|n| n.node_type == NodeType::Insight),
         "ordinary nodes still scan"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 0.9.2: tombstones guard the write path — like superseded, but "don't
+// re-add" instead of "follow the successor".
+// ---------------------------------------------------------------------------
+
+#[test]
+fn writes_near_a_tombstone_warn_tombstoned_across_types() {
+    let e = engine();
+    let t = e
+        .add_node(new_node(
+            NodeType::Tombstone,
+            "Removed: cache results in redis",
+            "Deleted Decision. **Why:** redis was ripped out of the stack.",
+        ))
+        .unwrap();
+
+    // A different type re-deriving the dead knowledge: the same-type
+    // duplicate match can't see it, the tombstoned warning must.
+    let outcome = e
+        .add_node_checked(new_node(
+            NodeType::Decision,
+            "cache results in redis",
+            "for speed",
+        ))
+        .unwrap();
+    let WriteOutcome::Created { warnings, .. } = outcome else {
+        panic!("a tombstone never blocks a write — it warns")
+    };
+    let w = warnings
+        .iter()
+        .find(|w| w.id == t.id)
+        .unwrap_or_else(|| panic!("writing near a tombstone must warn: {warnings:?}"));
+    assert_eq!(w.reason, "tombstoned");
+    assert!(
+        w.note
+            .as_deref()
+            .is_some_and(|n| n.contains("redis was ripped out")),
+        "the warning carries the tombstone's reason: {w:?}"
+    );
+    // The tombstone is active, so it is never mistaken for superseded.
+    assert!(
+        warnings
+            .iter()
+            .all(|w| w.id != t.id || w.reason != "superseded"),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn tombstones_queue_no_write_time_suspects_on_either_side() {
+    let e = engine();
+    let victim = e
+        .add_node(new_node(
+            NodeType::Decision,
+            "sessions live in redis",
+            "fast and shared",
+        ))
+        .unwrap();
+    // Writing the tombstone itself (the bury gesture) must not pair it with
+    // its victim — that suspect would invite archiving the marker.
+    let outcome = e
+        .add_node_checked(new_node(
+            NodeType::Tombstone,
+            "Removed: sessions live in redis",
+            "Deleted Decision. **Why:** redis was dropped.",
+        ))
+        .unwrap();
+    let WriteOutcome::Created {
+        node: t, suspects, ..
+    } = outcome
+    else {
+        panic!("creates")
+    };
+    assert!(
+        suspects.is_empty(),
+        "tombstone write queues nothing: {suspects:?}"
+    );
+    // Nor does a later note landing near the tombstone — the warning is the
+    // channel, and the victim (still live here) remains fair game.
+    let outcome = e
+        .add_node_checked(new_node(
+            NodeType::Insight,
+            "sessions live in redis",
+            "fast and shared",
+        ))
+        .unwrap();
+    let WriteOutcome::Created {
+        suspects, warnings, ..
+    } = outcome
+    else {
+        panic!("creates")
+    };
+    assert!(
+        suspects.iter().all(|s| s.a.id != t.id && s.b.id != t.id),
+        "no suspect involves the tombstone: {suspects:?}"
+    );
+    assert!(
+        suspects
+            .iter()
+            .any(|s| s.a.id == victim.id || s.b.id == victim.id),
+        "the live victim still pairs: {suspects:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.id == t.id && w.reason == "tombstoned"),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn canon_check_skips_tombstones_the_warning_already_covers() {
+    let e = engine_with_nli();
+    // FakeNli reads shared "contra" as contradiction — the one pair shape
+    // that would have produced a spurious canon verdict from a tombstone.
+    let t = e
+        .add_node(new_node(
+            NodeType::Tombstone,
+            "Removed: contra sessions in redis",
+            "Deleted Decision.",
+        ))
+        .unwrap();
+    let outcome = e
+        .add_node_checked(new_node(NodeType::Decision, "contra sessions in redis", ""))
+        .unwrap();
+    let WriteOutcome::Created {
+        warnings, canon, ..
+    } = outcome
+    else {
+        panic!("different type must create")
+    };
+    assert!(
+        canon.iter().all(|c| c.id != t.id),
+        "tombstones are not canon-check material: {canon:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.id == t.id && w.reason == "tombstoned"),
+        "the tombstoned warning is the channel: {warnings:?}"
+    );
+}
+
+#[test]
+fn delete_with_tombstone_carries_the_removed_text_and_rehomes_anchor_edges() {
+    let e = engine();
+    let anchor = e
+        .add_node(new_node(NodeType::Anchor, "sdk layer", ""))
+        .unwrap();
+    let principle = e
+        .add_node(new_node(NodeType::Principle, "prefer boring tools", ""))
+        .unwrap();
+    let mut nn = new_node(
+        NodeType::Decision,
+        "Use the flaky vendor SDK",
+        "The vendor SDK handles retries and auth for us.",
+    );
+    nn.tags = vec!["sdk".into()];
+    nn.code_refs = vec!["src/sdk.rs".into()];
+    let victim = e.add_node(nn).unwrap();
+    let about = link(e.store(), EdgeType::About, &victim.id, &anchor.id);
+    link(e.store(), EdgeType::Because, &victim.id, &principle.id);
+
+    let (removed, tombstone) = e
+        .delete_node_with_tombstone(&victim.id, Some("vendor sunset the SDK"), true)
+        .unwrap();
+    assert!(removed);
+    let t = tombstone.expect("default ontology has a tombstone type");
+    let body = t.body.as_deref().unwrap();
+    assert!(
+        body.contains("The vendor SDK handles retries and auth for us."),
+        "victim body carried: {body}"
+    );
+    assert!(
+        body.contains("vendor sunset the SDK"),
+        "reason kept: {body}"
+    );
+    assert_eq!(t.tags, vec!["sdk".to_string()], "tags carried");
+    assert_eq!(
+        t.code_refs,
+        vec!["src/sdk.rs".to_string()],
+        "code_refs carried"
+    );
+
+    // The anchor edge moved (same id — the connection moved, it didn't
+    // recur); the reason edge cascaded with the victim.
+    let out = e.store().edges_out(&t.id).unwrap();
+    assert_eq!(out.len(), 1, "only the anchor edge rehomes: {out:?}");
+    assert_eq!(out[0].id, about.id);
+    assert_eq!(out[0].edge_type, EdgeType::About);
+    assert_eq!(out[0].to_id, anchor.id);
+    assert!(
+        e.store().edges_in(&principle.id).unwrap().is_empty(),
+        "because-edge does not follow the tombstone"
+    );
+    assert!(e.get_node(&victim.id).unwrap().is_none(), "victim gone");
+
+    // And the point of carrying the text: a paraphrase of the buried
+    // CONTENT (not the title) now lands on the tombstone.
+    let outcome = e
+        .add_node_checked(new_node(
+            NodeType::Insight,
+            "SDK retries and auth",
+            "The vendor SDK handles retries and auth for us.",
+        ))
+        .unwrap();
+    let WriteOutcome::Created { warnings, .. } = outcome else {
+        panic!("must create")
+    };
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.id == t.id && w.reason == "tombstoned"),
+        "content paraphrase must hit the tombstone: {warnings:?}"
+    );
+}
+
+#[test]
+fn delete_with_tombstone_purge_shape_keeps_identity_and_reason_only() {
+    let e = engine();
+    let mut nn = new_node(
+        NodeType::Decision,
+        "Use the flaky vendor SDK",
+        "The vendor SDK handles retries and auth for us.",
+    );
+    nn.tags = vec!["sdk".into()];
+    let victim = e.add_node(nn).unwrap();
+    let (_, tombstone) = e
+        .delete_node_with_tombstone(&victim.id, Some("purge it"), false)
+        .unwrap();
+    let t = tombstone.unwrap();
+    let body = t.body.as_deref().unwrap();
+    assert!(
+        !body.contains("handles retries"),
+        "purge drops the text: {body}"
+    );
+    assert!(
+        body.contains(&victim.id) && body.contains("purge it"),
+        "{body}"
+    );
+    assert!(t.tags.is_empty(), "purge carries no tags");
+}
+
+#[test]
+fn check_claim_files_tombstones_under_retracted() {
+    let e = engine_with_nli();
+    let t = e
+        .add_node(new_node(
+            NodeType::Tombstone,
+            "Removed: sessions live in localStorage",
+            "Deleted Decision. **Why:** moved to server sessions.",
+        ))
+        .unwrap();
+    e.add_node(new_node(
+        NodeType::Decision,
+        "sessions live in localStorage",
+        "",
+    ))
+    .unwrap();
+    let report = e.check_claim("sessions live in localStorage", 8).unwrap();
+    assert!(
+        report.retracted.iter().any(|v| v.id == t.id),
+        "tombstone lands in retracted: {report:?}"
+    );
+    let elsewhere = report
+        .supports
+        .iter()
+        .chain(&report.contradicts)
+        .chain(&report.silent)
+        .any(|v| v.id == t.id);
+    assert!(!elsewhere, "never judged by the NLI: {report:?}");
+    let r = report.retracted.iter().find(|v| v.id == t.id).unwrap();
+    assert!(r.entailment > 0.0 && r.neutral == 0.0 && r.contradiction == 0.0);
+}
+
+#[test]
+fn an_authored_tombstone_that_replaces_its_victim_buries_it_traceably() {
+    // The assistant's bury gesture: no hard delete, the victim is archived
+    // behind `replaces` and a later resurrection warns on BOTH records.
+    let e = engine();
+    let victim = e
+        .add_node(new_node(
+            NodeType::Decision,
+            "sessions live in redis",
+            "fast and shared",
+        ))
+        .unwrap();
+    let outcome = e
+        .add_node_checked(new_node(
+            NodeType::Tombstone,
+            "Removed: sessions live in redis",
+            "Deleted Decision. **Why:** redis was dropped from the stack.",
+        ))
+        .unwrap();
+    let WriteOutcome::Created { node: t, .. } = outcome else {
+        panic!("a tombstone is a different type from its victim — it creates")
+    };
+    e.add_edge(NewEdge {
+        edge_type: EdgeType::Replaces,
+        from_id: t.id.clone(),
+        to_id: victim.id.clone(),
+        source: Source::Claude,
+        note: None,
+        confidence: None,
+        strength: None,
+        status: None,
+    })
+    .unwrap();
+    let buried = e.get_node(&victim.id).unwrap().unwrap();
+    assert!(buried.valid_until.is_some(), "replaces archives the victim");
+
+    let outcome = e
+        .add_node_checked(new_node(
+            NodeType::Insight,
+            "sessions live in redis",
+            "fast and shared",
+        ))
+        .unwrap();
+    let WriteOutcome::Created { warnings, .. } = outcome else {
+        panic!("must create")
+    };
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.id == victim.id && w.reason == "superseded"),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.id == t.id && w.reason == "tombstoned"),
+        "{warnings:?}"
     );
 }
 
@@ -9079,7 +9416,7 @@ fn sealed_store_brief_merge_timeline_and_tombstone_read_prose() {
 
     // Hard delete with tombstone mints a readable marker.
     let (removed, ts) = e
-        .delete_node_with_tombstone(&nodes[2].id, Some("wrong call"))
+        .delete_node_with_tombstone(&nodes[2].id, Some("wrong call"), true)
         .unwrap();
     assert!(removed);
     let ts = ts.expect("default ontology tombstones");
@@ -9347,7 +9684,7 @@ fn required_field_can_never_veto_a_hard_delete() {
     // The delete's tombstone mint is engine-authored: required enforcement
     // is a contract for authors and must not block the user's delete.
     let (removed, ts) = e
-        .delete_node_with_tombstone(&victim.id, Some("cleanup"))
+        .delete_node_with_tombstone(&victim.id, Some("cleanup"), true)
         .unwrap();
     assert!(removed);
     let ts = ts.expect("tombstone minted despite the required field");
@@ -9497,7 +9834,9 @@ fn pre_0_9_export_and_config_shapes_still_parse() {
         .add_node(new_node(NodeType::Decision, "doomed", "x"))
         .unwrap();
     e.set_graph_config(&old_cfg).unwrap();
-    let (removed, ts) = e.delete_node_with_tombstone(&victim.id, None).unwrap();
+    let (removed, ts) = e
+        .delete_node_with_tombstone(&victim.id, None, true)
+        .unwrap();
     assert!(removed);
     assert!(ts.is_none(), "no tombstone role → plain delete, no error");
 }
