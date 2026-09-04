@@ -180,6 +180,26 @@ export const shots = [
         settle: 700,
     },
     {
+        name: 'engram-alpha-delete-tombstone-feature',
+        doc: 'docs/pane.md § Edit everything by hand (hard delete leaves a Tombstone)',
+        viewport: [1280, 700],
+        act: async (page) => {
+            await page
+                .locator('.vue-flow__node')
+                .filter({ hasText: 'Highlights land in the wrong paragraph' })
+                .first()
+                .click()
+            await page.locator(`${PANEL}`).getByRole('button', { name: 'Delete', exact: true }).click()
+            await page
+                .getByPlaceholder('Why is this being removed?', { exact: false })
+                .fill('the anchor rewrite made this obsolete')
+            // The confirm row lives at the foot of a long drawer.
+            await page.locator(`${PANEL} footer`).evaluate((el) => el.scrollIntoView({ block: 'end' }))
+        },
+        clip: PANEL,
+        settle: 700,
+    },
+    {
         name: 'engram-alpha-ontology-feature',
         doc: 'docs/customization.md § The ontology redactor',
         viewport: [1280, 980],

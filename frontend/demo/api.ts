@@ -127,7 +127,7 @@ export const api: EngramApi = {
 
     patchNode: (id, patch) => ok(engine.patchNode(id, patch)),
     patchEdge: (id, patch) => ok(engine.patchEdge(id, patch)),
-    deleteNode: (id) => ok(engine.deleteNode(id)),
+    deleteNode: (id, opts) => ok(engine.deleteNode(id, opts)),
 
     suspects: () => ok(engine.state().suspects),
     scanConflicts: () => ok({ added: engine.scanSuspects() }),
@@ -174,7 +174,7 @@ export const api: EngramApi = {
     system: () => {
         const p = engine.state(LAUNCH)
         const info: SystemInfo = {
-            version: '0.9.0',
+            version: '0.9.2',
             daemon: { pid: 4821, uptime_secs: 7326, repo_root: '/Users/you/code/lantern' },
             store: {
                 db: '/Users/you/code/lantern/.engram/graph.tepin',
@@ -217,12 +217,12 @@ export const api: EngramApi = {
                 { agent: 'codex', wired: true, prerename: false },
                 { agent: 'gemini', wired: false, prerename: false },
             ],
-            // The 0.9.0 process census — the core plus two light MCP bridges,
+            // The 0.9.2 process census — the core plus two light MCP bridges,
             // so the demo shows the Processes section populated.
             processes: {
                 core: {
                     pid: 4821,
-                    version: '0.9.0',
+                    version: '0.9.2',
                     started_at: Math.floor(Date.now() / 1000) - 7326,
                     home: '/Users/you/.engram',
                 },

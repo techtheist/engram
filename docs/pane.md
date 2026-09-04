@@ -134,6 +134,8 @@ every one of them editable in place.
   onto the Tombstone, so the removal stays attached to the code subject it
   happened under.
 
+  <img src="../.screenshots/engram-alpha-delete-tombstone-feature.png" width="290" alt="The delete confirm at the foot of the detail drawer: Leave a Tombstone ticked, a reason typed in, Keep the removed text ticked, and the Confirm delete button">
+
 ## The Review drawer
 
 Capture is silent; Review is where it becomes accountable.

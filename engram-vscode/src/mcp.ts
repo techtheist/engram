@@ -7,8 +7,10 @@ interface McpConfig {
 
 /**
  * Merge an `engram` server into the workspace `.mcp.json` (the file Claude Code
- * reads), without clobbering other servers. Uses a relative db path so it
- * resolves against the repo the daemon also uses.
+ * reads), without clobbering other servers. The entry is db-less, the same
+ * shape `engram-alpha setup` writes: Claude Code launches the server with the
+ * project as cwd and answers MCP roots, so the bridge binds the project's
+ * graph (`.engram/graph.tepin`) itself and the entry is portable.
  */
 export async function configureMcp(): Promise<void> {
     const folder = vscode.workspace.workspaceFolders?.[0]
@@ -31,7 +33,7 @@ export async function configureMcp(): Promise<void> {
 
     ;(config.mcpServers as Record<string, unknown>).engram = {
         command: 'engram-alpha',
-        args: ['mcp', '--db', '.engram/graph.db'],
+        args: ['mcp'],
     }
 
     const body = JSON.stringify(config, null, 2) + '\n'

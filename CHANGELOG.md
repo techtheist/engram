@@ -47,6 +47,23 @@ body of its GitHub Release (draft-release.yml lifts it automatically).
   Docs corrected where they implied the delete mint links its victim (it
   cannot — the victim is gone; the identity lives in the body).
 
+### Demo, screenshots, marketplace
+
+- **The demo caught up.** Its delete mints a Tombstone the way the daemon
+  does (reason, kept text, `about` edges rehomed), the seed gains a second
+  Tombstone — a scroll-mode prototype the assistant buried — that the
+  canned claim check files under *retracted*, and the System panel reports
+  0.9.2.
+- **Screenshots regenerated** from the demo, plus a new one of the delete
+  confirm with its Tombstone options (17 automated shots now).
+- **VS Code README rewritten for the Marketplace listing**: what Engram is
+  and why a graph, what the extension adds, a four-step setup including
+  Windows, and the MCP snippet corrected — the extension's *Configure MCP*
+  command wrote `--db .engram/graph.db`, a path that has not existed since
+  the TepinDB cutover; it now writes the same db-less `["mcp"]` entry
+  `engram-alpha setup` does, and the bridge binds the project's
+  `graph.tepin` itself.
+
 ## v0.9.1
 
 ### The pane stops looking foreign

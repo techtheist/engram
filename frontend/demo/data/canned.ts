@@ -119,6 +119,21 @@ export function claimReport(claim: string): ClaimReport {
                 contradiction: 0.85,
             },
         ],
+        // Sorted out by role before the model runs: a Tombstone says the
+        // scroll view was deliberately removed. The retrieval score rides
+        // in `entailment`; the NLI columns are zero because none ran.
+        retracted: [
+            {
+                id: synthId('t-scroll-mode'),
+                type: 'Tombstone',
+                title: 'Removed: the continuous-scroll reading mode prototype',
+                trust: 0.6,
+                stale: false,
+                entailment: 0.74,
+                neutral: 0,
+                contradiction: 0,
+            },
+        ],
         silent: [
             {
                 id: synthId('c-webview'),

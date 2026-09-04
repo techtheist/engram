@@ -538,10 +538,48 @@ export function patchNode(id: string, patch: Record<string, unknown>, project = 
     return put(next, project)
 }
 
-export function deleteNode(id: string, project = active): void {
+/**
+ * Hard delete, mirroring the daemon's `DELETE /nodes/{id}`: with
+ * `tombstone` the ontology's tombstone-role type mints a marker first —
+ * the victim's identity and the reason, plus (by default) the removed
+ * text, tags and code refs so a rewrite of the buried content lands on it
+ * (0.9.2) — and the victim's `about` edges move onto it. Then the cascade.
+ */
+export function deleteNode(
+    id: string,
+    opts?: { tombstone?: boolean; reason?: string; keepText?: boolean },
+    project = active,
+): void {
     const p = state(project)
     const prev = p.nodes.get(id)
     if (!prev) return
+    const tsType = p.config.ontology.types.find((t) => t.roles.tombstone)
+    if (opts?.tombstone && tsType) {
+        const keep = opts.keepText !== false
+        let body = `Deleted ${prev.type} "${prev.title}" (id ${prev.id}).`
+        if (opts.reason?.trim()) body += `\n\n**Why:** ${opts.reason.trim()}`
+        if (keep && prev.body?.trim()) body += `\n\n**Removed text:** ${prev.body.trim()}`
+        const marker = createNode(
+            {
+                type: tsType.name,
+                title: `Removed: ${prev.title}`,
+                body,
+                durability: tsType.durability,
+                source: 'user',
+                tags: keep ? [...prev.tags] : [],
+                code_refs: keep ? [...prev.code_refs] : [],
+            },
+            project,
+        )
+        const anchors = new Set(p.config.ontology.types.filter((t) => t.roles.anchor).map((t) => t.name))
+        for (const e of p.edges.values()) {
+            if (e.from_id !== id || e.valid_until != null) continue
+            const target = p.nodes.get(e.to_id)
+            if (!target || !anchors.has(target.type)) continue
+            e.from_id = marker.id
+            emit('edge_updated', e, project)
+        }
+    }
     p.nodes.delete(id)
     for (const [eid, e] of [...p.edges]) {
         if (e.from_id === id || e.to_id === id) p.edges.delete(eid)

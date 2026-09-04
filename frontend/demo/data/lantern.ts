@@ -730,6 +730,23 @@ export const LANTERN_NODES: SeedNode[] = [
         tags: ['sync', 'tech-decision'],
         version: '0.5.0',
     },
+    // The other way a tombstone comes to exist: the assistant buried a
+    // prototype that turned out wrong, behind a `replaces` edge. A later
+    // note that re-derives continuous scrolling draws the `tombstoned`
+    // warning; the claim check files it under "retracted".
+    {
+        key: 't-scroll-mode',
+        type: 'Tombstone',
+        title: 'Removed: the continuous-scroll reading mode prototype',
+        body: 'Deleted Decision "Offer a continuous-scroll reading mode beside pagination" — two layout engines meant every highlight bug twice. Killed on purpose after the pagination decision held; do not re-derive a scroll view from the old branch.\n\n**Removed text:** A scrolling view for long-form reading, sharing the paginator\'s measurement pass but laying columns out vertically.',
+        durability: 'stable',
+        source: 'claude',
+        days: 40,
+        session: 'mcp-00b6tbeta40r',
+        tags: ['reader', 'ux'],
+        code_refs: ['src/reader/paginate.ts'],
+        version: '0.5.0',
+    },
 ]
 
 export const LANTERN_EDGES: SeedEdge[] = [
@@ -755,6 +772,7 @@ export const LANTERN_EDGES: SeedEdge[] = [
     { type: 'about', from: 'i-cold-start-is-index', to: 'a-index', source: 'claude', days: 26 },
     { type: 'about', from: 'i-anchoring-not-sync', to: 'a-anno', source: 'claude', days: 26 },
     { type: 'about', from: 'd-paginate', to: 'a-reader', source: 'claude', days: 170 },
+    { type: 'about', from: 't-scroll-mode', to: 'a-reader', source: 'claude', days: 40 },
     { type: 'about', from: 'd-anno-crdt-cards', to: 'a-anno', source: 'claude', days: 26 },
     { type: 'about', from: 'd-pdf-text', to: 'a-index', source: 'claude', days: 26 },
 
