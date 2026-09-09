@@ -1,3 +1,27 @@
+/*
+ * Width breakpoints in use (all `@media (width <= N)`; N in px). A media
+ * query adds no specificity, so each component keeps its narrow-pane block
+ * at the END of its sheet. Values that differ by a few px are deliberate:
+ * each one is where that specific surface stopped fitting.
+ *
+ *   1020 App          burger + dropdown take over the actions cluster
+ *    860 HealthStrip  wraps, drops the trust meter
+ *    719 HistoryView  one column at a time (mirrored in NodeDetail's matchMedia)
+ *    700 FeedView, demo chrome  bars span the pane, demo badge rides the action bar
+ *    608 HealthStrip  folds to a column
+ *    600 App          search pill goes
+ *    470 App          brand chip + live badge go
+ *    450 App          tighter bar
+ *    360 App          brand goes — the view switch, burger and gear ARE the bar
+ *    350 HealthStrip  strip goes
+ *    300 App          view-switch segments tighten
+ *    260 GraphCanvas  minimap goes
+ *    250 App, SidePanel, FeedView, HistoryView  bar wraps to two rows; screens start lower
+ *
+ * z-index: canvas chrome 0–1 · floating bars 8–9 · popovers 10 · drawers 11
+ * · top bar 12 · menus 20 · dialogs 25–30 · settings modal 100 · SelectMenu
+ * listbox 1000 (teleported to body).
+ */
 @import "tailwindcss";
 @import "./tokens.css";
 @import "./themes.css";

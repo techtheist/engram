@@ -121,9 +121,9 @@ function onEnum(raw: string): void {
     flex: 1;
     min-width: 0;
     padding: 0.35rem 0.55rem;
-    border: 1px solid var(--border);
+    border: 1px solid var(--border-default);
     border-radius: var(--radius-md);
-    background: var(--bg-primary);
+    background: var(--surface-sunken);
     color: var(--text-primary);
     font-size: var(--text-caption);
 }

@@ -93,6 +93,36 @@ function startResize(down: PointerEvent): void {
     grip.addEventListener('pointerup', stop)
     grip.addEventListener('pointercancel', stop)
 }
+
+/**
+ * Touch: a horizontal swipe on the header toward the drawer's own edge
+ * closes it (left drawer ← / right drawer →). Mouse and pen are ignored —
+ * they have the × and the grip. No pointer capture, so a plain tap still
+ * reaches the header's buttons.
+ */
+function startSwipe(down: PointerEvent): void {
+    if (down.pointerType !== 'touch') return
+    const head = down.currentTarget as HTMLElement
+    const x0 = down.clientX
+    const y0 = down.clientY
+    const stop = () => {
+        head.removeEventListener('pointermove', onMove)
+        head.removeEventListener('pointerup', stop)
+        head.removeEventListener('pointercancel', stop)
+    }
+    const onMove = (e: PointerEvent) => {
+        const dx = e.clientX - x0
+        const dy = e.clientY - y0
+        const toward = props.side === 'left' ? -dx : dx
+        if (toward > 56 && Math.abs(dy) < 40) {
+            stop()
+            props.dismiss()
+        }
+    }
+    head.addEventListener('pointermove', onMove)
+    head.addEventListener('pointerup', stop)
+    head.addEventListener('pointercancel', stop)
+}
 </script>
 
 <template>
@@ -103,7 +133,7 @@ function startResize(down: PointerEvent): void {
         :class="[side, { 'has-accent': accent }]"
         :style="{ '--panel-width': width, '--panel-min': `${minRem}rem`, '--panel-accent': accent }"
     >
-        <div v-if="title || $slots.header" class="panel-head">
+        <div v-if="title || $slots.header" class="panel-head" @pointerdown="startSwipe">
             <header v-if="title" class="head">
                 <h2 class="heading">{{ title }}</h2>
                 <div class="head-actions">
@@ -144,6 +174,13 @@ function startResize(down: PointerEvent): void {
     min-width: min(var(--panel-min), 100vw);
     max-width: 100vw;
     box-shadow: var(--shadow-lg);
+}
+
+/* The top bar wraps onto two rows at this width (App.vue) — start below it. */
+@media (width <= 250px) {
+    .side-panel {
+        top: 9.8rem;
+    }
 }
 
 .side-panel.right {
@@ -196,6 +233,8 @@ function startResize(down: PointerEvent): void {
     flex: none;
     padding: 1.8rem 1.8rem 1.2rem;
     border-bottom: 1px solid var(--border-subtle);
+    /* Horizontal touch pans are the swipe-to-close gesture, not a scroll. */
+    touch-action: pan-y;
 }
 
 .scroll {

@@ -68,7 +68,10 @@ export const useGraphStore = defineStore('graph', () => {
        selection (it syncs both ways with the canvas) while the drawer stays
        shut — Edit is what opens it there. */
     const detailOpen = ref(false)
-    const loading = ref(false)
+    // Starts true: the first paint happens before App.vue's mount hook gets
+    // to load(), and a false here would flash the "No memory yet" overlay
+    // over a graph that is merely still on its way.
+    const loading = ref(true)
     const error = ref<string | null>(null)
     const connected = ref(false)
 

@@ -9,7 +9,12 @@ import { computed, ref, watch } from 'vue'
  */
 const props = withDefaults(
     defineProps<{
-        modelValue: number
+        /**
+         * Optional on purpose: a pane newer than its daemon (the VS Code build
+         * bundles the pane) can bind a policy knob the core never sent. That
+         * renders as the floor instead of crashing the whole drawer.
+         */
+        modelValue?: number
         min?: number
         max?: number
         step?: number
@@ -17,8 +22,11 @@ const props = withDefaults(
         decimals?: number
         ariaLabel?: string
     }>(),
-    { min: 0, max: Number.MAX_SAFE_INTEGER, step: 1, decimals: undefined, ariaLabel: undefined },
+    { modelValue: undefined, min: 0, max: Number.MAX_SAFE_INTEGER, step: 1, decimals: undefined, ariaLabel: undefined },
 )
+
+/** The bound number, or the floor when nothing (or NaN) is bound. */
+const current = computed(() => (Number.isFinite(props.modelValue) ? (props.modelValue as number) : props.min))
 
 const emit = defineEmits<{ (e: 'update:modelValue', v: number): void }>()
 
@@ -26,15 +34,12 @@ const digits = computed(() => props.decimals ?? (props.step < 1 ? 2 : 0))
 
 const fmt = (v: number): string => v.toFixed(digits.value)
 
-const text = ref(fmt(props.modelValue))
-watch(
-    () => props.modelValue,
-    (v) => (text.value = fmt(v)),
-)
+const text = ref(fmt(current.value))
+watch(current, (v) => (text.value = fmt(v)))
 
 function commit(raw: number): void {
     if (Number.isNaN(raw)) {
-        text.value = fmt(props.modelValue)
+        text.value = fmt(current.value)
         return
     }
     const clamped = Math.min(props.max, Math.max(props.min, raw))
@@ -43,7 +48,7 @@ function commit(raw: number): void {
     text.value = fmt(rounded)
 }
 
-const nudge = (dir: 1 | -1) => commit(props.modelValue + dir * props.step)
+const nudge = (dir: 1 | -1) => commit(current.value + dir * props.step)
 </script>
 
 <template>
@@ -52,7 +57,7 @@ const nudge = (dir: 1 | -1) => commit(props.modelValue + dir * props.step)
         class="nudge"
         type="button"
         :aria-label="`decrease ${ariaLabel ?? 'value'}`"
-        :disabled="modelValue <= min"
+        :disabled="current <= min"
         @click="nudge(-1)"
     >
         −
@@ -73,7 +78,7 @@ const nudge = (dir: 1 | -1) => commit(props.modelValue + dir * props.step)
         class="nudge"
         type="button"
         :aria-label="`increase ${ariaLabel ?? 'value'}`"
-        :disabled="modelValue >= max"
+        :disabled="current >= max"
         @click="nudge(1)"
     >
         +

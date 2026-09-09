@@ -282,6 +282,7 @@
         "knee_cliff": 0.25,
         "weak_line_quantile": 0.9,
         "weak_line_probes": 24,
+        "session_diversity_demote": 2,
         "rerank_full_note": false
     },
     "brief": {

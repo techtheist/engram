@@ -1209,9 +1209,9 @@ function close(): void {
 .tombstone-reason {
     width: 100%;
     padding: 0.4rem 0.6rem;
-    border: 1px solid var(--border);
+    border: 1px solid var(--border-default);
     border-radius: var(--radius-md);
-    background: var(--bg-primary);
+    background: var(--surface-sunken);
     color: var(--text-primary);
     font-size: var(--text-caption);
 }

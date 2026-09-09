@@ -82,7 +82,7 @@ const trustTone = computed(() =>
     align-items: center;
     gap: 0.9rem;
     padding: 0.5rem 1.1rem;
-    border-radius: var(--radius-full);
+    border-radius: var(--radius-lg);
     font-size: var(--text-caption);
 }
 
@@ -101,7 +101,6 @@ const trustTone = computed(() =>
         align-items: flex-start;
         gap: 0.4rem;
         padding: 0.8rem 1.2rem;
-        border-radius: var(--radius-lg);
     }
 }
 
@@ -171,13 +170,14 @@ const trustTone = computed(() =>
    goes: it is the one stat that needs width to say anything, and its number
    is in the tooltip. Last in the sheet so it outranks the 608px fold, which
    a media query's zero specificity would otherwise let win. */
-@media (width <= 700px) {
+@media (width <= 860px) {
     .health {
-        right: 13.0rem;
+        right: 13rem;
         flex-flow: row wrap;
         align-items: center;
         gap: 0.3rem 0.9rem;
         padding: 0.5rem 0.9rem;
+        max-width: max-content;
     }
 
     .meter-stat {

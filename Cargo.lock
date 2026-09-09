@@ -895,7 +895,7 @@ dependencies = [
 
 [[package]]
 name = "engram"
-version = "0.9.2"
+version = "0.9.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -914,7 +914,7 @@ dependencies = [
 
 [[package]]
 name = "engram-core"
-version = "0.9.2"
+version = "0.9.3"
 dependencies = [
  "base64 0.22.1",
  "chacha20poly1305",
@@ -940,7 +940,7 @@ dependencies = [
 
 [[package]]
 name = "engram-eval"
-version = "0.9.2"
+version = "0.9.3"
 dependencies = [
  "anyhow",
  "engram-core",
@@ -952,7 +952,7 @@ dependencies = [
 
 [[package]]
 name = "engram-http"
-version = "0.9.2"
+version = "0.9.3"
 dependencies = [
  "axum",
  "engram-core",
@@ -969,7 +969,7 @@ dependencies = [
 
 [[package]]
 name = "engram-mcp"
-version = "0.9.2"
+version = "0.9.3"
 dependencies = [
  "anyhow",
  "axum",

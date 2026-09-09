@@ -40,8 +40,12 @@ by the next.
    This installs the `engram-alpha` binary (checksum-verified, into `~/.local/bin`)
    and nothing else; `engram-alpha setup` from the project root wires the repo
    (`.mcp.json` + the capture skill for Claude Code; auto-detects the rest). On
-   Windows, run the same command inside WSL2 — it installs the native
-   `engram-alpha.exe`. Then start the daemon:
+   Windows, use PowerShell instead:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/techtheist/engram/main/install.ps1 | iex"
+   ```
+   (Assistants living in WSL2 should run the `install.sh` line inside WSL
+   instead, so the core and the agents share one filesystem.) Then start the daemon:
    ```sh
    engram-alpha serve
    ```

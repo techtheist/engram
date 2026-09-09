@@ -61,7 +61,7 @@ function reset(): void {
 .demo-chrome {
     position: absolute;
     right: 1.6rem;
-    /* Clear of the canvas minimap, which owns the bottom-right corner. */
+    /* Graph screen: clear of the canvas minimap, which owns the corner. */
     bottom: 10rem;
     z-index: 9;
     display: flex;
@@ -69,6 +69,22 @@ function reset(): void {
     align-items: flex-end;
     gap: 0.8rem;
     font-family: var(--font-sans);
+}
+
+/* The feed and history screens have no minimap — sit in the corner. */
+.app:has(> .feed-screen) .demo-chrome,
+.app:has(> .history) .demo-chrome {
+    bottom: 2rem;
+}
+
+/* Narrow feed: the action bar spans the pane, so ride 0.8rem above it
+   (CSS anchor positioning — a browser without it, or a feed with no card
+   selected, falls back to the corner). */
+@media (width <= 700px) {
+    .app:has(> .feed-screen) .demo-chrome {
+        position-anchor: --feed-action-bar;
+        bottom: calc(anchor(top, 1.2rem) + 0.8rem);
+    }
 }
 
 .badge {
@@ -163,12 +179,5 @@ function reset(): void {
 
 .link:hover {
     color: var(--text-primary);
-}
-
-/* Narrow panes stack the health strip under the minimap — move further up. */
-@media (width <= 700px) {
-    .demo-chrome {
-        bottom: 12rem;
-    }
 }
 </style>

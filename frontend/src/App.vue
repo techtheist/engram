@@ -56,11 +56,12 @@ onClickOutside(actionsRoot, () => (menuOpen.value = false))
 // The feed acts on the card at the center, not through a drawer: arriving
 // there with the detail pane still open covers the feed with the node you
 // just left. The selection survives (the feed centers on it) — Edit reopens
-// the drawer when the full form is actually wanted.
+// the drawer when the full form is actually wanted. History likewise: the
+// feed's centered card must not arrive there as a drawer over the lanes.
 watch(
     () => layout.view,
     (view) => {
-        if (view === 'feed') store.closeDetail()
+        if (view !== 'graph') store.closeDetail()
     },
 )
 
@@ -197,15 +198,7 @@ onBeforeUnmount(() => store.disconnect())
     top: 1.6rem;
     left: 1.6rem;
     right: 1.6rem;
-    /* Above the side drawers (z 11): the bar itself never overlaps them
-       (drawers start below it), but its dropdowns — settings, filters,
-       search results, the burger cluster — must stack over open drawers.
-       This is the whole subtree's stacking context, so the inner z-20s
-       can't win on their own. */
     z-index: 12;
-    /* Equal 1fr side tracks keep the search screen-centered regardless of how
-       the brand and actions differ in width; when space runs out the sides
-       floor at their content and the search track shrinks instead. */
     display: grid;
     grid-template-columns: minmax(max-content, 1fr) minmax(0, 36rem) minmax(max-content, 1fr);
     align-items: center;
@@ -268,7 +261,7 @@ onBeforeUnmount(() => store.disconnect())
     height: 1.6rem;
 }
 
-@media (width <= 850px) {
+@media (width <= 1020px) {
     .burger {
         display: flex;
     }
@@ -329,20 +322,24 @@ onBeforeUnmount(() => store.disconnect())
     }
 }
 
-/* Bare minimum chrome: the connection badge and the actions burger.
-   (.brand-qualified so this outranks the base .brand-chip rule, which
-   sits later in the file.) */
-@media (width <= 500px) {
+@media (width <= 470px) {
     .brand .brand-chip,
+    .brand .live {
+        display: none;
+    }
+}
+
+@media (width <= 345px) {
     .brand .switcher-root {
         display: none;
     }
+}
 
-    /* Everything shrinks so the settings gear never falls off the edge —
-       it is the only path to Settings. */
+@media (width <= 450px) {
     .topbar {
         left: 0.8rem;
         right: 0.8rem;
+        gap: 0;
     }
 
     .topbar-actions {
@@ -358,6 +355,29 @@ onBeforeUnmount(() => store.disconnect())
 @media (width <= 360px) {
     .brand {
         display: none;
+    }
+}
+
+@media (width <= 300px) {
+    .topbar-actions :deep(.segment) {
+        padding: 0.35rem 0.55rem;
+    }
+}
+
+/* Sliver panes (≤ 250px): the view switch alone outgrows the bar, so it
+   drops onto a second row under the burger and the gear — both stay pinned
+   to the edge, and the gear stays the reachable path to Settings.
+   (SidePanel lowers its top for the same width.) */
+@media (width <= 250px) {
+    .topbar-actions {
+        flex-wrap: wrap;
+        justify-content: flex-end;
+    }
+
+    .view-toggle {
+        order: 1;
+        flex-basis: 100%;
+        justify-content: space-evenly;;
     }
 }
 

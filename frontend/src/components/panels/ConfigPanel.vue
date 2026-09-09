@@ -1117,7 +1117,7 @@ const kneeCliff = computed({
 }
 
 .state.error {
-    color: #ef4444;
+    color: var(--node-problem);
 }
 
 .state.ok {
@@ -1328,7 +1328,7 @@ const kneeCliff = computed({
 }
 
 .mini.danger:hover:not(:disabled) {
-    color: #ef4444;
+    color: var(--node-problem);
 }
 
 .mini.add {
@@ -1375,7 +1375,7 @@ const kneeCliff = computed({
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgb(0 0 0 / 45%);
+    background: var(--surface-overlay);
 }
 
 .modal {
@@ -1400,7 +1400,7 @@ const kneeCliff = computed({
 
 .builtin-ref {
     margin: 0.4rem 0 0.8rem;
-    border: 1px solid var(--border);
+    border: 1px solid var(--border-default);
     border-radius: var(--radius-md);
     padding: 0.4rem 0.7rem;
 }

@@ -644,18 +644,10 @@ const currentNode = computed(() =>
     gap: 1rem;
     max-width: calc(100vw - 3.2rem);
     padding: 0.6rem 1rem;
-    border-radius: var(--radius-full);
+    border-radius: var(--radius-lg);
     box-shadow: var(--shadow-md);
     transform: translateX(-50%);
     flex-wrap: nowrap;
-}
-
-@media (width <= 560px) {
-    .feed-toolbar {
-        flex-wrap: wrap;
-        justify-content: center;
-        border-radius: var(--radius-lg);
-    }
 }
 
 .back {
@@ -870,18 +862,6 @@ const currentNode = computed(() =>
     background: color-mix(in srgb, var(--node-caution) 14%, transparent);
 }
 
-/* Verbatim the Review drawer's badge — square-ish corners included, so the
-   two surfaces say "stale" in exactly one shape. */
-.stale-badge {
-    padding: 0.1rem 0.6rem;
-    border: 1px solid color-mix(in srgb, var(--node-problem) 40%, transparent);
-    border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--node-problem) 14%, transparent);
-    font-size: var(--text-caption);
-    font-weight: 600;
-    color: var(--node-problem);
-}
-
 .spacer {
     flex: 1;
 }
@@ -1041,6 +1021,8 @@ const currentNode = computed(() =>
 /* Bottom action bar — the drawer's controls for the centered card. */
 .action-bar {
     position: absolute;
+    /* Host chrome (the demo badge) anchors above this bar on narrow panes. */
+    anchor-name: --feed-action-bar;
     bottom: 1.6rem;
     left: 50%;
     z-index: 9;
@@ -1108,25 +1090,9 @@ const currentNode = computed(() =>
     color: var(--node-problem, #ef4444);
 }
 
-/* ---------------------------------------------------------------------------
-   Thin panes (IDE side panels, up to ~700px). Every override for that width
-   lives here, at the END of the sheet, and deliberately so: a media query
-   carries no extra specificity, so a block sitting next to the rule it
-   refines silently loses to any same-specificity rule declared below it.
-   (That is what kept `.bar-title` at its 22rem cap and the jump buttons at
-   2.6rem while the media block looked correct.)
-
-   Two shapes recur. The floating bars stop being centered pills and span the
-   pane: an absolutely positioned wrapping box shrinks to fit the gap between
-   `left: 50%` and the right edge, so a centered pill only ever gets HALF the
-   width to lay out in — which folded the toolbar into three rows while it
-   looked half empty. And anything that is context rather than content (the
-   note count, the action bar's title) yields its space to the controls.
-   --------------------------------------------------------------------------- */
 @media (width <= 700px) {
     .feed {
         gap: 1.2rem;
-        /* 30vh of nothing reads as a broken screen on a sliver of a viewport. */
         padding: 24vh 0.8rem;
         scroll-padding-block: 20vh;
     }
@@ -1153,13 +1119,13 @@ const currentNode = computed(() =>
         max-width: none;
         padding: 0.4rem 0.6rem;
         transform: none;
+        flex-wrap: wrap;
     }
 
     .feed-toolbar :deep(.segment) {
         padding: 0.35rem 0.8rem;
     }
 
-    /* The one control in the bar that answers a question nobody asks mid-scroll. */
     .feed-count {
         display: none;
     }
@@ -1182,9 +1148,6 @@ const currentNode = computed(() =>
         transform: none;
     }
 
-    /* Basis = the row minus the dot, and no shrinking: that is what makes the
-       title take row one alone and truncate there, instead of letting one
-       lucky button squeeze in beside it and push the rest into a third row. */
     .bar-title {
         flex: 1 0 calc(100% - 1.4rem);
         max-width: none;
@@ -1195,6 +1158,13 @@ const currentNode = computed(() =>
         flex: 1 1 auto;
         padding: 0.4rem 0.6rem;
         text-align: center;
+    }
+}
+
+/* Sliver panes: the top bar wraps onto two rows (App.vue) — start below it. */
+@media (width <= 250px) {
+    .feed-toolbar {
+        top: 10rem;
     }
 }
 </style>

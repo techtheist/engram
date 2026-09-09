@@ -218,7 +218,7 @@ async function remove(s: HistorySession): Promise<void> {
 <style scoped>
 .history {
     position: absolute;
-    inset: var(--topbar-height, 56px) 0 0;
+    inset: 5.6rem 0 0; /* just under the floating top bar */
     display: grid;
     grid-template-columns: 300px 1fr;
     gap: 12px;
@@ -291,6 +291,7 @@ async function remove(s: HistorySession): Promise<void> {
 
 .lane-meta {
     display: flex;
+    flex-wrap: wrap; /* sliver panes: the date line wraps, the chip stays whole */
     gap: 6px;
     align-items: center;
     font-size: var(--text-caption, 11px);
@@ -300,6 +301,7 @@ async function remove(s: HistorySession): Promise<void> {
 .chip {
     padding: 1px 6px;
     border-radius: 999px;
+    white-space: nowrap;
     background: rgb(56 189 248 / 15%);
     font-size: var(--text-caption, 11px);
     color: var(--text-secondary);
@@ -397,7 +399,7 @@ async function remove(s: HistorySession): Promise<void> {
 }
 
 .turn.focus .bubble {
-    outline: 2px solid var(--interactive-primary, #38bdf8);
+    outline: 2px solid var(--interactive-primary);
 }
 
 .who {
@@ -427,7 +429,7 @@ async function remove(s: HistorySession): Promise<void> {
 }
 
 .empty.error {
-    color: #ef4444;
+    color: var(--node-problem);
 }
 
 .empty.pick {
@@ -447,7 +449,7 @@ async function remove(s: HistorySession): Promise<void> {
 
 .mini.danger {
     border-color: rgb(239 68 68 / 45%);
-    color: #ef4444;
+    color: var(--node-problem);
 }
 
 /* Recording off: the opt-in hero (what turning it on does) and the slim
@@ -467,7 +469,7 @@ async function remove(s: HistorySession): Promise<void> {
 
 .off-title {
     margin: 0;
-    font-size: var(--text-heading, 18px);
+    font-size: 1.8rem;
     font-weight: 600;
 }
 
@@ -488,8 +490,8 @@ async function remove(s: HistorySession): Promise<void> {
 }
 
 .mini.accent {
-    border-color: var(--interactive-primary, #38bdf8);
-    color: var(--interactive-primary, #38bdf8);
+    border-color: var(--interactive-primary);
+    color: var(--interactive-primary);
 }
 
 .off-banner {
@@ -543,6 +545,13 @@ async function remove(s: HistorySession): Promise<void> {
     .off-hero {
         margin-top: 6vh;
         padding: 18px 16px;
+    }
+}
+
+/* Sliver panes: the top bar wraps onto two rows (App.vue) — start below it. */
+@media (width <= 250px) {
+    .history {
+        inset: 9.4rem 0 0;
     }
 }
 </style>

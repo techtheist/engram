@@ -3,6 +3,49 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
+## v0.9.3
+
+### The pane fits any width
+
+- **Six widths on one page.** The pane was re-checked at 157, 214, 318, 542,
+  613 and 794 px — smartphones, and IDE side panels dragged thin. Under
+  250 px the view switch alone outgrew the top bar and pushed the burger
+  *and the gear* — the only path to Settings — off the edge; the bar now
+  wraps (icons on row one, switch on row two) and every screen starts below
+  it. Segments tighten under 300 px, the minimap yields to the zoom controls
+  under 260 px, history's harness chips stop breaking mid-word, and the
+  health strip wraps to two rows instead of running under the minimap.
+- **Swipe to close.** On touch screens a horizontal swipe on a drawer's
+  header toward its own edge dismisses it (left drawer ←, right drawer →).
+  Mouse and pen are ignored on purpose; taps still reach the header's
+  buttons.
+- **Graph settings no longer crashes the pane** when a policy knob is
+  missing from the config the core sent (the demo shipped without
+  `session_diversity_demote`; a pane newer than its core is the same
+  pairing). The number input renders the floor instead of throwing, and the
+  half-rendered drawer that could not be closed is gone with it.
+- **Two boot and navigation glitches.** "No memory yet" flashed over a
+  graph that was merely still loading; and switching Feed → History carried
+  the feed's centered card along as a detail drawer over the session lanes.
+- **Undefined tokens fixed.** Three inputs (tombstone reason, custom-field
+  control, built-in-fields reference) referenced `--border` and
+  `--bg-primary`, which no theme defines, and rendered borderless and
+  transparent. Hard-coded reds and an overlay literal now read theme tokens;
+  dead fallbacks and two unreachable rules were removed. The breakpoint
+  table and the z-index inventory now live at the top of `app.css`.
+- **Demo badge per screen, CSS only.** Graph keeps it clear of the minimap;
+  feed and history sit it in the corner; a narrow feed rides it just above
+  the action bar with CSS anchor positioning, falling back to the corner
+  where anchors are unsupported or no card is centered.
+
+### Docs
+
+- **README rewritten lighter**: the "why a graph" section is shared verbatim
+  with the VS Code listing, *Measured, not promised* moves below the feature
+  tour and shrinks to six bullets, and *Stack* names the three stacks — the
+  Rust core on TepinDB, the Vue pane, the IDE hosts. The JetBrains README's
+  Windows line now shows the PowerShell installer.
+
 ## v0.9.2
 
 ### Tombstones guard the write path

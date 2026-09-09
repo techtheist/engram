@@ -394,6 +394,22 @@ function persist(): void {
     }
 }
 
+/**
+ * A dump written by an older demo build may predate a policy/brief knob the
+ * pane now binds; the shipped config fills the gap so Settings never renders
+ * an undefined number.
+ */
+function backfillConfig(cfg: GraphConfig): GraphConfig {
+    const base = rawConfig as unknown as GraphConfig
+    return {
+        ...base,
+        ...cfg,
+        policy: { ...base.policy, ...cfg.policy },
+        brief: { ...base.brief, ...cfg.brief },
+        history: { ...base.history, ...cfg.history },
+    }
+}
+
 export function restore(): void {
     try {
         const raw = sessionStorage.getItem(STORAGE_KEY)
@@ -408,7 +424,7 @@ export function restore(): void {
                 journal: p.journal as AuditEntry[],
                 seq: p.seq as number,
                 version: (p.version ?? null) as string | null,
-                config: p.config as GraphConfig,
+                config: backfillConfig(p.config as GraphConfig),
             })
         }
         if (next.has(LAUNCH)) world = next
