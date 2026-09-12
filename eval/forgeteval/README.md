@@ -233,10 +233,9 @@ still a *configuration a caller has to choose to apply*; a role-blind
 
 ## Results
 
-Measured 2026-09-12 against a locally running engram machine core
-(`GET /health` → `{"status":"ok","version":"0.9.0", ...}` — the version
-string reads 0.9.0 because the tag stamp only happens in CI; the running
-binary is built from current source), lethe clone at commit
+Measured 2026-09-12 against a locally running engram machine core built
+from the 0.9.4 source (the abstention runs later that day ran on the
+redeployed core reporting `version: 0.9.4`), lethe clone at commit
 `b6053b7bdacc78a91b9ea4bb25f32edad278c495`, seed=42, distractors=4.
 Receipts: `eval/results/2026-09-12-forgeteval-template.json` /
 `...-adversarial.json` (raw per-case outcomes) with matching `.log` files.

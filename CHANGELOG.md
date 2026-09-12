@@ -5,58 +5,37 @@ body of its GitHub Release (draft-release.yml lifts it automatically).
 
 ## v0.9.4
 
-### Search hits name their role, and two external benches
+### Hits name their role, code refs are yours, and the bench grew three ways
 
-- **Search hits carry the tombstone role.** Every hit that plays the graph's
-  tombstone role now says so with a `tombstone: true` field, on REST as well
-  as MCP (MCP already summarized the count in `tombstone_note`). A reader
-  can tell "Removed: X" from a memory of X without knowing which type name
-  plays the role in a custom ontology — found by the ForgetEval adapter,
-  whose role-blind reader took the marker for the fact. Absent when false,
-  so plain hits are byte-identical to before.
-- **A zero knee cliff is refused.** `policy.knee_cliff` is an option: null
-  turns the knee trim off, but 0 was accepted and meant the opposite —
-  every relative drop clears a zero cliff, so every result was cut at its
-  largest score drop. The config now refuses 0 and names the real off
-  switch. Also found by the ForgetEval adapter, which zeroed it to disable
-  it and lost the surviving peer on every amnesia query.
-- **ForgetEval, run and reported per family** (`eval/forgeteval/`, receipts
-  `eval/results/2026-09-12-forgeteval-*`): an adapter over the local HTTP
-  API for the judge-free forgetting benchmark (arXiv:2606.15903). Reported
-  as five separate families — supersession, purge, drift, amnesia, decay —
-  never as one score, because the benchmark's "decay" and "amnesia" are
-  explicit releases of facts, which in engram is the user's tombstoned
-  delete, and the marker is *meant* to stay findable. Both readers are
-  measured: role-blind (the marker counts as a leak) and role-aware (the
-  `types` filter, now the `tombstone` flag). See `eval/README.md`.
-- **The rake test** (`eval/rake/`): a persist–clear–act protocol on an
-  invented Python fixture with planted decisions, cautions, a tombstone and
-  a superseded pair; three arms (no memory, a curated CLAUDE.md, engram)
-  run headless with Sonnet under a fixed turn and dollar budget, graded by
-  executable oracles on the diff — adherence and rake-avoidance, not
-  recall. Phase 1 receipt `eval/results/2026-09-12-rake-smoke.json`.
-- **Code refs are editable in the pane.** The node drawer's edit mode and
-  the create panel gained a "Code refs" field, one ref per line; saving an
-  empty field clears the list. Checkup lists notes with drifted refs and
-  opens them, so a moved file is fixed by hand in two clicks.
-- **The ladder learns history and collisions** (`eval/`, both opt-in, both
-  byte-identical when off): `--history` puts every note in a 5–10-note
-  session with a turn index and adds `reach@5` / `reach` / `hist-only` /
-  `hist-dist` — an answer reachable through a delivered session-mate, at
-  `2·|a−b|+1` dialogue turns; `--collision R` mints an untested collider on
-  the same subject for a fraction of answers. Measured: the walk is worth
-  +0.07 at depth five for rag and engram alike at 1,500 notes, a tie at a
-  ninth of the tokens.
-- **ForgetEval learns to say no** (`eval/forgeteval/`): three never-inscribed
-  control probes per case, a `grep` baseline, an `engram-mcp` reader that
-  takes the verdict over the MCP transport, and fp / hedge / separation
-  beside the unchanged family scores. engram answers none of 3,000 controls
-  where the reference answers all, but hedges on nearly every real query on
-  six-note graphs — the phantom-fitted weak line has nothing to fit there;
-  its scores still separate real from never-inscribed at 0.80–0.90.
-- **Receipts carry their run date.** Every file in `eval/results/` is now
-  prefixed `YYYY-MM-DD-` (`scripts/date-results.sh`, idempotent, by file
-  mtime); doc pointers updated.
+- **Search hits carry the tombstone role.** A hit that plays the graph's
+  tombstone role now carries `tombstone: true`, on REST as well as MCP, so
+  "Removed: X" is never mistaken for a memory of X — whatever the type is
+  called in a custom ontology. Absent when false.
+- **A zero knee cliff is refused.** `policy.knee_cliff: 0` was accepted and
+  meant the harshest trim, not off. The config refuses it and names `null`
+  as the off switch.
+- **Code refs are editable in the pane.** One ref per line in the node
+  drawer and the create panel; an empty field clears them. Checkup lists
+  notes with drifted refs and opens them.
+- **ForgetEval, per family and with a "no".** The judge-free forgetting
+  benchmark (arXiv:2606.15903) runs against engram over HTTP and is
+  reported per family with two readers — the tombstone marker is meant to
+  stay findable, so decay and amnesia read 0% role-blind and 100% / 92%
+  role-aware, the rest at 99–100%. Three never-inscribed control probes per
+  case add what the benchmark lacks: engram declines all 3,000 where the
+  reference answers all, and its scores separate real from never-inscribed
+  at 0.80–0.90. `eval/forgeteval/README.md` has the honest reading.
+- **The ladder learns history and collisions.** `--history` puts every note
+  in a session with a turn index and scores an answer reachable through a
+  delivered session-mate (`reach@5`): worth +0.07 at depth five for rag and
+  engram alike at 1,500 notes, a tie at a ninth of the tokens.
+  `--collision R` mints same-subject colliders; at 0.5 both retrievers lose
+  about three points, false positives unchanged. Both flags are
+  byte-identical when off, and 0.9.4 reproduces 0.9.0 to the digit.
+- **The rake test** (`eval/rake/`): does an agent *act* on what memory
+  says? Three arms, three tasks, executable oracles on the diff; phase 2
+  separates the arms only when the knowledge is memory-only.
+- Every receipt in `eval/results/` now carries its run date.
 
 ## v0.9.3
 
