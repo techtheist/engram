@@ -1,7 +1,7 @@
 {
   "name": "engram",
   "displayName": "Engram Alpha",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "description": "Durable, local-first graph memory for AI coding assistants: decisions with reasons, gotchas, conflicts \u2014 inspectable and editable in a graph pane.",
   "author": {
     "name": "techtheist",

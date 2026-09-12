@@ -377,6 +377,13 @@ pub struct SearchHit {
     /// `None` for nodes with no recorded session (pane-created, imports).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// The hit plays the graph's tombstone role: a record that knowledge was
+    /// deliberately removed, not live canon (0.9.4). Stamped by the engine
+    /// from the ontology so a reader on any surface — REST included — can be
+    /// role-aware without knowing which type name plays the role; serialized
+    /// only when true.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tombstone: bool,
     /// 1-hop subgraph around the match, `conflicts-with`/`replaces` first
     /// (PLAN §6A retrieval), capped.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

@@ -923,6 +923,7 @@ impl Store for SqliteStore {
                 trust,
                 stale: crate::policy::is_stale(trust, &policy),
                 session_id: row.get(12)?,
+                tombstone: false,
                 neighbors: Vec::new(),
                 project: None,
             })

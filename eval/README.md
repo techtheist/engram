@@ -25,7 +25,7 @@ version. Column definitions and corpus design live in [Method](#method).
 
 The same corpus, every arm, at 1,500 notes with every fact questioned.
 Measured **2026-08-22 on the shipped 0.8.10 stack** (receipts
-`results/arms-0810-100-1500.json` and `results/posttune-0810-100-1500.json`),
+`results/2026-08-22-arms-0810-100-1500.json` and `results/2026-08-22-posttune-0810-100-1500.json`),
 on the enriched corpus (each slot-vocabulary pool 12 → 25 entries, a more
 diverse and less template-shaped crowd — numbers before and after the
 enrichment are different corpora and are never mixed in one table). The
@@ -163,7 +163,9 @@ story is a section below.
 | 0.8.7 — search learns time | one temporal grammar (`after`/`before`/`during_version`) over memory and history; `--window` prices the candidate-pool depth | the premise was backwards: a window **buys** recall — oblique 0.263 → 0.830 at 2100 notes, three seeds unanimous; `window_overfetch` 8 → 2; the bench now panics on retrieval errors instead of scoring them zero |
 | 0.8.10 — sessions mix | session-diverse delivery: a rank demotion at the cut so one session's restatements stop crowding out other sessions' evidence; `--sessions` bench, `--lme-turns` tuning loop | at demote 2: top-5 session coverage +0.10–0.12 and full cluster coverage 1.000 at **zero** single-gold cost, three seeds unanimous; inert and cost-free on the chat register — which points the next cycle at the floor |
 | 0.8.10 — the floor bake-off | both floor attacks priced on one sweep: the per-graph dial-three fit vs full-note reranker input, cross-checked on the chat register | **neither ships**: full-note input wins the note register uncut (+0.07 oblique at 1500) and collapses on chat (R@5 0.96 → 0.78, delivery 111 → 67 tok/query) — register-fragile, stays a knob; the dial-three q25 fit is recall-free at ≤500, −0.01 R@5 at 1500, and misfires under full-note input — the surviving candidate, pending a chat-register fit |
-| next | a LongMemEval floor sweep (chat-register raw score curves), then the dial-three auto-tune dial if the fit validates there; the LongMemEval online half | benched before shipped, as always |
+| 0.9.4 — ForgetEval, per family | the first judge-free *forgetting* benchmark run against engram (arXiv:2606.15903), through the HTTP API alone; reported as five families, never one score, and with two readers: role-blind and role-aware | role-aware: supersession 100%, purge 100%, drift 99%, decay 100%, amnesia 92% (reference system 98%); adversarial 240/385 vs the reference's 244 — same three hard categories for both; role-blind: every released fact stays findable through its own tombstone, **by design** — the finding that put a `tombstone` flag on every search hit and made the config refuse a zero knee cliff |
+| 0.9.4 — the rake test | persist–clear–act on an invented Python fixture: planted decisions, a caution, a tombstone and a superseded pair; three arms (no memory / curated CLAUDE.md / engram) run headless with Sonnet under a fixed budget; executable oracles grade the diff for adherence, not recall | phase 1 (9 runs, seed 1): the no-memory arm passed every oracle — the fixture's own code guided the agent, so the baits were too weak; the one failure was the curated file's rule, present verbatim and violated anyway; phase 2 sharpens the baits and runs three seeds (see below) |
+| next | a LongMemEval floor sweep (chat-register raw score curves), then the dial-three auto-tune dial if the fit validates there; the LongMemEval online half; rake phase 3 with stronger separation between the arms | benched before shipped, as always |
 
 ### The graveyard
 
@@ -622,7 +624,7 @@ session, no LLM judge anywhere, and the `_abs` questions are scored under the
 calibrated recommendation verdict — a warned answer is honest, an unwarned one
 is the false positive. `--lme-limit N` runs a smoke subset and says so loudly
 in the output; a capped run is not a result. The full-population run
-(2026-08-08, `results/longmemeval-s-full.json`): engram ties rag's R@1
+(2026-08-08, `results/2026-08-09-longmemeval-s-full.json`): engram ties rag's R@1
 (0.91) within 0.02 R@5 at **208 vs 2,654 tokens/query**, and the 30
 never-answerable questions produce **zero unwarned answers** — the
 calibrated line holds on real chat it was never tuned for.
@@ -772,7 +774,7 @@ recall-free on this bench's note register, and on graphs whose whole score
 scale sits lower (dense prose, chat) it behaves as the hard abstention gate
 the research cycle refuted three times. Two attacks on that root, benched on
 one sweep (`--floor --distractors 0`, receipts
-`results/floor-dial3-{snippet,rerankfull}.json`):
+`results/2026-08-22-floor-dial3-snippet.json`, `results/2026-08-23-floor-dial3-rerankfull.json`):
 
 **Attack one — dial three**: fit the floor per graph as a quantile of every
 score the phantom (control) questions reach — the noise body, not its
@@ -798,7 +800,7 @@ column). And on the register the floor problem actually lives on — chat —
 full-note input **collapses**: the same 100-question `--lme-turns 50` loop
 goes R@5 0.96 → **0.78**, multi-session questions 0.93 → 0.50, delivery
 over-trimmed from 111 to 67 tok/query
-(`results/longmemeval-s-turns50-rerankfull.json`; `--rerank-full` reaches
+(`results/2026-08-23-longmemeval-s-turns50-rerankfull.json`; `--rerank-full` reaches
 the LongMemEval arm since this bench). A chat turn is long and rambling, the
 whole body dilutes the evidence sentence, the deflated scores fall to the
 fixed floor. Helps compact single-claim notes, hurts everything else — the
@@ -812,6 +814,113 @@ say the auto-tune dial isn't written until the fit is validated on the
 register it exists for — which needs chat-register raw score curves (an
 LongMemEval floor sweep) that don't exist yet. The fixed 0.22 stands,
 Problem-open, with both alternatives now priced instead of promised.
+
+---
+
+## 0.9.4 — two external benches: forgetting, and behaviour
+
+Everything above grades retrieval. This cycle added two benches that grade
+something else: whether the memory *forgets* what it was told to forget,
+and whether an agent *acts* on what it recalls.
+
+### ForgetEval — five families, two readers, never one score
+
+[ForgetEval](https://arxiv.org/abs/2606.15903) (MIT, `bench/forgeteval/`
+in the [lethe](https://github.com/deeplethe/lethe) repo) inscribes short
+facts, applies a mutation, and checks by exact substring on the system's
+own top-k whether the mutated fact is gone and its neighbours survived. No
+LLM anywhere. `eval/forgeteval/` adapts engram to its `Adapter` protocol
+over the local HTTP API only; receipts are
+`results/2026-09-12-forgeteval-{template,adversarial}.json` and the
+adapter's README carries the full mapping and every deviation.
+
+The five template families do not measure one thing, and two of them
+measure something engram deliberately does differently, so they are
+reported apart and never summed:
+
+- **supersession** and **drift** — a newer fact replaces an older one
+  (drift: three in a row). engram's `replaces` edge archives the old node.
+- **purge** — hard-delete by identifier. engram's plain delete.
+- **decay** and **amnesia** — the benchmark's names for an explicit
+  *release* of transient facts (one-time codes, flight bookings) or of a
+  whole person's facts, with the peer's facts required to survive. Nothing
+  here is time-based: engram has no time decay and will not get one. A
+  release maps to the user's tombstoned delete, which by design leaves a
+  findable marker naming what was removed. The marker's title contains the
+  fact — on one-sentence facts the title *is* the fact — so a reader that
+  does not look at the hit's role counts it as a leak.
+
+Hence two readers. **Role-blind** returns every hit's text; **role-aware**
+asks for k non-tombstone hits (the REST `types` filter; since 0.9.4 every
+hit also carries a `tombstone: true` flag for exactly this). Both are real
+configurations; neither is hidden behind the other.
+
+| family (200 cases each) | role-blind | role-aware | lethe (reference) |
+|---|---|---|---|
+| supersession | 200 (100%) | 200 (100%) | 200 (100%) |
+| drift | 198 (99%) | 198 (99%) | 198 (99%) |
+| purge | 200 (100%) | 200 (100%) | 200 (100%) |
+| decay | 0 (0%) | 200 (100%) | 200 (100%) |
+| amnesia | 0 (0%) | 185 (92%) | 195 (98%) |
+
+| adversarial category | n | role-blind | role-aware | lethe |
+|---|---|---|---|---|
+| substring_trap | 36 | 20 | 29 | 33 |
+| prefix_collision | 39 | 30 | 30 | 32 |
+| paraphrase_supersession | 38 | 29 | 29 | 31 |
+| negation_trap | 40 | 19 | 38 | 38 |
+| temporal_qualifier | 37 | 37 | 37 | 37 |
+| shared_attribute | 40 | 3 | 38 | 35 |
+| compound_fact | 40 | 0 | 0 | 0 |
+| identifier_obfuscation | 38 | 2 | 2 | 2 |
+| cross_lingual_identifier | 38 | 1 | 1 | 0 |
+| recursive_supersession | 39 | 36 | 36 | 36 |
+| all | 385 | 177 | 240 | 244 |
+
+Seed 42, four distractors per case, `--scale 200`; lethe measured
+in-process, engram over HTTP against the live core. The three categories
+every system fails (compound facts, obfuscated and cross-lingual
+identifiers) are hard for the reference too; the role-aware residual is
+amnesia's ten cases, where a generic "tell me about people" query against a
+five-note graph does not rank the surviving peer.
+
+**Two deviations, both disclosed.** The calibrated delivery floor (0.22,
+fitted on 100–1500-note graphs) returns nothing for a true only-match in a
+six-note graph (score 0.20), and the adapter's own target resolution goes
+through the same search — so the four floor knobs are zeroed on the
+benchmark's throwaway graphs, with the default-policy control kept in the
+adapter README. And the release/purge target rule is ported verbatim from
+the reference adapter rather than invented.
+
+**What the bench found in the product.** The first run of the day scored
+amnesia at 55% role-aware, and the cause was not forgetting: the adapter
+had set `knee_cliff` to 0 to disable the knee trim, and 0 is the *harshest*
+setting there is (every relative drop clears a zero cliff), so the release
+rule never saw the target's sibling facts and the peer was cut from every
+amnesia query. `null` is off. The config now refuses 0 with a teaching
+error, and the first run stays on disk as
+`results/2026-09-12-forgeteval-*-run1-kneebug.*`. The second finding is
+the role flag itself: over REST a hit's only role signal was its type name,
+which breaks on a custom ontology that calls its tombstone "Retraction".
+
+### The rake test — does the agent act on what it recalls?
+
+Retrieval benches ask whether the right note comes back. The rake test
+asks whether the agent then *steps around the rake*. `eval/rake/` plants
+ten notes about an invented Python package — a retry-budget decision with
+its reason, a deadlock caution, a tombstone for a removed fast path, a
+superseded config decision and six distractors — then runs three coding
+tasks headless with Sonnet under a fixed turn and dollar budget, in three
+arms: no memory at all, the same notes rendered into a CLAUDE.md, and
+engram (brief hook plus MCP tools). Executable oracles grade the diff:
+did the retry go through the shared budget, did the sync land outside the
+transaction, did the removed path stay removed, did the docs name the
+current config file. Phase 1 (`results/2026-09-12-rake-smoke.json`, nine
+runs, about two dollars) was a smoke of the pipeline, and its lesson was
+that the fixture's own code guided every arm past every rake; the one
+failure was the curated file's rule, present verbatim and violated anyway.
+Phase 2 sharpens every bait into memory-only knowledge and runs three
+seeds; its receipt and table are in `eval/rake/README.md`.
 
 ---
 

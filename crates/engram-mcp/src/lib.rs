@@ -498,13 +498,9 @@ impl Engram {
             // Tombstone-role hits are counted here (0.9.2) so the reply can
             // say out loud that a hit is a removal record, not live canon —
             // a compact scan shows only type/title, and "Removed: X" reads
-            // like a memory of X to a caller skimming for X.
-            let cfg = guard.config();
-            let tombstone_types = cfg.tombstone_types();
-            let tombstoned = hits
-                .iter()
-                .filter(|h| tombstone_types.contains(&h.node_type.as_str()))
-                .count();
+            // like a memory of X to a caller skimming for X. The engine
+            // stamps the role on every hit (0.9.4); this only counts it.
+            let tombstoned = hits.iter().filter(|h| h.tombstone).count();
             (hits, confidence, tombstoned)
         };
         hits.iter_mut().for_each(debracket);

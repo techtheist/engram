@@ -1,0 +1,7 @@
+# Quorl ledger relay — repo-local configuration.
+[relay]
+endpoint = "ledger://local"
+fail_rate = 0.3
+
+[vault]
+path = ".quorl-vault"

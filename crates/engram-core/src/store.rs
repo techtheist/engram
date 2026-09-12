@@ -593,6 +593,7 @@ pub trait Store: Send {
                 trust: node.trust,
                 stale: node.stale,
                 session_id: node.session_id,
+                tombstone: false,
                 neighbors: Vec::new(),
                 project: None,
             });

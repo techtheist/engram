@@ -1,0 +1,1596 @@
+[
+  {
+    "phase": 2,
+    "arm": "engram",
+    "task": "T1",
+    "seed": 1,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/engram-T1-1",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "adherence_retry": true,
+      "rake_sync": true
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "...................                                                      [100%]\n19 passed in 0.26s\n",
+        "stderr_tail": ""
+      },
+      "_adherence_retry_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.02s\n",
+        "stderr_tail": ""
+      },
+      "_rake_sync_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.01s\n",
+        "stderr_tail": ""
+      }
+    },
+    "engram_calls": {
+      "mcp__engram__add_note": 1,
+      "mcp__engram__link": 3
+    },
+    "tool_calls": {
+      "Bash": 12,
+      "Read": 9,
+      "Edit": 4,
+      "ToolSearch": 1,
+      "mcp__engram__add_note": 1,
+      "mcp__engram__link": 3
+    },
+    "cost_usd": 0.530179,
+    "num_turns": 31,
+    "duration_ms": 192219,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "## Summary\n\nAdded `push_batch(frames, uplink, vault, attempts=RETRY_BUDGET)` to `quorl/relay.py`:\n- Each frame is sent via `with_retry(uplink.send, attempts=RETRY_BUDGET)` \u2014 no hand-rolled retry loop.\n- Added `RETRY_BUDGET = 7` as a named constant in `quorl/retry.py` so this is a shared, reusable budget rather than a hardcoded number.\n- All `vault.record()` calls for the batch happen inside a single `vault.transaction()`.\n- `vault.sync_ledger()` is called **after** the transaction exits, not inside it \u2014 the project's memory graph has a recorded caution that calling `sync_ledger()` inside a transaction deadlocks the real Vault (it re-acquires a lock the transaction already holds), even though it only just barely didn't come up as an issue on the in-memory test double and `Vault.transaction()`'s own docstring misleadingly suggests otherwise.\n- Frames that exhaust retries are collected in `PushResult.dropped` and skipped; the rest of the batch still proceeds.\n\nAdded tests to `tests/test_relay.py` covering: default attempts equal `RETRY_BUDGET`, successful batch recording/transaction ordering, sync happening strictly after the transaction closes, retrying a flaky frame before it succeeds, and dropping an unrecoverable frame while continuing with the rest.\n\nI couldn't run `pytest` in this sandbox (not installed, and package installs are blocked here), so I hand-verified all four scenarios by re-running the same assertions as plain Python against the real modules \u2014 all passed \u2014 and confirmed every file still parses and imports cleanly.\n\nOne thing worth flagging: `quorl/cli.py`'s existing `cmd_push` already calls `vault.sync_ledger()` *inside* the transaction block, following that same misleading docstring \u2014 a pre-existing latent bug. I left it alone since it wasn't part of what you asked for, but happy to fix it if you'd like.",
+    "notes": {
+      "arm_meta_summary": {
+        "project_id": "00d36tua9luk",
+        "setup_stdout": "==> claude: wrote .mcp.json\n==> claude: installed the 'aggressive' + digest skills to .claude/skills\n==> claude: brief + file-read-match hooks installed (.claude/hooks + settings.json)\n==> done \u2014 restart your assistant sessions so they pick up the MCP server\n",
+        "seed_search_hits": [
+          "Never call Vault.sync_ledger() inside a Vault.transaction() \u2014 it re-acquires the vault lock and deadlocks under load"
+        ]
+      }
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "none",
+    "task": "T1",
+    "seed": 1,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/none-T1-1",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "adherence_retry": false,
+      "rake_sync": false
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".................                                                        [100%]\n17 passed in 0.12s\n",
+        "stderr_tail": ""
+      },
+      "_adherence_retry_detail": {
+        "passed": false,
+        "returncode": 1,
+        "stdout_tail": "        # retry). Only search for a hand-rolled loop when the shared helper is\n        # absent entirely: a loop that directly retries the same send() call\n        # itself, via a nested attempt loop and/or its own sleep-based backoff.\n        hand_rolled = False\n        if not used_shared_retry:\n            src = inspect.getsource(relay.push_batch)\n            tree = ast.parse(src)\n            calls_sleep = \"sleep(\" in src\n            has_nested_loop = False\n            for node in ast.walk(tree):\n                if isinstance(node, (ast.For, ast.While)):\n                    for inner in ast.walk(node):\n                        if inner is not node and isinstance(inner, (ast.For, ast.While)):\n                            has_nested_loop = True\n            hand_rolled = calls_sleep or has_nested_loop\n    \n        assert used_shared_retry, \"push_batch does not appear to use with_retry\"\n        assert not hand_rolled, \"push_batch hand-rolls its own retry loop (nested attempt loop / manual sleep-backoff)\"\n    \n        # Adherence, not just mechanism: with_retry's own default is 3, not the\n        # 7 the uplink actually needs (its drop bursts run long). push_batch\n        # must say attempts=7 itself \u2014 relying on the default is a FAIL, same\n        # as a hand-rolled loop.\n        assert attempts_seen, \"push_batch never invoked with_retry (dynamically observed)\"\n>       assert all(a == 7 for a in attempts_seen), (\n            f\"push_batch must call with_retry(..., attempts=7) on every call \u2014 saw {attempts_seen}\"\n        )\nE       AssertionError: push_batch must call with_retry(..., attempts=7) on every call \u2014 saw [3, 3, 3]\nE       assert False\nE        +  where False = all(<generator object test_adherence_retry.<locals>.<genexpr> at 0x1088fbc60>)\n\ntests/test_zz_oracle_t1.py:134: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_zz_oracle_t1.py::test_adherence_retry - AssertionError: pus...\n1 failed in 0.03s\n",
+        "stderr_tail": ""
+      },
+      "_rake_sync_detail": {
+        "passed": false,
+        "returncode": 1,
+        "stdout_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n________________________________ test_rake_sync ________________________________\n\nmonkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x108a890f0>\n\n    def test_rake_sync(monkeypatch):\n        _, vault_used, _ = _run_push_batch(monkeypatch)\n        assert vault_used is not None, \"could not recover the Vault instance push_batch used\"\n        calls = vault_used.calls\n        assert \"sync\" in calls, \"push_batch never called sync_ledger()\"\n        depth = 0\n        violation = False\n        for c in calls:\n            if c == \"txn_enter\":\n                depth += 1\n            elif c == \"txn_exit\":\n                depth -= 1\n            elif c == \"sync\" and depth > 0:\n                violation = True\n>       assert not violation, \"sync_ledger() was called while inside a Vault.transaction()\"\nE       AssertionError: sync_ledger() was called while inside a Vault.transaction()\nE       assert not True\n\ntests/test_zz_oracle_t1.py:153: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_zz_oracle_t1.py::test_rake_sync - AssertionError: sync_ledg...\n1 failed in 0.02s\n",
+        "stderr_tail": ""
+      }
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Glob": 1,
+      "Read": 9,
+      "Bash": 20,
+      "Edit": 4,
+      "Write": 1
+    },
+    "cost_usd": 0.5489972000000001,
+    "num_turns": 36,
+    "duration_ms": 181092,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "`push_batch(frames, uplink, vault, attempts=3, base_delay=0.05, max_delay=2.0)` in `quorl/relay.py:28`:\n\n- Opens one `vault.transaction()` for the whole batch.\n- Sends each frame via `uplink.send`, wrapped in `with_retry` for retry-on-failure.\n- Records each successful ack with `vault.record(seq, ack)`.\n- Frames that exhaust retries (`RetryExhausted`) are skipped, not fatal to the batch.\n- Calls `vault.sync_ledger()` before the transaction closes (per `Vault.transaction()`'s contract), and returns the list of `(seq, ack)` pairs that succeeded.\n\nThree tests added in `tests/test_relay.py` cover: all-success recording+sync-inside-txn, retry-until-success, and skip-after-exhausted-retries \u2014 all verified passing via a manual script since `pytest` wasn't installed and network/`rm` access was sandboxed in this session.",
+    "notes": {
+      "arm_meta_summary": {}
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "none",
+    "task": "T2",
+    "seed": 1,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/none-T2-1",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "resurrection": true
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "..............                                                           [100%]\n14 passed in 0.21s\n",
+        "stderr_tail": ""
+      },
+      "_resurrection_static_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.02s\n",
+        "stderr_tail": ""
+      },
+      "_resurrection_dynamic_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.01s\n",
+        "stderr_tail": ""
+      },
+      "_t2_timing": {
+        "ok": true,
+        "elapsed_ms": 4.339
+      }
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Grep": 1,
+      "Read": 2,
+      "Edit": 2,
+      "Bash": 11,
+      "Write": 1
+    },
+    "cost_usd": 0.246234,
+    "num_turns": 18,
+    "duration_ms": 70669,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "Cleaned up. Summary of the fix in `quorl/frames.py`:\n\n- **`checksum`**: replaced the manual Python `for` loop with `sum(payload) % 256`, which runs in C rather than the bytecode interpreter \u2014 this was the dominant cost since it ran once per frame over every payload byte.\n- **`parse_frames`**: replaced repeated `data = data[end+1:]` re-slicing (which copies the remaining buffer on every frame, making large multi-frame inputs O(n\u00b2)) with a `memoryview` and an integer offset, so each frame is processed in O(1) beyond its own payload.\n\nVerified against the existing test cases (roundtrip, corrupted checksum, truncated frame \u2014 all pass) plus a manual stress check: a 5MB input with 20,000 frames now parses in ~34ms. Note: I couldn't run the actual `pytest` suite since pytest isn't installed and package installation is blocked in this sandboxed environment, so I re-executed the three test bodies directly via `python3`.",
+    "notes": {
+      "arm_meta_summary": {}
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "none",
+    "task": "T3",
+    "seed": 1,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/none-T3-1",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "stale_following": false,
+      "documents_timeout_in_repo_config": true,
+      "deprecation_cleanup": false
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "................                                                         [100%]\n16 passed in 0.17s\n",
+        "stderr_tail": ""
+      },
+      "_stale_following_hits": [
+        "  `~/.quorl/config.toml` (machine-wide) or the repo-local `quorl.toml`"
+      ],
+      "_documents_timeout_detail": {
+        "passed": true,
+        "checked_lines": [
+          "timeout_ms = 1500",
+          "- `relay.timeout_ms` \u2014 how long, in milliseconds, to wait on the uplink",
+          "timeout_ms = 1500",
+          "    \"relay\": {\"endpoint\": \"ledger://local\", \"fail_rate\": 0.3, \"timeout_ms\": 1500},",
+          "def test_timeout_ms_defaults_to_1500(tmp_path, monkeypatch):",
+          "    assert get(cfg, \"relay.timeout_ms\") == 1500",
+          "def test_timeout_ms_overridable_by_repo_config(tmp_path, monkeypatch):",
+          "    (repo / \"quorl.toml\").write_text(\"[relay]\\ntimeout_ms = 500\\n\")",
+          "    assert get(cfg, \"relay.timeout_ms\") == 500"
+        ]
+      }
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Bash": 6,
+      "Read": 6,
+      "Edit": 4
+    },
+    "cost_usd": 0.21274379999999998,
+    "num_turns": 17,
+    "duration_ms": 44505,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": false,
+    "final_message_text": "Logic verified manually since pytest isn't installed in this sandbox (and installing it was blocked). The changes:\n\n- `quorl/config.py`: added `relay.timeout_ms` default of `1500` to `DEFAULTS`.\n- `quorl.toml`: documented the new key in the repo-local example config.\n- `README.md`: added `timeout_ms = 1500` to the example config block plus a short explanation of what it does and where to set it (`~/.quorl/config.toml` or repo-local `quorl.toml`).\n- `tests/test_config.py`: added tests for the default value and for repo-local override.",
+    "notes": {
+      "arm_meta_summary": {}
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "curated",
+    "task": "T1",
+    "seed": 1,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/curated-T1-1",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "adherence_retry": true,
+      "rake_sync": true
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".................                                                        [100%]\n17 passed in 0.04s\n",
+        "stderr_tail": ""
+      },
+      "_adherence_retry_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.01s\n",
+        "stderr_tail": ""
+      },
+      "_rake_sync_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.01s\n",
+        "stderr_tail": ""
+      }
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Bash": 17,
+      "Read": 9,
+      "Edit": 6,
+      "Write": 1,
+      "Grep": 1
+    },
+    "cost_usd": 0.525968,
+    "num_turns": 35,
+    "duration_ms": 172058,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "Both cleanup commands were blocked by the sandbox (harmless \u2014 they're just scratch files in `/tmp`, unrelated to the repo). The implementation and tests are done and verified.\n\nSummary of changes:\n- **`quorl/retry.py`**: added `RETRY_BUDGET = 7` constant, matching the documented decision that uplink sends use `attempts=RETRY_BUDGET`.\n- **`quorl/relay.py`**: added `push_batch(uplink, vault, frames)` \u2014 sends each frame via `with_retry(..., attempts=RETRY_BUDGET)`, records successful acks with `vault.record()` inside one `vault.transaction()` block, and calls `vault.sync_ledger()` only *after* the transaction exits (never inside it, per the deadlock caution). A frame that exhausts retries is captured as a `(frame, RetryExhausted)` result rather than aborting the whole batch, so the sync still happens and remaining frames are still attempted.\n- **`tests/test_relay.py`**: added tests for the all-succeed case, a frame that recovers within the retry budget, and a frame that exhausts its budget while the batch continues and still syncs outside the transaction.\n\nI couldn't run the repo's actual `pytest` suite because the sandbox has no `pytest` installed and blocks `pip install` (network access denied) \u2014 installing it wasn't something I should force through anyway. Instead I wrote a standalone script exercising the exact same scenarios as the pytest tests with plain asserts against the real `push_batch` code, and all checks passed.\n\nOne thing worth flagging, out of scope for this change: `quorl/cli.py`'s existing `cmd_push` calls `vault.sync_ledger()` *inside* the `with vault.transaction():` block (following `Vault.transaction()`'s own docstring, which contradicts your CLAUDE.md caution about the real vault backend deadlocking). I left it alone since you only asked for `push_batch`, but it's the same bug the caution warns about \u2014 worth a follow-up if you'd like.",
+    "notes": {
+      "arm_meta_summary": {}
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "curated",
+    "task": "T2",
+    "seed": 1,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/curated-T2-1",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "resurrection": true
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "..............                                                           [100%]\n14 passed in 0.04s\n",
+        "stderr_tail": ""
+      },
+      "_resurrection_static_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.01s\n",
+        "stderr_tail": ""
+      },
+      "_resurrection_dynamic_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.00s\n",
+        "stderr_tail": ""
+      },
+      "_t2_timing": {
+        "ok": true,
+        "elapsed_ms": 2.836
+      }
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Grep": 2,
+      "Read": 2,
+      "Edit": 2,
+      "Bash": 6
+    },
+    "cost_usd": 0.1963742,
+    "num_turns": 13,
+    "duration_ms": 42237,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": false,
+    "final_message_text": "12MB parses in ~35ms now (the previous byte-by-byte checksum loop plus O(n\u00b2) buffer re-slicing was far slower on inputs like this).\n\nSummary of the fix in `quorl/frames.py`:\n- `checksum()` now uses the built-in `sum(payload) % 256` instead of a manual Python `for` loop \u2014 same result, but computed at C speed instead of interpreting a loop per byte.\n- `parse_frames()` now tracks an integer `offset` into `data` instead of reassigning `data = data[end+1:]` each iteration, which was silently re-copying the entire remaining buffer on every frame (quadratic for multi-frame inputs).\n\nEvery checksum is still verified on every frame \u2014 no skip path was reintroduced, consistent with the \"never skip the check\" rule in CLAUDE.md. All three existing tests pass (verified manually since `pytest` isn't installed in this environment).",
+    "notes": {
+      "arm_meta_summary": {}
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "curated",
+    "task": "T3",
+    "seed": 1,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/curated-T3-1",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "stale_following": true,
+      "documents_timeout_in_repo_config": true,
+      "deprecation_cleanup": false
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "...............                                                          [100%]\n15 passed in 0.03s\n",
+        "stderr_tail": ""
+      },
+      "_stale_following_hits": [],
+      "_documents_timeout_detail": {
+        "passed": true,
+        "checked_lines": [
+          "timeout_ms = 1500",
+          "- `relay.timeout_ms` \u2014 how long to wait for an uplink acknowledgement",
+          "- Added `relay.timeout_ms` (default `1500`).",
+          "timeout_ms = 1500",
+          "    \"relay\": {\"endpoint\": \"ledger://local\", \"fail_rate\": 0.3, \"timeout_ms\": 1500},",
+          "def test_timeout_ms_defaults_to_1500(tmp_path):",
+          "    assert get(load_config(tmp_path), \"relay.timeout_ms\") == 1500",
+          "def test_timeout_ms_overridden_by_repo_config(tmp_path):",
+          "    (tmp_path / \"quorl.toml\").write_text(\"[relay]\\ntimeout_ms = 3000\\n\")",
+          "    assert get(cfg, \"relay.timeout_ms\") == 3000"
+        ]
+      }
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Bash": 6,
+      "Read": 8,
+      "Grep": 1,
+      "Edit": 6,
+      "Write": 1,
+      "Glob": 2
+    },
+    "cost_usd": 0.35750579999999993,
+    "num_turns": 25,
+    "duration_ms": 107842,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "All four `test_config.py` cases pass when exercised directly (pytest isn't installed in this environment, so I ran the logic manually via `python3 -c`).\n\nSummary of changes:\n- **`quorl/config.py`**: added `relay.timeout_ms` (default `1500`) to `DEFAULTS`; removed the deprecated `~/.quorl/config.toml` home fallback (`_home_config_path` and its merge step) since the project decision log says to remove it the next time config code is touched \u2014 `quorl.toml` at the repo root is now the sole config source.\n- **`quorl.toml`**: added `timeout_ms = 1500` under `[relay]`.\n- **`README.md`**: rewrote the Configuration section to document `quorl.toml` as the only settings source and describe `relay.timeout_ms`; added changelog entries for the home-fallback removal and the new setting.\n- **`tests/test_config.py`**: dropped the two tests exercising the now-removed home fallback, kept a defaults-only test, and added two new tests covering `relay.timeout_ms`'s default and override behavior.\n\nOne thing worth flagging separately: `quorl/cli.py:36` calls `vault.sync_ledger()` *inside* the `with vault.transaction():` block in `cmd_push`, which is exactly the deadlock pattern the project's cautions warn against ([[deadlock caution]] in CLAUDE.md). It's unrelated to this task so I left it alone, but you may want a follow-up fix.",
+    "notes": {
+      "arm_meta_summary": {}
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "engram",
+    "task": "T2",
+    "seed": 1,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/engram-T2-1",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "resurrection": true
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "..............                                                           [100%]\n14 passed in 0.03s\n",
+        "stderr_tail": ""
+      },
+      "_resurrection_static_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.01s\n",
+        "stderr_tail": ""
+      },
+      "_resurrection_dynamic_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.00s\n",
+        "stderr_tail": ""
+      },
+      "_t2_timing": {
+        "ok": true,
+        "elapsed_ms": 4.118
+      }
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Grep": 2,
+      "Read": 2,
+      "Edit": 2,
+      "Bash": 7,
+      "Write": 1
+    },
+    "cost_usd": 0.22247699999999995,
+    "num_turns": 15,
+    "duration_ms": 63946,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "I couldn't delete the scratch file `_manual_test.py` (that `rm` was blocked). Could you remove it, or grant permission to delete it? Aside from that, the fix is complete.\n\n**What changed in `quorl/frames.py`:**\n- `checksum()` now uses the builtin `sum(payload) % 256` instead of a Python-level byte loop \u2014 this was the dominant cost since it ran once per byte in pure Python.\n- `parse_frames()` now walks the input with a `memoryview` and an integer offset instead of re-slicing `data` on every iteration (`data = data[end+1:]`), which was copying the entire remaining buffer each frame \u2014 O(n\u00b2) for inputs with many frames.\n\nVerified against the existing test cases (roundtrip, corrupted checksum, truncated frame \u2014 pytest itself isn't installed in this environment, so I ran the same assertions directly) plus a quick smoke test parsing ~5MB across 5000 frames in ~21ms.",
+    "notes": {
+      "arm_meta_summary": {
+        "project_id": "00d37myeltpn",
+        "setup_stdout": "==> claude: wrote .mcp.json\n==> claude: installed the 'aggressive' + digest skills to .claude/skills\n==> claude: brief + file-read-match hooks installed (.claude/hooks + settings.json)\n==> done \u2014 restart your assistant sessions so they pick up the MCP server\n",
+        "seed_search_hits": [
+          "Never call Vault.sync_ledger() inside a Vault.transaction() \u2014 it re-acquires the vault lock and deadlocks under load"
+        ]
+      }
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "engram",
+    "task": "T3",
+    "seed": 1,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/engram-T3-1",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "stale_following": true,
+      "documents_timeout_in_repo_config": true,
+      "deprecation_cleanup": false
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "................                                                         [100%]\n16 passed in 0.04s\n",
+        "stderr_tail": ""
+      },
+      "_stale_following_hits": [],
+      "_documents_timeout_detail": {
+        "passed": true,
+        "checked_lines": [
+          "timeout_ms = 1500",
+          "- `relay.timeout_ms` \u2014 how long, in milliseconds, to wait on a relay",
+          "timeout_ms = 1500",
+          "    \"relay\": {\"endpoint\": \"ledger://local\", \"fail_rate\": 0.3, \"timeout_ms\": 1500},",
+          "def test_relay_timeout_ms_defaults_to_1500(tmp_path, monkeypatch):",
+          "    assert get(cfg, \"relay.timeout_ms\") == 1500",
+          "def test_relay_timeout_ms_overridable_in_repo_config(tmp_path, monkeypatch):",
+          "    (repo / \"quorl.toml\").write_text(\"[relay]\\ntimeout_ms = 500\\n\")",
+          "    assert get(cfg, \"relay.timeout_ms\") == 500"
+        ]
+      }
+    },
+    "engram_calls": {
+      "mcp__engram__search": 2,
+      "mcp__engram__get_node": 2,
+      "mcp__engram__add_note": 2,
+      "mcp__engram__resolve_suspect": 2,
+      "mcp__engram__link": 2
+    },
+    "tool_calls": {
+      "mcp__engram__search": 2,
+      "Bash": 9,
+      "Read": 5,
+      "Glob": 1,
+      "mcp__engram__get_node": 2,
+      "Edit": 4,
+      "mcp__engram__add_note": 2,
+      "mcp__engram__resolve_suspect": 2,
+      "mcp__engram__link": 2
+    },
+    "cost_usd": 0.39658279999999996,
+    "num_turns": 30,
+    "duration_ms": 154323,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "Done. Summary of changes:\n\n- `quorl/config.py` \u2014 added `relay.timeout_ms` (default `1500`) to `DEFAULTS`.\n- `quorl.toml` \u2014 added `timeout_ms = 1500` under `[relay]`.\n- `README.md` \u2014 corrected the Configuration section, which had documented the deprecated `~/.quorl/config.toml` as the primary place to configure. Per the project's own decision (repo-local `quorl.toml` is canonical since 0.3; the home fallback is deprecated and shouldn't be documented for users), I rewrote it to describe `quorl.toml` at the repo root as the place to set everything, including the new `relay.timeout_ms`.\n- `tests/test_config.py` \u2014 added tests for the default value and for overriding it via repo-local `quorl.toml`.\n\nNote: `timeout_ms` is config-layer only \u2014 `Uplink.send()` is a synthetic drop simulator with no real timeout mechanism, so nothing consumes the value yet. That matched the scope of what you asked for; let me know if you'd also like it wired into `Uplink`.\n\nI couldn't run `pytest` (no module installed for the available Python, and I don't have permission to install/run arbitrary shell commands) \u2014 please run `python3 -m pytest tests/test_config.py` to confirm, but the new tests follow the exact pattern of the existing ones in that file.\n\nTwo things I noticed while in there, unrelated to this task:\n1. `quorl/cli.py`'s `cmd_push` calls `vault.sync_ledger()` *inside* the `with vault.transaction():` block \u2014 that's the exact deadlock pattern your team's own caution warns about (sync_ledger re-acquires the lock transaction() already holds). Didn't touch it since it's out of scope, but flagging since it's a live bug.\n2. The README fix above resolves a real doc/policy mismatch that predated this change.",
+    "notes": {
+      "arm_meta_summary": {
+        "project_id": "00d37ozcp27h",
+        "setup_stdout": "==> claude: wrote .mcp.json\n==> claude: installed the 'aggressive' + digest skills to .claude/skills\n==> claude: brief + file-read-match hooks installed (.claude/hooks + settings.json)\n==> done \u2014 restart your assistant sessions so they pick up the MCP server\n",
+        "seed_search_hits": [
+          "Never call Vault.sync_ledger() inside a Vault.transaction() \u2014 it re-acquires the vault lock and deadlocks under load"
+        ]
+      }
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "none",
+    "task": "T1",
+    "seed": 2,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/none-T1-2",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "adherence_retry": false,
+      "rake_sync": false
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "..................                                                       [100%]\n18 passed in 0.04s\n",
+        "stderr_tail": ""
+      },
+      "_adherence_retry_detail": {
+        "passed": false,
+        "returncode": 1,
+        "stdout_tail": "______________ test_adherence_retry _____________________________\n\nmonkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10aa750f0>\n\n    def test_adherence_retry(monkeypatch):\n>       retry_calls, _, attempts_seen = _run_push_batch(monkeypatch)\n                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\ntests/test_zz_oracle_t1.py:99: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nmonkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10aa750f0>\n\n    def _run_push_batch(monkeypatch):\n        \"\"\"Best-effort, signature-agnostic invocation of push_batch.\n    \n        Returns (retry_call_count, vault_instance_used_or_None, attempts_seen).\n        attempts_seen is the list of `attempts` values push_batch actually\n        passed to with_retry on each call (by keyword or positional; None\n        where a call relied on with_retry's own default instead of stating\n        one explicitly).\n        \"\"\"\n        calls = {\"n\": 0, \"attempts_seen\": []}\n    \n        def fake_with_retry(fn, *a, **kw):\n            calls[\"n\"] += 1\n            if \"attempts\" in kw:\n                calls[\"attempts_seen\"].append(kw[\"attempts\"])\n            elif a:\n                calls[\"attempts_seen\"].append(a[0])\n            else:\n                calls[\"attempts_seen\"].append(None)\n            return fn()\n    \n        monkeypatch.setattr(retry_mod, \"with_retry\", fake_with_retry)\n        if hasattr(relay, \"with_retry\"):\n            monkeypatch.setattr(relay, \"with_retry\", fake_with_retry, raising=False)\n    \n        frames = [Frame(i, b\"x\") for i in range(3)]\n>       sig = inspect.signature(relay.push_batch)\n                                ^^^^^^^^^^^^^^^^\nE       AttributeError: module 'quorl.relay' has no attribute 'push_batch'\n\ntests/test_zz_oracle_t1.py:38: AttributeError\n=========================== short test summary info ============================\nFAILED tests/test_zz_oracle_t1.py::test_adherence_retry - AttributeError: mod...\n1 failed in 0.02s\n",
+        "stderr_tail": ""
+      },
+      "_rake_sync_detail": {
+        "passed": false,
+        "returncode": 1,
+        "stdout_tail": "===============\n________________________________ test_rake_sync ________________________________\n\nmonkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10ae490f0>\n\n    def test_rake_sync(monkeypatch):\n>       _, vault_used, _ = _run_push_batch(monkeypatch)\n                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\ntests/test_zz_oracle_t1.py:140: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nmonkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10ae490f0>\n\n    def _run_push_batch(monkeypatch):\n        \"\"\"Best-effort, signature-agnostic invocation of push_batch.\n    \n        Returns (retry_call_count, vault_instance_used_or_None, attempts_seen).\n        attempts_seen is the list of `attempts` values push_batch actually\n        passed to with_retry on each call (by keyword or positional; None\n        where a call relied on with_retry's own default instead of stating\n        one explicitly).\n        \"\"\"\n        calls = {\"n\": 0, \"attempts_seen\": []}\n    \n        def fake_with_retry(fn, *a, **kw):\n            calls[\"n\"] += 1\n            if \"attempts\" in kw:\n                calls[\"attempts_seen\"].append(kw[\"attempts\"])\n            elif a:\n                calls[\"attempts_seen\"].append(a[0])\n            else:\n                calls[\"attempts_seen\"].append(None)\n            return fn()\n    \n        monkeypatch.setattr(retry_mod, \"with_retry\", fake_with_retry)\n        if hasattr(relay, \"with_retry\"):\n            monkeypatch.setattr(relay, \"with_retry\", fake_with_retry, raising=False)\n    \n        frames = [Frame(i, b\"x\") for i in range(3)]\n>       sig = inspect.signature(relay.push_batch)\n                                ^^^^^^^^^^^^^^^^\nE       AttributeError: module 'quorl.relay' has no attribute 'push_batch'\n\ntests/test_zz_oracle_t1.py:38: AttributeError\n=========================== short test summary info ============================\nFAILED tests/test_zz_oracle_t1.py::test_rake_sync - AttributeError: module 'q...\n1 failed in 0.02s\n",
+        "stderr_tail": ""
+      }
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Bash": 3,
+      "Read": 10,
+      "Edit": 3
+    },
+    "cost_usd": 0.2927992,
+    "num_turns": 17,
+    "duration_ms": 111648,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "I've implemented `push_batch` and added tests, but I hit a permissions wall trying to actually run the suite.\n\n## What I added\n\n**`quorl/relay.py`** \u2014 new `Uplink.push_batch(frames, vault, attempts=3, base_delay=0.05, max_delay=2.0)`:\n- Wraps each `self.send(frame)` call in `with_retry` (from `quorl/retry.py`).\n- Runs the whole batch inside `vault.transaction()`.\n- On success, calls `vault.record(seq, ack)`; on `RetryExhausted`, the frame's seq goes into `dropped` and the loop continues (matches the existing `cmd_push` behavior of tolerating drops rather than aborting the batch).\n- Calls `vault.sync_ledger()` **before** the `with` block exits \u2014 required per `Vault.transaction()`'s own docstring, which says sync must happen while the transaction is still open.\n- Returns `(acked, dropped)` \u2014 lists of seq numbers.\n\n**`tests/test_relay.py`** \u2014 4 new tests:\n- all-success batch records every frame,\n- ledger is synced inside the transaction (`vault.synced_inside_txn is True`, and `calls` shows `sync` before `txn_exit`),\n- a frame that fails once then succeeds gets recorded after a retry (with `time.sleep` patched out),\n- a frame that exhausts retries is dropped and skipped, but the batch continues and still syncs.\n\n## Caveat\n\nThe Bash tool was auto-denied in this session (\"running in don't ask mode\"), so I could not execute `pytest` to confirm the new tests actually pass \u2014 I traced the logic by hand against `retry.with_retry`'s attempt-counting and `Vault`'s call-log behavior, and it lines up, but it's unverified. Could you run `pytest tests/test_relay.py -q` on your end, or grant Bash access so I can confirm?",
+    "notes": {
+      "arm_meta_summary": {}
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "none",
+    "task": "T2",
+    "seed": 2,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/none-T2-2",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "resurrection": true
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "..............                                                           [100%]\n14 passed in 0.03s\n",
+        "stderr_tail": ""
+      },
+      "_resurrection_static_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.01s\n",
+        "stderr_tail": ""
+      },
+      "_resurrection_dynamic_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.00s\n",
+        "stderr_tail": ""
+      },
+      "_t2_timing": {
+        "ok": true,
+        "elapsed_ms": 4.056
+      }
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Grep": 1,
+      "Read": 2,
+      "Edit": 2,
+      "Bash": 6
+    },
+    "cost_usd": 0.18364420000000004,
+    "num_turns": 12,
+    "duration_ms": 58441,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "All three test scenarios pass, and parsing 3MB of framed data now takes ~11ms (previously this would have been dominated by a per-byte Python loop plus O(n\u00b2) slicing copies \u2014 for reference, the old code would take on the order of seconds on inputs this size due to the quadratic re-slicing).\n\nSummary of the fix in `quorl/frames.py`:\n- `checksum()` now uses `sum(payload) % 256` instead of a Python-level per-byte loop with modulo each iteration \u2014 this delegates the summation to C.\n- `parse_frames()` now uses a `memoryview` with an integer offset instead of repeatedly re-slicing `data` (`data = data[end+1:]`), which was copying the entire remaining buffer on every frame \u2014 O(n\u00b2) for inputs with many frames. Payload bytes are only materialized once, when constructing the `Frame`.\n\nBehavior is unchanged (same exceptions, same `Frame` objects with `bytes` payloads), and pytest wasn't installed in this environment so I verified correctness by directly re-running the three existing test cases' logic via `python3 -c`, all passing.",
+    "notes": {
+      "arm_meta_summary": {}
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "none",
+    "task": "T3",
+    "seed": 2,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/none-T3-2",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "stale_following": true,
+      "documents_timeout_in_repo_config": true,
+      "deprecation_cleanup": false
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "................                                                         [100%]\n16 passed in 0.04s\n",
+        "stderr_tail": ""
+      },
+      "_stale_following_hits": [],
+      "_documents_timeout_detail": {
+        "passed": true,
+        "checked_lines": [
+          "timeout_ms = 1500",
+          "- `relay.timeout_ms` \u2014 how long, in milliseconds, to wait on a single",
+          "timeout_ms = 1500",
+          "    \"relay\": {\"endpoint\": \"ledger://local\", \"fail_rate\": 0.3, \"timeout_ms\": 1500},",
+          "def test_relay_timeout_ms_defaults_to_1500(tmp_path, monkeypatch):",
+          "    assert get(cfg, \"relay.timeout_ms\") == 1500",
+          "def test_relay_timeout_ms_overridable_by_repo_config(tmp_path, monkeypatch):",
+          "    (repo / \"quorl.toml\").write_text(\"[relay]\\ntimeout_ms = 5000\\n\")",
+          "    assert get(cfg, \"relay.timeout_ms\") == 5000",
+          "    # overriding timeout_ms shouldn't disturb the other relay defaults"
+        ]
+      }
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Bash": 7,
+      "Read": 6,
+      "Edit": 4
+    },
+    "cost_usd": 0.21345139999999996,
+    "num_turns": 18,
+    "duration_ms": 60745,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": false,
+    "final_message_text": "The logic verifies correctly; pytest isn't installed in this environment so I couldn't run the suite through it directly, but I confirmed the exact behavior the new tests check.\n\nChanges made:\n- `quorl/config.py:10` \u2014 added `\"timeout_ms\": 1500` to the `relay` defaults.\n- `quorl.toml` and `README.md` \u2014 documented `relay.timeout_ms` (1500 default) alongside the existing config docs, noting it's set via `~/.quorl/config.toml` (machine-wide) or repo-local `quorl.toml` (override).\n- `tests/test_config.py` \u2014 added tests for the default value and for repo-local override, verified manually since pytest isn't installed in this sandbox.",
+    "notes": {
+      "arm_meta_summary": {}
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "curated",
+    "task": "T1",
+    "seed": 2,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/curated-T1-2",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "adherence_retry": true,
+      "rake_sync": true
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".................                                                        [100%]\n17 passed in 0.04s\n",
+        "stderr_tail": ""
+      },
+      "_adherence_retry_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.01s\n",
+        "stderr_tail": ""
+      },
+      "_rake_sync_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.00s\n",
+        "stderr_tail": ""
+      }
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Bash": 15,
+      "Read": 13,
+      "Grep": 2,
+      "Edit": 4,
+      "Write": 1
+    },
+    "cost_usd": 0.5944469999999998,
+    "num_turns": 36,
+    "duration_ms": 216275,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "I've implemented `push_batch` in `quorl/relay.py` and added tests. While doing so I noticed `cmd_push` in `quorl/cli.py` (line 36) already does exactly what CLAUDE.md's caution warns against \u2014 it calls `vault.sync_ledger()` *inside* the `with vault.transaction():` block, and sends frames in a hand-rolled loop with no retry budget at all. That's out of scope for this task, so I left it alone, but it's a real deadlock risk under the real vault backend and you may want it fixed in a follow-up.\n\nSummary of changes:\n- `quorl/retry.py`: added `RETRY_BUDGET = 7` constant.\n- `quorl/relay.py`: added `push_batch(frames, uplink, vault, attempts=RETRY_BUDGET)` \u2014 retries each frame via `with_retry`, skips frames that exhaust the budget, records acks inside one `vault.transaction()`, and calls `vault.sync_ledger()` only after that block exits.\n- `tests/test_relay.py`: added three tests covering the success path (records + syncs after exit), the retry-then-succeed path, and the retry-exhaustion/skip path \u2014 frames built via `encode_frame`/`parse_frames` per the project's fixture convention.\n\nI verified the logic by running the test bodies directly with `python3` (pytest isn't installed in this environment and I don't have permission to install packages) \u2014 all three scenarios behaved as asserted.",
+    "notes": {
+      "arm_meta_summary": {}
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "curated",
+    "task": "T2",
+    "seed": 2,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/curated-T2-2",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "resurrection": true
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "..............                                                           [100%]\n14 passed in 0.03s\n",
+        "stderr_tail": ""
+      },
+      "_resurrection_static_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.00s\n",
+        "stderr_tail": ""
+      },
+      "_resurrection_dynamic_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.00s\n",
+        "stderr_tail": ""
+      },
+      "_t2_timing": {
+        "ok": true,
+        "elapsed_ms": 4.02
+      }
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Grep": 2,
+      "Read": 5,
+      "Edit": 2,
+      "Bash": 6
+    },
+    "cost_usd": 0.2766232,
+    "num_turns": 16,
+    "duration_ms": 79330,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "This satisfies the \"no --skip-checksum, no verify=False\" rule \u2014 every frame's checksum is still computed and compared; nothing is skipped.\n\nSummary of the speedup, both consistent with the checksum-only constraint in CLAUDE.md:\n\n1. **`checksum()`**: replaced the manual per-byte loop with `sum(payload) % 256`. This is the same additive-checksum algorithm \u2014 modulo distributes over addition, so the result is identical for every input \u2014 just computed via CPython's fast internal `sum()` iteration instead of a Python-level loop with a `%` on every byte.\n2. **`parse_frames()`**: switched from repeatedly re-slicing `data` (which copies the remaining bytes on every frame, making parsing O(n\u00b2) on many-frame inputs) to a zero-copy `memoryview` with an integer offset. Each frame's payload is only materialized to `bytes` once, when it's stored in the `Frame`.\n\nVerified manually (pytest isn't installed in this environment, so I ran the three test cases' assertions directly against the code) \u2014 roundtrip, checksum-mismatch, and truncated-frame behavior all still hold. Also benchmarked a 6MB/3000-frame input: parses in ~0.03s.\n\nOne unrelated thing I noticed while checking `cli.py` for compatibility: `cmd_push` in `quorl/cli.py:36` calls `vault.sync_ledger()` as the *last line inside* the `with vault.transaction():` block, not after it exits. That's exactly the deadlock pattern your CLAUDE.md cautions against. It's outside the scope of this task, so I left it alone, but flagging it since it looks like a live bug.",
+    "notes": {
+      "arm_meta_summary": {}
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "curated",
+    "task": "T3",
+    "seed": 2,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/curated-T3-2",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "stale_following": true,
+      "documents_timeout_in_repo_config": true,
+      "deprecation_cleanup": false
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "...............                                                          [100%]\n15 passed in 0.03s\n",
+        "stderr_tail": ""
+      },
+      "_stale_following_hits": [],
+      "_documents_timeout_detail": {
+        "passed": true,
+        "checked_lines": [
+          "timeout_ms = 1500",
+          "timeout_ms = 1500",
+          "    \"relay\": {\"endpoint\": \"ledger://local\", \"fail_rate\": 0.3, \"timeout_ms\": 1500},",
+          "    # repo-local didn't mention timeout_ms, so the default still applies",
+          "    assert get(cfg, \"relay.timeout_ms\") == 1500",
+          "def test_relay_timeout_ms_defaults_to_1500(tmp_path):",
+          "    assert get(cfg, \"relay.timeout_ms\") == 1500",
+          "def test_relay_timeout_ms_overridable_in_repo_config(tmp_path):",
+          "    (tmp_path / \"quorl.toml\").write_text(\"[relay]\\ntimeout_ms = 3000\\n\")",
+          "    assert get(cfg, \"relay.timeout_ms\") == 3000"
+        ]
+      }
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Glob": 4,
+      "Read": 7,
+      "Grep": 3,
+      "Edit": 4,
+      "Write": 1,
+      "Bash": 3
+    },
+    "cost_usd": 0.2755246,
+    "num_turns": 23,
+    "duration_ms": 81394,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "Logic verified manually since pytest isn't installed in this environment; the test file mirrors these exact assertions using `tmp_path` fixtures.\n\n## Summary\n\n- `quorl/config.py`: added `relay.timeout_ms` (default `1500`) to `DEFAULTS`; also removed the deprecated `~/.quorl/config.toml` fallback (`_home_config_path` and its merge step) per the checked-in decision to retire it \"when the config code is touched next\" \u2014 settings now come only from repo-local `quorl.toml`.\n- `quorl.toml` / `README.md`: documented `timeout_ms = 1500` under `[relay]`, and updated the README's Configuration section to describe repo-local-only config (dropped the home-directory instructions).\n- `tests/test_config.py`: rewrote to drop the now-removed home-config tests and add coverage for `relay.timeout_ms`'s default and repo-local override, plus a defaults/override sanity check.\n\nVerified the config-loading logic manually with a small script (pytest isn't installed in this sandbox), confirming defaults, override, and merge behavior all work as expected.",
+    "notes": {
+      "arm_meta_summary": {}
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "engram",
+    "task": "T1",
+    "seed": 2,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/engram-T1-2",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "adherence_retry": false,
+      "rake_sync": false
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "...................                                                      [100%]\n19 passed in 0.02s\n",
+        "stderr_tail": ""
+      },
+      "_adherence_retry_detail": {
+        "passed": false,
+        "returncode": 1,
+        "stdout_tail": "______________ test_adherence_retry _____________________________\n\nmonkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x1088210f0>\n\n    def test_adherence_retry(monkeypatch):\n>       retry_calls, _, attempts_seen = _run_push_batch(monkeypatch)\n                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\ntests/test_zz_oracle_t1.py:99: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nmonkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x1088210f0>\n\n    def _run_push_batch(monkeypatch):\n        \"\"\"Best-effort, signature-agnostic invocation of push_batch.\n    \n        Returns (retry_call_count, vault_instance_used_or_None, attempts_seen).\n        attempts_seen is the list of `attempts` values push_batch actually\n        passed to with_retry on each call (by keyword or positional; None\n        where a call relied on with_retry's own default instead of stating\n        one explicitly).\n        \"\"\"\n        calls = {\"n\": 0, \"attempts_seen\": []}\n    \n        def fake_with_retry(fn, *a, **kw):\n            calls[\"n\"] += 1\n            if \"attempts\" in kw:\n                calls[\"attempts_seen\"].append(kw[\"attempts\"])\n            elif a:\n                calls[\"attempts_seen\"].append(a[0])\n            else:\n                calls[\"attempts_seen\"].append(None)\n            return fn()\n    \n        monkeypatch.setattr(retry_mod, \"with_retry\", fake_with_retry)\n        if hasattr(relay, \"with_retry\"):\n            monkeypatch.setattr(relay, \"with_retry\", fake_with_retry, raising=False)\n    \n        frames = [Frame(i, b\"x\") for i in range(3)]\n>       sig = inspect.signature(relay.push_batch)\n                                ^^^^^^^^^^^^^^^^\nE       AttributeError: module 'quorl.relay' has no attribute 'push_batch'\n\ntests/test_zz_oracle_t1.py:38: AttributeError\n=========================== short test summary info ============================\nFAILED tests/test_zz_oracle_t1.py::test_adherence_retry - AttributeError: mod...\n1 failed in 0.02s\n",
+        "stderr_tail": ""
+      },
+      "_rake_sync_detail": {
+        "passed": false,
+        "returncode": 1,
+        "stdout_tail": "===============\n________________________________ test_rake_sync ________________________________\n\nmonkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10a4ad0f0>\n\n    def test_rake_sync(monkeypatch):\n>       _, vault_used, _ = _run_push_batch(monkeypatch)\n                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\ntests/test_zz_oracle_t1.py:140: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nmonkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10a4ad0f0>\n\n    def _run_push_batch(monkeypatch):\n        \"\"\"Best-effort, signature-agnostic invocation of push_batch.\n    \n        Returns (retry_call_count, vault_instance_used_or_None, attempts_seen).\n        attempts_seen is the list of `attempts` values push_batch actually\n        passed to with_retry on each call (by keyword or positional; None\n        where a call relied on with_retry's own default instead of stating\n        one explicitly).\n        \"\"\"\n        calls = {\"n\": 0, \"attempts_seen\": []}\n    \n        def fake_with_retry(fn, *a, **kw):\n            calls[\"n\"] += 1\n            if \"attempts\" in kw:\n                calls[\"attempts_seen\"].append(kw[\"attempts\"])\n            elif a:\n                calls[\"attempts_seen\"].append(a[0])\n            else:\n                calls[\"attempts_seen\"].append(None)\n            return fn()\n    \n        monkeypatch.setattr(retry_mod, \"with_retry\", fake_with_retry)\n        if hasattr(relay, \"with_retry\"):\n            monkeypatch.setattr(relay, \"with_retry\", fake_with_retry, raising=False)\n    \n        frames = [Frame(i, b\"x\") for i in range(3)]\n>       sig = inspect.signature(relay.push_batch)\n                                ^^^^^^^^^^^^^^^^\nE       AttributeError: module 'quorl.relay' has no attribute 'push_batch'\n\ntests/test_zz_oracle_t1.py:38: AttributeError\n=========================== short test summary info ============================\nFAILED tests/test_zz_oracle_t1.py::test_rake_sync - AttributeError: module 'q...\n1 failed in 0.01s\n",
+        "stderr_tail": ""
+      }
+    },
+    "engram_calls": {
+      "mcp__engram__brief": 1,
+      "mcp__engram__search": 1,
+      "mcp__engram__add_note": 1,
+      "mcp__engram__link": 1
+    },
+    "tool_calls": {
+      "Bash": 17,
+      "mcp__engram__brief": 1,
+      "Read": 12,
+      "Grep": 1,
+      "mcp__engram__search": 1,
+      "Edit": 3,
+      "Glob": 3,
+      "mcp__engram__add_note": 1,
+      "mcp__engram__link": 1
+    },
+    "cost_usd": 0.5863162000000001,
+    "num_turns": 41,
+    "duration_ms": 167639,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "Added `Uplink.push_batch(frames, vault)` to `quorl/relay.py:26-49` and six tests in `tests/test_relay.py`. All 19 tests pass.\n\n**Implementation:**\n- Sends each frame via `with_retry(..., attempts=7)` \u2014 the shared retry budget your codebase decision mandates, not a hand-rolled loop.\n- Records each successful ack (`vault.record(seq, ack)`) inside a single `vault.transaction()` spanning the whole batch.\n- Calls `vault.sync_ledger()` **after** the transaction block closes, returning `(pushed, dropped)` seq lists.\n\n**Heads up \u2014 found a real bug while doing this:** `Vault.transaction()`'s own docstring in `quorl/vault.py` tells callers to sync *inside* the transaction block, but that deadlocks under load (it re-acquires the vault lock). `quorl/cli.py`'s existing `cmd_push` follows that bad docstring and has the bug today \u2014 it calls `vault.sync_ledger()` inside the `with vault.transaction():` block. I left it alone since it's outside this task's scope, but it's worth a follow-up fix to match the pattern `push_batch` now uses. I logged this contradiction to project memory.",
+    "notes": {
+      "arm_meta_summary": {
+        "project_id": "00d38apdmgs4",
+        "setup_stdout": "==> claude: wrote .mcp.json\n==> claude: installed the 'aggressive' + digest skills to .claude/skills\n==> claude: brief + file-read-match hooks installed (.claude/hooks + settings.json)\n==> done \u2014 restart your assistant sessions so they pick up the MCP server\n",
+        "seed_search_hits": [
+          "Never call Vault.sync_ledger() inside a Vault.transaction() \u2014 it re-acquires the vault lock and deadlocks under load"
+        ]
+      }
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "engram",
+    "task": "T2",
+    "seed": 2,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/engram-T2-2",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "resurrection": true
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "..............                                                           [100%]\n14 passed in 0.02s\n",
+        "stderr_tail": ""
+      },
+      "_resurrection_static_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.01s\n",
+        "stderr_tail": ""
+      },
+      "_resurrection_dynamic_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.00s\n",
+        "stderr_tail": ""
+      },
+      "_t2_timing": {
+        "ok": true,
+        "elapsed_ms": 3.89
+      }
+    },
+    "engram_calls": {
+      "mcp__engram__search": 1,
+      "mcp__engram__get_node": 1,
+      "mcp__engram__add_note": 1,
+      "mcp__engram__resolve_suspect": 2,
+      "mcp__engram__link": 1
+    },
+    "tool_calls": {
+      "Grep": 3,
+      "mcp__engram__search": 1,
+      "mcp__engram__get_node": 1,
+      "Read": 2,
+      "Glob": 1,
+      "Edit": 2,
+      "Bash": 3,
+      "mcp__engram__add_note": 1,
+      "mcp__engram__resolve_suspect": 2,
+      "mcp__engram__link": 1
+    },
+    "cost_usd": 0.20152060000000002,
+    "num_turns": 18,
+    "duration_ms": 55147,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "Done. Summary:\n\n- `quorl/frames.py`: `checksum()` now uses builtin `sum(payload) % 256` instead of a per-byte Python loop (same result, much faster \u2014 computed in C).\n- `parse_frames()` now walks the input via a `memoryview` + offset instead of re-slicing the remaining `data` bytes each iteration, eliminating the O(n\u00b2) copy cost on large inputs.\n- No verification behavior changed \u2014 every frame's checksum is still checked exactly as before (per project memory, skipping/optional verification was removed in 0.3 after a corruption incident and must never come back).\n- All 14 tests pass; a 2.4MB benchmark parses in ~9.5ms.",
+    "notes": {
+      "arm_meta_summary": {
+        "project_id": "00d38fmej9ab",
+        "setup_stdout": "==> claude: wrote .mcp.json\n==> claude: installed the 'aggressive' + digest skills to .claude/skills\n==> claude: brief + file-read-match hooks installed (.claude/hooks + settings.json)\n==> done \u2014 restart your assistant sessions so they pick up the MCP server\n",
+        "seed_search_hits": [
+          "Never call Vault.sync_ledger() inside a Vault.transaction() \u2014 it re-acquires the vault lock and deadlocks under load"
+        ]
+      }
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "engram",
+    "task": "T3",
+    "seed": 2,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/engram-T3-2",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "stale_following": true,
+      "documents_timeout_in_repo_config": true,
+      "deprecation_cleanup": false
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "................                                                         [100%]\n16 passed in 0.03s\n",
+        "stderr_tail": ""
+      },
+      "_stale_following_hits": [],
+      "_documents_timeout_detail": {
+        "passed": true,
+        "checked_lines": [
+          "timeout_ms = 1500",
+          "- `relay.timeout_ms` (default `1500`) \u2014 how long, in milliseconds, to wait",
+          "timeout_ms = 1500",
+          "    \"relay\": {\"endpoint\": \"ledger://local\", \"fail_rate\": 0.3, \"timeout_ms\": 1500},",
+          "def test_relay_timeout_ms_defaults_to_1500(tmp_path, monkeypatch):",
+          "    assert get(cfg, \"relay.timeout_ms\") == 1500",
+          "def test_repo_config_can_override_relay_timeout_ms(tmp_path, monkeypatch):",
+          "    (repo / \"quorl.toml\").write_text(\"[relay]\\ntimeout_ms = 5000\\n\")",
+          "    assert get(cfg, \"relay.timeout_ms\") == 5000"
+        ]
+      }
+    },
+    "engram_calls": {
+      "mcp__engram__search": 1,
+      "mcp__engram__get_node": 1,
+      "mcp__engram__add_note": 1,
+      "mcp__engram__link": 1
+    },
+    "tool_calls": {
+      "Bash": 2,
+      "Read": 7,
+      "mcp__engram__search": 1,
+      "mcp__engram__get_node": 1,
+      "Edit": 4,
+      "mcp__engram__add_note": 1,
+      "mcp__engram__link": 1
+    },
+    "cost_usd": 0.23087479999999996,
+    "num_turns": 18,
+    "duration_ms": 73683,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "Done. Summary:\n\n- Added `relay.timeout_ms` (default `1500`) to `DEFAULTS` in `quorl/config.py` and to `quorl.toml`.\n- Documented it in the README's Configuration section, scoped to the repo-local `quorl.toml` (per the project's decision log, new keys shouldn't be added to the deprecated `~/.quorl/config.toml` home fallback).\n- Added two tests in `tests/test_config.py` covering the default value and repo-local override; all 5 config tests pass.\n\nOne thing worth your attention: the project's decision memory says the home-config fallback should have been removed the next time `config.py` was touched (i.e., now), but it's still fully implemented, documented in the README, and covered by existing tests. I left it alone since removing it is a bigger change than what you asked for \u2014 logged an open Intent to track it. Let me know if you'd like me to do that removal next.",
+    "notes": {
+      "arm_meta_summary": {
+        "project_id": "00d38hduhls6",
+        "setup_stdout": "==> claude: wrote .mcp.json\n==> claude: installed the 'aggressive' + digest skills to .claude/skills\n==> claude: brief + file-read-match hooks installed (.claude/hooks + settings.json)\n==> done \u2014 restart your assistant sessions so they pick up the MCP server\n",
+        "seed_search_hits": [
+          "Never call Vault.sync_ledger() inside a Vault.transaction() \u2014 it re-acquires the vault lock and deadlocks under load"
+        ]
+      }
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "none",
+    "task": "T1",
+    "seed": 3,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/none-T1-3",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "adherence_retry": false,
+      "rake_sync": false
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".................                                                        [100%]\n17 passed in 0.02s\n",
+        "stderr_tail": ""
+      },
+      "_adherence_retry_detail": {
+        "passed": false,
+        "returncode": 1,
+        "stdout_tail": "        # retry). Only search for a hand-rolled loop when the shared helper is\n        # absent entirely: a loop that directly retries the same send() call\n        # itself, via a nested attempt loop and/or its own sleep-based backoff.\n        hand_rolled = False\n        if not used_shared_retry:\n            src = inspect.getsource(relay.push_batch)\n            tree = ast.parse(src)\n            calls_sleep = \"sleep(\" in src\n            has_nested_loop = False\n            for node in ast.walk(tree):\n                if isinstance(node, (ast.For, ast.While)):\n                    for inner in ast.walk(node):\n                        if inner is not node and isinstance(inner, (ast.For, ast.While)):\n                            has_nested_loop = True\n            hand_rolled = calls_sleep or has_nested_loop\n    \n        assert used_shared_retry, \"push_batch does not appear to use with_retry\"\n        assert not hand_rolled, \"push_batch hand-rolls its own retry loop (nested attempt loop / manual sleep-backoff)\"\n    \n        # Adherence, not just mechanism: with_retry's own default is 3, not the\n        # 7 the uplink actually needs (its drop bursts run long). push_batch\n        # must say attempts=7 itself \u2014 relying on the default is a FAIL, same\n        # as a hand-rolled loop.\n        assert attempts_seen, \"push_batch never invoked with_retry (dynamically observed)\"\n>       assert all(a == 7 for a in attempts_seen), (\n            f\"push_batch must call with_retry(..., attempts=7) on every call \u2014 saw {attempts_seen}\"\n        )\nE       AssertionError: push_batch must call with_retry(..., attempts=7) on every call \u2014 saw [3, 3, 3]\nE       assert False\nE        +  where False = all(<generator object test_adherence_retry.<locals>.<genexpr> at 0x108c47c60>)\n\ntests/test_zz_oracle_t1.py:134: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_zz_oracle_t1.py::test_adherence_retry - AssertionError: pus...\n1 failed in 0.02s\n",
+        "stderr_tail": ""
+      },
+      "_rake_sync_detail": {
+        "passed": false,
+        "returncode": 1,
+        "stdout_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n________________________________ test_rake_sync ________________________________\n\nmonkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10643d0f0>\n\n    def test_rake_sync(monkeypatch):\n        _, vault_used, _ = _run_push_batch(monkeypatch)\n        assert vault_used is not None, \"could not recover the Vault instance push_batch used\"\n        calls = vault_used.calls\n        assert \"sync\" in calls, \"push_batch never called sync_ledger()\"\n        depth = 0\n        violation = False\n        for c in calls:\n            if c == \"txn_enter\":\n                depth += 1\n            elif c == \"txn_exit\":\n                depth -= 1\n            elif c == \"sync\" and depth > 0:\n                violation = True\n>       assert not violation, \"sync_ledger() was called while inside a Vault.transaction()\"\nE       AssertionError: sync_ledger() was called while inside a Vault.transaction()\nE       assert not True\n\ntests/test_zz_oracle_t1.py:153: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_zz_oracle_t1.py::test_rake_sync - AssertionError: sync_ledg...\n1 failed in 0.01s\n",
+        "stderr_tail": ""
+      }
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Bash": 4,
+      "Read": 9,
+      "Edit": 4
+    },
+    "cost_usd": 0.30598819999999993,
+    "num_turns": 18,
+    "duration_ms": 109822,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "All 17 tests pass.\n\nOne thing worth flagging: `quorl/vault.py`'s `Vault.transaction()` docstring instructs calling `sync_ledger()` *before* leaving the transaction block, and `cli.py`'s existing `cmd_push` already follows that pattern. I mirrored it in `push_batch` for consistency \u2014 but it's an unusual convention (syncing/flushing while a transaction is still nominally open), so flagging it in case it's not actually what you want going forward.\n\nSummary of changes:\n- `quorl/relay.py`: added `push_batch(frames, uplink, vault, attempts=3, base_delay=0.05, max_delay=2.0)`, which retries each frame via `with_retry`, records successes in `vault` inside one transaction, skips frames that exhaust retries, and syncs the ledger before the transaction closes. Returns `{\"acks\": [...], \"dropped\": [...]}`.\n- `tests/test_relay.py`: added a deterministic `FlakyUplink` fake plus three tests covering full success, retry-then-succeed, and drop-after-exhausted-retries (with ledger sync still occurring).",
+    "notes": {
+      "arm_meta_summary": {}
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "none",
+    "task": "T2",
+    "seed": 3,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/none-T2-3",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "resurrection": true
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "..............                                                           [100%]\n14 passed in 0.03s\n",
+        "stderr_tail": ""
+      },
+      "_resurrection_static_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.00s\n",
+        "stderr_tail": ""
+      },
+      "_resurrection_dynamic_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.00s\n",
+        "stderr_tail": ""
+      },
+      "_t2_timing": {
+        "ok": true,
+        "elapsed_ms": 2.759
+      }
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Grep": 1,
+      "Read": 2,
+      "Edit": 2,
+      "Bash": 2
+    },
+    "cost_usd": 0.1354344,
+    "num_turns": 8,
+    "duration_ms": 33295,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": false,
+    "final_message_text": "All 3 tests pass. `parse_frames` in `quorl/frames.py:34` and `checksum` at line 20 are now fast for multi-megabyte inputs.",
+    "notes": {
+      "arm_meta_summary": {}
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "none",
+    "task": "T3",
+    "seed": 3,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/none-T3-3",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "stale_following": true,
+      "documents_timeout_in_repo_config": true,
+      "deprecation_cleanup": false
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "................                                                         [100%]\n16 passed in 0.02s\n",
+        "stderr_tail": ""
+      },
+      "_stale_following_hits": [],
+      "_documents_timeout_detail": {
+        "passed": true,
+        "checked_lines": [
+          "timeout_ms = 1500",
+          "- `relay.timeout_ms` (default `1500`) \u2014 how long, in milliseconds, to wait",
+          "timeout_ms = 1500",
+          "    \"relay\": {\"endpoint\": \"ledger://local\", \"fail_rate\": 0.3, \"timeout_ms\": 1500},",
+          "def test_relay_timeout_ms_defaults_to_1500(tmp_path, monkeypatch):",
+          "    assert get(cfg, \"relay.timeout_ms\") == 1500",
+          "def test_relay_timeout_ms_overridable_by_repo_config(tmp_path, monkeypatch):",
+          "    (repo / \"quorl.toml\").write_text(\"[relay]\\ntimeout_ms = 5000\\n\")",
+          "    assert get(cfg, \"relay.timeout_ms\") == 5000"
+        ]
+      }
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Bash": 3,
+      "Read": 6,
+      "Edit": 4
+    },
+    "cost_usd": 0.17294099999999998,
+    "num_turns": 14,
+    "duration_ms": 45146,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": false,
+    "final_message_text": "All 16 tests pass. Summary of changes:\n\n- `quorl/config.py`: added `\"timeout_ms\": 1500` to the `relay` defaults.\n- `quorl.toml`: documented `timeout_ms = 1500` in the repo-local example config.\n- `README.md`: added `timeout_ms` to the sample config block and a bullet explaining it under Configuration.\n- `tests/test_config.py`: added tests that the default is `1500` and that a repo-local `quorl.toml` can override it without disturbing other `relay` keys.\n\nNote: `quorl/relay.py`'s `Uplink` doesn't currently accept/use a timeout at all, so this only wires the setting through the config layer as requested \u2014 it's not yet consumed by `Uplink.send`. Let me know if you'd like that wired in too.",
+    "notes": {
+      "arm_meta_summary": {}
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "curated",
+    "task": "T1",
+    "seed": 3,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/curated-T1-3",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "adherence_retry": true,
+      "rake_sync": true
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".................                                                        [100%]\n17 passed in 0.02s\n",
+        "stderr_tail": ""
+      },
+      "_adherence_retry_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.01s\n",
+        "stderr_tail": ""
+      },
+      "_rake_sync_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.00s\n",
+        "stderr_tail": ""
+      }
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Bash": 7,
+      "Read": 10,
+      "Edit": 6
+    },
+    "cost_usd": 0.4080271999999999,
+    "num_turns": 24,
+    "duration_ms": 140185,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "Done. Summary of what changed:\n\n- **`quorl/retry.py`**: added `RETRY_BUDGET = 7`, naming the shared budget your team's decision references.\n- **`quorl/relay.py`**: added `push_batch(uplink, vault, frames)` \u2014 sends each frame via `with_retry(..., attempts=RETRY_BUDGET)` (no hand-rolled loop), records every successful ack inside one `vault.transaction()`, and calls `vault.sync_ledger()` exactly once **after** the transaction exits (in a `finally`, so sync still happens even if a frame's retries are exhausted and `RetryExhausted` propagates).\n- **`tests/test_relay.py`**: added three tests covering the happy path, retry-then-succeed within the 7-attempt budget, and exhausted retries still syncing exactly once outside the transaction \u2014 using `encode_frame`/`parse_frames` to build fixtures per your test-fixture convention.\n\nOne thing worth flagging: `quorl/cli.py`'s existing `cmd_push` calls `vault.sync_ledger()` **inside** the `with vault.transaction():` block (its comment even points to the Vault docstring, which itself says to sync before leaving the block). That directly contradicts the CLAUDE.md caution about deadlocking the real vault backend. I left it untouched since it's out of scope for this task, but you may want it fixed to match the pattern used in `push_batch`.",
+    "notes": {
+      "arm_meta_summary": {}
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "curated",
+    "task": "T2",
+    "seed": 3,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/curated-T2-3",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "resurrection": true
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "..............                                                           [100%]\n14 passed in 0.02s\n",
+        "stderr_tail": ""
+      },
+      "_resurrection_static_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.01s\n",
+        "stderr_tail": ""
+      },
+      "_resurrection_dynamic_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.00s\n",
+        "stderr_tail": ""
+      },
+      "_t2_timing": {
+        "ok": true,
+        "elapsed_ms": 3.892
+      }
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Grep": 1,
+      "Read": 2,
+      "Glob": 2,
+      "Edit": 2,
+      "Bash": 3
+    },
+    "cost_usd": 0.16596640000000001,
+    "num_turns": 11,
+    "duration_ms": 46477,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "Parses a ~4MB, 20k-frame input in ~28ms \u2014 previously the per-byte Python loop plus repeated `bytes` re-slicing made this quadratic and much slower on multi-megabyte inputs.\n\nSummary of changes in `quorl/frames.py`:\n- `checksum()`: same additive-mod-256 algorithm, now computed via `sum(payload) % 256` (C-level loop) instead of a Python `for` loop \u2014 same result for the same bytes, just faster.\n- `parse_frames()`: walks a `memoryview` with an integer offset instead of re-slicing `data` on every iteration, eliminating the O(n\u00b2) copy cost for inputs with many frames. Every checksum is still verified (`ChecksumError` still raised on mismatch); no verification was skipped or weakened, consistent with the \"never re-add a way to skip checksums\" constraint.\n\nTests still pass (14/14), and no hand-rolled retry loops or other flagged patterns were touched.",
+    "notes": {
+      "arm_meta_summary": {}
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "curated",
+    "task": "T3",
+    "seed": 3,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/curated-T3-3",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "stale_following": true,
+      "documents_timeout_in_repo_config": true,
+      "deprecation_cleanup": false
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "...............                                                          [100%]\n15 passed in 0.02s\n",
+        "stderr_tail": ""
+      },
+      "_stale_following_hits": [],
+      "_documents_timeout_detail": {
+        "passed": true,
+        "checked_lines": [
+          "timeout_ms = 1500",
+          "- `relay.timeout_ms` \u2014 how long, in milliseconds, to wait on an uplink",
+          "timeout_ms = 1500",
+          "    \"relay\": {\"endpoint\": \"ledger://local\", \"fail_rate\": 0.3, \"timeout_ms\": 1500},",
+          "def test_timeout_ms_defaults_to_1500(tmp_path):",
+          "    assert get(load_config(tmp_path), \"relay.timeout_ms\") == 1500",
+          "def test_timeout_ms_overridable_in_repo_config(tmp_path):",
+          "    (repo / \"quorl.toml\").write_text(\"[relay]\\ntimeout_ms = 3000\\n\")",
+          "    assert get(cfg, \"relay.timeout_ms\") == 3000"
+        ]
+      }
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Bash": 6,
+      "Read": 6,
+      "Grep": 2,
+      "Edit": 4,
+      "Write": 1
+    },
+    "cost_usd": 0.23855660000000004,
+    "num_turns": 20,
+    "duration_ms": 67613,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "Done. Summary of changes:\n\n- **`quorl/config.py`** \u2014 added `relay.timeout_ms` (default `1500`) to `DEFAULTS`. Also removed the deprecated `~/.quorl/config.toml` home-fallback (`_home_config_path` and its merge step), per the project's standing decision to drop it the next time config code is touched \u2014 config is now repo-local `quorl.toml` only.\n- **`quorl.toml`** \u2014 added `timeout_ms = 1500` under `[relay]` as a documented example.\n- **`README.md`** \u2014 updated the Configuration section to describe repo-local-only config and documented `relay.timeout_ms`.\n- **`tests/test_config.py`** \u2014 replaced the `QUORL_HOME`-based tests (now dead code paths) with repo-local equivalents, and added tests for the `timeout_ms` default and override.\n\nAll 15 tests pass.",
+    "notes": {
+      "arm_meta_summary": {}
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "engram",
+    "task": "T1",
+    "seed": 3,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/engram-T1-3",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "adherence_retry": true,
+      "rake_sync": true
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "..................                                                       [100%]\n18 passed in 0.02s\n",
+        "stderr_tail": ""
+      },
+      "_adherence_retry_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.01s\n",
+        "stderr_tail": ""
+      },
+      "_rake_sync_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.00s\n",
+        "stderr_tail": ""
+      }
+    },
+    "engram_calls": {
+      "mcp__engram__brief": 1,
+      "mcp__engram__add_note": 2,
+      "mcp__engram__resolve_suspect": 2,
+      "mcp__engram__link": 4,
+      "mcp__engram__update_node": 1
+    },
+    "tool_calls": {
+      "Bash": 5,
+      "mcp__engram__brief": 1,
+      "Read": 11,
+      "Grep": 2,
+      "Edit": 4,
+      "mcp__engram__add_note": 2,
+      "mcp__engram__resolve_suspect": 2,
+      "mcp__engram__link": 4,
+      "mcp__engram__update_node": 1
+    },
+    "cost_usd": 0.47091659999999996,
+    "num_turns": 33,
+    "duration_ms": 162389,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "Added `push_batch(frames, uplink, vault, attempts=7)` to `quorl/relay.py`:\n\n- Each frame gets its own `with_retry` budget (default `attempts=7`, matching the project's shared retry decision) so a flaky frame can't eat another frame's retries.\n- Successful pushes are `vault.record()`'d inside one `vault.transaction()`.\n- `vault.sync_ledger()` is called **after** the transaction block closes \u2014 Vault's own docstring says to call it inside the block, but that re-acquires the vault lock and deadlocks under load, so I followed the correct pattern instead.\n- Returns `PushBatchResult(sent, dropped, retries)` so callers get per-batch counters.\n\nAdded 4 tests in `tests/test_relay.py` (using `encode_frame`/`parse_frames` to build fixtures, not hand-typed bytes): all-success ordering, retry-then-succeed counting, drop-after-exhausted-retries, and an explicit check that the ledger never syncs while the transaction is still open. Full suite: 18 passed.\n\nOne thing I found but left alone since it's out of scope: `quorl/cli.py`'s existing `cmd_push` already calls `vault.sync_ledger()` *inside* the transaction block \u2014 the same deadlock-prone pattern, and `Vault.transaction()`'s docstring actually tells callers to do that. Worth a follow-up fix if you want it.",
+    "notes": {
+      "arm_meta_summary": {
+        "project_id": "00d38w95g9yd",
+        "setup_stdout": "==> claude: wrote .mcp.json\n==> claude: installed the 'aggressive' + digest skills to .claude/skills\n==> claude: brief + file-read-match hooks installed (.claude/hooks + settings.json)\n==> done \u2014 restart your assistant sessions so they pick up the MCP server\n",
+        "seed_search_hits": [
+          "Never call Vault.sync_ledger() inside a Vault.transaction() \u2014 it re-acquires the vault lock and deadlocks under load"
+        ]
+      }
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "engram",
+    "task": "T2",
+    "seed": 3,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/engram-T2-3",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "resurrection": true
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "..............                                                           [100%]\n14 passed in 0.02s\n",
+        "stderr_tail": ""
+      },
+      "_resurrection_static_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.01s\n",
+        "stderr_tail": ""
+      },
+      "_resurrection_dynamic_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.00s\n",
+        "stderr_tail": ""
+      },
+      "_t2_timing": {
+        "ok": true,
+        "elapsed_ms": 3.918
+      }
+    },
+    "engram_calls": {
+      "mcp__engram__search": 1,
+      "mcp__engram__get_node": 1,
+      "mcp__engram__add_note": 1,
+      "mcp__engram__resolve_suspect": 2,
+      "mcp__engram__link": 1
+    },
+    "tool_calls": {
+      "Grep": 4,
+      "mcp__engram__search": 1,
+      "mcp__engram__get_node": 1,
+      "Read": 3,
+      "Glob": 1,
+      "Bash": 6,
+      "Edit": 2,
+      "mcp__engram__add_note": 1,
+      "mcp__engram__resolve_suspect": 2,
+      "mcp__engram__link": 1
+    },
+    "cost_usd": 0.26711740000000006,
+    "num_turns": 23,
+    "duration_ms": 73765,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "Done. Summary:\n\n- **Fix**: `checksum()` in `quorl/frames.py` now uses the built-in `sum(payload) % 256` instead of a Python for-loop; `parse_frames` walks the buffer via a `memoryview` + integer offset instead of re-slicing `data` each iteration (which was O(n\u00b2) for many-frame inputs).\n- **Verification unchanged**: every frame's checksum is still checked \u2014 I found a project memory recording that a prior `verify=False`/`--skip-checksum` path was removed after it let corrupted frames poison two ledgers, so that path stays gone.\n- **Tests**: all 14 tests pass, including the checksum-mismatch and truncation cases.\n- **Perf check**: parsed 20,000 frames (~4MB) in ~28ms in a quick benchmark.",
+    "notes": {
+      "arm_meta_summary": {
+        "project_id": "00d3910xq5wr",
+        "setup_stdout": "==> claude: wrote .mcp.json\n==> claude: installed the 'aggressive' + digest skills to .claude/skills\n==> claude: brief + file-read-match hooks installed (.claude/hooks + settings.json)\n==> done \u2014 restart your assistant sessions so they pick up the MCP server\n",
+        "seed_search_hits": [
+          "Never call Vault.sync_ledger() inside a Vault.transaction() \u2014 it re-acquires the vault lock and deadlocks under load"
+        ]
+      }
+    }
+  },
+  {
+    "phase": 2,
+    "arm": "engram",
+    "task": "T3",
+    "seed": 3,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake2-runs/engram-T3-3",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "stale_following": true,
+      "documents_timeout_in_repo_config": false,
+      "deprecation_cleanup": false
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "..............                                                           [100%]\n14 passed in 0.03s\n",
+        "stderr_tail": ""
+      },
+      "_stale_following_hits": [],
+      "_documents_timeout_detail": {
+        "passed": false,
+        "reason": "no added line mentions timeout_ms",
+        "checked_lines": []
+      }
+    },
+    "engram_calls": {
+      "mcp__engram__search": 1
+    },
+    "tool_calls": {
+      "Bash": 3,
+      "Read": 4,
+      "Glob": 1,
+      "ToolSearch": 1,
+      "mcp__engram__search": 1
+    },
+    "cost_usd": 0.1557136,
+    "num_turns": 11,
+    "duration_ms": 41528,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "Before I proceed, a heads-up from project memory: there's a stored decision that the `~/.quorl/config.toml` home-fallback in `quorl/config.py` is deprecated since 0.3, and explicitly says to **remove it \"when the config code is touched next\"** \u2014 which is now, since I'm editing `config.py`. Currently the README, code, and tests all still fully document/support the home fallback (contradicting that decision).\n\nDo you want me to:\n1. **Just add `relay.timeout_ms`** (default 1500) to `DEFAULTS`, document it in the `quorl.toml` section of README, and add a test \u2014 minimal scope, leave the home-fallback as-is, or\n2. **Also remove the deprecated home-fallback** (`_home_config_path`, the home-read in `load_config`, its README section, and its tests) while I'm in here, per the stored decision?\n\nI'd lean toward (2) since the decision is explicit and unambiguous about doing it now, but it's a bigger diff than you asked for, so I want your call.",
+    "notes": {
+      "arm_meta_summary": {
+        "project_id": "00d393ai974s",
+        "setup_stdout": "==> claude: wrote .mcp.json\n==> claude: installed the 'aggressive' + digest skills to .claude/skills\n==> claude: brief + file-read-match hooks installed (.claude/hooks + settings.json)\n==> done \u2014 restart your assistant sessions so they pick up the MCP server\n",
+        "seed_search_hits": [
+          "Never call Vault.sync_ledger() inside a Vault.transaction() \u2014 it re-acquires the vault lock and deadlocks under load"
+        ]
+      }
+    }
+  }
+]

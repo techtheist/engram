@@ -3,6 +3,42 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
+## v0.9.4
+
+### Search hits name their role, and two external benches
+
+- **Search hits carry the tombstone role.** Every hit that plays the graph's
+  tombstone role now says so with a `tombstone: true` field, on REST as well
+  as MCP (MCP already summarized the count in `tombstone_note`). A reader
+  can tell "Removed: X" from a memory of X without knowing which type name
+  plays the role in a custom ontology — found by the ForgetEval adapter,
+  whose role-blind reader took the marker for the fact. Absent when false,
+  so plain hits are byte-identical to before.
+- **A zero knee cliff is refused.** `policy.knee_cliff` is an option: null
+  turns the knee trim off, but 0 was accepted and meant the opposite —
+  every relative drop clears a zero cliff, so every result was cut at its
+  largest score drop. The config now refuses 0 and names the real off
+  switch. Also found by the ForgetEval adapter, which zeroed it to disable
+  it and lost the surviving peer on every amnesia query.
+- **ForgetEval, run and reported per family** (`eval/forgeteval/`, receipts
+  `eval/results/2026-09-12-forgeteval-*`): an adapter over the local HTTP
+  API for the judge-free forgetting benchmark (arXiv:2606.15903). Reported
+  as five separate families — supersession, purge, drift, amnesia, decay —
+  never as one score, because the benchmark's "decay" and "amnesia" are
+  explicit releases of facts, which in engram is the user's tombstoned
+  delete, and the marker is *meant* to stay findable. Both readers are
+  measured: role-blind (the marker counts as a leak) and role-aware (the
+  `types` filter, now the `tombstone` flag). See `eval/README.md`.
+- **The rake test** (`eval/rake/`): a persist–clear–act protocol on an
+  invented Python fixture with planted decisions, cautions, a tombstone and
+  a superseded pair; three arms (no memory, a curated CLAUDE.md, engram)
+  run headless with Sonnet under a fixed turn and dollar budget, graded by
+  executable oracles on the diff — adherence and rake-avoidance, not
+  recall. Phase 1 receipt `eval/results/2026-09-12-rake-smoke.json`.
+- **Receipts carry their run date.** Every file in `eval/results/` is now
+  prefixed `YYYY-MM-DD-` (`scripts/date-results.sh`, idempotent, by file
+  mtime); doc pointers updated.
+
 ## v0.9.3
 
 ### The pane fits any width

@@ -2661,6 +2661,15 @@ impl Engine {
         for hit in &mut hits {
             hit.neighbors = self.store.neighbors(&hit.id, NEIGHBOR_CAP)?;
         }
+        // Role, not type name: a custom ontology can call its tombstone
+        // anything, and a reader skimming for X must not take "Removed: X"
+        // for a memory of X — the flag rides on every surface (0.9.4).
+        let cfg = self.store.config();
+        for hit in &mut hits {
+            hit.tombstone = cfg
+                .type_def(hit.node_type.as_str())
+                .is_some_and(|t| t.roles.tombstone);
+        }
         order_hits(&mut hits, filter.order);
         // Observability stamp on what was actually returned — never the
         // over-fetched candidates the reranker discarded. (Trust doesn't

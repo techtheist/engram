@@ -1079,6 +1079,7 @@ impl Store for TepinStore {
                 trust: node.trust,
                 stale: node.stale,
                 session_id: node.session_id.clone(),
+                tombstone: false,
                 neighbors: Vec::new(),
                 project: None,
             });

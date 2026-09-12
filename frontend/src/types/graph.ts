@@ -375,6 +375,8 @@ export interface SearchHit {
     status: NodeStatus | null
     /** When the node was captured — carried so a hit can be dated or time-ordered without a second read (0.8.7). */
     created_at: number
+    /** The hit plays the graph's tombstone role — a removal record, not live canon; present only when true (0.9.4). */
+    tombstone?: boolean
 }
 
 /** One node's NLI verdict against a checked claim (POST /claims/check). */

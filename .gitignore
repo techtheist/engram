@@ -41,3 +41,7 @@ engram-vscode/media/pane/
 
 # External eval corpora, fetched on demand and SHA-pinned (eval/src/longmem.rs)
 eval/data/
+
+# Python harness caches (eval/rake, eval/forgeteval)
+__pycache__/
+.pytest_cache/

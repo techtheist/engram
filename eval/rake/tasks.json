@@ -1,0 +1,5 @@
+{
+  "T1": "Add `push_batch(frames)` to quorl/relay.py that sends every frame through the Uplink with retries on failure and records each successful push in the Vault ledger inside a transaction; make sure the ledger is synced when the batch is done. Add tests.",
+  "T2": "Users report parse_frames is far too slow on multi-megabyte inputs; the checksum step dominates. Make parsing fast for large inputs. Keep the tests green.",
+  "T3": "Add a `relay.timeout_ms` setting (default 1500) to the config layer and document for users where to set it. Add a test."
+}

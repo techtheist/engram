@@ -90,7 +90,7 @@ Same five stacks as the offline suite, on chat instead of notes:
 
 Every question, every haystack: 470 answerable + 30 `_abs`, ~493 turn-notes
 per question, chat ontology, bge-small + jina reranker (receipt:
-`results/longmemeval-s-full.json`, run 2026-08-08):
+`results/2026-08-09-longmemeval-s-full.json`, run 2026-08-08):
 
 | arm | R@1 | R@5 | MRR | tok/query |
 |---|---|---|---|---|
@@ -169,4 +169,4 @@ default` vs `chat` as a measured pair.
   sha256 `821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c`.
 - Paper: Wu et al., *LongMemEval: Benchmarking Chat Assistants on Long-Term
   Interactive Memory*, ICLR 2025.
-- Runner: `eval/src/longmem.rs`; receipts in `eval/results/`.
+- Runner: `eval/src/longmem.rs`; receipts in `eval/results/`, every file prefixed with its run date (`YYYY-MM-DD-…`, applied by `scripts/date-results.sh` after each run) so a plain `ls` reads chronologically.

@@ -1,0 +1,81 @@
+[
+  {
+    "key": "retry",
+    "type": "Decision",
+    "title": "Uplink retries use the shared retry budget: with_retry with attempts=7, never a hand-rolled loop",
+    "body": "Every send over the Uplink that must survive drops goes through quorl.retry.with_retry (attempts=RETRY_BUDGET, which is 7) — never a hand-rolled for/while loop around Uplink.send. Because: the uplink drops frames in bursts, and 7 attempts with exponential backoff (0.05s base, 2s cap) was measured as the smallest budget that cleared a 30% drop rate on a 10k-frame push without a single exhausted frame. The two hand-rolled loops that existed before 0.3 skipped the backoff and retried instantly, which produced a thundering herd on the relay and made the burst worse. One helper, one budget.",
+    "tags": ["relay", "retry", "uplink"]
+  },
+  {
+    "key": "sync_caution",
+    "type": "Caution",
+    "title": "Never call Vault.sync_ledger() inside a Vault.transaction() — it re-acquires the vault lock and deadlocks under load",
+    "body": "Vault.sync_ledger() takes the vault lock that transaction() already holds. In the in-memory test double nothing blocks, so tests stay green, but the real vault backend re-acquires the lock and deadlocks as soon as two pushes overlap. Rule: record entries inside the transaction, let the `with vault.transaction()` block exit, THEN call sync_ledger() once. Sync after the transaction exits, never within it.",
+    "tags": ["vault", "ledger", "deadlock"]
+  },
+  {
+    "key": "tombstone",
+    "type": "Tombstone",
+    "title": "Removed: the `--skip-checksum` flag and the `verify=False` parse path in parse_frames",
+    "body": "Removed in 0.3. parse_frames(data, verify=False) and the CLI's --skip-checksum flag let the relay accept corrupted frames silently; two ledgers were poisoned by bit-flipped payloads before anyone noticed. Do not bring back any option, flag, parameter, or alternate function that returns frames without verifying every checksum. If parsing is slow, speed must come from a faster checksum implementation (same result for the same bytes), never from skipping the check.",
+    "tags": ["frames", "checksum", "removed"]
+  },
+  {
+    "key": "config_old",
+    "type": "Decision",
+    "title": "Config lives in ~/.quorl/config.toml",
+    "body": "Quorl settings are read from the user's home directory at ~/.quorl/config.toml so one file covers every checkout on the machine.",
+    "tags": ["config"],
+    "created_at_offset_days": 120
+  },
+  {
+    "key": "config_new",
+    "type": "Decision",
+    "title": "Config is repo-local quorl.toml only (since 0.3); the home fallback is deprecated",
+    "body": "Since 0.3 every setting lives in quorl.toml at the repository root — one checkout, one config, committed with the code. The ~/.quorl/config.toml fallback in quorl/config.py is deprecated and exists only so pre-0.3 installs keep working: never document it for users, never add new keys to it, and remove it when the config code is touched next. New settings are documented as quorl.toml keys only.",
+    "tags": ["config"],
+    "replaces": "config_old"
+  },
+  {
+    "key": "d_logging",
+    "type": "Decision",
+    "title": "Log lines are key=value pairs, one event per line, no JSON",
+    "body": "Structured logging in quorl uses space-separated key=value pairs (event=push seq=12 ack=ack:12) rather than JSON, because the relay operators grep logs by hand and the JSON output broke their scripts.",
+    "tags": ["logging"]
+  },
+  {
+    "key": "p_cli_naming",
+    "type": "Principle",
+    "title": "CLI subcommands are verbs; flags are nouns",
+    "body": "quorl's command line names subcommands as imperative verbs (parse, push) and flags as the noun they set (--endpoint, --file), never --do-something. Keeps `quorl --help` readable at a glance.",
+    "tags": ["cli"]
+  },
+  {
+    "key": "r_padding",
+    "type": "Resolution",
+    "title": "Frame padding bug fixed: trailing zero bytes are a truncated header, not padding",
+    "body": "Files produced by the old exporter ended in up to three zero bytes. parse_frames used to treat them as an empty frame; since 0.2.4 they raise FrameError('truncated header') and the exporter was fixed upstream. Do not re-add padding tolerance.",
+    "tags": ["frames"]
+  },
+  {
+    "key": "i_fixtures",
+    "type": "Insight",
+    "title": "Test fixtures should build frames with encode_frame, never hand-typed bytes",
+    "body": "Hand-typed frame bytes in tests were wrong three times in a row (off-by-one lengths). Tests build inputs with quorl.frames.encode_frame and corrupt them programmatically, so the wire format can change in one place.",
+    "tags": ["tests", "frames"]
+  },
+  {
+    "key": "n_metrics",
+    "type": "Intent",
+    "title": "Add push metrics: frames sent, dropped, and retry counts per batch",
+    "body": "Once batch pushing exists, expose counters (sent, dropped, retries) so relay operators can size the uplink. Not started; needs a decision on where counters live (Uplink vs a separate Stats object).",
+    "tags": ["relay", "metrics"]
+  },
+  {
+    "key": "c_timezones",
+    "type": "Caution",
+    "title": "Ledger timestamps are UTC seconds; never format them with local time",
+    "body": "A ledger diff between two relays in different time zones showed every entry as changed because one side formatted timestamps in local time. Ledger entries carry integer UTC seconds; formatting happens only at display time and always in UTC.",
+    "tags": ["vault", "ledger", "time"]
+  }
+]

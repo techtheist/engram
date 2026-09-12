@@ -1,0 +1,9 @@
+[project]
+name = "quorl"
+version = "0.3.1"
+description = "Quorl ledger relay — frames in, acknowledged ledger entries out."
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

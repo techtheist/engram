@@ -6099,6 +6099,51 @@ fn delete_with_tombstone_records_the_victim_and_reason() {
     assert!(e.get_node(&t.id).unwrap().is_some(), "tombstone persists");
 }
 
+/// Search hits carry the tombstone ROLE as a flag (0.9.4), so a reader on
+/// any surface — REST has no `tombstone_note` — can tell "Removed: X" from
+/// a memory of X without knowing which type name plays the role. Found by
+/// the ForgetEval adapter (2026-09-12): a role-blind reader took the
+/// marker for the fact, and a type-name filter breaks on custom ontologies.
+#[test]
+fn search_hits_flag_the_tombstone_role_and_nothing_else() {
+    let e = engine();
+    let victim = e
+        .add_node(new_node(
+            NodeType::Decision,
+            "Use the flaky vendor SDK",
+            "It seemed fine at the time.",
+        ))
+        .unwrap();
+    let survivor = e
+        .add_node(new_node(
+            NodeType::Caution,
+            "The vendor SDK retries forever on 5xx",
+            "Wrap every call in a deadline.",
+        ))
+        .unwrap();
+    let (_, tombstone) = e
+        .delete_node_with_tombstone(&victim.id, Some("vendor sunset the SDK"), true)
+        .unwrap();
+    let t = tombstone.unwrap();
+    let hits = e.search("vendor SDK", &[], 8).unwrap();
+    let flagged: Vec<&str> = hits
+        .iter()
+        .filter(|h| h.tombstone)
+        .map(|h| h.id.as_str())
+        .collect();
+    assert_eq!(flagged, vec![t.id.as_str()], "only the marker is flagged");
+    assert!(
+        hits.iter().any(|h| h.id == survivor.id && !h.tombstone),
+        "live canon is not flagged: {hits:?}"
+    );
+    // Serialized only when true: a plain hit's wire shape is unchanged.
+    let json = serde_json::to_value(&hits).unwrap();
+    for h in json.as_array().unwrap() {
+        let is_marker = h["id"] == t.id.as_str();
+        assert_eq!(h.get("tombstone").is_some(), is_marker, "{h}");
+    }
+}
+
 #[test]
 fn delete_with_tombstone_degrades_to_plain_delete_without_the_role() {
     let e = engine();
@@ -7340,6 +7385,24 @@ fn knee_trim_is_an_opt_out_via_config() {
         .search("zeta component grace period is two seconds", &[], 10)
         .unwrap();
     assert_eq!(hits.len(), 3, "knee_cliff = null disables the knee trim");
+}
+
+/// A zero cliff is not "off" — every relative drop clears it, so it would
+/// trim every curve at its largest drop. The config refuses it and names
+/// the real off switch (found by the ForgetEval adapter, 2026-09-12).
+#[test]
+fn knee_cliff_zero_is_refused_and_taught() {
+    let e = engine_with_reranker(vec![4.0, 3.8, 0.5]);
+    let mut cfg = e.graph_config();
+    cfg.policy.knee_cliff = Some(0.0);
+    let err = e.set_graph_config(&cfg).unwrap_err().to_string();
+    assert!(err.contains("knee_cliff 0"), "{err}");
+    assert!(err.contains("null"), "teaches the off switch: {err}");
+    assert_eq!(
+        e.graph_config().policy.knee_cliff,
+        Some(crate::policy::KNEE_MIN_CLIFF),
+        "a refused config leaves the stored one untouched"
+    );
 }
 
 #[test]

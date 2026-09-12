@@ -234,7 +234,7 @@ pub const SEARCH_RECENCY_HALF_LIFE_SECS: i64 = 30 * 24 * 60 * 60; // 30 days
 /// candidates before filtering.
 ///
 /// TWO, measured (`engram-eval --window`, three seeds, receipts in
-/// `eval/results/window-100x20*.json`).
+/// `eval/results/*-window-100x20*.json`).
 ///
 /// The firm result is that DEPTH PAST 2 IS DEAD WEIGHT: on a 2100-note graph
 /// the mean recall@5 at 2, 4, 8 and 16 is identical to three decimals at both

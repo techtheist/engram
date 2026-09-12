@@ -1,0 +1,460 @@
+[
+  {
+    "arm": "none",
+    "task": "T1",
+    "seed": 1,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake-runs/none-T1-1",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "adherence_retry": true,
+      "rake_sync": true
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "................                                                         [100%]\n16 passed in 0.02s\n",
+        "stderr_tail": ""
+      },
+      "_adherence_retry_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.01s\n",
+        "stderr_tail": ""
+      },
+      "_rake_sync_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.00s\n",
+        "stderr_tail": ""
+      }
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Bash": 4,
+      "Glob": 1,
+      "Read": 11,
+      "Edit": 4
+    },
+    "cost_usd": 0.2735692,
+    "num_turns": 21,
+    "duration_ms": 83834,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "All 16 tests pass.\n\n## Summary\n\nAdded `push_batch(frames, uplink, vault)` to `quorl/relay.py`:\n- Wraps each `uplink.send(frame)` call with `with_retry` for retry-on-failure.\n- Records every successful push (`vault.record`) inside a single `vault.transaction()`.\n- Calls `vault.sync_ledger()` in a `finally` block outside the transaction, so the ledger is synced whether the batch fully succeeds or a frame's retries are exhausted (which re-raises `RetryExhausted`).\n- Returns the list of acks for pushed frames.\n\nAdded 3 tests to `tests/test_relay.py` (plus a small `FakeUplink` test double for controlling failure counts):\n- Successful batch records all entries in one transaction and syncs afterward (not inside the transaction).\n- A frame that fails twice then succeeds is retried and recorded once.\n- When retries are exhausted, the exception propagates but the ledger is still synced with no entries recorded.\n\nFull suite (16 tests) passes.",
+    "notes": {
+      "arm_meta_summary": {}
+    }
+  },
+  {
+    "arm": "curated",
+    "task": "T1",
+    "seed": 1,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake-runs/curated-T1-1",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "adherence_retry": true,
+      "rake_sync": true
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "................                                                         [100%]\n16 passed in 0.03s\n",
+        "stderr_tail": ""
+      },
+      "_adherence_retry_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.01s\n",
+        "stderr_tail": ""
+      },
+      "_rake_sync_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.01s\n",
+        "stderr_tail": ""
+      }
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Bash": 5,
+      "Read": 11,
+      "Grep": 1,
+      "Edit": 3
+    },
+    "cost_usd": 0.30996000000000007,
+    "num_turns": 21,
+    "duration_ms": 90751,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "Added `push_batch(uplink, vault, frames)` to `quorl/relay.py`: each frame send goes through `with_retry(attempts=RETRY_BUDGET)` (no hand-rolled loop, per the repo's retry convention), successful acks are recorded via `vault.record()` inside one `vault.transaction()` block, and `vault.sync_ledger()` is called once after the transaction exits \u2014 never from inside it, per the deadlock caution in CLAUDE.md.\n\nAdded four tests in `tests/test_relay.py` covering: all-success recording + single sync, retries succeeding within the 7-attempt budget, and budget exhaustion (`RetryExhausted` propagates, nothing gets synced, no ledger entries for the failed frame). Full suite passes (16/16).",
+    "notes": {
+      "harness_note": "recomputed oracle after fixing _run_push_batch keyword-binding bug in oracles.py (original push_batch(uplink, vault, frames) signature broke positional-arg guessing)"
+    }
+  },
+  {
+    "arm": "engram",
+    "task": "T1",
+    "seed": 1,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake-runs/engram-T1-1",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "adherence_retry": true,
+      "rake_sync": true
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "..................                                                       [100%]\n18 passed in 0.06s\n",
+        "stderr_tail": ""
+      },
+      "_adherence_retry_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.03s\n",
+        "stderr_tail": ""
+      },
+      "_rake_sync_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.01s\n",
+        "stderr_tail": ""
+      }
+    },
+    "engram_calls": {
+      "mcp__engram__search": 1,
+      "mcp__engram__add_note": 1,
+      "mcp__engram__link": 3
+    },
+    "tool_calls": {
+      "Bash": 5,
+      "Read": 10,
+      "Glob": 3,
+      "Edit": 3,
+      "ToolSearch": 1,
+      "mcp__engram__search": 1,
+      "mcp__engram__add_note": 1,
+      "mcp__engram__link": 3
+    },
+    "cost_usd": 0.3851428,
+    "num_turns": 28,
+    "duration_ms": 118123,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "Done. Summary:\n\n- **`quorl/relay.py`**: added `push_batch(frames, uplink, vault)`. It sends each frame via `with_retry(uplink.send, ...)` (default 7-attempt budget, no hand-rolled loop), records every successful ack with `vault.record()` inside one `vault.transaction()` for the whole batch, calls `vault.sync_ledger()` only after that transaction has closed (avoiding the known deadlock), and drops-and-continues past any frame that exhausts its retries \u2014 returning the list of dropped sequence numbers.\n- **`tests/test_relay.py`**: added `FlakyUplink`/`DeadUplink` test doubles and 5 new tests covering: all-success recording/transaction shape, retry-then-succeed, drop-after-exhaustion, continuing past a dropped frame, and sync happening after (not inside) the transaction.\n\nFull suite: 18/18 passing. Also recorded the design as a Decision node in Engram, linked to the existing retry-budget decision and the sync-deadlock caution, and linked the open \"push metrics\" intent as depending on it.",
+    "notes": {
+      "harness_note": "recomputed: original AST heuristic flagged any for-loop+try/except as a hand-rolled retry, a false positive against push_batch(frames, uplink, vault) which correctly delegates to with_retry() and only try/excepts RetryExhausted for per-frame bookkeeping (continue on exhaustion). Heuristic fixed to only search for a hand-rolled loop when with_retry is NOT used at all."
+    }
+  },
+  {
+    "arm": "none",
+    "task": "T2",
+    "seed": 1,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake-runs/none-T2-1",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "resurrection": true
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".............                                                            [100%]\n13 passed in 0.05s\n",
+        "stderr_tail": ""
+      },
+      "_resurrection_static_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.02s\n",
+        "stderr_tail": ""
+      },
+      "_resurrection_dynamic_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.01s\n",
+        "stderr_tail": ""
+      }
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Grep": 1,
+      "Read": 2,
+      "Edit": 2,
+      "Bash": 3
+    },
+    "cost_usd": 0.14689460000000001,
+    "num_turns": 9,
+    "duration_ms": 46205,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": false,
+    "final_message_text": "~2.4MB now parses in under 7ms (previously the pure-Python per-byte checksum loop plus O(n\u00b2) buffer re-slicing made this dramatically slower).\n\nChanges in `quorl/frames.py`:\n- `checksum` now uses the built-in `sum(payload) % 256` instead of a manual Python-level byte loop, letting the summation run in C.\n- `parse_frames` now walks the buffer with an integer offset instead of repeatedly re-slicing `data`, eliminating the O(n\u00b2) behavior from copying the shrinking remainder on every frame.\n\nBoth are drop-in behavioral equivalents; all 13 tests (including checksum-mismatch and truncation cases) still pass.",
+    "notes": {
+      "arm_meta_summary": {}
+    }
+  },
+  {
+    "arm": "curated",
+    "task": "T2",
+    "seed": 1,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake-runs/curated-T2-1",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "resurrection": true
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".............                                                            [100%]\n13 passed in 0.06s\n",
+        "stderr_tail": ""
+      },
+      "_resurrection_static_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.02s\n",
+        "stderr_tail": ""
+      },
+      "_resurrection_dynamic_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.00s\n",
+        "stderr_tail": ""
+      }
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Grep": 2,
+      "Read": 2,
+      "Edit": 1,
+      "Bash": 2
+    },
+    "cost_usd": 0.1454088,
+    "num_turns": 8,
+    "duration_ms": 38835,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "~10ms for 2.5MB (previously a pure-Python byte-by-byte loop plus O(n\u00b2) slicing would take much longer on larger inputs).\n\nTwo changes in `quorl/frames.py`, both preserving exact checksum semantics (same result for the same bytes, every frame still verified \u2014 no skip path added):\n\n1. **`checksum`**: modulo distributes over addition, so `sum(payload) % 256` (C-level loop) is equivalent to reducing mod 256 on every byte in a Python loop, just far faster.\n2. **`parse_frames`**: switched from re-slicing `data` (copying the shrinking remainder each iteration, O(n\u00b2) on many frames) to a `memoryview` with an integer offset, so each frame is read without copying the rest of the buffer.\n\nRan the existing test suite \u2014 all 13 tests pass, including the checksum-mismatch and truncation cases.",
+    "notes": {
+      "arm_meta_summary": {}
+    }
+  },
+  {
+    "arm": "engram",
+    "task": "T2",
+    "seed": 1,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake-runs/engram-T2-1",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "resurrection": true
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".............                                                            [100%]\n13 passed in 0.04s\n",
+        "stderr_tail": ""
+      },
+      "_resurrection_static_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.02s\n",
+        "stderr_tail": ""
+      },
+      "_resurrection_dynamic_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 0.01s\n",
+        "stderr_tail": ""
+      }
+    },
+    "engram_calls": {
+      "mcp__engram__search": 1,
+      "mcp__engram__get_node": 1
+    },
+    "tool_calls": {
+      "Grep": 3,
+      "mcp__engram__search": 1,
+      "mcp__engram__get_node": 1,
+      "Read": 2,
+      "Glob": 1,
+      "Edit": 2,
+      "Bash": 4
+    },
+    "cost_usd": 0.18508940000000004,
+    "num_turns": 15,
+    "duration_ms": 54307,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "~64x faster on a 4MB / 20k-frame benchmark (1.34s \u2192 0.02s), with all tests still passing.\n\nTwo fixes in `quorl/frames.py`, both preserving exact verification semantics:\n\n1. **`checksum`**: replaced the per-byte Python loop with `sum(payload) & 0xFF` \u2014 same math (sum then mod 256), but runs in C instead of the interpreter.\n2. **`parse_frames`**: replaced `data = data[end+1:]` (which re-copied the entire remaining buffer on every frame, making parsing O(n\u00b2) on large inputs) with an integer offset `pos` into the original buffer, so each byte is scanned once.\n\nEvery frame's checksum is still verified \u2014 per this project's memory, skipping the check was removed in 0.3 after it let corrupted frames poison two ledgers, so the fix had to be a faster checksum/parse path, not a bypass option. Full test suite (13 tests) passes.",
+    "notes": {
+      "arm_meta_summary": {
+        "project_id": "00d358bsldwq",
+        "setup_stdout": "==> claude: wrote .mcp.json\n==> claude: installed the 'aggressive' + digest skills to .claude/skills\n==> claude: brief + file-read-match hooks installed (.claude/hooks + settings.json)\n==> done \u2014 restart your assistant sessions so they pick up the MCP server\n",
+        "seed_search_hits": [
+          "Never call Vault.sync_ledger() inside a Vault.transaction() \u2014 it re-acquires the vault lock and deadlocks under load"
+        ]
+      }
+    }
+  },
+  {
+    "arm": "none",
+    "task": "T3",
+    "seed": 1,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake-runs/none-T3-1",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "stale_following": true,
+      "deprecation_cleanup": false
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "..............                                                           [100%]\n14 passed in 0.25s\n",
+        "stderr_tail": ""
+      },
+      "_stale_following_hits": [
+        "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"toolu_01N3gv4NY7qiCTKap7w4VTLX\",\"type\":\"tool_result\",\"content\":\"1\\t\\\"\\\"\\\"Configuration loading for quorl.\\\"\\\"\\\"\\n2\\t\\n3\\timport os\\n4\\timport tomllib\\n5\\tfrom pathlib import Path\\n6\\t\\n7\\tCONFIG_NAME = \\\"quorl.toml\\\"\\n8\\t\\n9\\tDEFAULTS = {\\n10\\t    \\\"relay\\\": {\\\"endpoint\\\": \\\"ledger://local\\\", \\\"fail_rate\\\": 0.3},\\n11\\t    \\\"vault\\\": {\\\"path\\\": \\\".quorl-vault\\\"},\\n12\\t}\\n13\\t\\n14\\t\\n15\\tdef _merge(base, override):\\n16\\t    out = {k: (dict(v) if isinstance(v, dict) else v) for k, v in base.items()}\\n17\\t    for key, value in override.items():\\n18\\t        if isinstance(value, dict) and isinstance(out.get(key), dict):\\n19\\t            out[key] = _merge(out[key], value)\\n20\\t        else:\\n21\\t            out[key] = value\\n22\\t    return out\\n23\\t\\n24\\t\\n25\\tdef repo_config_path(root=None):\\n26\\t    \\\"\\\"\\\"The repo-local config file: <root>/quorl.toml.\\\"\\\"\\\"\\n27\\t    return Path(root or os.getcwd()) / CONFIG_NAME\\n28\\t\\n29\\t\\n30\\tdef _legacy_home_path():\\n31\\t    # Deprecated: pre-0.3 installs kept their settings in ~/.quorl/config.toml.\\n32\\t    home = Path(os.environ.get(\\\"QUORL_HOME\\\") or Path.home())\\n33\\t    return home / \\\".quorl\\\" / \\\"config.toml\\\"\\n34\\t\\n35\\t\\n36\\tdef load_config(root=None):\\n37\\t    \\\"\\\"\\\"Load settings, merged over DEFAULTS.\\n38\\t\\n39\\t    Reads <root>/quorl.toml. When that file is missing, falls back to the\\n40\\t    legacy ~/.quorl/config.toml if one exists.\\n41\\t    \\\"\\\"\\\"\\n42\\t    path = repo_config_path(root)\\n43\\t    if not path.exists():\\n44\\t        legacy = _legacy_home_path()\\n45\\t        path = legacy if legacy.exists() else None\\n46\\t    data = tomllib.loads(path.read_text()) if path else {}\\n47\\t    return _merge(DEFAULTS, data)\\n48\\t\\n49\\t\\n50\\tdef get(config, dotted, default=None):\\n51\\t    \\\"\\\"\\\"Fetch a nested key: get(cfg, \\\"relay.endpoint\\\").\\\"\\\"\\\"\\n52\\t    node = config\\n53\\t    for part in dotted.split(\\\".\\\"):\\n54\\t        if not isinstance(node, dict) or part not in node:\\n55\\t            return default\\n56\\t        node = node[part]\\n57\\t    return node\\n58\\t\"}]},\"parent_tool_use_id\":null,\"session_id\":\"3fc1f304-e715-4cf8-8118-acfbe60d7a8c\",\"uuid\":\"0735e5f0-73f8-4ac6-8f46-5ccfc6616e9b\",\"timestamp\":\"2026-09-12T10:03:55.898Z\",\"tool_use_result\":{\"type\":\"text\",\"file\":{\"filePath\":\"/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake-runs/none-T3-1/quorl/config.py\",\"content\":\"\\\"\\\"\\\"Configuration loading for quorl.\\\"\\\"\\\"\\n\\nimport os\\nimport tomllib\\nfrom pathlib import Path\\n\\nCONFIG_NAME = \\\"quorl.toml\\\"\\n\\nDEFAULTS = {\\n    \\\"relay\\\": {\\\"endpoint\\\": \\\"ledger://local\\\", \\\"fail_rate\\\": 0.3},\\n    \\\"vault\\\": {\\\"path\\\": \\\".quorl-vault\\\"},\\n}\\n\\n\\ndef _merge(base, override):\\n    out = {k: (dict(v) if isinstance(v, dict) else v) for k, v in base.items()}\\n    for key, value in override.items():\\n        if isinstance(value, dict) and isinstance(out.get(key), dict):\\n            out[key] = _merge(out[key], value)\\n        else:\\n            out[key] = value\\n    return out\\n\\n\\ndef repo_config_path(root=None):\\n    \\\"\\\"\\\"The repo-local config file: <root>/quorl.toml.\\\"\\\"\\\"\\n    return Path(root or os.getcwd()) / CONFIG_NAME\\n\\n\\ndef _legacy_home_path():\\n    # Deprecated: pre-0.3 installs kept their settings in ~/.quorl/config.toml.\\n    home = Path(os.environ.get(\\\"QUORL_HOME\\\") or Path.home())\\n    return home / \\\".quorl\\\" / \\\"config.toml\\\"\\n\\n\\ndef load_config(root=None):\\n    \\\"\\\"\\\"Load settings, merged over DEFAULTS.\\n\\n    Reads <root>/quorl.toml. When that file is missing, falls back to the\\n    legacy ~/.quorl/config.toml if one exists.\\n    \\\"\\\"\\\"\\n    path = repo_config_path(root)\\n    if not path.exists():\\n        legacy = _legacy_home_path()\\n        path = legacy if legacy.exists() else None\\n    data = tomllib.loads(path.read_text()) if path else {}\\n    return _merge(DEFAULTS, data)\\n\\n\\ndef get(config, dotted, default=None):\\n    \\\"\\\"\\\"Fetch a nested key: get(cfg, \\\"relay.endpoint\\\").\\\"\\\"\\\"\\n    node = config\\n    for part in dotted.split(\\\".\\\"):\\n        if not isinstance(node, dict) or part not in node:\\n            return default\\n        node = node[part]\\n    return node\\n\",\"numLines\":58,\"startLine\":1,\"totalLines\":58}}}",
+        "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"toolu_01Df64vHyooDiyek8GeJCcHx\",\"type\":\"tool_result\",\"content\":\"The file /private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake-runs/none-T3-1/quorl/config.py has been updated successfully. (file state is current in your context \u2014 no need to Read it back)\"}]},\"parent_tool_use_id\":null,\"session_id\":\"3fc1f304-e715-4cf8-8118-acfbe60d7a8c\",\"uuid\":\"17e12ded-6f46-4040-b767-39bb7597ee64\",\"timestamp\":\"2026-09-12T10:04:09.428Z\",\"tool_use_result\":{\"filePath\":\"/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake-runs/none-T3-1/quorl/config.py\",\"oldString\":\"    \\\"relay\\\": {\\\"endpoint\\\": \\\"ledger://local\\\", \\\"fail_rate\\\": 0.3},\",\"newString\":\"    \\\"relay\\\": {\\\"endpoint\\\": \\\"ledger://local\\\", \\\"fail_rate\\\": 0.3, \\\"timeout_ms\\\": 1500},\",\"originalFile\":\"\\\"\\\"\\\"Configuration loading for quorl.\\\"\\\"\\\"\\n\\nimport os\\nimport tomllib\\nfrom pathlib import Path\\n\\nCONFIG_NAME = \\\"quorl.toml\\\"\\n\\nDEFAULTS = {\\n    \\\"relay\\\": {\\\"endpoint\\\": \\\"ledger://local\\\", \\\"fail_rate\\\": 0.3},\\n    \\\"vault\\\": {\\\"path\\\": \\\".quorl-vault\\\"},\\n}\\n\\n\\ndef _merge(base, override):\\n    out = {k: (dict(v) if isinstance(v, dict) else v) for k, v in base.items()}\\n    for key, value in override.items():\\n        if isinstance(value, dict) and isinstance(out.get(key), dict):\\n            out[key] = _merge(out[key], value)\\n        else:\\n            out[key] = value\\n    return out\\n\\n\\ndef repo_config_path(root=None):\\n    \\\"\\\"\\\"The repo-local config file: <root>/quorl.toml.\\\"\\\"\\\"\\n    return Path(root or os.getcwd()) / CONFIG_NAME\\n\\n\\ndef _legacy_home_path():\\n    # Deprecated: pre-0.3 installs kept their settings in ~/.quorl/config.toml.\\n    home = Path(os.environ.get(\\\"QUORL_HOME\\\") or Path.home())\\n    return home / \\\".quorl\\\" / \\\"config.toml\\\"\\n\\n\\ndef load_config(root=None):\\n    \\\"\\\"\\\"Load settings, merged over DEFAULTS.\\n\\n    Reads <root>/quorl.toml. When that file is missing, falls back to the\\n    legacy ~/.quorl/config.toml if one exists.\\n    \\\"\\\"\\\"\\n    path = repo_config_path(root)\\n    if not path.exists():\\n        legacy = _legacy_home_path()\\n        path = legacy if legacy.exists() else None\\n    data = tomllib.loads(path.read_text()) if path else {}\\n    return _merge(DEFAULTS, data)\\n\\n\\ndef get(config, dotted, default=None):\\n    \\\"\\\"\\\"Fetch a nested key: get(cfg, \\\"relay.endpoint\\\").\\\"\\\"\\\"\\n    node = config\\n    for part in dotted.split(\\\".\\\"):\\n        if not isinstance(node, dict) or part not in node:\\n            return default\\n        node = node[part]\\n    return node\\n\",\"structuredPatch\":[{\"oldStart\":7,\"oldLines\":7,\"newStart\":7,\"newLines\":7,\"lines\":[\" CONFIG_NAME = \\\"quorl.toml\\\"\",\" \",\" DEFAULTS = {\",\"-    \\\"relay\\\": {\\\"endpoint\\\": \\\"ledger://local\\\", \\\"fail_rate\\\": 0.3},\",\"+    \\\"relay\\\": {\\\"endpoint\\\": \\\"ledger://local\\\", \\\"fail_rate\\\": 0.3, \\\"timeout_ms\\\": 1500},\",\"     \\\"vault\\\": {\\\"path\\\": \\\".quorl-vault\\\"},\",\" }\",\" \"]}],\"userModified\":false,\"replaceAll\":false}}"
+      ]
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Bash": 3,
+      "Read": 5,
+      "Edit": 4
+    },
+    "cost_usd": 0.1570854,
+    "num_turns": 13,
+    "duration_ms": 44133,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": false,
+    "final_message_text": "All 14 tests pass. Changes:\n\n- `quorl/config.py` \u2014 added `\"timeout_ms\": 1500` to `DEFAULTS[\"relay\"]`\n- `quorl.toml` \u2014 added `timeout_ms = 1500` under `[relay]` as the example/repo config\n- `README.md` \u2014 documented `relay.timeout_ms` under Configuration, noting it goes in `quorl.toml`'s `[relay]` section\n- `tests/test_config.py` \u2014 new test verifying the default value and that it's overridable via repo config",
+    "notes": {
+      "harness_note": "recomputed: capture_diff originally staged transcript.jsonl alongside code, and transcript.jsonl quotes ORIGINAL file contents inside tool_result JSON (a Read of the pristine config.py, which contains ~/.quorl in a comment) \u2014 the stale_following grep saw that quoted text and false-failed. Fixed capture_diff to exclude transcript.jsonl/diff.patch from the staged diff."
+    }
+  },
+  {
+    "arm": "curated",
+    "task": "T3",
+    "seed": 1,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake-runs/curated-T3-1",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "stale_following": false,
+      "deprecation_cleanup": false
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "..............                                                           [100%]\n14 passed in 0.08s\n",
+        "stderr_tail": ""
+      },
+      "_stale_following_hits": [
+        "`~/.quorl/config.toml` fallback is deprecated and must not gain new keys."
+      ]
+    },
+    "engram_calls": {},
+    "tool_calls": {
+      "Bash": 4,
+      "Read": 4,
+      "Edit": 5
+    },
+    "cost_usd": 0.18595640000000002,
+    "num_turns": 14,
+    "duration_ms": 44322,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": true,
+    "final_message_text": "All tests pass. Summary of changes:\n\n- `quorl/config.py`: added `timeout_ms: 1500` to `DEFAULTS[\"relay\"]`.\n- `quorl.toml`: added `timeout_ms = 1500` under `[relay]`.\n- `README.md`: documented the key in the config example plus a note that it's set only via repo-local `quorl.toml` (no legacy fallback for new keys, per the deprecated-config decision).\n- `tests/test_config.py`: added a test covering both the default value and a repo-local override, following existing fixture conventions (`QUORL_HOME` monkeypatch to avoid legacy fallback interference).",
+    "notes": {
+      "arm_meta_summary": {}
+    }
+  },
+  {
+    "arm": "engram",
+    "task": "T3",
+    "seed": 1,
+    "model": "sonnet",
+    "run_dir": "/private/tmp/claude-501/-Users-techtheist-IdeaProjects-engram/beed9258-835e-40e3-953c-e90b19cf4f7a/scratchpad/rake-runs/engram-T3-1",
+    "skip_claude": false,
+    "oracles": {
+      "common_tests_pass": true,
+      "stale_following": true,
+      "deprecation_cleanup": false
+    },
+    "oracles_detail": {
+      "_common_tests_detail": {
+        "passed": true,
+        "returncode": 0,
+        "stdout_tail": "...............                                                          [100%]\n15 passed in 0.06s\n",
+        "stderr_tail": ""
+      },
+      "_stale_following_hits": []
+    },
+    "engram_calls": {
+      "mcp__engram__search": 1,
+      "mcp__engram__add_note": 1,
+      "mcp__engram__link": 1
+    },
+    "tool_calls": {
+      "Bash": 3,
+      "mcp__engram__search": 1,
+      "Read": 5,
+      "Edit": 4,
+      "mcp__engram__add_note": 1,
+      "mcp__engram__link": 1
+    },
+    "cost_usd": 0.1969906,
+    "num_turns": 16,
+    "duration_ms": 39584,
+    "returncode": 0,
+    "hit_max_turns_or_error": false,
+    "permission_mode_fallback_used": false,
+    "final_message_mentions_memory": false,
+    "final_message_text": "Added `relay.timeout_ms` (default `1500`) to `quorl/config.py`'s `DEFAULTS`, documented it in `README.md`'s Configuration section and `quorl.toml`, and added two tests in `tests/test_config.py` covering the default and a `quorl.toml` override. All 4 config tests pass.\n\nI left it unwired from `quorl.relay.Uplink` since that class is a synchronous fail-rate simulator with no real timeout concept \u2014 wiring it in would mean inventing behavior beyond the ask.",
+    "notes": {
+      "arm_meta_summary": {
+        "project_id": "00d35exswaxq",
+        "setup_stdout": "==> claude: wrote .mcp.json\n==> claude: installed the 'aggressive' + digest skills to .claude/skills\n==> claude: brief + file-read-match hooks installed (.claude/hooks + settings.json)\n==> done \u2014 restart your assistant sessions so they pick up the MCP server\n",
+        "seed_search_hits": [
+          "Never call Vault.sync_ledger() inside a Vault.transaction() \u2014 it re-acquires the vault lock and deadlocks under load"
+        ]
+      }
+    }
+  }
+]

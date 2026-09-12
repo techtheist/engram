@@ -1647,10 +1647,21 @@ impl GraphConfig {
                 return fail(format!("policy.{name} {value} out of 0..=1"));
             }
         }
-        if let Some(c) = p.knee_cliff
-            && !(0.0..=1.0).contains(&c)
-        {
-            return fail(format!("policy.knee_cliff {c} out of 0..=1"));
+        if let Some(c) = p.knee_cliff {
+            if !(0.0..=1.0).contains(&c) {
+                return fail(format!("policy.knee_cliff {c} out of 0..=1"));
+            }
+            // 0 is not "off": every relative drop is >= 0, so a zero cliff
+            // trims EVERY score curve at its largest drop — the harshest
+            // setting, not the absence of one. Off is null. (Found by the
+            // ForgetEval adapter, which zeroed it to disable it.)
+            if c <= 0.0 {
+                return fail(
+                    "policy.knee_cliff 0 would trim every result at its largest score drop; \
+                     set it to null to turn the knee trim off"
+                        .into(),
+                );
+            }
         }
         if !(4..=256).contains(&p.weak_line_probes) {
             return fail(format!(
