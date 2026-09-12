@@ -17,7 +17,17 @@ obfuscation, cross-lingual identifiers, recursive supersession).
 
 This directory adapts **engram** (this repo's graph memory daemon) to
 ForgetEval's `Adapter` protocol purely over its local HTTP API — no MCP, no
-Rust code touched — and runs both suites against it.
+Rust code touched — and runs both suites against it. Two further adapters
+extend the harness: **`engram-mcp`** (role-aware, same policy override as
+`engram-notomb`, but `recall_texts` goes over the real MCP `search` TOOL —
+the transport an actual agent client speaks — and records that tool's
+confidence verdict per query) and **`grep`** (a daemon-free, embedding-free
+keyword-overlap baseline). These two, plus a control-probe / hedge /
+absence-signal measurement layered on top without touching ForgetEval's own
+scoring, exist to answer a question the benchmark itself doesn't ask: *how
+often does a system quietly make something up about a subject it was never
+told about, and does engram's own "I'm not sure" signal actually show up
+where it should?* See "Abstention: what ForgetEval does not measure" below.
 
 ## How to run
 
@@ -37,6 +47,8 @@ cd eval/forgeteval
 # smoke (~20 cases/suite, sanity + timing check)
 ../data/venv/bin/python3 run_engram.py --adapter engram        --suite template    --scale 4  --project-dir /tmp/forgeteval-store
 ../data/venv/bin/python3 run_engram.py --adapter engram-notomb --suite adversarial --limit 20 --project-dir /tmp/forgeteval-store-notomb
+../data/venv/bin/python3 run_engram.py --adapter engram-mcp    --suite template    --limit 20 --project-dir /tmp/forgeteval-store-mcp
+../data/venv/bin/python3 run_engram.py --adapter grep          --suite adversarial --limit 20
 
 # full receipts (as run for this record)
 ../data/venv/bin/python3 run_engram.py --adapter engram         --suite template    --scale 200 --project-dir <dir1> --out ../results/2026-09-12-forgeteval-template-engram.json
@@ -59,13 +71,26 @@ and `engram-notomb` so the two variants never share graph state.
 
 - `engram_adapter.py` — the `EngramAdapter` class (see its module docstring
   for the full REST mapping, the query-resolution policy, and the config
-  deviation).
+  deviation) and `EngramMCPAdapter`, which reuses everything about
+  `EngramAdapter(include_tombstones=False)` except `recall_texts`, which it
+  routes over a real MCP `search` tool call (see that class's docstring for
+  the transport details and a genuine gotcha it had to route around: an MCP
+  session's engine handle is captured once at session creation and never
+  rebinds, which silently served frozen pre-reset data until `reset()` was
+  taught to force a fresh handshake every case).
+- `grep_adapter.py` — the `GrepAdapter` class: a deterministic,
+  embedding-free content-word-overlap baseline that mirrors the same
+  supersede/release/purge target-resolution rules `EngramAdapter` mirrors
+  from `LetheAdapter`.
 - `run_engram.py` — wraps the upstream `bench/forgeteval/{generate,
   adversarial}.py` generators and `tests.py`'s `TestCase.run` /
   `GeneratedCase.run` scoring loop; nothing inside the `lethe` clone is
-  patched.
-- `merge_receipts.py` — combines the three per-adapter JSON receipts for one
-  suite into the single `eval/results/<date>-forgeteval-<suite>.json` file.
+  patched. Also owns the control-probe generation, hedge computation, and
+  absence-signal computation described below.
+- `merge_receipts.py` — combines the per-adapter JSON receipts for one
+  suite into the single `eval/results/<date>-forgeteval-<suite>.json` file,
+  carrying the `controls`/`hedge`/`absence_signal` blocks through and
+  printing the pass-rate-next-to-fp/hedge summary table.
 
 ## Semantics mapping
 
@@ -273,24 +298,215 @@ and `cross_lingual_identifier` are hard for every adapter under test,
 lethe included; both systems embed with the same model, so the one-case
 differences there are noise at 36–40 cases per category.
 
-### Timing
+Timing is deliberately not reported: the engram variants ran concurrently
+against one shared core while other benchmarks used the machine, so wall
+clock says nothing about the mechanism. Per-operation timings stay in each
+receipt's `timing_ms` for anyone who wants them.
 
-`engram` and `engram-notomb` ran **concurrently** against one shared core
-(two HTTP clients, one daemon), so per-case cost is inflated by contention;
-`lethe` ran alone, in-process.
+## Abstention: what ForgetEval does not measure
 
-| run | wall | ms/case |
-|---|---|---|
-| template — engram | 575.0s | 575 |
-| template — engram-notomb | 569.3s | 569 |
-| template — lethe | 106.0s | 106 |
-| adversarial — engram | 149.6s | 389 |
-| adversarial — engram-notomb | 149.1s | 387 |
-| adversarial — lethe | 23.2s | 60 |
+Every ForgetEval case — template or adversarial — is graded entirely by
+substring checks on facts the case itself inscribed:
+`must_contain`/`must_not_contain` never mention anyone the case didn't set
+up. That leaves an entire failure mode invisible to the benchmark's own
+score: a system that confidently invents an answer about a subject it was
+**never told about** would pass every standard ForgetEval case while being
+unreliable in exactly the way that matters for a memory system. Symmetrically,
+the benchmark has no way to see a system's own "I'm not sure" signal, or
+credit it for using one. This section adds both measurements as a layer on
+top of the existing suites — **the standard pass/fail numbers above are
+completely unchanged**; nothing here alters `must_contain`/`must_not_contain`
+scoring, an adapter's target-resolution rules, or ForgetEval's own generator
+or scoring code (still unpatched).
 
-Per-operation timings are in each receipt's `timing_ms`; an uncontended
-smoke earlier in the day measured `reset()` at ~90–100 ms and a full
-inscribe→search round trip under 400 ms/case.
+### The protocol
+
+For **every** case, after `tc.run(adapter)` completes (setup facts inscribed,
+mutations applied, the case's own `final_query` already scored) and *before*
+the adapter is reset for the next case, the runner puts three **control
+queries** to the same live adapter state — about subjects the case never
+mentioned:
+
+1. **Control queries.** Each `GeneratedCase` (template and adversarial share
+   the same dataclass) carries a `family` (`supersession` / `decay` /
+   `amnesia` / `purge` / `drift`). `run_engram.py`'s `CONTROL_TEMPLATES` maps
+   each family to 2–3 question shapes lifted near-verbatim from
+   `bench/forgeteval/generate.py`'s own `final_query` f-strings for that
+   family:
+
+   | family | control templates |
+   |---|---|
+   | supersession | `Where does {name} work?` · `What theme does {name} use?` · `What is {name}'s diet?` |
+   | decay | `Any one-time codes for {name}?` · `What are {name}'s travel plans?` · `Tell me about {name}.` |
+   | amnesia | `What does {name} like to eat?` · `What has {name} accomplished?` · `Tell me about {name}.` |
+   | purge | `Tell me about {name}.` · `What is the API key for {name}?` · `Show me customer data for {name}.` |
+   | drift | `Where does {name} work?` · `What is {name}'s address?` · `What is {name}'s favorite color?` |
+
+   For each case, a `random.Random(f"{seed}:{case.id}:controls")` instance
+   (deterministic given `--seed` and the case id, independent of
+   `PYTHONHASHSEED`) samples 3 names from `bench.forgeteval.generate.NAMES`
+   **minus every name appearing anywhere in that case's `setup_facts`,
+   mutations, or `final_query`** (regex word-boundary scan), and 3 templates
+   from that family's pool (with replacement — some pools have only 2
+   entries), then formats `template.format(name=name)`.
+
+2. **Answered vs. declined.** An adapter *answers* a control iff it returns
+   at least one text **and does not decline**:
+   - `engram-mcp` declines when *that specific call's* MCP verdict was
+     `weak` or `none` — even if it still returned nearest-candidate texts
+     (the 0.8.1 "likely not in memory, delivered anyway" behavior; see this
+     repo's own chronicle). This is read straight off
+     `stats["mcp_confidence_log"][-1]` immediately after the call.
+   - `lethe` never declines (`Lethe.recall()` is unconditional top-k) unless
+     the store itself is empty for that query.
+   - `grep` declines exactly when the query shares zero content words with
+     every stored fact (`recall_texts` returns `[]`).
+   - `engram`/`engram-notomb` (REST) have no verdict signal available to
+     `recall_texts` at all, so for them "declined" collapses to "returned
+     nothing" — the same rule as lethe/grep.
+
+3. **FP** = `controls_answered / controls_asked`, per bucket and overall.
+   **Lower is better** — but see the warning below.
+
+4. **Hedge** = share of the case's own real `final_query` calls (one per
+   case, already scored by the standard suite) where `engram-mcp`'s verdict
+   was `weak` or `none`. This is engram-mcp's *cost side*: a system that
+   hedges on every real question would show FP≈0 for a trivial reason. For
+   `lethe`/`grep`/`engram`/`engram-notomb`, hedge is **0 by construction** —
+   none of them carry a verdict signal, so the receipts say so explicitly in
+   `hedge.note` rather than reporting a number that would look measured.
+
+5. **Absence signal** (engram-mcp only, informational, no `must_contain`
+   implications) = on template `decay`/`amnesia` cases and any case (either
+   suite) whose mutations include a `release` op, the share where the case's
+   final-query verdict was `weak`/`none` **or every hit MCP returned for that
+   query was tombstone-flagged** (`all_tombstone` in the log, computed from
+   the *pre-filter* hit list — the role-aware texts returned to scoring have
+   already had tombstones removed, so this has to be captured at the MCP
+   call site, before that filtering happens). Reads as "the system forgot,
+   and its own signal said so" — a property no other adapter here exposes
+   (0/0, not 0%, for the rest — there is nothing to compute).
+
+### Why FP is never reported alone
+
+**A mute system wins this metric for free.** `grep` declines whenever a
+query's content words are unseen — which happens to be true of nearly every
+well-formed control query in this design, so `grep`'s FP is trivially low
+*without engram's calibration doing any work*. Reporting FP by itself would
+make "answers nothing" look like the best possible memory system. Every
+table below prints FP **next to** the case's own pass rate: a low FP paired
+with a high pass rate is the only combination that means anything (declining
+selectively — never on the real question, always on the control) — that is
+what `engram-mcp`'s hedge number is for. `merge_receipts.py`'s summary table
+enforces this layout; there is no code path that prints FP without recall
+alongside it.
+
+### Separation: a threshold-free companion to fp/hedge
+
+FP and hedge are both read off ONE FIXED verdict line — `engram-mcp`'s own
+`weak`/`none` cut, calibrated (`policy.weak_evidence_top`) against this
+repo's large, noisy, cross-session real memory graph, not against a
+six-to-ten-note synthetic ForgetEval case. A high hedge paired with a low FP
+is indistinguishable, read alone, from "the system is simply mute here" —
+which would be the wrong conclusion if the underlying scores actually
+separate real questions from control questions cleanly and the fixed line
+is just drawn in the wrong place for a graph this small. `separation`
+answers that question directly, without reference to any threshold at all:
+for every case's real `final_query` call (the *answerable*/positive class)
+and every control probe (the negative class), the runner captures the
+adapter's own NATIVE top score — `engram-mcp`'s raw MCP hit score, `lethe`'s
+cosine similarity (read via the same lower-level `Lethe.recall()` call
+`LetheAdapter.release()`'s gap-threshold already uses, from a same-file
+subclass — nothing in `eval/data/lethe` is touched), `grep`'s overlap count
+— then computes the AUC (Mann–Whitney rank-sum, ties=0.5, a missing score
+scored as the observed floor rather than dropped) between the two score
+populations. An AUC near 1.0 means the populations are cleanly separable on
+that adapter's own scale — a decline rule COULD work well here, whatever
+fp/hedge says about the one rule actually in use; an AUC near 0.5 means the
+scores carry no separating signal at all, and no threshold placement would
+ever fix that regardless of where the verdict line is moved. Reported per
+bucket and totals as
+`separation: {auc, answerable_mean, control_mean, n_answerable, n_control}`
+in every receipt; `n/a` for `engram`/`engram-notomb`, which log no native
+score to compare. As with the section above, no numbers from an actual run
+are asserted here — see the per-run receipts once a full measurement exists.
+
+### Results (2026-09-12, full suites)
+
+Receipts `eval/results/2026-09-12-forgeteval-fp-{template,adversarial}.json`
+(+ per-adapter files and `-run.log`), same seed/distractors/scale as the
+main run, live core 0.9.4, three control probes per case.
+
+| template (1000 cases, 3000 controls) | pass | fp (controls answered) | hedge | separation AUC | forgets and says so |
+|---|---|---|---|---|---|
+| engram-mcp | 983 (98%) | **0%** | 99.5% | 0.80 | 400/400 |
+| grep | 850 (85%) | 3% | 0 by construction | 0.80 | n/a |
+| lethe | 993 (99%) | 100% | 0 by construction | 0.75 | n/a |
+
+| adversarial (385 cases, 1155 controls) | pass | fp | hedge | separation AUC | forgets and says so |
+|---|---|---|---|---|---|
+| engram-mcp | 252 (65%) | **0%** | 87% | 0.90 | 64/75 |
+| grep | 266 (69%) | 4% | 0 by construction | 0.91 | n/a |
+| lethe | 244 (63%) | 100% | 0 by construction | 0.94 | n/a |
+
+Per family, engram-mcp's separation is supersession 0.96, drift 0.93,
+decay 0.89, purge 0.72, amnesia 0.55; its answerable top scores average
+0.17–0.44 against 0.06–0.13 for controls.
+
+**How to read this honestly.** Lethe has no decline rule, so its 100% is a
+product choice, not a capability — its own similarity separates real from
+control at 0.75–0.94 and would support one. engram's 0% is *not* evidence
+of discernment on this register either: with the verdict weak on 99.5% of
+real template queries, the line simply never clears on a six-note graph.
+The calibrated weak line is fitted from phantom probes over the graph's
+own vocabulary, which a per-case graph of six to fifteen short facts cannot
+support, so the 0.85 default rules and everything reads weak. What engram
+can claim is the separation: without any tuning its scores rank real
+questions above never-inscribed ones at 0.80–0.90, so a line fitted on the
+graph's actual score population would decline the controls and pass most
+real questions. Amnesia (0.55) is the register where that fails — "tell me
+about people" scores like a control. This is the same open problem as the
+delivery floor on the ladder, in a fourth register; nothing here changes
+the product, it prices the gap. Grep's 3–4% comes from shared names, and
+its 85% template pass is why fp is never read alone.
+
+Two footnotes. engram-mcp's adversarial pass (252) is above the REST
+role-aware run's 240, all of it in `cross_lingual_identifier` (15/38 vs
+1/38) — same engine, different transport, unexplained and left as
+measured. And an MCP session captures its engine once at creation, so the
+adapter re-handshakes after every `reset()`; without that, a session
+outlives the store file it was opened on (recorded as an open problem in
+the engram graph).
+
+### Commands
+
+```bash
+cd eval/forgeteval
+
+# smoke (this repo's own record used --limit 20 per suite)
+../data/venv/bin/python3 run_engram.py --adapter engram-mcp --suite template    --limit 20 --project-dir <throwaway-dir-1>
+../data/venv/bin/python3 run_engram.py --adapter engram-mcp --suite adversarial --limit 20 --project-dir <throwaway-dir-2>
+../data/venv/bin/python3 run_engram.py --adapter grep       --suite template    --limit 20
+../data/venv/bin/python3 run_engram.py --adapter grep       --suite adversarial --limit 20
+../data/venv/bin/python3 run_engram.py --adapter lethe      --suite template    --limit 20
+../data/venv/bin/python3 run_engram.py --adapter lethe      --suite adversarial --limit 20
+
+# full receipts (same shape as the existing engram/engram-notomb/lethe runs)
+../data/venv/bin/python3 run_engram.py --adapter engram-mcp --suite template    --scale 200 --project-dir <dir> --out ../results/<date>-forgeteval-template-engram-mcp.json
+../data/venv/bin/python3 run_engram.py --adapter grep       --suite template    --scale 200               --out ../results/<date>-forgeteval-template-grep.json
+../data/venv/bin/python3 run_engram.py --adapter engram-mcp --suite adversarial --project-dir <dir>        --out ../results/<date>-forgeteval-adversarial-engram-mcp.json
+../data/venv/bin/python3 run_engram.py --adapter grep       --suite adversarial                            --out ../results/<date>-forgeteval-adversarial-grep.json
+
+python3 merge_receipts.py template    ../results/<date>-forgeteval-template.json    ../results/<date>-forgeteval-template-*.json
+python3 merge_receipts.py adversarial ../results/<date>-forgeteval-adversarial.json ../results/<date>-forgeteval-adversarial-*.json
+```
+
+`--project-dir` for `engram-mcp` follows the same rule as `engram`/
+`engram-notomb`: a throwaway directory outside any registered project, never
+`engram`/`eval`/`home`. `grep` and `lethe` need no project directory — `grep`
+has no daemon at all. No numbers from an actual run are recorded in this
+section; see the per-run receipts in `eval/results/` for measured values
+once a full (non-smoke) run has been made.
 
 ## Protocol deviations (summary)
 
@@ -308,6 +524,37 @@ inscribe→search round trip under 400 ms/case.
    statement. engram's ontology is a *decision/reasoning* memory for coding
    agents, not a general personal-fact store, so this is an approximation,
    stated as such.
+5. **`engram-mcp` re-handshakes its MCP session on every `reset()`.** An MCP
+   session's engine handle is bound once, at session creation
+   (`Engram::for_project` runs inside the per-session factory
+   `streamable_http_service_for` hands to `StreamableHttpService`), and is
+   never rebound afterward. `reset()` deletes the store file out from under
+   the daemon so a REST call reopens a fresh engine on next touch — correct
+   for REST, which resolves its engine fresh per request, but fatal for a
+   long-lived MCP session: keeping one `mcp-session-id` across a `reset()`
+   silently served every subsequent case the FIRST case's frozen data
+   (found while smoke-testing this adapter — every case after the first
+   failed until this was fixed). Nothing about normal engram usage triggers
+   this — no real client deletes a live project's store file out from under
+   an open bridge session — it is purely an artifact of ForgetEval's
+   `reset()` protocol. `EngramMCPAdapter.reset()` now clears the cached
+   session id so the next `recall_texts` call re-handshakes.
+6. **`engram-mcp`'s hedge is not tunable by this adapter's own policy
+   override.** `disable_delivery_floor` zeros `delivery_floor` /
+   `semantic_floor` / `search_min_score` / `search_relative_cut` and nulls
+   `knee_cliff` — none of which affect `search_confidence`'s strong/weak
+   split, which instead compares the top hit's score against
+   `policy.weak_evidence_top` (default 0.85, untouched here). That knob is
+   calibrated against this repo's own large, noisy, cross-session real
+   memory graph (the `eval/` ladder), the same category of mismatch the
+   "Config deviation" section above measured for `delivery_floor` against a
+   six-node synthetic graph. The task scoped this adapter to mirror
+   `engram-notomb`'s policy exactly, so `weak_evidence_top` is left as
+   shipped — meaning the hedge numbers this adapter produces should be read
+   as "how often the real-graph confidence calibration clears its bar on a
+   tiny per-case ForgetEval graph," not as a verdict on engram's confidence
+   mechanism in general. Flagged qualitatively here rather than smoothed
+   over; no numbers are asserted (see the section above for why).
 
 ## Known limitations
 
@@ -316,10 +563,10 @@ inscribe→search round trip under 400 ms/case.
   obfuscation, cross-lingual identifiers) are hard for every adapter under
   test, engram included, and that is visible in the per-category table
   above rather than smoothed over.
-- The daemon (`127.0.0.1:8787`) is shared machine-wide; running two engram
-  variants concurrently measurably slows both down (see timing) — the
-  timing numbers below reflect whatever concurrency was actually used for
-  this record (noted per run).
+- The daemon (`127.0.0.1:8787`) is shared machine-wide and the engram
+  variants ran concurrently with other benchmarks, which is why no timing
+  is reported: the per-operation numbers in each receipt's `timing_ms` are
+  contended and say nothing about the mechanism.
 - `mem0` / `langmem` / `cognee` / `amem` reference adapters were not run:
   the task scoped this to engram + engram-notomb + lethe (the only
   zero-external-service reference), to keep the exercise to what installs

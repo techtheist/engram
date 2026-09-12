@@ -1,0 +1,187 @@
+{
+  "embedder": "bge-small-en-v1.5",
+  "reranker": "jina-reranker-v1-turbo-en",
+  "embeddings_are_fake": false,
+  "seed": 1,
+  "limit": 10,
+  "sizes": [
+    {
+      "graph": 100,
+      "edges": 106,
+      "questions": 300,
+      "controls": 25,
+      "weak_line": 0.886295050730942,
+      "auto_tune_note": "weak line 0.881 -> 0.886 (fit 0.891, damped) from 24 phantom probes at q90, two families",
+      "standing_tokens": 3051,
+      "overall": {
+        "queries": 300,
+        "recall_at_1": 0.7966666666666666,
+        "recall_at_3": 0.8966666666666666,
+        "recall_at_5": 0.94,
+        "recall_at_10": 0.9733333333333334,
+        "mrr": 0.8546693121693124,
+        "tokens_mean": 197.95333333333335,
+        "twin_confusion": 0.0,
+        "neighbor_only": 0.016666666666666666,
+        "focus": 0.634438597725573,
+        "noise": 0.3570899470899472
+      },
+      "assisted": {
+        "queries": 300,
+        "recall_at_1": 0.8,
+        "recall_at_3": 0.9033333333333333,
+        "recall_at_5": 0.95,
+        "recall_at_10": 0.99,
+        "mrr": 0.8609193121693124,
+        "tokens_mean": 197.95333333333335,
+        "twin_confusion": 0.0,
+        "neighbor_only": 0.016666666666666666,
+        "focus": 0.634438597725573,
+        "noise": 0.3552566137566139
+      },
+      "by_phrasing": [
+        {
+          "phrasing": "lexical",
+          "score": {
+            "queries": 100,
+            "recall_at_1": 1.0,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0,
+            "recall_at_10": 1.0,
+            "mrr": 1.0,
+            "tokens_mean": 61.44,
+            "twin_confusion": 0.0,
+            "neighbor_only": 0.0,
+            "focus": 0.9145359789091115,
+            "noise": 0.04333333333333333
+          }
+        },
+        {
+          "phrasing": "paraphrase",
+          "score": {
+            "queries": 100,
+            "recall_at_1": 0.99,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0,
+            "recall_at_10": 1.0,
+            "mrr": 0.995,
+            "tokens_mean": 125.62,
+            "twin_confusion": 0.0,
+            "neighbor_only": 0.0,
+            "focus": 0.7556677583502224,
+            "noise": 0.2139603174603175
+          }
+        },
+        {
+          "phrasing": "oblique",
+          "score": {
+            "queries": 100,
+            "recall_at_1": 0.41,
+            "recall_at_3": 0.71,
+            "recall_at_5": 0.85,
+            "recall_at_10": 0.97,
+            "mrr": 0.5877579365079366,
+            "tokens_mean": 406.8,
+            "twin_confusion": 0.0,
+            "neighbor_only": 0.0,
+            "focus": 0.198214095760152,
+            "noise": 0.8084761904761905
+          }
+        }
+      ],
+      "weighted_recall": 0.985,
+      "controls_unwarned": 0.0,
+      "controls_empty": 0.08,
+      "answerable_warned": 0.47333333333333333
+    },
+    {
+      "graph": 1500,
+      "edges": 1590,
+      "questions": 4500,
+      "controls": 375,
+      "weak_line": 0.87811970012182,
+      "auto_tune_note": "weak line 0.869 -> 0.878 (fit 0.887, damped) from 24 phantom probes at q90, two families",
+      "standing_tokens": 3040,
+      "overall": {
+        "queries": 4500,
+        "recall_at_1": 0.6828888888888889,
+        "recall_at_3": 0.7475555555555555,
+        "recall_at_5": 0.7833333333333333,
+        "recall_at_10": 0.8304444444444444,
+        "mrr": 0.7253969135802475,
+        "tokens_mean": 296.8091111111111,
+        "twin_confusion": 0.0,
+        "neighbor_only": 0.018444444444444444,
+        "focus": 0.5203724593740154,
+        "noise": 0.549773456790136
+      },
+      "assisted": {
+        "queries": 4500,
+        "recall_at_1": 0.6855555555555556,
+        "recall_at_3": 0.7542222222222222,
+        "recall_at_5": 0.7937777777777778,
+        "recall_at_10": 0.8488888888888889,
+        "mrr": 0.7315283068783073,
+        "tokens_mean": 296.8091111111111,
+        "twin_confusion": 0.0,
+        "neighbor_only": 0.018444444444444444,
+        "focus": 0.5203724593740154,
+        "noise": 0.5479166666666803
+      },
+      "by_phrasing": [
+        {
+          "phrasing": "lexical",
+          "score": {
+            "queries": 1500,
+            "recall_at_1": 0.9986666666666667,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0,
+            "recall_at_10": 1.0,
+            "mrr": 0.9993333333333333,
+            "tokens_mean": 106.948,
+            "twin_confusion": 0.0,
+            "neighbor_only": 0.0,
+            "focus": 0.756630868197769,
+            "noise": 0.2091317460317458
+          }
+        },
+        {
+          "phrasing": "paraphrase",
+          "score": {
+            "queries": 1500,
+            "recall_at_1": 0.942,
+            "recall_at_3": 0.9806666666666667,
+            "recall_at_5": 0.9886666666666667,
+            "recall_at_10": 0.99,
+            "mrr": 0.9625952380952382,
+            "tokens_mean": 269.932,
+            "twin_confusion": 0.0,
+            "neighbor_only": 0.0,
+            "focus": 0.490425939921301,
+            "noise": 0.49530608465608034
+          }
+        },
+        {
+          "phrasing": "oblique",
+          "score": {
+            "queries": 1500,
+            "recall_at_1": 0.116,
+            "recall_at_3": 0.282,
+            "recall_at_5": 0.39266666666666666,
+            "recall_at_10": 0.5566666666666666,
+            "mrr": 0.23265634920634887,
+            "tokens_mean": 513.5473333333333,
+            "twin_confusion": 0.0,
+            "neighbor_only": 0.0,
+            "focus": 0.10824874680969584,
+            "noise": 0.939312169312176
+          }
+        }
+      ],
+      "weighted_recall": 0.9341666666666667,
+      "controls_unwarned": 0.016,
+      "controls_empty": 0.0,
+      "answerable_warned": 0.4717777777777778
+    }
+  ]
+}

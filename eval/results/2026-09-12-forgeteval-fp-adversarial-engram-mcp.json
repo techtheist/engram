@@ -1,0 +1,4180 @@
+{
+  "benchmark": "ForgetEval",
+  "source": "https://github.com/deeplethe/lethe (bench/forgeteval), arXiv:2606.15903",
+  "suite": "adversarial",
+  "adapter": "engram-mcp",
+  "adapter_policy": "Identical to 'engram-notomb' in reset/inscribe/supersede/release/purge (all REST, same floor-zeroed/knee_cliff=null policy override). recall_texts instead drives the MCP 'search' tool over the streamable-HTTP JSON-RPC transport (initialize -> notifications/initialized -> tools/call), reading the reply's confidence verdict (strong/weak/none) and filtering tombstone-role hits client-side on each hit's 'tombstone: true' flag (0.9.4) rather than the server-side 'types' exclusion the REST variants use. Every recall_texts call logs {query, confidence, n_hits_raw, n_hits, all_tombstone} to stats['mcp_confidence_log'], which feeds the controls/hedge/absence_signal numbers below -- see README's 'Abstention' section.",
+  "engram_health": {
+    "db": "/Users/techtheist/.engram/home.tepin",
+    "status": "ok",
+    "version": "0.9.4"
+  },
+  "lethe_git_rev": "b6053b7bdacc78a91b9ea4bb25f32edad278c495",
+  "generated_at": "2026-09-12T15:38:02.706761+00:00",
+  "params": {
+    "scale": 200,
+    "seed": 42,
+    "distractors": 4,
+    "limit": 0,
+    "n_generated": 385,
+    "n_run": 385
+  },
+  "wall_seconds": 126.733,
+  "timing_ms": {
+    "reset": {
+      "count": 385,
+      "mean_ms": 88.4,
+      "p50_ms": 86.92,
+      "p95_ms": 99.62,
+      "max_ms": 201.62
+    },
+    "inscribe": {
+      "count": 954,
+      "mean_ms": 22.78,
+      "p50_ms": 21.96,
+      "p95_ms": 30.98,
+      "max_ms": 55.57
+    },
+    "supersede": {
+      "count": 246,
+      "mean_ms": 60.01,
+      "p50_ms": 58.24,
+      "p95_ms": 76.09,
+      "max_ms": 107.79
+    },
+    "recall": {
+      "count": 1516,
+      "mean_ms": 29.32,
+      "p50_ms": 26.83,
+      "p95_ms": 45.57,
+      "max_ms": 84.69
+    },
+    "purge": {
+      "count": 126,
+      "mean_ms": 46.45,
+      "p50_ms": 44.99,
+      "p95_ms": 60.02,
+      "max_ms": 69.52
+    },
+    "release": {
+      "count": 75,
+      "mean_ms": 68.03,
+      "p50_ms": 66.92,
+      "p95_ms": 97.5,
+      "max_ms": 109.89
+    }
+  },
+  "aggregate": {
+    "compound_fact": {
+      "pass": 0,
+      "fail": 40,
+      "na": 0,
+      "total": 40,
+      "rate": 0.0
+    },
+    "cross_lingual_identifier": {
+      "pass": 15,
+      "fail": 23,
+      "na": 0,
+      "total": 38,
+      "rate": 0.3947
+    },
+    "identifier_obfuscation": {
+      "pass": 2,
+      "fail": 36,
+      "na": 0,
+      "total": 38,
+      "rate": 0.0526
+    },
+    "negation_trap": {
+      "pass": 38,
+      "fail": 2,
+      "na": 0,
+      "total": 40,
+      "rate": 0.95
+    },
+    "paraphrase_supersession": {
+      "pass": 29,
+      "fail": 9,
+      "na": 0,
+      "total": 38,
+      "rate": 0.7632
+    },
+    "prefix_collision": {
+      "pass": 28,
+      "fail": 11,
+      "na": 0,
+      "total": 39,
+      "rate": 0.7179
+    },
+    "recursive_supersession": {
+      "pass": 36,
+      "fail": 3,
+      "na": 0,
+      "total": 39,
+      "rate": 0.9231
+    },
+    "shared_attribute": {
+      "pass": 38,
+      "fail": 2,
+      "na": 0,
+      "total": 40,
+      "rate": 0.95
+    },
+    "substring_trap": {
+      "pass": 29,
+      "fail": 7,
+      "na": 0,
+      "total": 36,
+      "rate": 0.8056
+    },
+    "temporal_qualifier": {
+      "pass": 37,
+      "fail": 0,
+      "na": 0,
+      "total": 37,
+      "rate": 1.0
+    }
+  },
+  "totals": {
+    "pass": 252,
+    "fail": 133,
+    "na": 0,
+    "total": 385,
+    "rate": 0.6545
+  },
+  "controls": {
+    "by_bucket": {
+      "compound_fact": {
+        "asked": 120,
+        "answered": 0,
+        "fp": 0.0
+      },
+      "cross_lingual_identifier": {
+        "asked": 114,
+        "answered": 0,
+        "fp": 0.0
+      },
+      "identifier_obfuscation": {
+        "asked": 114,
+        "answered": 0,
+        "fp": 0.0
+      },
+      "negation_trap": {
+        "asked": 120,
+        "answered": 0,
+        "fp": 0.0
+      },
+      "paraphrase_supersession": {
+        "asked": 114,
+        "answered": 0,
+        "fp": 0.0
+      },
+      "prefix_collision": {
+        "asked": 117,
+        "answered": 0,
+        "fp": 0.0
+      },
+      "recursive_supersession": {
+        "asked": 117,
+        "answered": 0,
+        "fp": 0.0
+      },
+      "shared_attribute": {
+        "asked": 120,
+        "answered": 0,
+        "fp": 0.0
+      },
+      "substring_trap": {
+        "asked": 108,
+        "answered": 0,
+        "fp": 0.0
+      },
+      "temporal_qualifier": {
+        "asked": 111,
+        "answered": 0,
+        "fp": 0.0
+      }
+    },
+    "totals": {
+      "asked": 1155,
+      "answered": 0,
+      "fp": 0.0
+    }
+  },
+  "hedge": {
+    "by_bucket": {
+      "compound_fact": 1.0,
+      "cross_lingual_identifier": 0.7105,
+      "identifier_obfuscation": 0.9474,
+      "negation_trap": 0.975,
+      "paraphrase_supersession": 0.9737,
+      "prefix_collision": 0.5897,
+      "recursive_supersession": 1.0,
+      "shared_attribute": 0.725,
+      "substring_trap": 0.9167,
+      "temporal_qualifier": 0.8919
+    },
+    "total": 0.8727,
+    "note": "share of real final_query calls where engram-mcp's own verdict was weak or none (its cost side)"
+  },
+  "absence_signal": {
+    "by_bucket": {
+      "negation_trap": {
+        "qualifying": 19,
+        "forgets_and_says_so": 19,
+        "rate": 1.0
+      },
+      "shared_attribute": {
+        "qualifying": 40,
+        "forgets_and_says_so": 29,
+        "rate": 0.725
+      },
+      "substring_trap": {
+        "qualifying": 16,
+        "forgets_and_says_so": 16,
+        "rate": 1.0
+      }
+    },
+    "totals": {
+      "qualifying": 75,
+      "forgets_and_says_so": 64,
+      "rate": 0.8533
+    },
+    "note": "engram-specific, informational: decay/amnesia (template) and any release-based case (adversarial) where the final query's verdict was weak/none or every returned hit was a tombstone -- \"forgets AND says so\". 0/0 for every other adapter (no verdict/tombstone-flag signal)."
+  },
+  "separation": {
+    "by_bucket": {
+      "compound_fact": {
+        "auc": 0.6770833333333334,
+        "answerable_mean": 0.1387,
+        "control_mean": 0.0878,
+        "n_answerable": 40,
+        "n_control": 120
+      },
+      "cross_lingual_identifier": {
+        "auc": 0.8257156048014774,
+        "answerable_mean": 0.3445,
+        "control_mean": 0.0399,
+        "n_answerable": 38,
+        "n_control": 114
+      },
+      "identifier_obfuscation": {
+        "auc": 0.948291782086796,
+        "answerable_mean": 0.399,
+        "control_mean": 0.0554,
+        "n_answerable": 38,
+        "n_control": 114
+      },
+      "negation_trap": {
+        "auc": 0.9597916666666667,
+        "answerable_mean": 0.3221,
+        "control_mean": 0.0656,
+        "n_answerable": 40,
+        "n_control": 120
+      },
+      "paraphrase_supersession": {
+        "auc": 0.8864265927977839,
+        "answerable_mean": 0.2862,
+        "control_mean": 0.0911,
+        "n_answerable": 38,
+        "n_control": 114
+      },
+      "prefix_collision": {
+        "auc": 0.9945211483673022,
+        "answerable_mean": 0.7263,
+        "control_mean": 0.0485,
+        "n_answerable": 39,
+        "n_control": 117
+      },
+      "recursive_supersession": {
+        "auc": 0.940609248301556,
+        "answerable_mean": 0.2348,
+        "control_mean": 0.0569,
+        "n_answerable": 39,
+        "n_control": 117
+      },
+      "shared_attribute": {
+        "auc": 0.9997916666666666,
+        "answerable_mean": 0.5899,
+        "control_mean": 0.0424,
+        "n_answerable": 40,
+        "n_control": 120
+      },
+      "substring_trap": {
+        "auc": 0.7636316872427984,
+        "answerable_mean": 0.2894,
+        "control_mean": 0.0534,
+        "n_answerable": 36,
+        "n_control": 108
+      },
+      "temporal_qualifier": {
+        "auc": 0.9690771852934015,
+        "answerable_mean": 0.4302,
+        "control_mean": 0.069,
+        "n_answerable": 37,
+        "n_control": 111
+      }
+    },
+    "totals": {
+      "auc": 0.9044763029178614,
+      "answerable_mean": 0.3771,
+      "control_mean": 0.0614,
+      "n_answerable": 385,
+      "n_control": 1155
+    },
+    "note": "threshold-free: AUC = P(a random answerable top-score > a random control top-score), ties=0.5, missing/empty scored as the observed floor. Says whether this adapter's OWN scores could support a decline rule at all, independent of where fp/hedge's fixed verdict line happens to sit. n/a (0 answerable/0 control) for engram/engram-notomb -- no native score is logged for them."
+  },
+  "cases": [
+    {
+      "id": "adv_substring_trap_01",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.4691,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_02",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.279,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_03",
+      "bucket": "substring_trap",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.3079,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_04",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.3229,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_05",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.3229,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_06",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2688,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_07",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2298,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_08",
+      "bucket": "substring_trap",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2911,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_11",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.3042,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_14",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.3484,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_12",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.3046,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_13",
+      "bucket": "substring_trap",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2927,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_15",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2819,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_16",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.294,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_18",
+      "bucket": "substring_trap",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.3082,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_17",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.265,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_19",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.3423,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_20",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2981,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_21",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.3363,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_22",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2813,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_26",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2876,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_27",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2732,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_24",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2578,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_25",
+      "bucket": "substring_trap",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.3016,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_30",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.262,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_28",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.332,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_31",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.3071,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_32",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2789,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_33",
+      "bucket": "substring_trap",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.3141,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_35",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2923,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_36",
+      "bucket": "substring_trap",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.3009,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_34",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.3121,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_37",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.3059,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_38",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.275,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_39",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.3121,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_substring_trap_40",
+      "bucket": "substring_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.3,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_01",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2375,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_02",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2378,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_03",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2368,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_04",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2381,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_05",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.253,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_06",
+      "bucket": "prefix_collision",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2261,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_07",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.24,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_08",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2468,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_09",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.234,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_10",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2199,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_11",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.236,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_12",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.228,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_13",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2527,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_14",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2322,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_15",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2481,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_16",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2321,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_17",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2298,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_18",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2369,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_19",
+      "bucket": "prefix_collision",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.215,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_20",
+      "bucket": "prefix_collision",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2289,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_21",
+      "bucket": "prefix_collision",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.224,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_22",
+      "bucket": "prefix_collision",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2209,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_23",
+      "bucket": "prefix_collision",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.23,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_24",
+      "bucket": "prefix_collision",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2299,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_25",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2311,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_26",
+      "bucket": "prefix_collision",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.256,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_27",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.227,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_28",
+      "bucket": "prefix_collision",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2292,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_30",
+      "bucket": "prefix_collision",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.239,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_32",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2279,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_31",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2503,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_33",
+      "bucket": "prefix_collision",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2419,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_34",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2188,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_35",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2108,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_36",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2342,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_37",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2272,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_38",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2269,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_39",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2408,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_prefix_collision_40",
+      "bucket": "prefix_collision",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.296,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_01",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2139,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_02",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2129,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_03",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2229,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_04",
+      "bucket": "paraphrase_supersession",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.239,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_05",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2211,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_06",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.3233,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_07",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2308,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_08",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.226,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_09",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2298,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_10",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2089,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_11",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.209,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_12",
+      "bucket": "paraphrase_supersession",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.218,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_13",
+      "bucket": "paraphrase_supersession",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2291,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_14",
+      "bucket": "paraphrase_supersession",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2228,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_15",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2209,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_16",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2319,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_17",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2348,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_18",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2157,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_20",
+      "bucket": "paraphrase_supersession",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2342,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_21",
+      "bucket": "paraphrase_supersession",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2341,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_22",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.234,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_23",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.24,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_24",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2221,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_25",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.221,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_26",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2213,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_27",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.227,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_28",
+      "bucket": "paraphrase_supersession",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2228,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_29",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2193,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_30",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.244,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_31",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2183,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_33",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.208,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_34",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2117,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_35",
+      "bucket": "paraphrase_supersession",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2249,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_37",
+      "bucket": "paraphrase_supersession",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.239,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_38",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2341,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_36",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2441,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_39",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2249,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_paraphrase_supersession_40",
+      "bucket": "paraphrase_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.242,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_01",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2151,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_02",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2101,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_03",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2339,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_04",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2311,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_05",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2093,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_06",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2241,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_07",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2219,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_08",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2151,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_09",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2229,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_10",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2271,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_11",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2434,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_12",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2369,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_13",
+      "bucket": "negation_trap",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2458,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_14",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.247,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_15",
+      "bucket": "negation_trap",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2216,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_16",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2704,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_17",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2471,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_18",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2287,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_19",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2282,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_20",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2188,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_21",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2431,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_22",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2227,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_23",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2293,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_24",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.229,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_25",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2241,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_26",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2089,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_27",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2221,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_28",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2149,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_29",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2278,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_30",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2168,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_31",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2129,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_32",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2362,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_33",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2118,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_34",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2169,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_35",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2282,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_36",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.216,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_37",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2362,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_38",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2168,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_39",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2079,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_negation_trap_40",
+      "bucket": "negation_trap",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2102,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_01",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2202,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_02",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2618,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_03",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2629,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_04",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2238,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_05",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.3118,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_06",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2191,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_07",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.24,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_08",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2879,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_09",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2108,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_10",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2855,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_11",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2189,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_12",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.289,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_13",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2668,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_14",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.229,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_15",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.266,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_16",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2345,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_17",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.214,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_18",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.271,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_19",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2459,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_20",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2619,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_22",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2952,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_23",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.215,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_24",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.301,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_25",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2175,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_26",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2247,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_27",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2587,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_28",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2396,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_29",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.266,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_30",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2219,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_31",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.267,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_33",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2455,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_34",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.274,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_36",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2681,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_37",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.23,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_38",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.264,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_39",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2711,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_temporal_qualifier_40",
+      "bucket": "temporal_qualifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2082,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_01",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2544,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_02",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2559,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_03",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.26,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_04",
+      "bucket": "shared_attribute",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.3062,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_05",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2916,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_06",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.3149,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_07",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2778,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_08",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2539,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_09",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.264,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_10",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2705,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_11",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2576,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_12",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2855,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_13",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2982,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_14",
+      "bucket": "shared_attribute",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2907,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_15",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.3094,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_16",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2922,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_17",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2619,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_18",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.3449,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_19",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2968,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_20",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.311,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_21",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2581,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_22",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2599,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_23",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2789,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_24",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2622,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_25",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2803,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_26",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2757,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_27",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.263,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_28",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2655,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_29",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2489,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_30",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2539,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_31",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.318,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_32",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.275,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_33",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.239,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_34",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2851,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_35",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2471,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_36",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2709,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_37",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2689,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_38",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2468,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_39",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2779,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_shared_attribute_40",
+      "bucket": "shared_attribute",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2789,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_01",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2179,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_02",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.213,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_03",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2199,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_04",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2138,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_05",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2312,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_06",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2564,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_07",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2168,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_08",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2379,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_09",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2129,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_10",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2236,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_11",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2371,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_12",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2448,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_13",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.231,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_14",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.24,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_15",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.217,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_16",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.226,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_17",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2161,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_18",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2348,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_19",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2242,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_20",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2501,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_21",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.227,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_22",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.214,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_23",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.228,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_24",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2141,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_25",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2122,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_26",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2322,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_27",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.213,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_28",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2242,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_29",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2206,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_30",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2325,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_31",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2411,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_32",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2171,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_33",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2238,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_34",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.232,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_35",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2159,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_36",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2129,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_37",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2239,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_38",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2178,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_39",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2361,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_compound_fact_40",
+      "bucket": "compound_fact",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.232,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_01",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2379,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_02",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2322,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_03",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2541,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_04",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2358,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_05",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.234,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_06",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.23,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_07",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.234,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_08",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2177,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_09",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2269,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_10",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2386,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_11",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2408,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_12",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2359,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_13",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.224,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_14",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.261,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_15",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.226,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_16",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2212,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_19",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2419,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_20",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.244,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_21",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2378,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_22",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2341,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_23",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2267,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_24",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2431,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_25",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.241,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_26",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2496,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_27",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2316,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_28",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.241,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_29",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2499,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_30",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.231,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_31",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2408,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_32",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.237,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_33",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2169,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_34",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2131,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_35",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2548,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_36",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2329,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_37",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.26,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_38",
+      "bucket": "identifier_obfuscation",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2178,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_17",
+      "bucket": "identifier_obfuscation",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2272,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_identifier_obfuscation_18",
+      "bucket": "identifier_obfuscation",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2391,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_01",
+      "bucket": "cross_lingual_identifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2402,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_02",
+      "bucket": "cross_lingual_identifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2338,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_03",
+      "bucket": "cross_lingual_identifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2509,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_04",
+      "bucket": "cross_lingual_identifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.237,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_05",
+      "bucket": "cross_lingual_identifier",
+      "passed": false,
+      "error": "JSONDecodeError: Unterminated string starting at: line 1 column 68 (char 67)",
+      "duration_seconds": 0.2169,
+      "final_confidence": null,
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_06",
+      "bucket": "cross_lingual_identifier",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.241,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_07",
+      "bucket": "cross_lingual_identifier",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2539,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_08",
+      "bucket": "cross_lingual_identifier",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2798,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_09",
+      "bucket": "cross_lingual_identifier",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2738,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_10",
+      "bucket": "cross_lingual_identifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2863,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_11",
+      "bucket": "cross_lingual_identifier",
+      "passed": false,
+      "error": "JSONDecodeError: Unterminated string starting at: line 1 column 68 (char 67)",
+      "duration_seconds": 0.2727,
+      "final_confidence": null,
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_12",
+      "bucket": "cross_lingual_identifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2365,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_13",
+      "bucket": "cross_lingual_identifier",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2389,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_14",
+      "bucket": "cross_lingual_identifier",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2385,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_15",
+      "bucket": "cross_lingual_identifier",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2438,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_16",
+      "bucket": "cross_lingual_identifier",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2468,
+      "final_confidence": "strong",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_17",
+      "bucket": "cross_lingual_identifier",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.296,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_19",
+      "bucket": "cross_lingual_identifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2705,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_20",
+      "bucket": "cross_lingual_identifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2492,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_21",
+      "bucket": "cross_lingual_identifier",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.268,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_22",
+      "bucket": "cross_lingual_identifier",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2452,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_24",
+      "bucket": "cross_lingual_identifier",
+      "passed": false,
+      "error": "JSONDecodeError: Unterminated string starting at: line 1 column 68 (char 67)",
+      "duration_seconds": 0.2699,
+      "final_confidence": null,
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_23",
+      "bucket": "cross_lingual_identifier",
+      "passed": false,
+      "error": "JSONDecodeError: Unterminated string starting at: line 1 column 68 (char 67)",
+      "duration_seconds": 0.2569,
+      "final_confidence": null,
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_25",
+      "bucket": "cross_lingual_identifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2238,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_26",
+      "bucket": "cross_lingual_identifier",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2618,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_27",
+      "bucket": "cross_lingual_identifier",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2347,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_30",
+      "bucket": "cross_lingual_identifier",
+      "passed": false,
+      "error": "JSONDecodeError: Unterminated string starting at: line 1 column 68 (char 67)",
+      "duration_seconds": 0.2687,
+      "final_confidence": null,
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_28",
+      "bucket": "cross_lingual_identifier",
+      "passed": false,
+      "error": "JSONDecodeError: Unterminated string starting at: line 1 column 68 (char 67)",
+      "duration_seconds": 0.2409,
+      "final_confidence": null,
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_29",
+      "bucket": "cross_lingual_identifier",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2283,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_31",
+      "bucket": "cross_lingual_identifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2199,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_32",
+      "bucket": "cross_lingual_identifier",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.24,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_33",
+      "bucket": "cross_lingual_identifier",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2269,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_34",
+      "bucket": "cross_lingual_identifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2569,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_35",
+      "bucket": "cross_lingual_identifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2522,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_37",
+      "bucket": "cross_lingual_identifier",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.242,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_38",
+      "bucket": "cross_lingual_identifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2529,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_39",
+      "bucket": "cross_lingual_identifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2599,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_cross_lingual_identifier_40",
+      "bucket": "cross_lingual_identifier",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2581,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_01",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.279,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_02",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2576,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_03",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2604,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_04",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2559,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_05",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.259,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_06",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2519,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_07",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.257,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_08",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2577,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_09",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2487,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_10",
+      "bucket": "recursive_supersession",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2699,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_11",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2649,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_12",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.258,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_13",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.251,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_14",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2639,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_15",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2427,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_16",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2636,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_17",
+      "bucket": "recursive_supersession",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2444,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_18",
+      "bucket": "recursive_supersession",
+      "passed": false,
+      "error": null,
+      "duration_seconds": 0.2638,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_19",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2509,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_20",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2359,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_21",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.251,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_22",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2672,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_23",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2499,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_24",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2376,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_25",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2643,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_26",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2384,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_27",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2736,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_28",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2413,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_29",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.232,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_30",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2471,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_31",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.254,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_32",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2405,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_33",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.3041,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_35",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2779,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_36",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2778,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_37",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2953,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_38",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.2972,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_39",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.3228,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    },
+    {
+      "id": "adv_recursive_supersession_40",
+      "bucket": "recursive_supersession",
+      "passed": true,
+      "error": null,
+      "duration_seconds": 0.3548,
+      "final_confidence": "weak",
+      "controls_asked": 3,
+      "controls_answered": 0
+    }
+  ]
+}

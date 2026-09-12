@@ -1040,8 +1040,14 @@ pub struct Fact {
     pub backdate_days: u64,
     /// The session this fact is written under. `None` (the whole regular
     /// corpus) keeps the historical single-session write — every existing
-    /// bench is byte-identical — and only the sessions bench assigns ids.
+    /// bench is byte-identical — and only the sessions bench and the
+    /// `--history` shaping assign ids.
     pub session: Option<String>,
+    /// 1-based assistant turn inside [`Fact::session`], set only by the
+    /// `--history` shaping. `None` everywhere else, which is what keeps the
+    /// distance metric silent and `created_at` unstamped on every bench that
+    /// existed before it.
+    pub turn: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1296,6 +1302,28 @@ impl Vocab {
     }
 }
 
+/// The two opt-in shaping knobs the regular corpus can be built under.
+///
+/// Both default to OFF, and off they must leave the corpus byte-identical to
+/// every receipt already in `eval/results/` — a golden digest test enforces
+/// exactly that.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct CorpusShape {
+    /// `--history`: give every fact a session and a turn, so the delivered
+    /// hits carry the provenance the distance metric walks.
+    pub history: bool,
+    /// `--collision`: the share of TESTED facts that gain one extra untested
+    /// fact on the same subject, making the same coined name carry two
+    /// unrelated claims. `0.0` mints none.
+    pub collision: f64,
+}
+
+/// Sessions hold 5..=10 notes. A working session is a handful of notes, not
+/// one and not fifty; the range is a stated assumption like the type mix, and
+/// the metric reports the distances it produces rather than assuming them.
+pub const HISTORY_SESSION_MIN: usize = 5;
+pub const HISTORY_SESSION_MAX: usize = 10;
+
 /// Build a graph of `tested + distractors` facts (spread evenly across the
 /// five kinds), the questions for the tested ones, a matching set of
 /// unanswerable questions, and the labelled NLI pairs.
@@ -1328,7 +1356,38 @@ pub fn corpus_full(
     profile: &Profile,
     type_mix: &[(Kind, u32)],
 ) -> Corpus {
-    corpus_impl(tested, distractors, seed, profile, type_mix, 0, 0, None).0
+    corpus_shaped(
+        tested,
+        distractors,
+        seed,
+        profile,
+        type_mix,
+        CorpusShape::default(),
+    )
+}
+
+/// As `corpus_full`, under an explicit [`CorpusShape`] — history sessions,
+/// entity collisions, or neither.
+pub fn corpus_shaped(
+    tested: usize,
+    distractors: usize,
+    seed: u64,
+    profile: &Profile,
+    type_mix: &[(Kind, u32)],
+    shape: CorpusShape,
+) -> Corpus {
+    corpus_impl(
+        tested,
+        distractors,
+        seed,
+        profile,
+        type_mix,
+        0,
+        0,
+        None,
+        shape,
+    )
+    .0
 }
 
 /// The sessions-bench corpus: the regular corpus spread across a session
@@ -1352,6 +1411,7 @@ pub fn corpus_sessions(
         0,
         0,
         Some(spec),
+        CorpusShape::default(),
     )
 }
 
@@ -1378,6 +1438,7 @@ pub fn corpus_chained(
         n_chains,
         chain_len,
         None,
+        CorpusShape::default(),
     )
     .0
 }
@@ -1392,6 +1453,7 @@ fn corpus_impl(
     n_chains: usize,
     chain_len: usize,
     sessions: Option<SessionSpec>,
+    shape: CorpusShape,
 ) -> (Corpus, Vec<SessionCluster>) {
     let mut rng = Rng::new(seed);
     let vocab = Vocab::new(&mut rng);
@@ -1466,6 +1528,13 @@ fn corpus_impl(
         profile,
     );
 
+    // Entity collisions, if asked for: an extra untested fact per selected
+    // TESTED subject. Minted AFTER `pairs` and `edges` (a collider is graph
+    // noise, not an NLI partner or a link endpoint) and BEFORE the controls,
+    // whose name space it never touches — a collider reuses a name already
+    // issued, so FP can only move through ranking.
+    colliders(&mut facts, shape.collision, seed, &vocab, total, profile);
+
     // Session assignment + multi-session clusters (sessions bench only).
     // Clusters draw fresh names BEFORE the controls, like chains, so a
     // phantom subject can never collide with a cluster's.
@@ -1493,6 +1562,17 @@ fn corpus_impl(
         None => Vec::new(),
     };
 
+    // History shaping last, so every resident of the graph — tested facts,
+    // distractors and colliders alike — lands in a session. The crowd shares
+    // the sessions; that is what makes a walk through one cost something.
+    if shape.history {
+        assert!(
+            n_chains == 0 && sessions.is_none(),
+            "the history shaping does not combine with chains or the sessions bench"
+        );
+        assign_history_sessions(&mut facts, seed);
+    }
+
     let (unanswerable, phantom_subjects) = controls(tested, &mut names);
 
     (
@@ -1507,6 +1587,150 @@ fn corpus_impl(
         },
         clusters,
     )
+}
+
+/// Spread every fact across dialogue sessions of 5..=10 notes, one component
+/// per session.
+///
+/// The model this encodes: **an assistant writes one note per assistant turn,
+/// with a user turn in between**. So walking from the note at turn `a` to the
+/// note at turn `b` of one session costs `2*|a-b| + 1` dialogue turns — both
+/// endpoints counted, five assistant turns and four user turns for the fifth
+/// note against the first. That is the number
+/// `metrics::Score::history_distance` reports, and it is the price of reaching
+/// a fact by walking the transcript instead of retrieving it.
+///
+/// A session is *work on one component*: its notes are drawn from a single
+/// component's facts, which is why a session-mate is a plausible neighbour of
+/// the answer rather than an accident. A component with more facts than one
+/// session spans several, and its last session may fall short of the minimum
+/// because the component simply ran out.
+fn assign_history_sessions(facts: &mut [Fact], seed: u64) {
+    // Its own stream: the shaping must never shift the draws the corpus
+    // itself made, or turning the flag on would move numbers it has no
+    // business moving.
+    let mut rng = Rng::new(seed ^ 0x4849_5354_4F52_5900);
+
+    let mut groups: Vec<Vec<usize>> = vec![Vec::new(); COMPONENTS.len()];
+    for (i, f) in facts.iter().enumerate() {
+        let c = COMPONENTS
+            .iter()
+            .position(|c| *c == component_of(f))
+            .expect("every generated subject names one of the components");
+        groups[c].push(i);
+    }
+
+    let span = HISTORY_SESSION_MAX - HISTORY_SESSION_MIN + 1;
+    let mut session = 0usize;
+    for group in groups {
+        let mut at = 0usize;
+        while at < group.len() {
+            let take = (HISTORY_SESSION_MIN + rng.below(span)).min(group.len() - at);
+            let id = format!("h{session:04}");
+            for (t, &i) in group[at..at + take].iter().enumerate() {
+                facts[i].session = Some(id.clone());
+                facts[i].turn = Some(t + 1);
+            }
+            session += 1;
+            at += take;
+        }
+    }
+}
+
+/// Mint one untested collider per selected tested fact: the SAME subject
+/// string, a different kind, and a claim from a slot triple no regular fact
+/// used — so one coined name now carries two unrelated facts and a retriever
+/// that keys on the name alone has to choose.
+///
+/// The collider takes its slot ordinal from the free range past the regular
+/// corpus (the trick chains and clusters use), filtered to ordinals naming
+/// the subject's OWN component so the note stays coherent with the name it
+/// wears. Its `oblique_key` is suffixed like a cluster aspect's: the corpus
+/// -wide uniqueness check must not read a deliberate second claim about one
+/// subject as a second answer to one question.
+///
+/// Controls are untouched by construction — a collider consumes no invented
+/// name — so the false-positive rate can only move through ranking.
+fn colliders(
+    facts: &mut Vec<Fact>,
+    rate: f64,
+    seed: u64,
+    vocab: &Vocab,
+    total: usize,
+    profile: &Profile,
+) {
+    let rate = rate.clamp(0.0, 1.0);
+    if rate <= 0.0 {
+        return;
+    }
+    let mut chosen: Vec<usize> = (0..facts.len()).filter(|i| facts[*i].tested).collect();
+    let n = (chosen.len() as f64 * rate).round() as usize;
+    if n == 0 {
+        return;
+    }
+    let mut rng = Rng::new(seed ^ 0xC01_11D3_5EED_0000);
+    rng.shuffle(&mut chosen);
+    chosen.truncate(n);
+    // Back into corpus order: which facts collide is a seeded draw, the order
+    // they are written in is not.
+    chosen.sort_unstable();
+
+    // Slot ordinals the regular corpus never reached, bucketed by the
+    // component each one names.
+    let used = total.div_ceil(KINDS.len());
+    let mut free: Vec<Vec<usize>> = vec![Vec::new(); COMPONENTS.len()];
+    for j in used..MAX_PER_KIND {
+        free[vocab.slots(j).0].push(j);
+    }
+    let mut cursor = vec![0usize; COMPONENTS.len()];
+
+    let mut minted: Vec<Fact> = Vec::with_capacity(n);
+    for (ci, &i) in chosen.iter().enumerate() {
+        let (subject, component, kind) = {
+            let src = &facts[i];
+            let c = COMPONENTS
+                .iter()
+                .position(|c| *c == component_of(src))
+                .expect("every generated subject names one of the components");
+            let base = KINDS
+                .iter()
+                .position(|k| *k == src.kind)
+                .expect("every fact carries one of the kinds");
+            // A DIFFERENT kind, always: a collider that agreed with its host
+            // on both subject and type would be a near-duplicate, which is a
+            // separate experiment.
+            let kind = KINDS[(base + 1 + rng.below(KINDS.len() - 1)) % KINDS.len()];
+            (src.subject.clone(), c, kind)
+        };
+        let Some(&j) = free[component].get(cursor[component]) else {
+            panic!(
+                "the free slot space for {} is exhausted",
+                COMPONENTS[component]
+            );
+        };
+        cursor[component] += 1;
+
+        let (_, s1, s2) = vocab.slots(j);
+        let key = format!("x{i:04}");
+        let mut collider = build(
+            kind,
+            key.clone(),
+            subject,
+            Slots {
+                component: COMPONENTS[component],
+                s1,
+                s2,
+                j,
+            },
+            None,
+            false,
+            profile,
+            (total + ci) as u64,
+        );
+        collider.oblique_key = format!("{} [{key}]", collider.oblique_key);
+        minted.push(collider);
+    }
+    facts.append(&mut minted);
 }
 
 /// Generate the multi-session clusters. Each cluster claims a fresh invented
@@ -1598,6 +1822,7 @@ fn session_clusters(
                     code_refs: aspect.code_refs.clone(),
                     backdate_days: 0,
                     session: Some(session.clone()),
+                    turn: None,
                 });
                 members.push((key, s));
             }
@@ -1695,6 +1920,7 @@ fn chains(
                 // recency alone would have picked the head.
                 backdate_days: ((chain_len - 1 - g) as u64) * 30,
                 session: None,
+                turn: None,
             });
             keys.push(key);
         }
@@ -2006,6 +2232,7 @@ fn build(
         code_refs,
         backdate_days: 0,
         session: None,
+        turn: None,
     }
 }
 
@@ -2726,6 +2953,198 @@ mod tests {
             plain.facts.iter().map(|f| &f.title).collect::<Vec<_>>(),
             c.facts[..120].iter().map(|f| &f.title).collect::<Vec<_>>(),
         );
+    }
+
+    // ------------------------------------------------- the shaping knobs
+
+    fn shaped(tested: usize, distractors: usize, seed: u64, shape: CorpusShape) -> Corpus {
+        corpus_shaped(
+            tested,
+            distractors,
+            seed,
+            &Profile::default(),
+            &DEFAULT_TYPE_MIX,
+            shape,
+        )
+    }
+
+    /// FNV-1a over every fact's title and body, in corpus order — one number
+    /// that moves the moment any generated text does.
+    fn digest(c: &Corpus) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for f in &c.facts {
+            for b in f
+                .title
+                .as_bytes()
+                .iter()
+                .chain(b"\n")
+                .chain(f.body.as_bytes())
+            {
+                h ^= *b as u64;
+                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        h
+    }
+
+    #[test]
+    fn both_knobs_off_reproduce_the_corpus_every_receipt_was_measured_on() {
+        // The golden guard. `eval/results/` holds receipts that reproduce to
+        // the digit across releases, and the ladder is expected to keep doing
+        // that — so with the shaping off the generator must emit byte-for-byte
+        // what it emitted before the shaping existed. The constant below was
+        // computed on the pre-change generator and must never be "updated" to
+        // make a failing run pass: a mismatch means the corpus moved, and the
+        // corpus moving invalidates every number already published.
+        let c = corpus(40, 80, 42);
+        assert_eq!(
+            digest(&c),
+            0x3568_5252_56ad_51bd,
+            "the unshaped corpus changed — every published receipt just became \
+             incomparable"
+        );
+        assert!(
+            c.facts
+                .iter()
+                .all(|f| f.session.is_none() && f.turn.is_none()),
+            "an unshaped fact carries no session and no turn"
+        );
+        // And the explicit default shape is the same corpus, not merely a
+        // similar one.
+        assert_eq!(
+            digest(&shaped(40, 80, 42, CorpusShape::default())),
+            digest(&c)
+        );
+    }
+
+    #[test]
+    fn history_gives_every_fact_a_session_and_a_turn() {
+        let c = shaped(
+            100,
+            200,
+            3,
+            CorpusShape {
+                history: true,
+                ..Default::default()
+            },
+        );
+        // Sessions are shaping, not content: the notes themselves are the
+        // same notes the unshaped corpus wrote.
+        assert_eq!(digest(&c), digest(&corpus(100, 200, 3)));
+
+        let mut members: std::collections::BTreeMap<String, Vec<&Fact>> = Default::default();
+        for f in &c.facts {
+            let s = f.session.clone().expect("every fact lands in a session");
+            assert!(s.starts_with('h'), "session ids are h0000-shaped: {s}");
+            assert!(f.turn.is_some(), "every fact carries a turn");
+            members.entry(s).or_default().push(f);
+        }
+        assert!(members.len() > 1, "one session is not a history");
+
+        // A component's LAST session may fall short of the minimum because
+        // the component ran out; every other session holds 5..=10.
+        let mut short_per_component: std::collections::HashMap<&str, usize> = Default::default();
+        for (id, fs) in &members {
+            let comps: HashSet<&str> = fs.iter().map(|f| component_of(f)).collect();
+            assert_eq!(comps.len(), 1, "session {id} mixes components: {comps:?}");
+            assert!(
+                fs.len() <= HISTORY_SESSION_MAX,
+                "session {id} holds {} notes",
+                fs.len()
+            );
+            if fs.len() < HISTORY_SESSION_MIN {
+                *short_per_component
+                    .entry(comps.into_iter().next().unwrap())
+                    .or_default() += 1;
+            }
+            // Turns are 1..=n in draw order, one note per assistant turn.
+            let mut turns: Vec<usize> = fs.iter().map(|f| f.turn.unwrap()).collect();
+            turns.sort_unstable();
+            assert_eq!(turns, (1..=fs.len()).collect::<Vec<_>>());
+        }
+        for (comp, n) in short_per_component {
+            assert_eq!(n, 1, "{comp} has {n} short sessions, only its tail may be");
+        }
+    }
+
+    #[test]
+    fn colliders_share_a_subject_and_nothing_else() {
+        let plain = corpus(100, 200, 11);
+        let c = shaped(
+            100,
+            200,
+            11,
+            CorpusShape {
+                collision: 0.5,
+                ..Default::default()
+            },
+        );
+        let extra = c.facts.len() - plain.facts.len();
+        assert_eq!(extra, 50, "half of the 100 tested facts collide");
+        // The base corpus is untouched: same facts, same order, same text.
+        assert_eq!(
+            plain.facts.iter().map(|f| &f.title).collect::<Vec<_>>(),
+            c.facts[..plain.facts.len()]
+                .iter()
+                .map(|f| &f.title)
+                .collect::<Vec<_>>()
+        );
+        // Controls keep their own name space, so FP can only move through
+        // ranking — never through a control subject suddenly existing.
+        assert_eq!(plain.phantom_subjects, c.phantom_subjects);
+        let subjects: HashSet<&String> = c.facts.iter().map(|f| &f.subject).collect();
+        for p in &c.phantom_subjects {
+            assert!(!subjects.contains(p), "a control subject was written");
+        }
+
+        let mut hosts = 0;
+        for collider in &c.facts[plain.facts.len()..] {
+            assert!(!collider.tested && collider.questions.is_empty());
+            let host = c
+                .facts
+                .iter()
+                .find(|f| f.tested && f.subject == collider.subject)
+                .expect("a collider sits on a tested subject");
+            hosts += 1;
+            assert_ne!(collider.kind, host.kind, "a collider re-types the subject");
+            assert_ne!(collider.answer, host.answer, "and re-claims it");
+            assert_ne!(collider.title, host.title);
+        }
+        assert_eq!(hosts, extra);
+
+        // Still exactly one answer per oblique question, colliders included.
+        let mut seen = HashSet::new();
+        for f in &c.facts {
+            assert!(
+                seen.insert(f.oblique_key.clone()),
+                "two facts answer the same oblique question: {}",
+                f.oblique_key
+            );
+        }
+
+        // And R = 0 mints nothing at all.
+        assert_eq!(
+            shaped(100, 200, 11, CorpusShape::default()).facts.len(),
+            plain.facts.len()
+        );
+
+        // The ladder's top rung with EVERY tested subject colliding: the free
+        // slot space has to hold one unused triple per collider, per
+        // component, or the knob would panic exactly where it matters most.
+        let full = shaped(
+            1500,
+            0,
+            2,
+            CorpusShape {
+                history: true,
+                collision: 1.0,
+            },
+        );
+        assert_eq!(full.facts.len(), 3000);
+        let keys: HashSet<&String> = full.facts.iter().map(|f| &f.key).collect();
+        assert_eq!(keys.len(), full.facts.len(), "collider keys collide");
+        let obliques: HashSet<&String> = full.facts.iter().map(|f| &f.oblique_key).collect();
+        assert_eq!(obliques.len(), full.facts.len());
     }
 
     #[test]

@@ -27,6 +27,19 @@ pub struct Outcome {
     /// How many records the arm delivered for this question — the base the
     /// noise share is computed over.
     pub returned: usize,
+    /// Dialogue turns between the answer and the nearest DELIVERED hit from
+    /// the answer's own session — `Some(0)` when the answer itself was
+    /// delivered, `None` when nothing delivered shares its session (and
+    /// always `None` on a corpus built without `--history`, where no fact has
+    /// one). This is what a caller would have to walk to reach the answer
+    /// from the transcript instead of from the ranking.
+    pub history_distance: Option<usize>,
+    /// 1-based delivered position of the FIRST hit that shares the answer's
+    /// session (the answer itself counts) — the rank at which a walk became
+    /// possible. `None` when no delivered hit shares the session. Lets reach
+    /// be read at a fixed depth (`reach@5`) the way recall is, so an arm that
+    /// delivers ten records is not credited for breadth alone.
+    pub history_rank: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -53,6 +66,47 @@ pub struct Score {
     /// empty return scores 0.0, because saying nothing tells no lies. The one
     /// column where declining to answer is rewarded rather than invisible.
     pub noise: f64,
+    /// Share of questions whose answer was delivered OR sat in a session a
+    /// delivered hit came from — retrieval plus the transcript walk. Zero on
+    /// every corpus built without `--history`.
+    pub history_reach: f64,
+    /// `history_reach` read at depth five: the answer ranked in the first
+    /// five OR a session-mate did. The fair companion of `recall_at_5` — an
+    /// arm that dumps ten records reaches more sessions than one that trims
+    /// to three, and this column removes that breadth credit.
+    pub history_reach_at_5: f64,
+    /// Share of questions where the answer never ranked but a session-mate
+    /// did: the history analogue of `neighbor_only`, and the only column the
+    /// walk can claim for itself.
+    pub history_only: f64,
+    /// Mean dialogue distance, in turns, over exactly those `history_only`
+    /// questions. Zero when there are none — a mean over nothing is not a
+    /// short walk, and the reach column is what says whether it happened.
+    pub history_distance: f64,
+}
+
+/// Dialogue turns between two notes of one transcript.
+///
+/// The model: an assistant writes one note per assistant turn, and a user turn
+/// sits between consecutive assistant turns. So walking from the note at
+/// 1-based turn `a` to the note at turn `b` of the same session costs
+/// `2*|a-b| + 1` turns — every assistant turn from the delivered note back to
+/// (and including) the answer's, with the user turns wedged between them.
+/// Reaching the first note from the fifth reads nine: five assistant turns and
+/// four user turns (the user's own convention; the strictly-between count of
+/// seven is the other defensible one and is NOT what this column reports). A
+/// note is zero turns from itself, which is what a directly delivered answer
+/// scores.
+///
+/// Two notes from DIFFERENT sessions have no dialogue distance at all: there
+/// is no transcript joining them, which is exactly the case the reach column
+/// refuses to credit.
+pub fn dialogue_distance(a: (&str, usize), b: (&str, usize)) -> Option<usize> {
+    if a.0 != b.0 {
+        return None;
+    }
+    let steps = a.1.abs_diff(b.1);
+    Some(if steps == 0 { 0 } else { 2 * steps + 1 })
 }
 
 fn ratio(hits: usize, total: usize) -> f64 {
@@ -110,6 +164,44 @@ pub fn score(outcomes: &[Outcome]) -> Score {
                 .count(),
             n,
         ),
+        history_reach: ratio(
+            outcomes
+                .iter()
+                .filter(|o| o.history_distance.is_some())
+                .count(),
+            n,
+        ),
+        history_reach_at_5: ratio(
+            outcomes
+                .iter()
+                .filter(|o| {
+                    o.rank.is_some_and(|r| r <= 5) || o.history_rank.is_some_and(|r| r <= 5)
+                })
+                .count(),
+            n,
+        ),
+        history_only: ratio(
+            outcomes
+                .iter()
+                .filter(|o| o.rank.is_none() && o.history_distance.is_some())
+                .count(),
+            n,
+        ),
+        history_distance: {
+            let walks: Vec<usize> = outcomes
+                .iter()
+                .filter(|o| o.rank.is_none())
+                .filter_map(|o| o.history_distance)
+                .collect();
+            // Spelt out rather than divided by `len().max(1)`: f64's empty
+            // sum is NEGATIVE zero, and a column reading `-0.0` turns "there
+            // were no walks" into a typo hunt.
+            if walks.is_empty() {
+                0.0
+            } else {
+                walks.iter().sum::<usize>() as f64 / walks.len() as f64
+            }
+        },
     }
 }
 
@@ -282,6 +374,8 @@ mod tests {
             twin_above: false,
             focus: rank.map(|_| 0.25),
             returned: 10,
+            history_distance: None,
+            history_rank: None,
         }
     }
 
@@ -436,6 +530,54 @@ mod tests {
         );
         // Arms that never cross report nothing rather than a bogus number.
         assert!(PhrasingMix::crossover(&set(1.0, 1.0, 1.0), &set(0.5, 0.5, 0.5)).is_none());
+    }
+
+    #[test]
+    fn dialogue_distance_counts_the_turns_between_two_notes() {
+        // A note is zero turns from itself — the answer was delivered.
+        assert_eq!(dialogue_distance(("h0000", 3), ("h0000", 3)), Some(0));
+        // The fifth note against the first: five assistant turns including
+        // both endpoints, with four user turns wedged between them, and
+        // symmetric.
+        assert_eq!(dialogue_distance(("h0000", 1), ("h0000", 5)), Some(9));
+        assert_eq!(dialogue_distance(("h0000", 5), ("h0000", 1)), Some(9));
+        // Adjacent notes: two assistant turns and the user turn between.
+        assert_eq!(dialogue_distance(("h0000", 2), ("h0000", 3)), Some(3));
+        // Different transcripts do not connect at any distance.
+        assert_eq!(dialogue_distance(("h0000", 1), ("h0001", 1)), None);
+    }
+
+    #[test]
+    fn the_history_columns_price_the_walk_and_stay_silent_without_one() {
+        let walked = |rank: Option<usize>, d: Option<usize>| Outcome {
+            history_distance: d,
+            // The session-mate sits at rank 7 unless the answer itself was
+            // delivered — so reach@5 credits only the direct hits here.
+            history_rank: d.map(|dd| if dd == 0 { rank.unwrap_or(1) } else { 7 }),
+            ..outcome(rank)
+        };
+        // Delivered directly (0), reached across nine turns, reached across
+        // one, and never reached at all.
+        let s = score(&[
+            walked(Some(2), Some(0)),
+            walked(None, Some(9)),
+            walked(None, Some(1)),
+            walked(None, None),
+        ]);
+        assert_eq!(s.history_reach, 0.75, "three of four were reachable");
+        assert_eq!(s.history_only, 0.5, "two of four ONLY through the walk");
+        assert_eq!(s.history_distance, 5.0, "(9 + 1) / 2 over the walked ones");
+        assert_eq!(
+            s.history_reach_at_5, 0.25,
+            "at depth five only the direct hit counts — the session-mates sat at rank 7"
+        );
+
+        // A corpus with no sessions must leave every column at zero rather
+        // than reporting a walk of length nothing.
+        let silent = score(&[outcome(Some(1)), outcome(None)]);
+        assert_eq!(silent.history_reach, 0.0);
+        assert_eq!(silent.history_only, 0.0);
+        assert_eq!(silent.history_distance, 0.0);
     }
 
     #[test]

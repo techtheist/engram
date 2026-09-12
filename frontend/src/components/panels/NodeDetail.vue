@@ -13,6 +13,7 @@ import { api } from '@/services/api'
 import { useGraphStore } from '@/stores/graph'
 import { useHistoryStore } from '@/stores/history'
 import { useLayoutStore } from '@/stores/layout'
+import { parseCodeRefs } from '@/utils/codeRefs'
 import type { BornIn, EdgeType, GraphEdge, TimelineEntry } from '@/types/graph'
 
 const store = useGraphStore()
@@ -157,6 +158,10 @@ const draft = reactive({
     type: '',
     durability: '',
     tags: [] as string[],
+    // Raw textarea text, one code ref per line — parsed on save
+    // (see parseCodeRefs). Kept as text, not an array, so the user can leave
+    // a blank/partial line mid-edit without it being silently dropped.
+    codeRefsText: '',
     fields: {} as Record<string, unknown>,
 })
 
@@ -198,6 +203,7 @@ function startEdit(): void {
     draft.type = selected.value.type
     draft.durability = selected.value.durability
     draft.tags = [...selected.value.tags]
+    draft.codeRefsText = selected.value.code_refs.join('\n')
     draft.fields = { ...(selected.value.fields ?? {}) }
     editing.value = true
 }
@@ -212,6 +218,9 @@ async function saveEdit(): Promise<void> {
             type: draft.type,
             durability: draft.durability,
             tags: draft.tags,
+            // Always sent, even empty — an empty list is how a drifted ref
+            // gets cleared (PATCH replaces the array wholesale).
+            code_refs: parseCodeRefs(draft.codeRefsText),
         }
         // Custom fields ride as a MERGE patch: cleared keys become null
         // (delete), set keys overwrite. Only sent when the graph has defs.
@@ -380,6 +389,19 @@ function close(): void {
             <label class="edit-label">
                 Tags
                 <TagEditor v-model="draft.tags" />
+            </label>
+            <label class="edit-label">
+                Code refs
+                <textarea
+                    v-model="draft.codeRefsText"
+                    class="edit-input edit-refs"
+                    rows="4"
+                    placeholder="One repo-relative path per line…"
+                    aria-label="Code refs"
+                />
+                <span class="field-hint">
+                    Repo-relative paths, one per line, no line numbers — drift-checked against the working tree. Leave empty to clear.
+                </span>
             </label>
             <div v-if="fieldDefs.length" class="fields-edit">
                 <span class="edit-label">Custom fields</span>
@@ -753,6 +775,18 @@ function close(): void {
     resize: vertical;
     font-family: var(--font-mono);
     line-height: var(--leading-normal);
+}
+
+.edit-refs {
+    resize: vertical;
+    font-family: var(--font-mono);
+    font-size: var(--text-caption);
+    line-height: var(--leading-normal);
+}
+
+.field-hint {
+    font-size: var(--text-caption);
+    color: var(--text-tertiary);
 }
 
 .edit-row {

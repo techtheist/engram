@@ -1,0 +1,199 @@
+queued Sat Sep 12 16:45:12 CEST 2026
+=== arms history start Sat Sep 12 16:45:12 CEST 2026
+engram-eval — offline retrieval suite
+runtime: embedder=bge-small-en-v1.5  reranker=jina-reranker-v1-turbo-en  nli=deberta-v3-small-tasksource-nli  seed=1  limit=10
+corpus:  bodies ~748 chars, 1.06 edges/node — profiled from the real graph
+asked:   decision=1 caution=1 principle=1 problem=1 insight=1 (an assumption, not a measurement)
+shaped:  history sessions on (5-10 notes per session, one component each) — colliders on 0% of tested subjects
+
+graph 100 facts (100 tested + 0 distractors), 106 edges / 300 questions / 25 controls
+  curated-3000 holds 37 of 100 facts at a 3000-token budget (37% of the graph)
+  curated-30000 holds 100 of 100 facts at a 30000-token budget (100% of the graph)
+  arm            standing tok/query  focus  noise    R@1    R@5    MRR    lex   para  obliq reach@5  reach hist-only hist-dist   twin     FP    sep  graph
+  chance                0      2518   0.09   0.99   0.01   0.05   0.03   0.04   0.04   0.06    0.26   0.47      0.36       5.9   0.02   1.00   0.50   0.00
+  grep                  0      2547   0.10   0.90   0.72   0.84   0.77   1.00   1.00   0.52    0.98   1.00      0.08       3.8   0.00   1.00   0.80   0.00
+  rag                   0      2295   0.12   0.88   0.81   0.96   0.87   1.00   1.00   0.87    1.00   1.00      0.02       3.4   0.00   1.00   0.92   0.00
+  engram-hybrid      3043       198   0.63   0.36   0.80   0.94   0.85   1.00   1.00   0.81    1.00   1.00      0.02       3.0   0.00   0.92   0.81   0.01
+  engram-full        3043       198   0.63   0.36   0.80   0.94   0.86   1.00   1.00   0.83    1.00   1.00      0.02       3.0   0.00   0.92   0.81   0.01
+  curated-3000       2998      2998   0.03   0.99   0.37   0.37   0.37   0.37   0.37   0.37    0.55   0.98      0.61       3.6   0.00   1.00   0.50   0.00
+  curated-30000      8409      8409   0.01   0.99   1.00   1.00   1.00   1.00   1.00   1.00    1.00   1.00      0.00       0.0   0.00   1.00   0.50   0.00
+  whole-file        25184     25184   0.01   0.99   1.00   1.00   1.00   1.00   1.00   1.00    1.00   1.00      0.00       0.0   0.00   1.00   0.50   0.00
+  weighted recall@5: chance 0.04  grep 0.95  rag 0.99  engram-hybrid 0.98  engram-full 0.98  curated-3000 0.37  curated-30000 1.00  whole-file 1.00  
+  best retrieving arm: rag at 0.987
+  engram and rag tie at 0% oblique questions (assumed 10%)
+  nli deberta-v3-small-tasksource-nli — 300 pairs, accuracy 0.61, mean confidence 0.57
+      entailment     precision 0.25  recall 0.02  support 100
+      neutral        precision 0.47  recall 0.82  support 100
+      contradiction  precision 0.84  recall 1.00  support 100
+
+graph 1500 facts (1500 tested + 0 distractors), 1590 edges / 4500 questions / 375 controls
+  curated-3000 holds 36 of 1500 facts at a 3000-token budget (2% of the graph)
+  curated-30000 holds 368 of 1500 facts at a 30000-token budget (25% of the graph)
+  arm            standing tok/query  focus  noise    R@1    R@5    MRR    lex   para  obliq reach@5  reach hist-only hist-dist   twin     FP    sep  graph
+  chance                0      2517   0.08   1.00   0.00   0.00   0.00   0.00   0.00   0.00    0.03   0.05      0.04       7.1   0.00   1.00   0.50   0.00
+  grep                  0      2739   0.10   0.93   0.64   0.68   0.66   1.00   1.00   0.05    0.76   0.81      0.11       6.0   0.00   1.00   0.75   0.00
+  rag                   0      2721   0.10   0.91   0.66   0.79   0.72   1.00   0.93   0.45    0.86   0.93      0.08       6.4   0.00   1.00   0.79   0.00
+  engram-hybrid      3017       297   0.52   0.55   0.68   0.78   0.73   1.00   0.99   0.36    0.85   0.92      0.09       6.5   0.00   1.00   0.76   0.02
+  engram-full        3017       297   0.52   0.55   0.69   0.79   0.73   1.00   0.99   0.39    0.86   0.92      0.09       6.5   0.00   1.00   0.76   0.02
+  curated-3000       2944      2944   0.03   1.00   0.02   0.02   0.02   0.02   0.02   0.02    0.05   0.18      0.15       7.1   0.00   1.00   0.50   0.00
+  curated-30000     29997     29997   0.00   1.00   0.25   0.25   0.25   0.25   0.25   0.25    0.27   0.99      0.74       4.4   0.00   1.00   0.50   0.00
+  whole-file       377898    377898   0.00   1.00   1.00   1.00   1.00   1.00   1.00   1.00    1.00   1.00      0.00       0.0   0.00   1.00   0.50   0.00
+  weighted recall@5: chance 0.00  grep 0.90  rag 0.91  engram-hybrid 0.93  engram-full 0.93  curated-3000 0.02  curated-30000 0.25  whole-file 1.00  
+  best retrieving arm: engram-full at 0.934
+  engram and rag tie at 26% oblique questions (assumed 10%)
+  nli deberta-v3-small-tasksource-nli — 300 pairs, accuracy 0.60, mean confidence 0.57 (budget cut 300 of 4500)
+      entailment     precision 0.20  recall 0.02  support 100
+      neutral        precision 0.46  recall 0.78  support 100
+      contradiction  precision 0.83  recall 1.00  support 100
+
+reading it: `standing` is what the arm costs every session before a question
+is asked; `tok/query` is what it delivers per question. `focus` is the share
+of the delivered tokens that were the answer, when it arrived at all —
+attention is the budget, and everything delivered beyond the answer spends
+it. A dump can score recall 1.00 and focus 0.00x on the same run; that pair
+of numbers is the difference between present and readable. `noise` is the
+share of delivered records that were NOT the answer, counting a miss as
+all-noise and an empty return as zero — the one column where declining to
+answer scores better than guessing. `obliq` is recall on
+questions that never name their subject — the column meaning has to win.
+`FP` is the share of questions with no written answer that still got one;
+`sep` is how well any confidence threshold could have told those apart
+(0.5 = not at all, 1.0 = perfectly). `graph` is the share of questions
+whose answer was reachable ONLY through a neighbour — engram-full minus
+engram-hybrid is what the edges bought.
+
+engram-eval — the ladder: recall@5 by graph size
+    graph  asked    curated-3000   curated-30000            grep             rag   engram-hybrid
+      100    300            0.37            1.00            0.84            0.96            0.94
+     1500   4500            0.02            0.25            0.68            0.79            0.78
+  curated-3000 falls behind retrieval at 100 notes (0.37 vs 0.94, holding 37 of 100)
+  curated-30000 falls behind retrieval at 1500 notes (0.25 vs 0.78, holding 368 of 1500)
+
+wrote /Users/techtheist/IdeaProjects/engram/eval/results/2026-09-12-0.9.4-history-arms-100-1500.json
+arms history exit 0
+=== posttune history start Sat Sep 12 17:19:39 CEST 2026
+  100: weak line 0.894 -> 0.902 (fit 0.909, damped) from 24 phantom probes at q90, two families (weak line 0.902, converged)
+  1500: weak line 0.897 -> 0.905 (fit 0.913, damped) from 24 phantom probes at q90, two families (weak line 0.905, converged)
+engram-eval — the shipped post-tune stack, measured end to end
+runtime: embedder=bge-small-en-v1.5  reranker=jina-reranker-v1-turbo-en  seed=1  limit=10
+shaped:  history sessions on — colliders on 0% of tested subjects
+
+graph 100 facts (106 edges) / 300 questions / 25 controls
+  auto-tune: weak line 0.894 -> 0.902 (fit 0.909, damped) from 24 phantom probes at q90, two families (weak line 0.902)
+  recall (with graph credit): R@1 0.80  R@5 0.94 (hybrid alone 0.94)  lex 1.00  para 1.00  obliq 0.83  weighted 0.983
+  through history: reach@5 1.00  reach 1.00  hist-only 0.02  hist-dist 3.0 turns
+  attention: focus 0.63  noise 0.36  tok/query 198  standing 3043
+  recommendation regime: honest FP (controls unwarned) 0.00  controls empty/none 0.08  answerable warned 0.48
+
+graph 1500 facts (1590 edges) / 4500 questions / 375 controls
+  auto-tune: weak line 0.897 -> 0.905 (fit 0.913, damped) from 24 phantom probes at q90, two families (weak line 0.905)
+  recall (with graph credit): R@1 0.69  R@5 0.79 (hybrid alone 0.78)  lex 1.00  para 0.99  obliq 0.39  weighted 0.934
+  through history: reach@5 0.85  reach 0.92  hist-only 0.09  hist-dist 6.5 turns
+  attention: focus 0.52  noise 0.55  tok/query 297  standing 3023
+  recommendation regime: honest FP (controls unwarned) 0.01  controls empty/none 0.00  answerable warned 0.48
+
+Reading it: candidates are never cut — below the auto-tuned weak line the reply
+leads with "likely not in memory", so a warned answer to a never-written question
+counts as honest and only an unwarned one is a false positive.
+
+wrote /Users/techtheist/IdeaProjects/engram/eval/results/2026-09-12-0.9.4-history-posttune-100-1500.json
+posttune history exit 0
+=== arms history-collision50 start Sat Sep 12 17:48:32 CEST 2026
+engram-eval — offline retrieval suite
+runtime: embedder=bge-small-en-v1.5  reranker=jina-reranker-v1-turbo-en  nli=deberta-v3-small-tasksource-nli  seed=1  limit=10
+corpus:  bodies ~748 chars, 1.06 edges/node — profiled from the real graph
+asked:   decision=1 caution=1 principle=1 problem=1 insight=1 (an assumption, not a measurement)
+shaped:  history sessions on (5-10 notes per session, one component each) — colliders on 50% of tested subjects
+
+graph 150 facts (100 tested + 50 distractors), 106 edges / 300 questions / 25 controls
+  curated-3000 holds 37 of 150 facts at a 3000-token budget (25% of the graph)
+  curated-30000 holds 150 of 150 facts at a 30000-token budget (100% of the graph)
+  arm            standing tok/query  focus  noise    R@1    R@5    MRR    lex   para  obliq reach@5  reach hist-only hist-dist   twin     FP    sep  graph
+  chance                0      2516   0.09   0.99   0.00   0.03   0.01   0.04   0.01   0.03    0.23   0.43      0.36       6.6   0.02   1.00   0.50   0.00
+  grep                  0      2635   0.10   0.91   0.71   0.82   0.76   1.00   1.00   0.47    0.99   1.00      0.10       4.0   0.00   1.00   0.80   0.00
+  rag                   0      2319   0.11   0.88   0.75   0.94   0.83   1.00   1.00   0.81    1.00   1.00      0.03       4.2   0.00   1.00   0.90   0.00
+  engram-hybrid      3044       230   0.58   0.43   0.75   0.90   0.82   1.00   0.98   0.72    0.99   0.99      0.04       3.5   0.00   0.92   0.81   0.02
+  engram-full        3044       230   0.58   0.42   0.76   0.91   0.83   1.00   0.98   0.75    0.99   0.99      0.04       3.5   0.00   0.92   0.81   0.02
+  curated-3000       2990      2990   0.03   0.99   0.24   0.24   0.24   0.24   0.24   0.24    0.50   0.98      0.74       4.1   0.00   1.00   0.50   0.00
+  curated-30000     12635     12635   0.01   0.99   1.00   1.00   1.00   1.00   1.00   1.00    1.00   1.00      0.00       0.0   0.00   1.00   0.50   0.00
+  whole-file        37752     37752   0.01   0.99   1.00   1.00   1.00   1.00   1.00   1.00    1.00   1.00      0.00       0.0   0.00   1.00   0.50   0.00
+  weighted recall@5: chance 0.03  grep 0.95  rag 0.98  engram-hybrid 0.96  engram-full 0.97  curated-3000 0.24  curated-30000 1.00  whole-file 1.00  
+  best retrieving arm: rag at 0.981
+  nli deberta-v3-small-tasksource-nli — 300 pairs, accuracy 0.61, mean confidence 0.57
+      entailment     precision 0.25  recall 0.02  support 100
+      neutral        precision 0.47  recall 0.82  support 100
+      contradiction  precision 0.84  recall 1.00  support 100
+
+graph 2250 facts (1500 tested + 750 distractors), 1590 edges / 4500 questions / 375 controls
+  curated-3000 holds 36 of 2250 facts at a 3000-token budget (2% of the graph)
+  curated-30000 holds 367 of 2250 facts at a 30000-token budget (16% of the graph)
+  arm            standing tok/query  focus  noise    R@1    R@5    MRR    lex   para  obliq reach@5  reach hist-only hist-dist   twin     FP    sep  graph
+  chance                0      2525   0.08   1.00   0.00   0.00   0.00   0.00   0.00   0.00    0.02   0.03      0.03       6.8   0.00   1.00   0.50   0.00
+  grep                  0      2748   0.10   0.93   0.64   0.68   0.66   1.00   1.00   0.05    0.75   0.80      0.10       6.0   0.00   1.00   0.75   0.00
+  rag                   0      2717   0.10   0.91   0.63   0.76   0.69   0.99   0.91   0.39    0.81   0.88      0.07       6.7   0.00   1.00   0.80   0.00
+  engram-hybrid      3071       320   0.49   0.60   0.65   0.75   0.70   1.00   0.98   0.28    0.81   0.87      0.08       6.4   0.00   1.00   0.75   0.02
+  engram-full        3071       320   0.49   0.60   0.66   0.76   0.70   1.00   0.98   0.31    0.82   0.87      0.08       6.4   0.00   1.00   0.75   0.02
+  curated-3000       2944      2944   0.03   1.00   0.01   0.01   0.01   0.01   0.01   0.01    0.02   0.09      0.08       6.6   0.00   1.00   0.50   0.00
+  curated-30000     29938     29938   0.00   1.00   0.16   0.16   0.16   0.16   0.16   0.16    0.17   0.89      0.73       5.4   0.00   1.00   0.50   0.00
+  whole-file       567308    567308   0.00   1.00   1.00   1.00   1.00   1.00   1.00   1.00    1.00   1.00      0.00       0.0   0.00   1.00   0.50   0.00
+  weighted recall@5: chance 0.00  grep 0.90  rag 0.89  engram-hybrid 0.92  engram-full 0.92  curated-3000 0.01  curated-30000 0.16  whole-file 1.00  
+  best retrieving arm: engram-full at 0.922
+  engram and rag tie at 28% oblique questions (assumed 10%)
+  nli deberta-v3-small-tasksource-nli — 300 pairs, accuracy 0.60, mean confidence 0.57 (budget cut 300 of 4500)
+      entailment     precision 0.20  recall 0.02  support 100
+      neutral        precision 0.46  recall 0.78  support 100
+      contradiction  precision 0.83  recall 1.00  support 100
+
+reading it: `standing` is what the arm costs every session before a question
+is asked; `tok/query` is what it delivers per question. `focus` is the share
+of the delivered tokens that were the answer, when it arrived at all —
+attention is the budget, and everything delivered beyond the answer spends
+it. A dump can score recall 1.00 and focus 0.00x on the same run; that pair
+of numbers is the difference between present and readable. `noise` is the
+share of delivered records that were NOT the answer, counting a miss as
+all-noise and an empty return as zero — the one column where declining to
+answer scores better than guessing. `obliq` is recall on
+questions that never name their subject — the column meaning has to win.
+`FP` is the share of questions with no written answer that still got one;
+`sep` is how well any confidence threshold could have told those apart
+(0.5 = not at all, 1.0 = perfectly). `graph` is the share of questions
+whose answer was reachable ONLY through a neighbour — engram-full minus
+engram-hybrid is what the edges bought.
+
+engram-eval — the ladder: recall@5 by graph size
+    graph  asked    curated-3000   curated-30000            grep             rag   engram-hybrid
+      150    300            0.24            1.00            0.82            0.94            0.90
+     2250   4500            0.01            0.16            0.68            0.76            0.75
+  curated-3000 falls behind retrieval at 150 notes (0.24 vs 0.90, holding 37 of 150)
+  curated-30000 falls behind retrieval at 2250 notes (0.16 vs 0.75, holding 367 of 2250)
+
+wrote /Users/techtheist/IdeaProjects/engram/eval/results/2026-09-12-0.9.4-history-collision50-arms-100-1500.json
+arms history-collision50 exit 0
+=== posttune history-collision50 start Sat Sep 12 18:27:49 CEST 2026
+  100: weak line 0.864 -> 0.871 (fit 0.878, damped) from 24 phantom probes at q90, two families (weak line 0.871, converged)
+  1500: weak line 0.869 -> 0.878 (fit 0.887, damped) from 24 phantom probes at q90, two families (weak line 0.878, converged)
+engram-eval — the shipped post-tune stack, measured end to end
+runtime: embedder=bge-small-en-v1.5  reranker=jina-reranker-v1-turbo-en  seed=1  limit=10
+shaped:  history sessions on — colliders on 50% of tested subjects
+
+graph 150 facts (106 edges) / 300 questions / 25 controls
+  auto-tune: weak line 0.864 -> 0.871 (fit 0.878, damped) from 24 phantom probes at q90, two families (weak line 0.871)
+  recall (with graph credit): R@1 0.76  R@5 0.91 (hybrid alone 0.90)  lex 1.00  para 0.98  obliq 0.75  weighted 0.966
+  through history: reach@5 0.99  reach 0.99  hist-only 0.04  hist-dist 3.5 turns
+  attention: focus 0.58  noise 0.43  tok/query 230  standing 3044
+  recommendation regime: honest FP (controls unwarned) 0.00  controls empty/none 0.08  answerable warned 0.47
+
+graph 2250 facts (1590 edges) / 4500 questions / 375 controls
+  auto-tune: weak line 0.869 -> 0.878 (fit 0.887, damped) from 24 phantom probes at q90, two families (weak line 0.878)
+  recall (with graph credit): R@1 0.66  R@5 0.76 (hybrid alone 0.75)  lex 1.00  para 0.98  obliq 0.31  weighted 0.922
+  through history: reach@5 0.81  reach 0.87  hist-only 0.08  hist-dist 6.4 turns
+  attention: focus 0.49  noise 0.60  tok/query 320  standing 3071
+  recommendation regime: honest FP (controls unwarned) 0.02  controls empty/none 0.00  answerable warned 0.47
+
+Reading it: candidates are never cut — below the auto-tuned weak line the reply
+leads with "likely not in memory", so a warned answer to a never-written question
+counts as honest and only an unwarned one is a false positive.
+
+wrote /Users/techtheist/IdeaProjects/engram/eval/results/2026-09-12-0.9.4-history-collision50-posttune-100-1500.json
+posttune history-collision50 exit 0
+SHAPED DONE Sat Sep 12 18:58:46 CEST 2026

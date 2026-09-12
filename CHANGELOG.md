@@ -35,6 +35,25 @@ body of its GitHub Release (draft-release.yml lifts it automatically).
   run headless with Sonnet under a fixed turn and dollar budget, graded by
   executable oracles on the diff — adherence and rake-avoidance, not
   recall. Phase 1 receipt `eval/results/2026-09-12-rake-smoke.json`.
+- **Code refs are editable in the pane.** The node drawer's edit mode and
+  the create panel gained a "Code refs" field, one ref per line; saving an
+  empty field clears the list. Checkup lists notes with drifted refs and
+  opens them, so a moved file is fixed by hand in two clicks.
+- **The ladder learns history and collisions** (`eval/`, both opt-in, both
+  byte-identical when off): `--history` puts every note in a 5–10-note
+  session with a turn index and adds `reach@5` / `reach` / `hist-only` /
+  `hist-dist` — an answer reachable through a delivered session-mate, at
+  `2·|a−b|+1` dialogue turns; `--collision R` mints an untested collider on
+  the same subject for a fraction of answers. Measured: the walk is worth
+  +0.07 at depth five for rag and engram alike at 1,500 notes, a tie at a
+  ninth of the tokens.
+- **ForgetEval learns to say no** (`eval/forgeteval/`): three never-inscribed
+  control probes per case, a `grep` baseline, an `engram-mcp` reader that
+  takes the verdict over the MCP transport, and fp / hedge / separation
+  beside the unchanged family scores. engram answers none of 3,000 controls
+  where the reference answers all, but hedges on nearly every real query on
+  six-note graphs — the phantom-fitted weak line has nothing to fit there;
+  its scores still separate real from never-inscribed at 0.80–0.90.
 - **Receipts carry their run date.** Every file in `eval/results/` is now
   prefixed `YYYY-MM-DD-` (`scripts/date-results.sh`, idempotent, by file
   mtime); doc pointers updated.

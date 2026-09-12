@@ -44,7 +44,8 @@ install. Your edits stay in the tab.
 ![The Feed screen: the same memory as a scrollable timeline — the centered card opens its full story, with the judgment bar at the bottom](.screenshots/layout-feed.png)
 </details>
 
-## Why a graph, not a notes file
+<details>
+<summary><b>Why a graph, not a notes file</b> <i>(click to expand)</i></summary>
 
 A flat memory file is whole below about forty notes and overtaken by
 retrieval after that. Engram's graph is *active*: superseded knowledge is
@@ -71,6 +72,8 @@ would have prevented it.
 Every screenshot on this page is Engram's own graph — the project is built by
 dogfooding it.
 
+</details>
+
 ## Install
 
 ```sh
@@ -84,12 +87,17 @@ engram-alpha setup    # wires the assistants it finds (--cli names the ones you 
 engram-alpha serve    # starts the core; the pane is at http://127.0.0.1:8787
 ```
 
+<details>
+<summary><b>Other ways to install</b> <i>(IDE plugins, the Claude Code plugin, Windows, per-assistant wiring — click to expand)</i></summary>
+
 Or skip the browser and open the pane inside your IDE with the
 [JetBrains plugin](https://plugins.jetbrains.com/plugin/32654-engram) or the
 [VS Code extension](https://marketplace.visualstudio.com/items?itemName=techtheist.engram-alpha).
 Claude Code users can install everything as a plugin:
 `/plugin marketplace add techtheist/engram`. Windows, per-assistant wiring,
 and updating: [Getting started](./docs/getting-started.md).
+
+</details>
 
 ## What you get
 
@@ -137,7 +145,8 @@ and updating: [Getting started](./docs/getting-started.md).
   reranker, and NLI are swappable from the pane.
   → [Storage](./docs/storage.md) · [Local models](./docs/models.md)
 
-## The memory model
+<details>
+<summary><b>The memory model</b> <i>(node types, edge verbs, capture intensities — click to expand)</i></summary>
 
 Nine node types — Principle, Decision, Caution, Problem, Resolution,
 Insight, Intent, Anchor, Tombstone — and seven edge verbs that read as
@@ -147,6 +156,8 @@ other. Three capture intensities (`relaxed` / `normal` / `aggressive`) set
 how much your assistant writes. It's the shipped default, and the one most
 projects should keep — but every part of it is
 [yours to reshape](./docs/customization.md). → [The memory model](./docs/memory-model.md)
+
+</details>
 
 ## Measured, not promised
 
@@ -180,7 +191,8 @@ of benchmark runs published next to the code.
 
 Method, tables, and the honest caveats: [`eval/`](./eval/README.md).
 
-## Documentation
+<details>
+<summary><b>Documentation, security, and status</b> <i>(click to expand)</i></summary>
 
 All user documentation lives in [`docs/`](./docs/README.md) — install and
 wiring, the memory model, trust, the pane, conflicts, multi-project memory,
@@ -193,7 +205,10 @@ project's own memory graph — dogfooding is the spec. **Status:** early
 development, heavily dogfooded, benchmark-driven — retrieval changes cite a
 measured run or they don't ship.
 
-## Stack
+</details>
+
+<details>
+<summary><b>Stack</b> <i>(Rust core, Vue pane, IDE hosts — click to expand)</i></summary>
 
 - **Core — Rust.** One `engram-alpha` binary: the engine, the MCP server
   (`rmcp`, stdio and streamable HTTP), the HTTP API (`axum`), and the CLI.
@@ -207,6 +222,8 @@ measured run or they don't ship.
 - **IDE hosts.** A JetBrains plugin (Kotlin, JCEF) and a VS Code extension
   (TypeScript, Webview) that embed the same pane and talk to the local core.
   A Claude Code plugin carries the MCP wiring and the capture skill.
+
+</details>
 
 ## License
 

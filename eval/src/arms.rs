@@ -609,15 +609,22 @@ impl EngramArm {
 }
 
 fn new_node(f: &Fact) -> NewNode {
-    // Backdating only exists for chain generations; the regular corpus writes
-    // `None` and stays wall-clock independent, which the rerun test relies on.
-    let created_at = (f.backdate_days > 0).then(|| {
-        let now = std::time::SystemTime::now()
+    let now = || {
+        std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        now - f.backdate_days as i64 * 86_400
-    });
+            .unwrap_or(0)
+    };
+    // Backdating exists for chain generations; the history shaping stamps a
+    // minute per assistant turn so a session reads in order. With neither —
+    // the whole regular corpus — this is `None` and the write stays
+    // wall-clock independent, which the rerun test relies on.
+    let created_at = if f.backdate_days > 0 {
+        Some(now() - f.backdate_days as i64 * 86_400)
+    } else {
+        f.turn
+            .map(|t| now() - (crate::generate::HISTORY_SESSION_MAX as i64 - t as i64) * 60)
+    };
     NewNode {
         node_type: f.kind.node_type(),
         title: f.title.clone(),

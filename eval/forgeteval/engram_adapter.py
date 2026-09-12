@@ -76,6 +76,7 @@ into the headline number.
 """
 from __future__ import annotations
 
+import json
 import os
 import time
 import unicodedata
@@ -369,3 +370,167 @@ class EngramAdapter:
         r = self.session.get(f"{self.base}/health", timeout=self.timeout)
         r.raise_for_status()
         return r.json()
+
+
+def _hit_is_tombstone(hit: dict) -> bool:
+    """The 0.9.4 role flag, with a type-name fallback for a core that
+    predates it (see Caution 00d36lue869d / Decision 00d36lue869d in this
+    repo's own graph -- the flag is stamped by the engine from the
+    ontology and serialized only when true, so its ABSENCE on a hit that
+    has no `type` field either is not itself proof of "not a tombstone";
+    the fallback only fires when the flag key is missing outright)."""
+    if "tombstone" in hit:
+        return bool(hit["tombstone"])
+    return str(hit.get("type", "")).lower() == "tombstone"
+
+
+class EngramMCPAdapter(EngramAdapter):
+    """ForgetEval adapter variant `engram-mcp`.
+
+    Identical to `EngramAdapter(include_tombstones=False)` ("engram-notomb")
+    in every respect -- same floor-zeroed / knee_cliff=null policy override
+    on its own throwaway project, same REST-driven inscribe/supersede/
+    release/purge -- with exactly one difference: `recall_texts` is routed
+    through the MCP `search` TOOL over HTTP (the same streamable-HTTP
+    JSON-RPC transport a real MCP client speaks: POST .../mcp, an
+    `mcp-session-id` from `initialize`, `notifications/initialized`, then
+    `tools/call`), not the bare REST `/search` endpoint.
+
+    Why this is a distinct adapter rather than a flag on EngramAdapter:
+    the MCP tool's reply carries a `confidence` verdict (strong/weak/none)
+    that the REST endpoint's JSON body also carries but that
+    `EngramAdapter.recall_texts` never looks at -- ForgetEval's own
+    substring-match scoring has no concept of "the system told you it
+    wasn't sure," so measuring it needs a side channel. This adapter opens
+    exactly that channel: every `recall_texts` call appends
+    `{query, confidence, n_hits_raw, n_hits, all_tombstone}` to
+    `self.stats["mcp_confidence_log"]`, which `run_engram.py` reads back
+    to compute the FP/hedge/absence-signal numbers described in
+    eval/forgeteval/README.md. The standard pass/fail is untouched: the
+    texts handed back to the scoring loop are the same hits' texts either
+    way (title+body, tombstones excluded).
+
+    Tombstone filtering deliberately does NOT use the server-side `types`
+    exclusion the REST `engram-notomb` variant uses -- it filters
+    CLIENT-SIDE on each hit's `tombstone: true` flag (0.9.4), matching the
+    task's ask to exercise that flag specifically and, as a side effect,
+    letting `all_tombstone` in the log see the pre-filter hit set (a
+    server-side type exclusion would hide that a release marker was
+    found at all).
+
+    Gotcha this class exists to route around: an MCP session's engine
+    handle is captured ONCE, at session creation
+    (`streamable_http_service_for` hands `StreamableHttpService` a factory
+    closure that calls `Engram::for_project(hub, selector)` per NEW
+    session -- see crates/engram-mcp/src/lib.rs) and is never rebound
+    after that. `EngramAdapter.reset()` deletes the project's store file
+    out from under the daemon so a plain REST call reopens a fresh engine
+    on next touch -- correct for a REST caller, which re-resolves the
+    engine on every request, but fatal for a LONG-LIVED MCP session: if
+    the same `mcp-session-id` survives a `reset()`, every subsequent
+    `search` call keeps querying the pre-reset engine object frozen in
+    memory (still holding the FIRST case's data) instead of the reopened
+    store, because nothing ever tells that session to rebind. This never
+    happens in real usage -- nobody deletes a live project's store file
+    out from under an open bridge session -- but ForgetEval's reset()
+    protocol does exactly that every case, so this adapter forces a fresh
+    MCP handshake after every reset (`reset()` below), trading one extra
+    initialize round-trip per case for correctness.
+    """
+
+    name = "engram-mcp"
+
+    def __init__(self, project_dir: str, *, base_url: str = ENGRAM_BASE,
+                 timeout: float = 30.0, stats: dict | None = None,
+                 disable_delivery_floor: bool = True):
+        super().__init__(project_dir, include_tombstones=False,
+                         base_url=base_url, timeout=timeout, stats=stats,
+                         disable_delivery_floor=disable_delivery_floor)
+        self.name = "engram-mcp"
+        self._mcp_session_id: str | None = None
+        self.stats.setdefault("mcp_confidence_log", [])
+
+    # ─── MCP transport plumbing ─────────────────────────────────────
+
+    def _mcp_url(self) -> str:
+        return f"{self._base_url}/mcp"
+
+    def _mcp_call(self, payload: dict) -> tuple[requests.Response, dict | None]:
+        headers = {"Accept": "application/json, text/event-stream",
+                  "Content-Type": "application/json"}
+        if self._mcp_session_id:
+            headers["mcp-session-id"] = self._mcp_session_id
+        r = self.session.post(self._mcp_url(), headers=headers, json=payload,
+                              timeout=self.timeout)
+        r.raise_for_status()
+        body = r.text
+        if "text/event-stream" in r.headers.get("content-type", ""):
+            datas = [ln[5:].strip() for ln in body.splitlines() if ln.startswith("data:")]
+            body = datas[-1] if datas else ""
+        return r, (json.loads(body) if body.strip() else None)
+
+    def _mcp_ensure_session(self) -> None:
+        if self._mcp_session_id:
+            return
+        r, init = self._mcp_call({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                      "clientInfo": {"name": "forgeteval-engram-mcp", "version": "0"}},
+        })
+        sid = r.headers.get("mcp-session-id")
+        if not sid:
+            raise RuntimeError(f"MCP initialize returned no mcp-session-id: {init}")
+        self._mcp_session_id = sid
+        self._mcp_call({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+    def reset(self) -> None:
+        super().reset()
+        # Force a fresh MCP handshake next call -- see the class docstring's
+        # "Gotcha" paragraph. Without this, every case after the first
+        # queries a frozen, pre-reset engine handle.
+        self._mcp_session_id = None
+
+    # ─── the one overridden protocol method ─────────────────────────
+
+    def recall_texts(self, query: str, k: int = 5) -> list[str]:
+        def _do():
+            self._mcp_ensure_session()
+            _, res = self._mcp_call({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "search",
+                          "arguments": {"query": query, "limit": k, "detail": "full"}},
+            })
+            if not res or "result" not in res:
+                raise RuntimeError(f"MCP search failed for {query!r}: {res}")
+            result = res["result"]
+            if result.get("isError"):
+                raise RuntimeError(f"MCP search tool error for {query!r}: {result}")
+            payload_text = result["content"][0]["text"]
+            d = json.loads(payload_text)
+            confidence = d.get("confidence")
+            raw_hits = d.get("hits", [])
+            texts = []
+            for h in raw_hits:
+                if _hit_is_tombstone(h):
+                    continue
+                title = h.get("title", "")
+                body = h.get("body", h.get("snippet", ""))
+                text = f"{title}\n{body}"
+                texts.append(text)
+                if h.get("id"):
+                    self._texts[h["id"]] = text
+            top_score = raw_hits[0].get("score") if raw_hits else None
+            self.stats["mcp_confidence_log"].append({
+                "query": query,
+                "confidence": confidence,
+                "n_hits_raw": len(raw_hits),
+                "n_hits": len(texts),
+                "all_tombstone": bool(raw_hits) and all(_hit_is_tombstone(h) for h in raw_hits),
+                # Threshold-free companion to `confidence` (see README's
+                # "Abstention" section, separation/AUC paragraph): the raw
+                # top-hit score on engram's OWN native scale, pre-tombstone-
+                # filter, None when the reply carried no hits at all.
+                "top_score": top_score,
+            })
+            return texts
+        return self._timed("recall", _do)

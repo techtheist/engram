@@ -7,6 +7,7 @@ import TagEditor from '@/components/common/TagEditor.vue'
 import { onProjectSwitch } from '@/composables/onProjectSwitch'
 import { useConfigStore } from '@/stores/config'
 import { useGraphStore } from '@/stores/graph'
+import { parseCodeRefs } from '@/utils/codeRefs'
 import type { Durability, NodeType } from '@/types/graph'
 
 /**
@@ -29,6 +30,8 @@ const draft = reactive({
     body: '',
     durability: 'stable' as Durability,
     tags: [] as string[],
+    // One code ref per line, parsed into an array on save (parseCodeRefs).
+    codeRefsText: '',
     fields: {} as Record<string, unknown>,
 })
 
@@ -51,6 +54,7 @@ function reset(): void {
     draft.body = ''
     draft.durability = 'stable'
     draft.tags = []
+    draft.codeRefsText = ''
     draft.fields = {}
     error.value = null
 }
@@ -74,6 +78,7 @@ async function save(): Promise<void> {
             // Worklist-role types are live items from birth.
             status: config.typeDef(draft.type)?.roles.worklist ? 'open' : undefined,
             tags: draft.tags,
+            code_refs: parseCodeRefs(draft.codeRefsText),
             fields: Object.keys(fields).length > 0 ? fields : undefined,
         })
         open.value = false
@@ -141,6 +146,20 @@ function close(): void {
     <label class="edit-label">
         Tags
         <TagEditor v-model="draft.tags" />
+    </label>
+
+    <label class="edit-label">
+        Code refs
+        <textarea
+            v-model="draft.codeRefsText"
+            class="edit-input edit-refs"
+            rows="3"
+            placeholder="One repo-relative path per line (optional)…"
+            aria-label="Code refs"
+        />
+        <span class="field-hint">
+            Repo-relative paths, one per line, no line numbers — drift-checked against the working tree.
+        </span>
     </label>
 
     <div v-if="fieldDefs.length" class="fields-block">
@@ -211,6 +230,18 @@ function close(): void {
     resize: vertical;
     font-family: var(--font-mono);
     line-height: var(--leading-normal);
+}
+
+.edit-refs {
+    resize: vertical;
+    font-family: var(--font-mono);
+    font-size: var(--text-caption);
+    line-height: var(--leading-normal);
+}
+
+.field-hint {
+    font-size: var(--text-caption);
+    color: var(--text-tertiary);
 }
 
 .edit-label {

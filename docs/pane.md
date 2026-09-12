@@ -121,7 +121,11 @@ every one of them editable in place.
   which of the seven verbs the connection means. If no verb fits, there is
   no edge to create.
 - **Edit, retype, re-anchor** any node in place — custom field values
-  included; retype or delete edges from the node's connection list.
+  included; retype or delete edges from the node's connection list. Code
+  refs are editable too, as plain text (one repo-relative path per line, no
+  file picker) — the field the Checkup panel's drifted-notes list opens
+  straight into, so a moved or deleted file's stale reference is a two-click
+  fix.
 - **Hard-delete is user-only** by design: the assistant can supersede
   knowledge — and since 0.9.2 bury it behind a Tombstone of its own — but
   only you can destroy it. The delete confirm offers to **leave a

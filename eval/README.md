@@ -18,6 +18,9 @@ watching an agent use the tool.
 The page reads historically: the current numbers first, then how every
 generation of the stack earned its row, then the full record version by
 version. Column definitions and corpus design live in [Method](#method).
+Tables, verdicts and receipts stay at the top level; the narrative,
+the rationale and the long interpretations are folded into collapsed
+sections — open the one you want.
 
 ---
 
@@ -26,20 +29,26 @@ version. Column definitions and corpus design live in [Method](#method).
 The same corpus, every arm, at 1,500 notes with every fact questioned.
 Measured **2026-08-22 on the shipped 0.8.10 stack** (receipts
 `results/2026-08-22-arms-0810-100-1500.json` and `results/2026-08-22-posttune-0810-100-1500.json`),
-on the enriched corpus (each slot-vocabulary pool 12 → 25 entries, a more
+on the enriched corpus. The engram row is the shipped stack measured end to
+end by `--posttune`: knee trim, the self-calibrated recommendation line
+(auto-tuned weak line 0.898 from 24 phantom probes, two families), graph
+credit included. FP follows the recommendation regime: candidates are never
+cut, a warned answer to a never-written question counts as honest.
+
+<details>
+<summary>What "the enriched corpus" is, and why this rerun replicates the 0.8.2-era measurement to the digit</summary>
+
+The enriched corpus is each slot-vocabulary pool 12 → 25 entries, a more
 diverse and less template-shaped crowd — numbers before and after the
-enrichment are different corpora and are never mixed in one table). The
-engram row is the shipped stack measured end to end by `--posttune`: knee
-trim, the self-calibrated recommendation line (auto-tuned weak line 0.898
-from 24 phantom probes, two families), graph credit included. FP follows the
-recommendation regime: candidates are never cut, a warned answer to a
-never-written question counts as honest.
+enrichment are different corpora and are never mixed in one table.
 
 The rerun replicates the 0.8.2-era measurement to the digit — itself a
 receipt: three releases of engine work (the process model, temporal search,
 session-diverse delivery) changed nothing they weren't supposed to. The
 0.8.7 depth knob only engages when a search carries a time window, and the
 0.8.10 diversity cut is identity on a single-session corpus by construction.
+
+</details>
 
 | arm | standing | tok/query | focus | noise | R@1 | R@5 | lex | para | oblique | FP |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -75,6 +84,9 @@ Weighted for how often each phrasing actually occurs, the ranking is
 headline, on a corpus made deliberately harder to keyword-match than the
 one it was tuned on.
 
+<details>
+<summary>Reading the table: 9× recall per token, the perfect-recall trap, the one arm that declines, and the context wall</summary>
+
 Four things follow.
 
 **Engram delivers the most recall per token, by about 9×.** It returns a title
@@ -109,6 +121,8 @@ Engram is at **1.00 lexical and 0.99 paraphrase**, against rag's 1.00 and 0.93,
 with the best **R@1** of any retrieving arm: the right answer is more often the
 *first* thing returned, not merely somewhere in the list.
 
+</details>
+
 ### The other end of the ladder
 
 The attention story is scale-dependent, so here is the same table at **100
@@ -127,6 +141,9 @@ the trims work hardest:
 | curated-file 30k | 8409 | 8409 | 0.01 | 0.99 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
 | whole-file | 25184 | 25184 | 0.01 | 0.99 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
 
+<details>
+<summary>Reading the 100-note table: focus 0.63 at 198 tokens, FP 0.00, and what the 30k file's perfect recall costs</summary>
+
 The engram row is where the young-graph story peaks: **focus 0.63 at 198
 tokens/query** — a twelfth of rag's bill with nearly two-thirds of it being
 the answer — and **FP 0.00**, against a field where every other arm answers
@@ -137,6 +154,8 @@ column sits next to its own price: 8,409 standing tokens every session with
 the answer at 1% of the text — at exactly the size where a diligent file
 still *can* hold everything, holding everything is already the expensive way
 to remember.
+
+</details>
 
 ---
 
@@ -164,10 +183,15 @@ story is a section below.
 | 0.8.10 — sessions mix | session-diverse delivery: a rank demotion at the cut so one session's restatements stop crowding out other sessions' evidence; `--sessions` bench, `--lme-turns` tuning loop | at demote 2: top-5 session coverage +0.10–0.12 and full cluster coverage 1.000 at **zero** single-gold cost, three seeds unanimous; inert and cost-free on the chat register — which points the next cycle at the floor |
 | 0.8.10 — the floor bake-off | both floor attacks priced on one sweep: the per-graph dial-three fit vs full-note reranker input, cross-checked on the chat register | **neither ships**: full-note input wins the note register uncut (+0.07 oblique at 1500) and collapses on chat (R@5 0.96 → 0.78, delivery 111 → 67 tok/query) — register-fragile, stays a knob; the dial-three q25 fit is recall-free at ≤500, −0.01 R@5 at 1500, and misfires under full-note input — the surviving candidate, pending a chat-register fit |
 | 0.9.4 — ForgetEval, per family | the first judge-free *forgetting* benchmark run against engram (arXiv:2606.15903), through the HTTP API alone; reported as five families, never one score, and with two readers: role-blind and role-aware | role-aware: supersession 100%, purge 100%, drift 99%, decay 100%, amnesia 92% (reference system 98%); adversarial 240/385 vs the reference's 244 — same three hard categories for both; role-blind: every released fact stays findable through its own tombstone, **by design** — the finding that put a `tombstone` flag on every search hit and made the config refuse a zero knee cliff |
+| 0.9.4 — ForgetEval, saying no | three never-inscribed control probes per case, a `grep` baseline, and an `engram-mcp` reader that takes the verdict over MCP; fp, hedge, and a threshold-free separation AUC beside the unchanged family scores | engram answers 0 of 3000 controls where the reference answers all — but hedges on 99.5% of real queries: on a six-note graph the phantom-fitted weak line never clears, so the honest claim is separation 0.80 / 0.90 (reference 0.75 / 0.94, which has no decline rule at all); the delivery-floor problem priced in a fourth register |
+| 0.9.4 — distance through history | every ladder note born in a 5–10-note session with a turn index; `reach@5` / `reach` / `hist-only` / `hist-dist` credit an answer reachable through a delivered session-mate, for every arm | the walk is worth +0.07 at depth five for rag and engram alike (0.79 → 0.86 at 1500), a tie at a ninth of the tokens; session shaping with diversity demotion live reproduced direct recall to the digit; reach is a property of the delivered set, not of the graph — no engram-specific edge here yet |
 | 0.9.4 — the rake test | persist–clear–act on an invented Python fixture: planted decisions, a caution, a tombstone and a superseded pair; three arms (no memory / curated CLAUDE.md / engram) run headless with Sonnet under a fixed budget; executable oracles grade the diff for adherence, not recall | phase 1 (9 runs, seed 1): the no-memory arm passed every oracle — the fixture's own code guided the agent, so the baits were too weak; the one failure was the curated file's rule, present verbatim and violated anyway; phase 2 sharpens the baits and runs three seeds (see below) |
 | next | a LongMemEval floor sweep (chat-register raw score curves), then the dial-three auto-tune dial if the fit validates there; the LongMemEval online half; rake phase 3 with stronger separation between the arms | benched before shipped, as always |
 
 ### The graveyard
+
+<details>
+<summary>Everything implemented, measured and abandoned — and why neighbours attach after ranking, not before it</summary>
 
 The graveyard is part of the evolution — a harness that only reports its wins
 is an advertisement. Refuted along the way, each with a receipt: spreading
@@ -197,6 +221,8 @@ the graph-spreading row is the useful one: it is why Engram attaches neighbours
 +0.06 oblique recall and costs nothing; the alternative was measured and is a
 clear loss.
 
+</details>
+
 ---
 
 ## Method
@@ -208,9 +234,14 @@ retry budget of 7 attempts"*. No model can answer that from pretraining, and no
 agent can answer it from having read this repository or from understanding how
 the tool works.
 
+<details>
+<summary>Why invented subjects, and what watching a well-informed agent would have measured instead</summary>
+
 That immunity is the point. Evidence gathered by watching a well-informed agent
 use a tool it helped build measures the agent, not the tool, and no quantity of
 it is worth one clean number.
+
+</details>
 
 It also means **grading never needs a judge**: the corpus knows the answer
 contains `7 attempts`, so correctness is a substring check. Nothing here asks a
@@ -235,6 +266,9 @@ Both dimensions change the result rather than the decoration: body length is how
 much surface a question has to match against, and edges are the whole mechanism
 by which a graph memory could beat a flat one.
 
+<details>
+<summary>Filler rules, the three vocabulary registers, the two banned edge verbs, and `--terse`</summary>
+
 Bodies are padded with filler naming only the fact's own subject. A filler
 sentence containing another fact's answer would manufacture a false positive and
 corrupt every recall number, so a test asserts that never happens.
@@ -255,6 +289,8 @@ and separately.
 `--terse` restores the old shape, so the difference can be quantified rather
 than asserted.
 
+</details>
+
 ### Attention is the budget
 
 Two columns price what recall cannot see. **focus** — the share of delivered
@@ -266,6 +302,9 @@ a false positive) and an empty return as 0.00, because saying nothing tells no
 lies. Noise is the one column where declining to answer scores better than
 guessing, which is what makes calibrated delivery measurable at all.
 
+<details>
+<summary>What the `--floor` sweep priced: hard abstention by absolute score is unaffordable</summary>
+
 `--floor` sweeps a delivery floor over the engram arm and produced the
 product's calibrated-delivery defaults: a trim floor at the top of the
 measured free zone (tail hits removed at zero recall cost), and the finding
@@ -275,6 +314,8 @@ oblique answers and unanswerable questions genuinely overlap in score space.
 Abstention therefore ships as a *verdict label* (strong / weak / none) on the
 search reply, not as a harder floor.
 
+</details>
+
 ### Three ways to ask
 
 - **lexical** — quotes the fact's own words. `grep` wins these by construction.
@@ -282,16 +323,105 @@ search reply, not as a harder floor.
 - **oblique** — *never names the subject*, and shares no content vocabulary with
   the fact. Only meaning can find these.
 
+<details>
+<summary>The two tests that defend the oblique property</summary>
+
 Two tests defend the property: one asserts an oblique question shares at most
 one content word with its own fact, the other that body filler reuses no
 paraphrase vocabulary anywhere. The second exists because thirteen collisions
 got in when the check was done by eye.
+
+</details>
 
 How often each phrasing occurs is **an assumption, not a measurement** —
 `45/45/10` by default — and it decides which arm wins. Every report prints the
 weighting that produced it, and the crossover point where the ranking would flip.
 Questions are also weighted by node type (`decision=35, caution=20, insight=20,
 problem=15, principle=10`) on the same footing: stated, not discovered.
+
+### Distance through history
+
+`--history` shapes the same corpus into transcripts. Every fact — tested and
+distractor alike — lands in a session of 5-10 notes drawn from **one
+component**, at a 1-based assistant turn, seeded off the same `--seed` as
+everything else. A session is *work on one component*, so a session-mate is a
+plausible neighbour of the answer rather than an accident; a component with
+more facts than one session spans several, and only its last session may fall
+short of five, because the component simply ran out.
+
+<details>
+<summary>The turn-cost model behind `hist-dist`: 2*|a-b| + 1</summary>
+
+The model the metric encodes: **an assistant writes one note per assistant
+turn, with a user turn between consecutive ones.** Walking from the note at
+turn `a` to the note at turn `b` of the same session costs `2*|a-b| + 1`
+turns — every assistant turn from the delivered note back to and including
+the answer's, plus the user turns between them — so reaching the first note
+from the fifth reads nine (five assistant turns, four user turns). A note is
+zero turns from itself, which is what a directly delivered answer scores.
+
+</details>
+
+Four columns follow, printed only under the flag:
+
+- **reach@5** — read at depth five, like `R@5`: the answer ranked in the first
+  five, or a session-mate did. The fair cell: an arm that dumps ten records
+  reaches more sessions than one that trims to three, and this column removes
+  the breadth credit. Compare it against `R@5` for the same arm to see what
+  the walk adds at the depth the assistant actually reads.
+- **reach** — the same over everything the arm delivered, however deep: the
+  share of questions whose answer was delivered **or** sat in a session some
+  delivered hit came from. Retrieval plus the walk, breadth included.
+- **hist-only** — the share where the answer never ranked but a session-mate
+  did. The history analogue of the graph column: the only share the walk can
+  claim for itself.
+- **hist-dist** — the mean distance, in turns, over exactly those `hist-only`
+  questions. Zero when there are none, because a mean over nothing is not a
+  short walk, and `reach` is the column that says whether anything happened.
+
+<details>
+<summary>Who the metric credits, the mechanism expected to move it, and what it does not price</summary>
+
+The metric credits **any** arm whose delivered hits carry provenance, not just
+engram — the hits are the same generated notes whichever arm returned them, so
+the mechanism decides who scores and the metadata never does. The mechanism
+expected to move it is **session-diverse delivery** (0.8.10,
+`policy.session_diversity_demote`): spreading the final cut across sessions
+puts a foothold in more transcripts, which is precisely what turns a miss into
+a walk.
+
+What this does **not** price is the walk itself. Reading back nine turns of
+dialogue costs tokens, and none of the three columns bills them; `hist-dist` is
+the length of a walk, not its price. Until the history channel is measured on
+its own register, a reach number is a statement about what is *findable*, not
+about what is affordable.
+
+</details>
+
+### Entity collisions
+
+`--collision R` gives a seeded R-share of the **tested** subjects one extra,
+untested fact: the same coined name and component, a different node type, and a
+claim built from a slot triple no regular fact used. One name, two unrelated
+things — which is the ordinary condition of a real graph and the one the
+invented-subject design otherwise engineers away, since by construction every
+fact owns its own subject and a name alone identifies an answer.
+
+<details>
+<summary>Two properties that keep the collision knob honest, and what `R = 0` guarantees</summary>
+
+Two properties keep the knob honest. The **controls never collide**: a collider
+reuses a name already issued and consumes none of the invented-name space, so
+the never-written subjects behind the false-positive rate stay exactly as they
+were and FP can only move through *ranking*, never through construction. And a
+collider is a **naming** collision, not a topological one — it is minted after
+the edges are drawn, so it joins the graph as an unlinked resident and the knob
+moves one variable.
+
+`R = 0`, the default, mints nothing: the corpus is byte-for-byte the one every
+receipt in `results/` was measured on, which a golden digest test enforces.
+
+</details>
 
 ### What it is compared against
 
@@ -301,11 +431,16 @@ retrieval at all. `grep` is keyword search over a flat file of the same notes.
 graph — which is what a conventional stack does. `whole-file` puts everything in
 context: perfect recall, no ranking, full bill every session.
 
+<details>
+<summary>Why `engram` and `engram + graph` are two rows and not one</summary>
+
 `engram` and `engram + graph` are two readings of one run: the same hits scored
 without and with the 1-hop neighbourhood, which makes the graph ablation free.
 They are separate rows because a neighbour reference carries a title and an id
 and nothing else — the caller still has to fetch the node. Collapsing them would
 overstate the graph.
+
+</details>
 
 ---
 
@@ -331,6 +466,9 @@ oblique recall@5, mean of 3 seeds:
 | 0.30 | 0.266 | 0.272 | +0.006 |
 | 0.50 *(old default)* | 0.237 | 0.196 | −0.041 |
 
+<details>
+<summary>Why it is an interaction, and what deciding vs voting means</summary>
+
 It is an interaction, and an interaction is invisible to any experiment that
 moves one knob at a time. Voting is worth a lot when the keyword channel is
 quiet and is actively harmful when it is loud — because at a high keyword weight
@@ -343,6 +481,8 @@ outright. **Voting** combines the two orderings by reciprocal rank, so the
 cross-encoder becomes one ranker of two and has to out-vote the retrieval
 channels rather than overrule them. This is the ranking form of a rule the rest
 of Engram already follows: a model's judgment nominates, it does not decide.
+
+</details>
 
 Shipped: keyword weight **0.15**, reranker **votes**. Verified on the real
 engine, 3 seeds:
@@ -360,6 +500,9 @@ engine, 3 seeds:
 Engram now beats pure vector search on aggregate recall, having previously lost
 to it, at a fifth of the tokens and with no cost anywhere else on the table.
 
+<details>
+<summary>Why 0.15 and not 0: the snippet the keyword channel pays for</summary>
+
 **Why 0.15 and not 0.** Zero scored higher on oblique questions, but silencing
 the keyword channel also silences the snippet: a keyword match yields a 12-token
 window around the hit, and without one the result falls back to a flat
@@ -367,7 +510,12 @@ window around the hit, and without one the result falls back to a flat
 and loses match highlighting, to buy 0.067. Token efficiency is the product's
 actual edge; this would have spent it.
 
+</details>
+
 ### Where pure vectors still lead — and where the ceiling is
+
+<details>
+<summary>Where pure vectors still lead: rag 0.47 oblique against 0.40–0.42, the 0.97 / 0.92 ceiling over every arm, and bge-base parity at a seventh of the tokens</summary>
 
 On oblique questions specifically, `rag` stays slightly ahead — 0.47 against
 0.40–0.42 at 1500 notes on the current corpus. The gap is real but small, and
@@ -382,6 +530,8 @@ bge-base as the embedder the shipped stack reaches **full rag parity — 0.97 /
 0.92 — at 346 tokens per query against rag's 2,308.** Tied with pure vectors
 at a seventh of the tokens is the honest sentence.
 
+</details>
+
 ## 0.8.0 — the ladder, and the baseline that actually competes
 
 The honest comparison is not "no memory", and it is not a dump of every note
@@ -390,10 +540,15 @@ always in context — plus the occasional prompt to shorten it. That objection
 came from a reviewer of this project, and it is the strongest one available, so
 `curated-file` is that baseline.
 
+<details>
+<summary>The curation rule, and why it is blind to the questions</summary>
+
 Its curation rule is deliberately **blind to the questions**: durable types
 first, an unbiased tie-break within a type, each entry trimmed, filled to a
 token budget. A human pruning a file has no idea what will be asked next, and
 letting the arm peek would be inventing a baseline nobody has.
+
+</details>
 
 What it cannot do is hold everything, and that is the whole measurement —
 recall@5 by **total graph size**, every fact questioned, measured rather than
@@ -407,6 +562,9 @@ extrapolated (the ladder, 2026-08-03):
 | 500 | 0.07 (37) | 0.72 (358) | 0.70 | 0.88 | 0.86 |
 | 1000 | 0.04 (36) | 0.37 (368) | 0.68 | 0.83 | 0.82 |
 | 1500 | 0.02 (36) | 0.25 (368) | 0.68 | 0.80 | 0.80 |
+
+<details>
+<summary>Reading the ladder: the two crossovers, what the 30k file's win costs, and the practical reading</summary>
 
 Three things fall out, and the crossovers are now numbers instead of a line's
 extrapolation.
@@ -432,12 +590,17 @@ maintained markdown file is a perfectly reasonable memory and this project is
 not needed; an unusually diligent one stays reasonable to ~200–300; everything
 Engram claims is about what happens after that.
 
+</details>
+
 ### The ladder
 
 `--ladder` measures exactly where that crossing happens instead of
 extrapolating it: total graph sizes 10 → 1500 under one seed, with the curated
 file scored at **3,000 and 30,000 tokens at every size**, and a closing table
 naming the first size at which each budget falls behind retrieval.
+
+<details>
+<summary>What the ladder asks that the sized runs do not</summary>
 
 It also changes what gets asked. The sized runs question a tested third
 of the graph and thin those questions to an assumed type mix; the ladder
@@ -448,12 +611,17 @@ larger and nothing depends on which third was picked. Assumed workload mixes
 stay where they belong, in the report-side weighting. `--series` runs the
 ladder plus the contradiction bench and writes one combined JSON.
 
+</details>
+
 ### The big-context question
 
 The obvious objection to any memory layer is that context windows keep growing,
 so retrieval is a temporary problem — just put the notes in the prompt. Three
 measured things make that argument weaker than it sounds, and one makes it
 stronger, so all four are here.
+
+<details>
+<summary>The big-context argument in four parts — including the honest one, prompt caching</summary>
 
 **It stops working, and it stops abruptly.** A 1500-note graph is 377,260
 tokens. That is not a large bill; it is past the window. There is no partial
@@ -487,6 +655,8 @@ Which of these dominates in practice is not decidable from retrieval metrics
 alone. It needs a live model answering from each arm's context, and that is the
 online half — built as a contract (`src/online.rs`), not yet run.
 
+</details>
+
 ## 0.8.1 — calibrated delivery: the research cycle
 
 A literature-first pass over the two problems the 0.8.0 tables left open:
@@ -500,6 +670,13 @@ adding one mechanism on top of the shipped 0.8.0 stack at 1500 notes:
 | + knee trim *(shipped in 0.8.1)* | 317 | **0.44** | **0.63** | 0.79 | 1.00 |
 | + calibrated "likely not in memory" note *(shipped in 0.8.1)* | 317 | **0.44** | **0.63** | 0.79 | 0.12 |
 | + transplant probes: the line calibrates in the graph's own voice *(0.8.1)* | 317 | **0.44** | **0.63** | 0.79 | **0.02** |
+
+Every row here shipped in 0.8.1: the knee trim tripled focus for 0.01 of
+recall@5, and the self-calibrated line — templated probes, then transplants
+— took FP from 1.00 to 0.02 without ever cutting a candidate.
+
+<details>
+<summary>The full 0.8.1 story: the knee, the phantom line, the transplants, what the literature contributed, and what measurement decided</summary>
 
 The FP column's history in one paragraph: below a confidence line the graph
 calibrates on itself, the reply is prefixed *"this likely isn't in memory —
@@ -561,6 +738,8 @@ the reply leads with *"this likely isn't in memory"*, a warned control counts
 as a correct outcome, and the only remaining false positive is a control
 answered confidently.
 
+</details>
+
 ## 0.8.2 — supersession measured, and the first external corpus
 
 Two modes landed after a fair external criticism: every number above is graded
@@ -585,6 +764,9 @@ state. 200 facts plus 20 chains × 3 generations, real embeddings:
 | curated-file (3k tokens) | 0.00 | 0.00 | 0.00 | 0.00 | 3,000 |
 | whole-file | 1.00 | 1.00 | 1.00 | 0.00 | 165,115 |
 
+<details>
+<summary>How the pollution column works, and the three mechanism checks retirement has to pass</summary>
+
 `pollution` is the share of questions that delivered a **retired** generation.
 The product's zero is structural — supersession archives the losing side out
 of retrieval at write time — while every baseline hands the model conflicting
@@ -607,12 +789,23 @@ context on 100% of answered questions. The one-line version: without the
 for rag); with it, pollution is 0.00 by construction at +0.25 R@1. Recency
 alone does not do what supersession does, and no flat stack can.
 
+</details>
+
 ### LongMemEval — graded on data we didn't generate
 
 **`--longmemeval s|oracle`** runs
 [LongMemEval](https://github.com/xiaowu0162/LongMemEval) (Wu et al., MIT) —
 500 questions, each over its own multi-session chat history, evidence sessions
-labelled, ~6% deliberately unanswerable. The full write-up — the comparison
+labelled, ~6% deliberately unanswerable. The full-population run
+(2026-08-08, `results/2026-08-09-longmemeval-s-full.json`): engram ties rag's R@1
+(0.91) within 0.02 R@5 at **208 vs 2,654 tokens/query**, and the 30
+never-answerable questions produce **zero unwarned answers** — the
+calibrated line holds on real chat it was never tuned for.
+
+<details>
+<summary>The separate write-up, the pinned download, as-is ingestion, retrieval grading, and the chat ontology defined as data</summary>
+
+The full write-up — the comparison
 table, the chat ontology, and why this is deliberately *not* a LongMemEval
 score — has its own page: [`LONGMEMEVAL.md`](./LONGMEMEVAL.md). The dataset is fetched on demand into
 `eval/data/` (gitignored) and verified against a SHA-256 pinned in
@@ -623,11 +816,7 @@ over the full population**: a hit is a delivered note from a labelled evidence
 session, no LLM judge anywhere, and the `_abs` questions are scored under the
 calibrated recommendation verdict — a warned answer is honest, an unwarned one
 is the false positive. `--lme-limit N` runs a smoke subset and says so loudly
-in the output; a capped run is not a result. The full-population run
-(2026-08-08, `results/2026-08-09-longmemeval-s-full.json`): engram ties rag's R@1
-(0.91) within 0.02 R@5 at **208 vs 2,654 tokens/query**, and the 30
-never-answerable questions produce **zero unwarned answers** — the
-calibrated line holds on real chat it was never tuned for.
+in the output; a capped run is not a result.
 
 By default the LongMemEval stores run under a **chat ontology defined as
 data** (`--lme-ontology chat`): two per-graph types replacing the stock
@@ -639,6 +828,8 @@ the product ships: same engine, zero engine changes, a register it was never
 written for. Notes are stamped with their session's real date, so recency
 reads the conversation timeline rather than a flat ingestion instant.
 `--lme-ontology default` runs the stock set beside it.
+
+</details>
 
 ## 0.8.7 — time-scoped search
 
@@ -663,6 +854,9 @@ held byte-identical), **mean of three seeds**:
 | 4 | 480 | 0.943 | 0.830 | 0.848 | 0.561 |
 | 8 *(was shipped)* | 960 | 0.943 | 0.830 | 0.848 | 0.561 |
 | 16 | 1920 | 0.943 | 0.830 | 0.848 | 0.561 |
+
+<details>
+<summary>Reading the window bench: why a window buys recall, why depth past 2 is dead weight, the soft 1 → 2 step, and the live bug the run found</summary>
 
 **The window is not a tax, it is a filter.** The premise the over-fetch was
 built on was backwards: scoping in time *buys* recall. Oblique recall —
@@ -698,6 +892,8 @@ returned an error, and the harness was scoring that error as a zero.
 Both were fixed: the store clamps its ask, and **the bench now panics on a
 search error instead of recording it as a miss**. A failed search and a search
 that found nothing produce identical numbers and opposite conclusions.
+
+</details>
 
 ```sh
 cargo run -p engram-eval --features fastembed -- --window --sizes 100 --distractors 20
@@ -743,6 +939,9 @@ thresholds don't transfer between graphs while relative mechanisms do — and
 it is identity by construction on a single-session graph, which is why every
 other table in this README is unchanged.
 
+<details>
+<summary>The real-data check on the chat register: inert, and cost-free</summary>
+
 The real-data check rides on LongMemEval: `--lme-turns 50` (below) grades
 a `multi-cov` column — the share of a question's labelled answer sessions
 represented in the delivered list, over the questions whose evidence spans
@@ -754,11 +953,16 @@ limit, so the selection never engages. The multi-cov gap against uncut pure
 vectors (0.56 vs 0.95) is owned by the delivery trims on that register, not
 by the cut — the delivery-floor work's problem, not this knob's.
 
+</details>
+
 ```sh
 cargo run -p engram-eval --features fastembed -- --sessions --sizes 100,500
 ```
 
 ### The short LongMemEval loop
+
+<details>
+<summary>What `--lme-turns N` caps, and why a capped receipt is not comparable</summary>
 
 `--lme-turns N` caps each question's ingested haystack at ~N turns. The
 labelled answer sessions are ALWAYS kept — a cap that could drop the evidence
@@ -766,6 +970,8 @@ would grade retrieval on an unanswerable world — and distractor sessions fill
 the budget in haystack order. At 50 turns a 100-question pass takes ~7
 minutes on the GPU embedder instead of hours, which makes it a tuning loop;
 receipts carry `turns_cap` and are not comparable to full-haystack numbers.
+
+</details>
 
 ### The delivery-floor bake-off: both attacks, priced
 
@@ -775,6 +981,9 @@ scale sits lower (dense prose, chat) it behaves as the hard abstention gate
 the research cycle refuted three times. Two attacks on that root, benched on
 one sweep (`--floor --distractors 0`, receipts
 `results/2026-08-22-floor-dial3-snippet.json`, `results/2026-08-23-floor-dial3-rerankfull.json`):
+
+<details>
+<summary>Reading the floor bake-off: dial three, full-note reranker input, and the register that decides</summary>
 
 **Attack one — dial three**: fit the floor per graph as a quantile of every
 score the phantom (control) questions reach — the noise body, not its
@@ -807,6 +1016,8 @@ fixed floor. Helps compact single-claim notes, hurts everything else — the
 definition of register-fragile, and exactly what the 0.8.1 lesson predicts
 for input-sensitive scoring.
 
+</details>
+
 **Verdict: neither ships as a default.** `rerank_full_note` stays a per-graph
 knob, refuted as a default by the chat receipt. Dial three survives as the
 only live candidate, but its bench cost at 1500 and its input-sensitivity
@@ -834,6 +1045,9 @@ over the local HTTP API only; receipts are
 `results/2026-09-12-forgeteval-{template,adversarial}.json` and the
 adapter's README carries the full mapping and every deviation.
 
+<details>
+<summary>The five families, and why decay and amnesia read differently through the two readers</summary>
+
 The five template families do not measure one thing, and two of them
 measure something engram deliberately does differently, so they are
 reported apart and never summed:
@@ -849,6 +1063,8 @@ reported apart and never summed:
   findable marker naming what was removed. The marker's title contains the
   fact — on one-sentence facts the title *is* the fact — so a reader that
   does not look at the hit's role counts it as a leak.
+
+</details>
 
 Hence two readers. **Role-blind** returns every hit's text; **role-aware**
 asks for k non-tombstone hits (the REST `types` filter; since 0.9.4 every
@@ -877,6 +1093,9 @@ configurations; neither is hidden behind the other.
 | recursive_supersession | 39 | 36 | 36 | 36 |
 | all | 385 | 177 | 240 | 244 |
 
+<details>
+<summary>Run conditions, the three categories every system fails, and two disclosed deviations</summary>
+
 Seed 42, four distractors per case, `--scale 200`; lethe measured
 in-process, engram over HTTP against the live core. The three categories
 every system fails (compound facts, obfuscated and cross-lingual
@@ -892,6 +1111,45 @@ benchmark's throwaway graphs, with the default-policy control kept in the
 adapter README. And the release/purge target rule is ported verbatim from
 the reference adapter rather than invented.
 
+</details>
+
+**What ForgetEval does not measure: saying no.** Nothing in the benchmark
+asks about a subject that was never inscribed, so a system that answers
+everything is never caught. The harness adds three control probes per case
+from the family's own question templates with never-used names, plus a
+`grep` baseline and an `engram-mcp` reader that takes the search verdict
+over the MCP transport (receipts
+`results/2026-09-12-forgeteval-fp-{template,adversarial}.json`):
+
+| template, 3000 controls | pass | fp | hedge | separation |
+|---|---|---|---|---|
+| engram-mcp | 98% | 0% | 99.5% | 0.80 |
+| grep | 85% | 3% | — | 0.80 |
+| lethe | 99% | 100% | — | 0.75 |
+
+Adversarial reads the same way (fp 0% / 4% / 100%, separation 0.90 / 0.91
+/ 0.94).
+
+<details>
+<summary>Reading all four columns: lethe's 100%, engram's 0%, and the delivery floor priced in a fourth register</summary>
+
+Read all four columns together. Lethe's 100% is a product choice —
+it has no decline rule, though its own similarity would support one. And
+engram's 0% is not discernment on this register: the verdict is weak on
+99.5% of real queries too, because the weak line is fitted from phantom
+probes over the graph's vocabulary and a six-note graph cannot support the
+fit, so the default line rules. The claim engram can make is the
+threshold-free one: its scores rank real questions above never-inscribed
+ones at 0.80–0.90 without tuning, so a line fitted on the graph's actual
+score population would work — except on amnesia's generic "tell me about
+people" register (0.55). That is the delivery-floor problem again, priced in
+a fourth register, and it changes nothing in the product from this receipt.
+
+</details>
+
+<details>
+<summary>What the bench found in the product: the `knee_cliff` zero bug, and the role flag over REST</summary>
+
 **What the bench found in the product.** The first run of the day scored
 amnesia at 55% role-aware, and the cause was not forgetting: the adapter
 had set `knee_cliff` to 0 to disable the knee trim, and 0 is the *harshest*
@@ -903,28 +1161,97 @@ error, and the first run stays on disk as
 the role flag itself: over REST a hit's only role signal was its type name,
 which breaks on a custom ontology that calls its tombstone "Retraction".
 
+</details>
+
+### Distance through history — measured
+
+With `--history` on (every note in a 5–10-note session on one component,
+turn-indexed; see [Method](#distance-through-history)), the arms table at
+1,500 notes reads (receipt
+`results/2026-09-12-0.9.4-history-arms-100-1500.json`):
+
+| arm | tok/query | R@5 | reach@5 | reach | hist-only | hist-dist |
+|---|---|---|---|---|---|---|
+| grep | 2739 | 0.68 | 0.76 | 0.81 | 0.11 | 6.0 |
+| rag | 2721 | 0.79 | 0.86 | 0.93 | 0.08 | 6.4 |
+| **engram** | **297** | 0.79 | 0.86 | 0.92 | 0.09 | 6.5 |
+
+<details>
+<summary>Three things the receipt says, and the posttune pass on the shaped corpus</summary>
+
+Three things the receipt says. Session shaping cost nothing: with every
+note carrying a session and the 0.8.10 diversity demotion live for the
+first time on this corpus, engram's direct columns reproduced the
+re-baseline to the digit (R@1 0.69, R@5 0.79, oblique 0.39). The walk is
+worth the same to both retrievers: seven points at depth five, a mean walk
+of about six turns, and a tie at 0.86 — at a ninth of the tokens for
+engram. And the all-delivered `reach` favours rag only because rag dumps
+ten records where engram trims to about three; read at equal depth the
+breadth credit is gone. Reach is a property of the delivered set, not of
+the graph, and nothing engram does today turns provenance into extra
+footholds — a session-mate hint carried on each hit, the way neighbours
+are, is the mechanism to bench if that column is to move. At 100 notes
+every retrieving arm reaches 1.00. The posttune pass on the same shaped
+corpus (`results/2026-09-12-0.9.4-history-posttune-100-1500.json`) keeps
+the verdict layer intact: FP 0.01 at 1,500 with 48% of answerable
+questions hedged, weak line 0.905 — the timestamped sessions refit the
+phantom line by a few hundredths and nothing else moved.
+
+</details>
+
+`--collision 0.5` re-runs the same shaped corpus with an untested collider on
+the same subject for half the answers (receipt
+`results/2026-09-12-0.9.4-history-collision50-arms-100-1500.json`). At 1,500
+notes grep R@5 holds at 0.68 → 0.68, rag goes 0.79 → 0.76 (oblique 0.45 →
+0.39) and engram 0.79 → 0.76 (oblique 0.39 → 0.31); reach@5 goes 0.86 → 0.81
+for rag and 0.86 → 0.82 for engram. At 100 notes rag reads 0.96 → 0.94 and
+engram 0.94 → 0.91. Crowding by same-subject colliders costs both retrievers
+about three points at depth five and six to eight points on oblique
+questions; grep is untouched because it never matched those questions
+anyway; and the oblique gap to pure vectors persists under collision. The
+knob measures crowding — it is not a score lever.
+
+The posttune pass under the same collisions
+(`results/2026-09-12-0.9.4-history-collision50-posttune-100-1500.json`)
+leaves the verdict layer where the re-baseline had it: FP 0.00 at 100 and
+0.02 at 1,500 with 47% of answerable questions hedged — same-subject
+colliders crowd the ranking without teaching the weak line to answer
+never-written questions, because the control subjects get no colliders by
+construction.
+
 ### The rake test — does the agent act on what it recalls?
 
 Retrieval benches ask whether the right note comes back. The rake test
 asks whether the agent then *steps around the rake*. `eval/rake/` plants
-ten notes about an invented Python package — a retry-budget decision with
-its reason, a deadlock caution, a tombstone for a removed fast path, a
-superseded config decision and six distractors — then runs three coding
+ten notes about an invented Python package, then runs three coding
 tasks headless with Sonnet under a fixed turn and dollar budget, in three
 arms: no memory at all, the same notes rendered into a CLAUDE.md, and
-engram (brief hook plus MCP tools). Executable oracles grade the diff:
-did the retry go through the shared budget, did the sync land outside the
-transaction, did the removed path stay removed, did the docs name the
-current config file. Phase 1 (`results/2026-09-12-rake-smoke.json`, nine
+engram (brief hook plus MCP tools). Phase 1 (`results/2026-09-12-rake-smoke.json`, nine
 runs, about two dollars) was a smoke of the pipeline, and its lesson was
 that the fixture's own code guided every arm past every rake; the one
 failure was the curated file's rule, present verbatim and violated anyway.
 Phase 2 sharpens every bait into memory-only knowledge and runs three
 seeds; its receipt and table are in `eval/rake/README.md`.
 
+<details>
+<summary>What the ten notes plant, and what the executable oracles grade</summary>
+
+The ten planted notes are a retry-budget decision with
+its reason, a deadlock caution, a tombstone for a removed fast path, a
+superseded config decision and six distractors. Executable oracles grade the
+diff:
+did the retry go through the shared budget, did the sync land outside the
+transaction, did the removed path stay removed, did the docs name the
+current config file.
+
+</details>
+
 ---
 
 ## What this does not show
+
+<details>
+<summary>The six caveats in full: nothing declines outright, the logic layer, keyword hostility, clean synthetic facts, structural oblique decay, and the no-model fallback</summary>
 
 - **Nothing declines outright, still.** The false-positive rate is 1.00 for
   every arm — asked about a subject that was never written, all of them return
@@ -955,7 +1282,12 @@ seeds; its receipt and table are in `eval/rake/README.md`.
   harness runs and the lexical path is exercised; the semantic numbers are noise,
   and every fake run says so at the top.
 
+</details>
+
 ## The online half — not yet run
+
+<details>
+<summary>The online-half contract: the manifest, the grading rule, and the two questions only it can settle</summary>
 
 `src/online.rs` is the contract for the part that needs a live model. It
 deliberately ships no API client and reuses none of the offline results, because
@@ -992,14 +1324,19 @@ Two things only the online half can settle, and both are open:
 
 Results will be added here once they are measured.
 
+</details>
+
 ## Layout
+
+<details>
+<summary>The file map, and how to isolate density from corpus size</summary>
 
 | file | |
 |---|---|
-| `generate.rs` | the corpus: facts, three phrasings, distractors, controls, twins, NLI pairs, session clusters |
+| `generate.rs` | the corpus: facts, three phrasings, distractors, controls, twins, NLI pairs, session clusters, history sessions and entity colliders |
 | `arms.rs` | the baselines and their token accounting |
 | `variants.rs` | retrieval strategies, including ones that do not ship |
-| `metrics.rs` | recall@k, MRR, twin confusion, threshold separation |
+| `metrics.rs` | recall@k, MRR, twin confusion, threshold separation, distance through history |
 | `nli_eval.rs` | confusion matrix and per-label precision/recall |
 | `run.rs` | the suite, the fusion sweep, the strategy grid, the floor sweep, the contradiction bench |
 | `chains.rs` | supersession chains: current-state recall, pollution, the flat ablation |
@@ -1013,3 +1350,10 @@ Results will be added here once they are measured.
 To isolate density from corpus size, hold `--sizes` fixed and vary
 `--distractors`: the tested facts and their questions stay byte-identical while
 the graph around them grows.
+
+`--history` and `--collision` are opt-in for the same reason: with both off the
+generated corpus is byte-for-byte the one every receipt in `results/` was
+measured on, so a shaped run is a deliberate second measurement rather than a
+quiet re-baselining of the first.
+
+</details>

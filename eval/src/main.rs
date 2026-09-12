@@ -40,6 +40,20 @@ OPTIONS:
                           real-embeddings run
     --phrasing-mix L,P,O  how often each phrasing is assumed to occur
                           [default: 45,45,10] — decides the headline number
+    --history             shape the corpus into dialogue sessions: every fact
+                          (tested and distractor) lands in a 5-10 note session
+                          of ONE component, at a 1-based assistant turn, and
+                          the arms table gains reach / hist-only / hist-dist —
+                          how far a caller would have to walk the transcript
+                          from a delivered session-mate to reach the answer.
+                          Off, every fact is written under one session and the
+                          three columns are not printed
+    --collision R         give a seeded R (0..1) share of tested subjects one
+                          EXTRA untested fact — same coined name, different
+                          type, unrelated claim — so a name no longer picks a
+                          fact out on its own. Controls keep their own name
+                          space, so FP can only move through ranking
+                          [default: 0 = the identical corpus]
     --tricks              research bench: candidate delivery strategies
                           (fixed/relative floors, knee cut, knee+buffer,
                           split-conformal abstention calibrated on synthetic
@@ -210,6 +224,15 @@ fn cli() -> anyhow::Result<()> {
             "--type-mix" => cfg.type_mix = parse_type_mix(&value()?)?,
             "--terse" => cfg.profile = engram_eval::profile::Profile::terse(),
             "--phrasing-mix" => cfg.phrasing = parse_phrasing(&value()?)?,
+            "--history" => cfg.history = true,
+            "--collision" => {
+                let r: f64 = value()?.parse()?;
+                anyhow::ensure!(
+                    (0.0..=1.0).contains(&r),
+                    "--collision wants a share between 0 and 1"
+                );
+                cfg.collision = r;
+            }
             "--ladder" => {
                 ladder_mode = true;
                 apply_ladder(&mut cfg);
@@ -662,6 +685,13 @@ fn print_posttune(r: &engram_eval::run::PostTuneReport) {
         "runtime: embedder={}  reranker={}  seed={}  limit={}",
         r.embedder, r.reranker, r.seed, r.limit
     );
+    if r.history || r.collision > 0.0 {
+        println!(
+            "shaped:  history sessions {} — colliders on {:.0}% of tested subjects",
+            if r.history { "on" } else { "off" },
+            100.0 * r.collision
+        );
+    }
     if r.embeddings_are_fake {
         println!("!! FAKE EMBEDDINGS — these numbers describe plumbing, not meaning");
     }
@@ -694,6 +724,15 @@ fn print_posttune(r: &engram_eval::run::PostTuneReport) {
             at(Phrasing::Oblique),
             s.weighted_recall,
         );
+        if r.history {
+            println!(
+                "  through history: reach@5 {:.2}  reach {:.2}  hist-only {:.2}  hist-dist {:.1} turns",
+                s.overall.history_reach_at_5,
+                s.overall.history_reach,
+                s.overall.history_only,
+                s.overall.history_distance
+            );
+        }
         println!(
             "  attention: focus {:.2}  noise {:.2}  tok/query {:.0}  standing {}",
             s.overall.focus, s.overall.noise, s.overall.tokens_mean, s.standing_tokens
@@ -1333,6 +1372,17 @@ fn print_report(r: &Report) {
         "asked:   {} (an assumption, not a measurement)",
         mix.join(" ")
     );
+    if rt.history || rt.collision > 0.0 {
+        println!(
+            "shaped:  history sessions {} — colliders on {:.0}% of tested subjects",
+            if rt.history {
+                "on (5-10 notes per session, one component each)"
+            } else {
+                "off"
+            },
+            100.0 * rt.collision
+        );
+    }
     if rt.embeddings_are_fake {
         println!(
             "\n!! FAKE EMBEDDINGS — the harness works, the semantic numbers do not mean\n\
@@ -1355,8 +1405,11 @@ fn print_report(r: &Report) {
                 100.0 * c.held as f64 / s.graph.max(1) as f64
             );
         }
-        println!(
-            "  {:<14} {:>8} {:>9} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}",
+        // The three history columns sit between `obliq` and `twin`, and are
+        // printed ONLY under --history: with the shaping off the row must be
+        // byte-identical to every receipt already in eval/results/.
+        print!(
+            "  {:<14} {:>8} {:>9} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}",
             "arm",
             "standing",
             "tok/query",
@@ -1368,14 +1421,17 @@ fn print_report(r: &Report) {
             "lex",
             "para",
             "obliq",
-            "twin",
-            "FP",
-            "sep",
-            "graph"
         );
+        if rt.history {
+            print!(
+                " {:>7} {:>6} {:>9} {:>9}",
+                "reach@5", "reach", "hist-only", "hist-dist"
+            );
+        }
+        println!(" {:>6} {:>6} {:>6} {:>6}", "twin", "FP", "sep", "graph");
         for arm in &s.arms {
-            println!(
-                "  {:<14} {:>8} {:>9.0} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2}",
+            print!(
+                "  {:<14} {:>8} {:>9.0} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2}",
                 arm.arm,
                 arm.standing_tokens,
                 arm.overall.tokens_mean,
@@ -1387,6 +1443,18 @@ fn print_report(r: &Report) {
                 phrasing_recall(arm, Phrasing::Lexical),
                 phrasing_recall(arm, Phrasing::Paraphrase),
                 phrasing_recall(arm, Phrasing::Oblique),
+            );
+            if rt.history {
+                print!(
+                    " {:>7.2} {:>6.2} {:>9.2} {:>9.1}",
+                    arm.overall.history_reach_at_5,
+                    arm.overall.history_reach,
+                    arm.overall.history_only,
+                    arm.overall.history_distance,
+                );
+            }
+            println!(
+                " {:>6.2} {:>6.2} {:>6.2} {:>6.2}",
                 arm.overall.twin_confusion,
                 arm.separation.false_positive_rate,
                 arm.separation.balanced_accuracy,

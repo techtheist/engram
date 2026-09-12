@@ -67,6 +67,14 @@ pub struct Config {
     /// the cross-encoder window whole, and the snippet starves it on oblique
     /// queries whose evidence sentence shares no keyword with the query.
     pub rerank_full: bool,
+    /// Shape the regular corpus into dialogue sessions (5..=10 notes each,
+    /// one component per session) and score the distance-through-history
+    /// columns. Off, every fact is written under the single "eval" session
+    /// exactly as every receipt in `eval/results/` recorded it.
+    pub history: bool,
+    /// Share of tested subjects that gain a second, unrelated claim under the
+    /// same coined name. `0.0` = the identical corpus every receipt used.
+    pub collision: f64,
 }
 
 impl Default for Config {
@@ -85,7 +93,27 @@ impl Default for Config {
             embed_model: None,
             curated_budgets: vec![DEFAULT_CURATED_BUDGET],
             rerank_full: false,
+            history: false,
+            collision: 0.0,
         }
+    }
+}
+
+impl Config {
+    /// The regular corpus at one size, under whatever shaping the run asked
+    /// for. Both knobs default off, and off this is `corpus_full` verbatim.
+    fn corpus(&self, size: usize) -> Corpus {
+        crate::generate::corpus_shaped(
+            size,
+            size * self.distractor_ratio,
+            self.seed,
+            &self.profile,
+            &self.type_mix,
+            crate::generate::CorpusShape {
+                history: self.history,
+                collision: self.collision,
+            },
+        )
     }
 }
 
@@ -950,6 +978,10 @@ pub fn bench(cfg: &Config) -> anyhow::Result<BenchReport> {
             type_mix: cfg.type_mix.clone(),
             profile: cfg.profile.clone(),
             phrasing: cfg.phrasing,
+            // The bench arms run on the plain corpus; the shaping knobs are
+            // wired to the ladder and the post-tune pass only.
+            history: false,
+            collision: 0.0,
         },
         graph: c.facts.len(),
         edges: engram.edges_written,
@@ -974,6 +1006,10 @@ pub struct Runtime {
     pub type_mix: Vec<(Kind, u32)>,
     pub profile: Profile,
     pub phrasing: PhrasingMix,
+    /// Corpus shaped into dialogue sessions (`--history`).
+    pub history: bool,
+    /// Share of tested subjects carrying a second claim (`--collision`).
+    pub collision: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1562,6 +1598,10 @@ pub struct PostTuneReport {
     pub embeddings_are_fake: bool,
     pub seed: u64,
     pub limit: usize,
+    /// The corpus shaping this run measured — the same two assumptions the
+    /// arms table's header carries.
+    pub history: bool,
+    pub collision: f64,
     pub sizes: Vec<PostTuneSizeReport>,
 }
 
@@ -1581,13 +1621,7 @@ pub fn posttune(cfg: &Config) -> anyhow::Result<PostTuneReport> {
     let mut sizes = Vec::new();
 
     for &size in &cfg.sizes {
-        let c = corpus_full(
-            size,
-            size * cfg.distractor_ratio,
-            cfg.seed,
-            &cfg.profile,
-            &cfg.type_mix,
-        );
+        let c = cfg.corpus(size);
         let twins = twin_map(&c);
         let engram = EngramArm::build(
             &c,
@@ -1638,8 +1672,11 @@ pub fn posttune(cfg: &Config) -> anyhow::Result<PostTuneReport> {
         let assisted_outcomes = crate::metrics::assisted(&outcomes);
         let mut assisted = score(&assisted_outcomes);
         // Assisted ranks are pre-filled, so neighbour-only would read as
-        // zero; carry the real figure like the arms table does.
+        // zero; carry the real figure like the arms table does. The walk's
+        // two rank-defined columns need the same treatment.
         assisted.neighbor_only = overall.neighbor_only;
+        assisted.history_only = overall.history_only;
+        assisted.history_distance = overall.history_distance;
         let split = by_phrasing(&assisted_outcomes);
 
         sizes.push(PostTuneSizeReport {
@@ -1673,6 +1710,8 @@ pub fn posttune(cfg: &Config) -> anyhow::Result<PostTuneReport> {
         },
         seed: cfg.seed,
         limit: cfg.limit,
+        history: cfg.history,
+        collision: cfg.collision,
         sizes,
     })
 }
@@ -2588,6 +2627,16 @@ fn measure(
 ) -> (Vec<Outcome>, Separation) {
     let mut outcomes = Vec::new();
     let mut answerable_scores = Vec::new();
+    // Where each fact sits in the transcript. Empty unless the corpus was
+    // built with the history shaping, which is what keeps the distance
+    // columns silent on every bench that predates it. Every arm is measured
+    // against it: the hits are engram nodes whichever arm returned them, so
+    // the MECHANISM decides who scores, never the metadata.
+    let placement: HashMap<&str, (&str, usize)> = c
+        .facts
+        .iter()
+        .filter_map(|f| Some((f.key.as_str(), (f.session.as_deref()?, f.turn?))))
+        .collect();
 
     for q in c.questions() {
         let Some(gold) = q.gold.as_ref() else {
@@ -2628,9 +2677,29 @@ fn measure(
         let focus = delivered_at
             .and_then(|i| r.rendered.get(i))
             .map(|entry| crate::arms::tokens(entry) as f64 / r.tokens.max(1) as f64);
-        let returned = match &r.delivery {
-            Delivery::Dump(keys) | Delivery::Ranked(keys) => keys.len(),
+        let delivered = match &r.delivery {
+            Delivery::Dump(keys) | Delivery::Ranked(keys) => keys,
         };
+        let returned = delivered.len();
+        // The walk: from the nearest delivered hit born in the answer's own
+        // session, how many dialogue turns back is the answer? One assistant
+        // note per assistant turn with a user turn between them, so the walk
+        // from turn a to turn b costs 2*|a-b| + 1 (both endpoints counted).
+        let history_distance = placement.get(gold.as_str()).and_then(|at| {
+            delivered
+                .iter()
+                .filter_map(|k| placement.get(k.as_str()))
+                .filter_map(|hit| crate::metrics::dialogue_distance(*at, *hit))
+                .min()
+        });
+        // Where in the delivered list the first session-mate (or the answer
+        // itself) sat, 1-based — reach read at a fixed depth needs it.
+        let history_rank = placement.get(gold.as_str()).and_then(|at| {
+            delivered
+                .iter()
+                .position(|k| placement.get(k.as_str()).is_some_and(|hit| hit.0 == at.0))
+                .map(|i| i + 1)
+        });
         answerable_scores.push(r.top_score);
         outcomes.push(Outcome {
             phrasing: q.phrasing,
@@ -2641,6 +2710,8 @@ fn measure(
             twin_above,
             focus,
             returned,
+            history_distance,
+            history_rank,
         });
     }
 
@@ -2672,13 +2743,7 @@ pub fn run(cfg: &Config) -> anyhow::Result<Report> {
     let mut sizes = Vec::new();
 
     for &size in &cfg.sizes {
-        let c = corpus_full(
-            size,
-            size * cfg.distractor_ratio,
-            cfg.seed,
-            &cfg.profile,
-            &cfg.type_mix,
-        );
+        let c = cfg.corpus(size);
         let twins = twin_map(&c);
         let (emb, _) = embedder(model);
 
@@ -2731,6 +2796,14 @@ pub fn run(cfg: &Config) -> anyhow::Result<Report> {
                     .last()
                     .map(|h| h.overall.neighbor_only)
                     .unwrap_or_default();
+                // Same reasoning for the walk: `history_only` and its mean
+                // distance are defined against the UNASSISTED rank, so read
+                // them off the hybrid row rather than recomputing them
+                // against ranks the graph has already filled in.
+                if let Some(hybrid) = arms.last() {
+                    full.overall.history_only = hybrid.overall.history_only;
+                    full.overall.history_distance = hybrid.overall.history_distance;
+                }
                 arms.push(full);
             }
         }
@@ -2788,6 +2861,8 @@ pub fn run(cfg: &Config) -> anyhow::Result<Report> {
             type_mix: cfg.type_mix.clone(),
             profile: cfg.profile.clone(),
             phrasing: cfg.phrasing,
+            history: cfg.history,
+            collision: cfg.collision,
         },
         sizes,
     })
@@ -2806,7 +2881,11 @@ mod tests {
     }
 
     fn smoke() -> Report {
-        run(&Config {
+        run(&smoke_cfg()).unwrap()
+    }
+
+    fn smoke_cfg() -> Config {
+        Config {
             sizes: vec![40],
             distractor_ratio: 2,
             type_mix: DEFAULT_TYPE_MIX.to_vec(),
@@ -2820,8 +2899,9 @@ mod tests {
             embed_model: None,
             curated_budgets: vec![DEFAULT_CURATED_BUDGET],
             rerank_full: false,
-        })
-        .unwrap()
+            history: false,
+            collision: 0.0,
+        }
     }
 
     #[test]
@@ -2977,6 +3057,45 @@ mod tests {
                 "{} lost lexical recall: {}",
                 arm.arm,
                 lexical.score.recall_at_10
+            );
+        }
+    }
+
+    #[test]
+    fn the_history_columns_are_silent_unshaped_and_speak_when_shaped() {
+        // Unshaped: no fact has a session, so no question has a walk. Every
+        // arm's three columns must read zero — that is what makes the flag
+        // safe to leave off and the old receipts safe to compare against.
+        for arm in &smoke().sizes[0].arms {
+            assert_eq!(arm.overall.history_reach, 0.0, "{} reached", arm.arm);
+            assert_eq!(arm.overall.history_only, 0.0, "{} walked", arm.arm);
+            assert_eq!(arm.overall.history_distance, 0.0, "{} paced", arm.arm);
+        }
+
+        // Shaped: the dump arm delivers every record, so every answer is in
+        // the delivered set and reach is total with nothing left to walk to.
+        // That is the arithmetic floor the metric has to satisfy before any
+        // ranked arm's number means anything.
+        let shaped = run(&Config {
+            sizes: vec![40],
+            nli_budget: 0,
+            history: true,
+            ..smoke_cfg()
+        })
+        .unwrap();
+        let whole = arm(&shaped, "whole-file");
+        assert_eq!(whole.overall.history_reach, 1.0);
+        assert_eq!(whole.overall.history_only, 0.0, "nothing was missed");
+        assert_eq!(whole.overall.history_distance, 0.0);
+        // And every arm's reach is at least its own recall: a delivered
+        // answer is a reached answer, never less.
+        for a in &shaped.sizes[0].arms {
+            assert!(
+                a.overall.history_reach >= a.overall.recall_at_10 - 1e-9,
+                "{} reaches {} but recalls {}",
+                a.arm,
+                a.overall.history_reach,
+                a.overall.recall_at_10
             );
         }
     }

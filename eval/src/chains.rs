@@ -354,6 +354,8 @@ mod tests {
             embed_model: None,
             curated_budgets: vec![],
             rerank_full: false,
+            history: false,
+            collision: 0.0,
         }
     }
 

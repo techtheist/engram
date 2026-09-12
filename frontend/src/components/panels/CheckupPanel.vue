@@ -23,7 +23,7 @@ import type {
  */
 const store = useGraphStore()
 const config = useConfigStore()
-const { nodeList, edgeList } = storeToRefs(store)
+const { nodeList, edgeList, driftByNode } = storeToRefs(store)
 
 const open = ref(false)
 const nliReady = ref<boolean | null>(null)
@@ -200,6 +200,10 @@ const orphans = computed(() => {
 const unreachable = computed(() =>
     orphans.value.filter((n) => !(n.tags && n.tags.length)),
 )
+
+/** Nodes carrying at least one path-shaped code_ref that no longer exists —
+ *  open one from here to fix it by hand in the edit drawer. */
+const drifted = computed(() => nodeList.value.filter((n) => active(n) && driftByNode.value.has(n.id)))
 
 const STRUCT_CAP = 8
 </script>
@@ -471,6 +475,20 @@ const STRUCT_CAP = 8
                 :key="n.id"
                 class="verdict-row"
                 type="button"
+                @click="store.select(n.id)"
+            >
+                <span class="dot" :style="{ background: config.accent(n.type) }" />
+                <span class="row-title">{{ n.title }}</span>
+            </button>
+            <p class="struct-line">
+                <b>{{ drifted.length }}</b> notes with drifted code refs (the path no longer exists — open one to fix it in the edit drawer)
+            </p>
+            <button
+                v-for="n in drifted.slice(0, STRUCT_CAP)"
+                :key="n.id"
+                class="verdict-row"
+                type="button"
+                :title="`Missing: ${(driftByNode.get(n.id) ?? []).join(', ')}`"
                 @click="store.select(n.id)"
             >
                 <span class="dot" :style="{ background: config.accent(n.type) }" />
