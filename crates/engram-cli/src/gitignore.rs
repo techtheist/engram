@@ -8,8 +8,28 @@
 //! Outside a repo, or without git on PATH, a line matcher reads the repo's
 //! own `.gitignore` and understands the common shapes of one entry.
 
-use std::path::Path;
+use std::path::{Component, Path};
 use std::process::{Command, Stdio};
+
+/// The `.gitignore` entry for a graph store at `db`, as seen from `cwd`: its
+/// top folder (`.engram/` for `.engram/graph.tepin`). None when there's no
+/// folder of the repo's own to ignore — a store outside `cwd`, or one sitting
+/// directly in it. An absolute `--db` inside `cwd` (scripts/deploy-pane.sh)
+/// counts; its first component used to be the root, which wrote `//`.
+pub fn db_dir_entry(db: &Path, cwd: &Path) -> Option<String> {
+    let rel = if db.is_absolute() {
+        db.strip_prefix(cwd).ok()?
+    } else {
+        db
+    };
+    let mut parts = rel.components().filter(|c| !matches!(c, Component::CurDir));
+    let top = match parts.next()? {
+        Component::Normal(top) => top,
+        _ => return None,
+    };
+    parts.next()?;
+    Some(format!("{}/", top.to_string_lossy()))
+}
 
 /// True when `rel` (relative to `repo`, a trailing `/` for a directory) is
 /// already ignored, so nothing needs adding.
@@ -81,14 +101,31 @@ fn normalize(pattern: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_ignored, listed};
-    use std::path::PathBuf;
+    use super::{db_dir_entry, is_ignored, listed};
+    use std::path::{Path, PathBuf};
 
     fn scratch(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("engram-gitignore-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn db_dir_entry_names_the_top_folder_inside_cwd_only() {
+        let cwd = Path::new("/work/repo");
+        for (db, want) in [
+            (".engram/graph.tepin", Some(".engram/")),
+            ("./.engram/graph.db", Some(".engram/")),
+            ("/work/repo/.engram/graph.db", Some(".engram/")),
+            ("/work/repo/data/mem/graph.tepin", Some("data/")),
+            ("/elsewhere/.engram/graph.tepin", None),
+            ("/work/repo/graph.tepin", None),
+            ("graph.tepin", None),
+            ("../other/.engram/graph.tepin", None),
+        ] {
+            assert_eq!(db_dir_entry(Path::new(db), cwd).as_deref(), want, "{db}");
+        }
     }
 
     #[test]

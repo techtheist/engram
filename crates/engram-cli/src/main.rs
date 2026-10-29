@@ -2989,10 +2989,12 @@ fn write_daemon_file(db: &Path, port: u16, pid: u32) {
 /// (it's personal/local). Idempotent; never fatal; a dir git already ignores
 /// in any way (`/.engram/`, a global rule — issue #12) is left alone.
 fn ensure_gitignored(db: &Path) {
-    let Some(top) = db.components().next() else {
+    let Some(entry) = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| gitignore::db_dir_entry(db, &cwd))
+    else {
         return;
     };
-    let entry = format!("{}/", top.as_os_str().to_string_lossy());
     if gitignore::is_ignored(Path::new("."), &entry) {
         return;
     }
