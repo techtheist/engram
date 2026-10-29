@@ -3,6 +3,65 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
+## v0.10.3
+
+### Deleting from the Feed, with or without a Tombstone
+
+- **The Feed's Delete works in VS Code again (issue #14).** It asked for
+  confirmation with the browser's own pop-up, which VS Code's webview
+  silently blocks, so the button looked dead there. It now opens a dialog
+  in the pane: the note and how many connections go with it, then **Just
+  delete** (nothing left behind) or **Leave a Tombstone**, with an
+  optional note on why and the removed text kept by default, so the
+  assistant doesn't learn it again. The dialog remembers your last choice;
+  ⌘/Ctrl+Enter confirms, Esc cancels.
+- **No browser pop-ups anywhere in the pane.** Deleting a recorded session,
+  wiping session history and switching the ontology preset ask in the same
+  kind of dialog, so they work in every IDE too. Destructive questions start
+  with Cancel focused.
+
+### Fixes
+
+- **Every project's session brief carries the home graph again, and 3
+  seconds sooner.** The core runs on the home graph, but building a
+  project's brief opened the home graph a second time, waited 3 seconds for
+  a lock the core itself held, and quietly left the home section out.
+  Measured on this project's graph: the brief your assistant gets at
+  session start went from 3.2 s to 0.35 s. Searching or checking a claim
+  across `all` projects paid the same 3 seconds and skipped the home graph;
+  both are fixed.
+- **`serve` and `doctor` recognize an `.engram/` folder that's already
+  ignored (issue #12).** They used to look only for an exact `.engram/`
+  line, so an anchored `/.engram/` read as missing: `doctor` warned, and
+  `serve` appended a duplicate line to your tracked `.gitignore` on every
+  start. Both now ask git, so any rule that ignores the folder counts,
+  including nested `.gitignore` files, `.git/info/exclude` and your global
+  excludes file. Outside a git repository they read `.gitignore` and
+  understand anchored entries. `setup` does the same for the config files
+  it ignores. On older versions, remove the extra line after updating.
+- **System info names the project you picked (issue #13).** The panel
+  describes the core, which runs on the home graph, so its store details
+  always showed home. With another project selected in the switcher, the
+  Graph store section now shows that project's folder and database file.
+- **`engram-alpha stop` no longer reports a failure after a clean stop.**
+  The core answers the shutdown request and exits; on macOS the connection
+  could close before the answer was fully read, so `stop` threw away a
+  complete reply. It now keeps it.
+- **Card text wraps the same on the GPU canvas as in the browser.** The
+  canvas only broke lines at spaces, while the browser also breaks after a
+  hyphen, so a card like "write-verdict protocol" could wrap differently
+  depending on which renderer drew it.
+
+### Docs and tests
+
+- The pane guide covers the 5,000-note canvas, the selection highlight,
+  the Feed's delete dialog and what System info shows for each project;
+  troubleshooting has entries for the `.gitignore` and `stop` fixes.
+- New unit tests for the `.gitignore` check, the home graph's place in
+  briefs and searches, selection focus, line breaking, code refs, audit
+  labels and the confirm dialog. A test that failed about 2 runs in 5
+  (it hit the `stop` issue above) passes reliably now.
+
 ## v0.10.2
 
 ### See a note's neighborhood on the graph
