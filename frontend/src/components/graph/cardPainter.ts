@@ -136,10 +136,18 @@ interface Flow {
 
 /**
  * Break spans into lines `maxW` wide, CSS `white-space: normal` style:
- * breaks at spaces, collapsed runs of spaces, nothing broken mid-word (an
- * overlong word overflows and the box clips it, as in the card). `pre`
- * keeps spaces and breaks only at newlines.
+ * breaks at spaces, collapsed runs of spaces, and after a hyphen inside a
+ * word as the browser does ("write-" / "verdict");
+ * nothing else is broken mid-word (an overlong word overflows and the box
+ * clips it, as in the card). `pre` keeps spaces and breaks only at newlines.
  */
+/** A word's pieces with a break opportunity after each hyphen that has text
+ *  after it — Chromium's rule, probed: "-flag", "0.10-3" and "a--b" all break
+ *  after their hyphens. The pieces flow with no space between them. */
+export function hyphenPieces(word: string): string[] {
+    return word.split(/(?<=-)(?=.)/)
+}
+
 function flow(spans: Span[], x0: number, maxW: number, lh: number, pre = false, maxLines = Infinity, codePad = 0): Flow {
     const lines: Line[] = [{ top: 0, frags: [] }]
     let x = x0
@@ -156,7 +164,7 @@ function flow(spans: Span[], x0: number, maxW: number, lh: number, pre = false, 
     outer: for (const span of spans) {
         const padX = span.code ? codePad : 0
         x += padX
-        const parts = pre ? span.text.split(/(\n)/) : span.text.split(/(\n|[^\S\n]+)/)
+        const parts = pre ? span.text.split(/(\n)/) : span.text.split(/(\n|[^\S\n]+)/).flatMap(hyphenPieces)
         for (const part of parts) {
             if (part === '') continue
             if (part === '\n') {

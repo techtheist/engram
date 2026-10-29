@@ -98,8 +98,24 @@ graph and is always safe.
 side for binary + assistants + repo and stay there
 ([details](./getting-started.md#windows)).
 
+**`serve` or `doctor` says `.engram/` isn't git-ignored, but it is.**
+Fixed in 0.10.3. Both ask git (`git check-ignore`), so any rule that
+already covers the folder counts: an anchored `/.engram/`, `.engram/**`, a
+nested `.gitignore`, `.git/info/exclude`, or your global excludes file.
+Nothing is appended to a tracked `.gitignore` then. Outside a git
+repository they read the folder's own `.gitignore` and accept the same
+shapes. On 0.10.2 and earlier, remove the extra `.engram/` line after you
+update.
+
+**`engram-alpha stop` reported a failure, but the core did stop.** Fixed
+in 0.10.3. The core answers `POST /shutdown` and then exits, and on macOS
+the connection could be reset before the reply was fully read, so the
+answer was lost. `stop` now keeps a complete reply even when the socket
+resets right after it.
+
 **Something was captured that shouldn't have been.** Open Review, find it,
-delete it (hard-delete is yours alone) — or edit it into shape; a deliberate
+delete it (hard-delete is yours alone; the Feed's **Delete** is the
+quick way, the drawer's leaves a Tombstone) — or edit it into shape; a deliberate
 edit also re-validates trust. The audit log shows exactly which session
 wrote what, with before/after values.
 

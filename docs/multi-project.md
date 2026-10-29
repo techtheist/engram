@@ -37,6 +37,11 @@ is how projects find each other and how the pane's project list is built.
 Removing an entry (pane: Settings → System → *forget*) never touches the
 project's graph; it only forgets the address.
 
+Settings → System describes the core itself, so its store health
+(size, integrity, vectors) is the home graph's. Pick another project in the
+switcher and the panel names that project's folder and database file
+instead.
+
 ## The home graph
 
 `~/.engram/home.tepin` is a normal Engram graph for knowledge that was never

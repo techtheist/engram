@@ -44,7 +44,15 @@ const theme = useThemeStore()
 const heroIcon = computed(() =>
     `${import.meta.env.BASE_URL}${theme.applied.endsWith('light') ? 'engram-dark-512.png' : 'engram-light-512.png'}`,
 )
-const { projects } = storeToRefs(projectsStore)
+const { projects, active: activeProject } = storeToRefs(projectsStore)
+
+/** The project picked in "Project graphs" when it isn't the core's own graph.
+ *  The core is one machine-level process bound to the home graph, so /system's
+ *  store facts describe home; for any other project the panel names its paths
+ *  only (issue #13). */
+const otherProject = computed(() =>
+    activeProject.value && !activeProject.value.current ? activeProject.value : null,
+)
 
 watch(open, (isOpen) => {
     if (isOpen) {
@@ -430,7 +438,15 @@ function wiringStatus(w: { wired: boolean; prerename: boolean }): { status: Stat
         </PanelSection>
 
         <PanelSection title="Graph store">
-            <MetaList size="md">
+            <MetaList v-if="otherProject" size="md">
+                <MetaRow label="Project">{{ projectLabel(otherProject) }}</MetaRow>
+                <MetaRow v-if="otherProject.root" label="Folder" mono>{{ otherProject.root }}</MetaRow>
+                <MetaRow label="Database" mono>{{ otherProject.db }}</MetaRow>
+            </MetaList>
+            <NoteText v-if="otherProject" tone="hint">
+                Size, integrity and vectors are shown for the home graph, the core's own store.
+            </NoteText>
+            <MetaList v-else size="md">
                 <MetaRow label="Database" mono>{{ info.store.db ?? '—' }}</MetaRow>
                 <MetaRow label="Backend">{{ info.store.backend === 'tepindb' ? 'TepinDB (redb single-file)' : 'SQLite' }}</MetaRow>
                 <MetaRow label="Size">{{ fmtBytes(info.store.size_bytes) }}</MetaRow>

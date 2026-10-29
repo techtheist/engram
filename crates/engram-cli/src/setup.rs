@@ -159,18 +159,18 @@ impl Setup {
         self.ensure_gitignore_line(".engram/", "Engram local graph (personal)")
     }
 
-    /// Append one line to .gitignore unless it is already there.
+    /// Append one line to .gitignore unless the path is already ignored.
     fn ensure_gitignore_line(&self, line: &str, comment: &str) -> anyhow::Result<()> {
-        let path = self.repo.join(".gitignore");
-        let current = fs::read_to_string(&path).unwrap_or_default();
-        if !current.lines().any(|l| l.trim() == line) {
-            let mut s = current;
-            if !s.is_empty() && !s.ends_with('\n') {
-                s.push('\n');
-            }
-            s.push_str(&format!("\n# {comment}\n{line}\n"));
-            fs::write(&path, s)?;
+        if crate::gitignore::is_ignored(&self.repo, line) {
+            return Ok(());
         }
+        let path = self.repo.join(".gitignore");
+        let mut s = fs::read_to_string(&path).unwrap_or_default();
+        if !s.is_empty() && !s.ends_with('\n') {
+            s.push('\n');
+        }
+        s.push_str(&format!("\n# {comment}\n{line}\n"));
+        fs::write(&path, s)?;
         Ok(())
     }
 

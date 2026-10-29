@@ -140,7 +140,8 @@ fn http_post(port: u16, path: &str, body: &str) -> Option<String> {
     )
     .ok()?;
     let mut buf = Vec::new();
-    stream.read_to_end(&mut buf).ok()?;
+    // /shutdown's core can reset the socket after a full answer — keep it.
+    let _ = stream.read_to_end(&mut buf);
     let text = String::from_utf8_lossy(&buf);
     (text.starts_with("HTTP/1.0 2") || text.starts_with("HTTP/1.1 2"))
         .then(|| text.split_once("\r\n\r\n").map(|(_, b)| b.to_string()))?

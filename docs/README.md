@@ -10,7 +10,7 @@ if Engram isn't installed yet.
 | [The memory model](./memory-model.md) | The nine node types, seven edge verbs, durability, capture modes |
 | [Customization](./customization.md) | Reshaping the ontology, presets, custom fields, tuning trust/decay, version tracking, handoff notes |
 | [Trust & decay](./trust.md) | How trust is computed, what moves it, pins (and what to do when a pinned note is wrong), stale knowledge |
-| [The pane](./pane.md) | The graph UI: layouts, the timeline feed, the session-history screen, tags and filters, editing, review, audit |
+| [The pane](./pane.md) | The graph UI: the GPU canvas and its layouts, the timeline feed, Tasks, the session-history screen, tags and filters, editing, review, audit, System |
 | [Recall & capture](./recall-and-capture.md) | The session brief, search, silent writes and their verdicts, what gets redacted, code refs |
 | [Conflicts & Checkup](./conflicts-and-checkup.md) | Suspected conflicts, judgments, claim checks, graph sweeps |
 | [Multi-project memory](./multi-project.md) | The machine core, the registry, the home graph, promotion |

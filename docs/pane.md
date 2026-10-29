@@ -23,8 +23,11 @@ Engram Purple, IDE Light or IDE Dark. A click-to-center minimap handles
 big graphs, and a health strip keeps the counts that matter — suspected
 conflicts, stale nodes, provisional writes — in the corner of your eye.
 
-The canvas is drawn on the GPU (WebGL2), so a graph of a thousand notes
-pans and zooms smoothly. Zoomed far out, card text turns into simple
+The canvas is drawn on the GPU (WebGL2), so a graph of thousands of notes
+pans and zooms smoothly (5,000 holds 60 fps through zooms, drags and
+minimap jumps). Select a card and its neighborhood stands out: the edges
+one, two and three hops away widen and draw on top, and the rest of the
+graph dims. Zoomed far out, card text turns into simple
 lines; double-click or double-tap zooms in (Shift zooms out). The card
 under your pointer and the selected card are real HTML on top, so links
 and the hover expansion work as usual. On a machine without a usable GPU,
@@ -59,6 +62,14 @@ through where the file no longer exists — and its date, which spells out
 creation and last retrieval on hover. The bottom bar carries the
 side drawer's actions for whichever card is centered — **Approve / Still
 true / Pin / Edit / Delete** — so a review pass never leaves the feed.
+The feed's **Delete** is the quick one, made for clearing out notes you
+don't need while you review: **Delete**, then **Confirm delete** in the
+same bar, and the note and its edges are gone, with no Tombstone left
+behind. When you want the removal on record,
+use the drawer's delete (**Edit**, then **Delete**), which leaves a
+Tombstone by default (see [Edit everything by hand](#edit-everything-by-hand)).
+The cards around the current one fade with their distance from it, and one
+selection ring glides from card to card as you move.
 
 The feed also *traverses*: click any edge chip on a card and the feed jumps
 to that node — even one the current lens filters out — while **← back**
@@ -276,3 +287,10 @@ default; encrypt history — on by default): flipping one migrates the whole
 store with a progress readout, and each store's recorded state is shown
 beside its switch. See [SECURITY.md](../SECURITY.md) for what sealing does
 and doesn't protect.
+
+The panel describes the core, and the core is one machine-level process
+whose own store is the [home graph](./multi-project.md#the-home-graph). So
+the **Graph store** section shows the home graph's size, integrity and
+vectors when home is selected. With a project picked in the top-bar
+switcher, it names that project's folder and database file instead
+(since 0.10.3).

@@ -16,6 +16,7 @@ use engram_core::{
 use tracing_subscriber::EnvFilter;
 
 mod doctor;
+mod gitignore;
 mod lazy;
 mod setup;
 mod shipped_skills;
@@ -2985,20 +2986,18 @@ fn write_daemon_file(db: &Path, port: u16, pid: u32) {
 }
 
 /// Best-effort: make sure the repo's `.gitignore` excludes the graph DB dir
-/// (it's personal/local). Idempotent; never fatal.
+/// (it's personal/local). Idempotent; never fatal; a dir git already ignores
+/// in any way (`/.engram/`, a global rule — issue #12) is left alone.
 fn ensure_gitignored(db: &Path) {
     let Some(top) = db.components().next() else {
         return;
     };
     let entry = format!("{}/", top.as_os_str().to_string_lossy());
-    let gitignore = Path::new(".gitignore");
-    let current = std::fs::read_to_string(gitignore).unwrap_or_default();
-    if current.lines().any(|l| {
-        let l = l.trim();
-        l == entry || l == entry.trim_end_matches('/')
-    }) {
+    if gitignore::is_ignored(Path::new("."), &entry) {
         return;
     }
+    let gitignore = Path::new(".gitignore");
+    let current = std::fs::read_to_string(gitignore).unwrap_or_default();
     let mut next = current;
     if !next.is_empty() && !next.ends_with('\n') {
         next.push('\n');

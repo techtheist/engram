@@ -885,10 +885,14 @@ const revoke = (n: GraphNode) => run(n.id, () => store.revokeApproval(n.id))
 const togglePin = (n: GraphNode) =>
     run(n.id, () => store.pin(n.id, n.trust_override == null ? 1 : null))
 
+/** The quick delete (issue #14: kept on purpose — the user's fast way to
+ *  drop notes mid-review; no Tombstone, the drawer's delete leaves one).
+ *  Confirmed inline: IDE webviews sandbox window.confirm into a silent
+ *  `false`, which made the button look dead in VS Code. */
+const confirmingDeleteId = ref<string | null>(null)
+
 async function removeNode(n: GraphNode): Promise<void> {
-    if (!window.confirm(`Delete "${n.title}"? This cascades its edges and cannot be undone.`)) {
-        return
-    }
+    confirmingDeleteId.value = null
     await run(n.id, () => store.remove(n.id))
 }
 
@@ -1071,13 +1075,29 @@ const currentNode = computed(() =>
         >
             Edit
         </UiButton>
+        <template v-if="confirmingDeleteId === currentNode.id">
+            <UiButton
+                size="sm"
+                pill
+                variant="danger-text"
+                :disabled="busyId === currentNode.id"
+                title="Delete this note and its edges"
+                @click="removeNode(currentNode)"
+            >
+                Confirm delete
+            </UiButton>
+            <UiButton size="sm" pill variant="ghost" @click="confirmingDeleteId = null">
+                Cancel
+            </UiButton>
+        </template>
         <UiButton
+            v-else
             size="sm"
             pill
             variant="danger-text"
             :disabled="busyId === currentNode.id"
             title="Hard delete (user-only) — cascades edges"
-            @click="removeNode(currentNode)"
+            @click="confirmingDeleteId = currentNode.id"
         >
             Delete
         </UiButton>

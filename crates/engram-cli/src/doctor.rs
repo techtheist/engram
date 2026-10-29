@@ -323,7 +323,10 @@ pub(crate) fn http_post_timeout(
     )
     .ok()?;
     let mut buf = Vec::new();
-    stream.read_to_end(&mut buf).ok()?;
+    // A peer that answers and then exits (POST /shutdown) can reset the
+    // socket before EOF: keep the bytes that arrived — the status line
+    // below still decides.
+    let _ = stream.read_to_end(&mut buf);
     let text = String::from_utf8_lossy(&buf);
     let ok = text.starts_with("HTTP/1.0 2") || text.starts_with("HTTP/1.1 2");
     ok.then(|| {
@@ -391,11 +394,7 @@ fn check_proxy_env(r: &mut Report) {
 
 fn check_wiring(r: &mut Report, repo: &Path, db_abs: &Path) {
     check_proxy_env(r);
-    let gitignored = std::fs::read_to_string(repo.join(".gitignore")).is_ok_and(|s| {
-        s.lines()
-            .any(|l| matches!(l.trim(), ".engram/" | ".engram"))
-    });
-    if gitignored {
+    if crate::gitignore::is_ignored(repo, ".engram/") {
         r.ok(".engram/ is git-ignored");
     } else {
         r.warn(".engram/ is not in .gitignore — the graph is personal, keep it out of the repo");
