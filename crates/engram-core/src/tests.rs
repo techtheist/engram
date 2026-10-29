@@ -12359,3 +12359,89 @@ fn history_read_cost() {
         s.nodes_in_session("sess-7").unwrap().len()
     });
 }
+
+/// 0.10.3: the machine core is launched on the home graph, so `open_home`
+/// must hand out that same engine. It used to open home.tepin a second time,
+/// wait out TepinDB's 3 s lock retry and fail — every project brief silently
+/// lost its home section, 3 s late, and `project: "all"` skipped home.
+#[test]
+fn home_launched_hub_serves_home_from_its_own_engine() {
+    let _guard = env_home_lock();
+    let tmp = std::env::temp_dir().join(format!("engram-hubhome-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    unsafe { std::env::set_var("ENGRAM_HOME", tmp.join("enghome")) };
+
+    let factory: EngineFactory = Box::new(|db: &std::path::Path| {
+        if let Some(dir) = db.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| Error::Io(e.to_string()))?;
+        }
+        Ok(Engine::with_store(
+            crate::store::open_store(db)?,
+            Box::new(FakeEmbedder::default()),
+        ))
+    });
+    let home_db = registry::home_db_path().unwrap();
+    std::fs::create_dir_all(home_db.parent().unwrap()).unwrap();
+    let home = Engine::with_store(
+        crate::store::open_store(&home_db).unwrap(),
+        Box::new(FakeEmbedder::default()),
+    );
+    let hub = Hub::new_home(
+        std::sync::Arc::new(std::sync::Mutex::new(home)),
+        Some(factory),
+    );
+    hub.current_engine()
+        .lock()
+        .unwrap()
+        .add_node(new_node(
+            NodeType::Principle,
+            "prefer boring storage engines over clever ones",
+            "user-level canon",
+        ))
+        .unwrap();
+
+    let beta_root = tmp.join("beta");
+    std::fs::create_dir_all(&beta_root).unwrap();
+    registry::register(&beta_root, &beta_root.join(".engram/graph.tepin")).unwrap();
+    hub.get("beta")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .add_node(new_node(
+            NodeType::Decision,
+            "beta stores notes in redb",
+            "local",
+        ))
+        .unwrap();
+
+    assert!(std::sync::Arc::ptr_eq(
+        &hub.get("home").unwrap(),
+        &hub.current_engine()
+    ));
+
+    let started = std::time::Instant::now();
+    let brief = hub.brief_for(Some("beta"), 16_000).unwrap();
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "the brief waited on a store lock: {:?}",
+        started.elapsed()
+    );
+    assert!(
+        brief.contains("## Home graph"),
+        "home section missing:\n{brief}"
+    );
+    assert!(brief.contains("prefer boring storage engines"));
+
+    // "all" reads home once (as the current graph), and skips nothing.
+    let (hits, skipped) = hub.search_all("boring storage engines", &[], 10).unwrap();
+    assert!(skipped.is_empty(), "skipped: {skipped:?}");
+    let home_hits = hits
+        .iter()
+        .filter(|h| h.title.contains("boring storage"))
+        .count();
+    assert_eq!(home_hits, 1);
+
+    drop(hub);
+    unsafe { std::env::remove_var("ENGRAM_HOME") };
+    let _ = std::fs::remove_dir_all(&tmp);
+}

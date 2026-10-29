@@ -577,6 +577,13 @@ impl Hub {
     }
 
     fn open_home(&self) -> Result<Arc<Mutex<Engine>>> {
+        // The machine core's launch graph IS the home graph (`new_home`): hand
+        // out that engine. A second open would wait out the store's lock retry
+        // (3 s on TepinDB) and fail — every project brief silently lost its
+        // home section that way, 3 s late (0.10.3).
+        if self.current.id == HOME_PROJECT {
+            return Ok(self.current.engine.clone());
+        }
         {
             let mut open = self.open.lock().unwrap();
             if let Some(h) = open.get(HOME_PROJECT) {
@@ -706,7 +713,11 @@ impl Hub {
     fn others(&self, include_home: bool) -> (NamedEngines, Vec<String>) {
         let mut engines = Vec::new();
         let mut skipped = Vec::new();
-        if include_home && registry::home_db_path().is_some_and(|p| p.is_file()) {
+        // Home as the launch graph is already `current`, read by the caller.
+        if include_home
+            && self.current.id != HOME_PROJECT
+            && registry::home_db_path().is_some_and(|p| p.is_file())
+        {
             match self.open_home() {
                 Ok(e) => engines.push((HOME_PROJECT.to_string(), e)),
                 Err(err) => skipped.push(format!("{HOME_PROJECT}: {err}")),
