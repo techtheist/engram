@@ -18,6 +18,7 @@ import { useConfigStore } from '@/stores/config'
 import { useGraphStore } from '@/stores/graph'
 import { api } from '@/services/api'
 import type { Durability, FieldDef, GraphConfig, HistoryStatus, TypeDef, VerbDef } from '@/types/graph'
+import { confirmDialog } from '@/composables/useConfirm'
 
 /**
  * Settings → Graph settings: the ontology redactor (PLAN §7D stage 4).
@@ -98,15 +99,16 @@ const HARNESS_LABELS: Array<{ key: keyof GraphConfig['history']['harnesses']; la
 /** Wholesale delete: user-only, like curated hard delete. */
 async function wipeHistory(): Promise<void> {
     const n = historyStatus.value?.stats?.nodes ?? 0
-    if (
-        !window.confirm(
-            `Delete this project's recorded session history${n ? ` (${n} nodes)` : ''}? ` +
-                'The curated graph is untouched. Transcripts on disk are re-indexed ' +
-                'from scratch only while harvesting stays enabled. This cannot be undone.',
-        )
-    ) {
-        return
-    }
+    const ok = await confirmDialog({
+        title: "Delete this project's session history?",
+        message:
+            `Every recorded session${n ? ` (${n} nodes)` : ''} goes. The curated graph is untouched. ` +
+            'Transcripts on disk are indexed again from scratch only while recording stays on. ' +
+            'This cannot be undone.',
+        confirmLabel: 'Delete history',
+        danger: true,
+    })
+    if (!ok) return
     busy.value = true
     error.value = null
     try {
@@ -176,11 +178,14 @@ async function applyPreset(id: string): Promise<void> {
     if (!preset) return
     if (
         nodeCount.value > 0 &&
-        !window.confirm(
-            `Apply the "${preset.name}" ontology? Types already holding nodes cannot be dropped — ` +
-                'on a non-empty graph this only works when the type names line up (or after retyping). ' +
-                'Policy, brief, version tracking and custom fields are kept.',
-        )
+        !(await confirmDialog({
+            title: `Apply the "${preset.name}" ontology?`,
+            message:
+                'Types that already hold notes cannot be dropped, so on a non-empty graph this only ' +
+                'works when the type names line up (or after retyping). Policy, brief, version ' +
+                'tracking and custom fields are kept.',
+            confirmLabel: 'Apply ontology',
+        }))
     ) {
         return
     }

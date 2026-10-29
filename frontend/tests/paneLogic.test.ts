@@ -106,3 +106,26 @@ describe('audit action labels', () => {
         expect(actionLabel('edge__create')).toEqual({ verb: 'create', noun: 'edge' })
     })
 })
+
+describe('confirmDialog', () => {
+    test('the host settles the open question', async () => {
+        const { confirmDialog, useConfirmState } = await import('../src/composables/useConfirm')
+        const { pending, settle } = useConfirmState()
+        const answer = confirmDialog({ title: 'Delete?', message: 'Gone for good.', danger: true })
+        expect(pending.value?.title).toBe('Delete?')
+        settle(true)
+        expect(await answer).toBe(true)
+        expect(pending.value).toBeNull()
+    })
+
+    test('a new question answers the pending one with false', async () => {
+        const { confirmDialog, useConfirmState } = await import('../src/composables/useConfirm')
+        const { pending, settle } = useConfirmState()
+        const first = confirmDialog({ title: 'First', message: '' })
+        const second = confirmDialog({ title: 'Second', message: '' })
+        expect(await first).toBe(false)
+        expect(pending.value?.title).toBe('Second')
+        settle(false)
+        expect(await second).toBe(false)
+    })
+})

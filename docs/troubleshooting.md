@@ -115,7 +115,7 @@ resets right after it.
 
 **Something was captured that shouldn't have been.** Open Review, find it,
 delete it (hard-delete is yours alone; the Feed's **Delete** is the
-quick way, the drawer's leaves a Tombstone) — or edit it into shape; a deliberate
+quick way, with or without a Tombstone) — or edit it into shape; a deliberate
 edit also re-validates trust. The audit log shows exactly which session
 wrote what, with before/after values.
 

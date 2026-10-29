@@ -62,12 +62,13 @@ through where the file no longer exists — and its date, which spells out
 creation and last retrieval on hover. The bottom bar carries the
 side drawer's actions for whichever card is centered — **Approve / Still
 true / Pin / Edit / Delete** — so a review pass never leaves the feed.
-The feed's **Delete** is the quick one, made for clearing out notes you
-don't need while you review: **Delete**, then **Confirm delete** in the
-same bar, and the note and its edges are gone, with no Tombstone left
-behind. When you want the removal on record,
-use the drawer's delete (**Edit**, then **Delete**), which leaves a
-Tombstone by default (see [Edit everything by hand](#edit-everything-by-hand)).
+The feed's **Delete** is the quick way to clear out notes you don't need
+while you review. It asks in a dialog: **Just delete** removes the note and
+its edges with nothing left behind, and **Leave a Tombstone** records what
+was removed, with an optional note on why and (by default) the removed
+text, so the assistant doesn't learn it again (see
+[Edit everything by hand](#edit-everything-by-hand)). The dialog remembers
+your last choice; ⌘/Ctrl+Enter confirms, Esc cancels.
 The cards around the current one fade with their distance from it, and one
 selection ring glides from card to card as you move.
 

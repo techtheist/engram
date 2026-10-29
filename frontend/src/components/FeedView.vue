@@ -3,6 +3,7 @@ import UiButton from '@/components/common/UiButton.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, useTemplateRef, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import EmptyGraph from '@/components/common/EmptyGraph.vue'
+import DeleteNoteDialog from '@/components/feed/DeleteNoteDialog.vue'
 import FeedCard from '@/components/feed/FeedCard.vue'
 import { HeightMap, anchorShift, distanceToLine } from '@/components/feed/heightMap'
 import SegmentedControl from '@/components/common/SegmentedControl.vue'
@@ -885,16 +886,9 @@ const revoke = (n: GraphNode) => run(n.id, () => store.revokeApproval(n.id))
 const togglePin = (n: GraphNode) =>
     run(n.id, () => store.pin(n.id, n.trust_override == null ? 1 : null))
 
-/** The quick delete (issue #14: kept on purpose — the user's fast way to
- *  drop notes mid-review; no Tombstone, the drawer's delete leaves one).
- *  Confirmed inline: IDE webviews sandbox window.confirm into a silent
- *  `false`, which made the button look dead in VS Code. */
-const confirmingDeleteId = ref<string | null>(null)
-
-async function removeNode(n: GraphNode): Promise<void> {
-    confirmingDeleteId.value = null
-    await run(n.id, () => store.remove(n.id))
-}
+/** The note the delete dialog is asking about (issue #14: the user's quick
+ *  way to drop notes mid-review — delete outright or leave a Tombstone). */
+const deleting = shallowRef<GraphNode | null>(null)
 
 /** Edit needs the full form — the one gesture that still opens the drawer. */
 function openDetail(n: GraphNode): void {
@@ -1075,33 +1069,18 @@ const currentNode = computed(() =>
         >
             Edit
         </UiButton>
-        <template v-if="confirmingDeleteId === currentNode.id">
-            <UiButton
-                size="sm"
-                pill
-                variant="danger-text"
-                :disabled="busyId === currentNode.id"
-                title="Delete this note and its edges"
-                @click="removeNode(currentNode)"
-            >
-                Confirm delete
-            </UiButton>
-            <UiButton size="sm" pill variant="ghost" @click="confirmingDeleteId = null">
-                Cancel
-            </UiButton>
-        </template>
         <UiButton
-            v-else
             size="sm"
             pill
             variant="danger-text"
             :disabled="busyId === currentNode.id"
-            title="Hard delete (user-only) — cascades edges"
-            @click="confirmingDeleteId = currentNode.id"
+            title="Delete this note (user-only), with or without a Tombstone"
+            @click="deleting = currentNode"
         >
             Delete
         </UiButton>
     </div>
+    <DeleteNoteDialog v-if="deleting" :node="deleting" @close="deleting = null" />
 </div>
 </template>
 

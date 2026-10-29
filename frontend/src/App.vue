@@ -7,6 +7,7 @@ import GraphCanvas from '@/components/GraphCanvas.vue'
 import HistoryView from '@/components/HistoryView.vue'
 import TasksView from '@/components/TasksView.vue'
 import ScreenSkeleton from '@/components/common/ScreenSkeleton.vue'
+import ConfirmHost from '@/components/common/ConfirmHost.vue'
 import EmptyGraph from '@/components/common/EmptyGraph.vue'
 import EngramMark from '@/components/common/EngramMark.vue'
 import ViewSwitcher from '@/components/common/ViewSwitcher.vue'
@@ -261,6 +262,7 @@ onBeforeUnmount(() => store.disconnect())
          and the strip earned no other home there. -->
     <HealthStrip v-if="layout.view === 'graph'" />
     <HistoryNotice />
+    <ConfirmHost />
 
     <Transition name="fade">
         <div v-if="loading" class="overlay glass-panel">Loading memory…</div>

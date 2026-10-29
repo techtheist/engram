@@ -9,6 +9,7 @@ import { useConfigStore } from '@/stores/config'
 import { useHistoryStore } from '@/stores/history'
 import { useLayoutStore } from '@/stores/layout'
 import type { GraphConfig, HistorySession } from '@/types/graph'
+import { confirmDialog } from '@/composables/useConfirm'
 
 /**
  * The history view (0.8.4, plan §5): recorded coding-assistant sessions as
@@ -106,14 +107,15 @@ function backToLanes(): void {
 }
 
 async function remove(s: HistorySession): Promise<void> {
-    if (
-        !window.confirm(
-            `Delete the recorded session "${s.title}" (${s.messages} messages)? ` +
-                'Its transcript path is excluded from future indexing. This cannot be undone.',
-        )
-    ) {
-        return
-    }
+    const ok = await confirmDialog({
+        title: 'Delete this recorded session?',
+        message:
+            `"${s.title}" and its ${s.messages} messages leave session history, and its transcript ` +
+            'is skipped from now on. This cannot be undone.',
+        confirmLabel: 'Delete session',
+        danger: true,
+    })
+    if (!ok) return
     await history.deleteSession(s.session)
 }
 </script>
