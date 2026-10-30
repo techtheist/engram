@@ -23,6 +23,7 @@ mod shipped_skills;
 mod skillgen;
 mod skillsync;
 mod update;
+mod watchdog;
 
 #[derive(Parser)]
 #[command(
@@ -927,6 +928,24 @@ fn run_update(args: UpdateArgs) -> anyhow::Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))?;
+    }
+    // Shakedown before the swap (issue #17): the binary that will run is
+    // started once with --version, and one that can't start never replaces
+    // the one that can. Unix tests the staged copy itself — it sits where it
+    // will run, so a noexec temp dir can't fail a good binary; Windows needs
+    // the .exe name, so it tests the download.
+    let candidate = if cfg!(windows) { &new_bin } else { &staged };
+    match update::smoke_test(candidate, std::time::Duration::from_secs(10)) {
+        Ok(line) => eprintln!("shakedown: {line} starts on this machine"),
+        Err(e) => {
+            let _ = std::fs::remove_file(&staged);
+            drop(cleanup);
+            anyhow::bail!(
+                "{e:#}\nrefusing to install {tag}: {} is unchanged. To pin a release that works \
+                 here, run `engram-alpha update --version <tag>`.",
+                exe.display()
+            );
+        }
     }
     #[cfg(windows)]
     {
@@ -2465,6 +2484,10 @@ async fn run_core(args: CoreArgs) -> anyhow::Result<()> {
     // provisional nodes and refresh the suspected-conflict queue. Purely local
     // math — judgment stays with Claude/the user (PLAN §7). First tick fires
     // at startup, then every 6 hours.
+    // Logs a runtime stall the moment it passes 5 s — the trace a bridge's
+    // missed pings never left here before (0.10.4).
+    let watchdog = watchdog::spawn();
+
     let sweeper = hub.clone();
     let librarian_idle = runtime.idle.clone();
     let librarian = tokio::spawn(async move {
@@ -2490,36 +2513,51 @@ async fn run_core(args: CoreArgs) -> anyhow::Result<()> {
                 continue;
             }
             // Every engine the core currently holds open — the machine core
-            // sweeps all its projects, not just the launch one.
-            let (mut archived_total, mut added_total) = (0usize, 0usize);
-            for engine in sweeper.engines() {
-                let result = {
-                    let decayed = {
-                        let mut engine = engine.lock().unwrap();
-                        // Sweep writes (decay archives, scan suspects) are the
-                        // daemon's own — attribute them as such in the journal.
-                        engine.set_audit_origin(engram_core::AuditOrigin::daemon());
-                        engine.decay(engine.graph_config().policy.decay_ttl_days, false)
+            // sweeps all its projects, not just the launch one. On the
+            // blocking pool (0.10.4): embedder + NLI over a whole graph is
+            // seconds to minutes of CPU, and on an async worker it held up
+            // whatever was queued there — bridge pings that went unanswered
+            // past 10 s, and every bridge on the machine exited (Problem
+            // 00fkvifk0v8a).
+            let hub = sweeper.clone();
+            let started = std::time::Instant::now();
+            let swept = tokio::task::spawn_blocking(move || {
+                let (mut archived_total, mut added_total) = (0usize, 0usize);
+                for engine in hub.engines() {
+                    let result = {
+                        let decayed = {
+                            let mut engine = engine.lock().unwrap();
+                            // Sweep writes (decay archives, scan suspects) are
+                            // the daemon's own — attribute them as such in the
+                            // journal.
+                            engine.set_audit_origin(engram_core::AuditOrigin::daemon());
+                            engine.decay(engine.graph_config().policy.decay_ttl_days, false)
+                        };
+                        // The scan releases the lock per node (0.9.9) — a
+                        // six-hourly sweep must not freeze the graph it sweeps.
+                        decayed.and_then(|archived| {
+                            engram_core::Engine::scan_conflicts_shared(&engine)
+                                .map(|added| (archived.len(), added))
+                        })
                     };
-                    // The scan releases the lock per node (0.9.9) — a
-                    // six-hourly sweep must not freeze the graph it sweeps.
-                    decayed.and_then(|archived| {
-                        engram_core::Engine::scan_conflicts_shared(&engine)
-                            .map(|added| (archived.len(), added))
-                    })
-                };
-                match result {
-                    Ok((archived, added)) => {
-                        archived_total += archived;
-                        added_total += added;
+                    match result {
+                        Ok((archived, added)) => {
+                            archived_total += archived;
+                            added_total += added;
+                        }
+                        Err(e) => tracing::warn!("sweep failed: {e}"),
                     }
-                    Err(e) => tracing::warn!("sweep failed: {e}"),
                 }
-            }
-            if archived_total > 0 || added_total > 0 {
-                tracing::info!(
-                    "sweep: archived {archived_total} stale nodes, queued {added_total} suspected conflicts"
-                );
+                (archived_total, added_total)
+            })
+            .await;
+            match swept {
+                Ok((archived_total, added_total)) => tracing::info!(
+                    "librarian: sweep took {:.1}s — archived {archived_total} stale nodes, \
+                     queued {added_total} suspected conflicts",
+                    started.elapsed().as_secs_f64()
+                ),
+                Err(e) => tracing::warn!("librarian: sweep task panicked: {e}"),
             }
             clean_epoch = Some(librarian_idle.graph_writes());
         }
@@ -2569,6 +2607,7 @@ async fn run_core(args: CoreArgs) -> anyhow::Result<()> {
                 }
             }
             let hub = harvest_hub.clone();
+            let started = std::time::Instant::now();
             let (h, stats) = tokio::task::spawn_blocking(move || {
                 let mut h = harvester;
                 let stats = h.sweep(&hub);
@@ -2583,6 +2622,14 @@ async fn run_core(args: CoreArgs) -> anyhow::Result<()> {
                 )
             });
             harvester = h;
+            let took = started.elapsed();
+            if took >= std::time::Duration::from_secs(5) {
+                tracing::info!(
+                    "harvest: sweep took {:.1}s (+{} message(s))",
+                    took.as_secs_f64(),
+                    stats.messages
+                );
+            }
             if stats.wrote_anything() {
                 // Harvest writes dirty the graph for the librarian's
                 // idle-unload gate (they don't ride the ChangeEvent path).
@@ -2692,6 +2739,9 @@ async fn run_core(args: CoreArgs) -> anyhow::Result<()> {
     // issue #8 gap — the old order aborted http first and could sit on the
     // locks indefinitely behind a wedged engine mutex).
     librarian.abort();
+    if let Some(task) = &watchdog {
+        task.abort();
+    }
     harvester_task.abort();
     if let Some(task) = &unload_task {
         task.abort();

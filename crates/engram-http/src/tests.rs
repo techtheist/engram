@@ -49,8 +49,13 @@ fn decision(title: &str, body: &str) -> Value {
 #[tokio::test]
 async fn health_ok() {
     let app = test_app();
-    let (status, _) = req(&app, "GET", "/health", None).await;
+    let (status, body) = req(&app, "GET", "/health", None).await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["pid"].as_u64(),
+        Some(std::process::id() as u64),
+        "health names the answering process: {body}"
+    );
 }
 
 /// `/settings` is a machine-core surface, like the census: a daemon without

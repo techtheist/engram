@@ -3,6 +3,64 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
+## v0.10.4
+
+### The Linux binary runs on Ubuntu 24.04 and Debian again (issue #17)
+
+- **0.10.3's Linux binary needed glibc 2.43** and refused to start on
+  Ubuntu 24.04, Debian and most current distributions. GitHub's
+  `ubuntu-latest` runner had quietly moved to Ubuntu 26.04, and a binary
+  needs at least the glibc of the machine that built it. The release build
+  is now pinned to Ubuntu 24.04, so the minimum is back to glibc 2.38
+  (Ubuntu 24.04, Debian 13, Fedora 39 and later).
+- **Updates and installs test the new binary before replacing the old
+  one.** `engram-alpha update`, `install.sh` and `install.ps1` start the
+  downloaded binary once with `--version`. If it doesn't start, or doesn't
+  answer as engram-alpha, nothing is replaced and you see the binary's own
+  error, such as "GLIBC_2.43 not found". Thanks to the reporter for the
+  suggestion.
+
+### MCP connections survive a busy or restarted core
+
+- **A busy core no longer disconnects every assistant.** Each assistant's
+  bridge pings the core every 15 seconds, and one ping slower than 10
+  seconds used to count as a dead core, so the bridge exited and the
+  assistant showed "MCP connection failed". The core's 6-hourly
+  contradiction scan could stall it that long. The bridge now asks the
+  core's `/health` before deciding: a core that answers is busy, and the
+  session stays. The scan itself no longer runs on the threads that answer
+  requests.
+- **Bridges reconnect when the core restarts.** After a `stop` followed by
+  `serve`, or a crash and restart, the bridge waits up to 90 seconds for a
+  core to come back, reconnects, and tells the assistant to reload its
+  tools, so no `/mcp` reconnect is needed. It never starts a core on its
+  own, so `stop` still stops everything; with no core back after 90
+  seconds the bridge exits and says why.
+- **No failed start on every Claude Code connect.** Claude Code sends a
+  `server/discover` probe before the MCP handshake, and the bridge exited
+  on it, logged an ERROR and was started a second time. It now answers the
+  probe and carries on.
+
+### Logs for tracking connection problems
+
+- `<repo>/.engram/mcp.log` records slow and missed pings with what
+  `/health` said, a likely machine sleep, each reconnect and why a bridge
+  exited.
+- `~/.engram/core.log` logs when the core stops responding for over 5
+  seconds (`ENGRAM_STALL_WARN_SECS`) and how long it took to recover, plus
+  how long each contradiction scan and long history sweep took.
+- `/health` now includes the core's process id.
+
+### Docs and tests
+
+- Troubleshooting covers "MCP connection failed", reconnects after a
+  restart, and pinning or downgrading a release that won't start.
+- New tests run a real bridge against a sandboxed core: the early probe, a
+  core frozen for over 10 seconds, a stop-and-serve restart, and a stop
+  with no restart. Installer tests serve fake releases (a binary failing
+  with a GLIBC error, one that isn't engram, a good one), and unit tests
+  cover the update check, the stall watchdog and the sleep detection.
+
 ## v0.10.3
 
 ### Deleting from the Feed, with or without a Tombstone

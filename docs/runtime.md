@@ -92,6 +92,19 @@ no port scanning:
   never blocks bridging. It is exactly what `engram-alpha status` and the
   pane's **Settings → System** process list render — including which client
   bound where, and via what.
+- **Liveness and reconnects.** The same heartbeat pings the core over MCP.
+  Since 0.10.4 a missed ping is checked against the core's `/health`: a core
+  that answers there is busy, not gone, and the session stays (up to two
+  minutes of missed pings). A core that doesn't answer, or a session it
+  closed, sends the bridge into a 90-second wait for a core to come back at
+  the same address. It never spawns one itself, so `stop` stays a stop.
+  When a core returns, the bridge keeps its session if the same process
+  answers, or opens a new one and sends the client
+  `notifications/tools/list_changed` if a new core took over. Only a core
+  that stays gone for the whole window ends the bridge. Every slow ping,
+  likely machine sleep, reconnect and exit is logged in
+  `<repo>/.engram/mcp.log`; the core logs runtime stalls over 5 seconds
+  (`ENGRAM_STALL_WARN_SECS`) to `~/.engram/core.log`.
 
 ## Which project an MCP session serves
 
@@ -185,8 +198,9 @@ the activity clock, so *watching* the core never keeps it warm.
 `ENGRAM_IDLE_UNLOAD_SECS` tunes the window; `0` disables the unload.
 
 **Stop.** `engram-alpha stop` asks the core to shut down over a
-loopback-only `POST /shutdown`: MCP sessions close (bridges exit immediately
-instead of timing out), every engine is drained so any store operation that
+loopback-only `POST /shutdown`: MCP sessions close (bridges wait 90 seconds
+for a core to return, so a stop-then-serve restart keeps assistants
+connected, then exit), every engine is drained so any store operation that
 had started has committed, every store lock is released, the daemon files are
 removed, and the process exits. Since 0.8.13 `stop` waits on the *process*,
 not just the health endpoint — "stopped" means the PID is gone and every

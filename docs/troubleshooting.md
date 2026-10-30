@@ -23,7 +23,9 @@ failure. It exits non-zero on real failures, so it works as a pre-flight in
 scripts.
 
 `stop` runs an orchestrated shutdown over the core's API: MCP sessions
-close (bridges exit immediately), in-flight store operations commit, every
+close (bridges wait 90 seconds for a core to come back, then exit — a
+`stop` followed by `serve` keeps assistants connected), in-flight store
+operations commit, every
 store lock is released, and the daemon files are cleaned up — with a
 health-verified PID kill as the fallback when the core doesn't answer. Use
 it before updates and whenever a repair needs exclusive access to a store.
@@ -49,9 +51,43 @@ the cost of every root-less session landing there. Details in
 [Runtime](./runtime.md#which-project-an-mcp-session-serves).
 
 **The assistant's MCP tools stopped responding after an update or restart.**
-The assistant's MCP session was connected to the old daemon process.
-Reconnect it (Claude Code: `/mcp`) — the new session bridges to the running
-core automatically.
+Since 0.10.4 a bridge whose core restarts reconnects to the new one on its
+own (within 90 seconds) and tells the assistant to reload the tool list.
+The bridge itself stays the binary that was running, so after an update a
+reconnect (Claude Code: `/mcp`) still picks up the new bridge. A bridge
+that found no core for 90 seconds has exited; reconnect it the same way.
+
+**"MCP connection failed" while the core was running.** Up to 0.10.3 a
+bridge treated one ping that took over 10 seconds as a dead core and exited
+— a core busy with a contradiction sweep could disconnect every assistant
+on the machine. Since 0.10.4 the bridge checks the core's `/health` before
+deciding: a busy core keeps its sessions. Both sides leave a trace now.
+`<repo>/.engram/mcp.log` names every slow or missed ping, a likely machine
+sleep, each reconnect, and why a bridge exited. `~/.engram/core.log` logs
+"the core's runtime has been unresponsive for N s" when the core itself
+stalls, and how long each librarian sweep took.
+
+**A new release won't start ("GLIBC_2.43 not found" or similar).** Since
+0.10.4, `engram-alpha update` and both install scripts start the new binary
+once with `--version` before replacing anything, so a binary that can't run
+on your machine is refused and the working one stays. On an older version,
+or to go back to a release that worked, pin it:
+
+```sh
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh | ENGRAM_VERSION=v0.10.2 sh
+# with a working engram-alpha still installed
+engram-alpha update --version v0.10.2
+```
+
+```powershell
+# Windows
+$env:ENGRAM_VERSION = 'v0.10.2'; irm https://raw.githubusercontent.com/techtheist/engram/main/install.ps1 | iex
+```
+
+Linux release binaries are built on Ubuntu 24.04 and need glibc 2.38 or
+newer (Ubuntu 24.04, Debian 13, Fedora 39 and later). Issue #17 was 0.10.3,
+built by mistake on a newer runner that required glibc 2.43.
 
 **`database_locked` on a `.tepin` store.** The store has exactly one owning
 process — normally the core, which serves reads to everyone else. If an

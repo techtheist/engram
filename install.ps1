@@ -53,9 +53,19 @@ try {
     $actual = (Get-FileHash (Join-Path $tmp $asset) -Algorithm SHA256).Hash.ToLower()
     if ($actual -ne $expected) { throw "checksum mismatch - refusing to install" }
 
+    # Shakedown before the swap (issue #17): start the new binary once, and
+    # never let one that can't start replace one that can.
+    $candidate = Join-Path $tmp $asset
+    $shakedown = (& $candidate --version 2>&1 | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $shakedown.StartsWith("engram-alpha ")) {
+        if ($shakedown) { Write-Host $shakedown }
+        throw "the $Version binary does not start on this machine - nothing was replaced. Pin a release that works here with `$env:ENGRAM_VERSION = '<tag>'"
+    }
+    Say "shakedown: $shakedown starts on this machine"
+
     $exe = Join-Path $binDir "engram-alpha.exe"
     Say "installing engram-alpha.exe to $binDir"
-    Move-Item -Force (Join-Path $tmp $asset) $exe
+    Move-Item -Force $candidate $exe
 }
 finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

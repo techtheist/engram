@@ -186,6 +186,13 @@ struct Bridge {
 
 impl Bridge {
     fn spawn(sb: &Sandbox, project: &Path) -> Self {
+        let mut bridge = Self::spawn_raw(sb, project);
+        bridge.handshake();
+        bridge
+    }
+
+    /// The bridge child with nothing sent yet.
+    fn spawn_raw(sb: &Sandbox, project: &Path) -> Self {
         let mut child = sb
             .cmd(
                 &["mcp", "--db", ".engram/graph.db", "--fake-embeddings"],
@@ -197,9 +204,7 @@ impl Bridge {
             .spawn()
             .expect("spawning the mcp bridge");
         let reader = BufReader::new(child.stdout.take().expect("bridge stdout"));
-        let mut bridge = Self { child, reader };
-        bridge.handshake();
-        bridge
+        Self { child, reader }
     }
 
     fn handshake(&mut self) {
@@ -227,6 +232,24 @@ impl Bridge {
             .expect("reading from the bridge");
         assert!(!line.is_empty(), "bridge closed stdout");
         line
+    }
+
+    /// Read lines until the reply to request `id`, returning it and every
+    /// line that came before it (server notifications).
+    fn recv_reply(&mut self, id: u64) -> (String, Vec<String>) {
+        let mut before = Vec::new();
+        loop {
+            let line = self.recv();
+            let v: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+            if v["id"].as_u64() == Some(id) {
+                return (line, before);
+            }
+            before.push(line);
+        }
+    }
+
+    fn is_alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
     }
 
     fn kill(&mut self) {
@@ -753,5 +776,185 @@ fn registration_and_data_survive_core_restart() {
     assert!(
         graph.contains("survives the restart"),
         "the reopened store carries the pre-restart data: {graph}"
+    );
+}
+
+// ---- bridge resilience (0.10.4, Problem 00fkvifk0v8a) ----------------------
+
+fn mcp_log(project: &Path) -> String {
+    std::fs::read_to_string(project.join(".engram/mcp.log")).unwrap_or_default()
+}
+
+fn tool_names_listed(b: &mut Bridge, id: u64) -> (String, Vec<String>) {
+    b.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/list"}}"#
+    ));
+    let (reply, before) = b.recv_reply(id);
+    assert!(
+        reply.contains("add_note") && reply.contains("search"),
+        "the bridge still proxies the core's tools: {reply}"
+    );
+    (reply, before)
+}
+
+/// Claude Code opens with a `server/discover` probe before initialize. The
+/// bridge used to hard-exit on it (rmcp takes only initialize first), so
+/// every connect cost a failed spawn; now it answers "method not found" and
+/// the same process completes the handshake.
+#[test]
+fn bridge_answers_a_pre_initialize_probe_and_still_handshakes() {
+    let sb = Sandbox::new("probe", 19600);
+    let proj = sb.project("alpha");
+    let mut b = Bridge::spawn_raw(&sb, &proj);
+
+    b.send(r#"{"jsonrpc":"2.0","id":"server-discover-probe-1","method":"server/discover","params":{}}"#);
+    let probe: serde_json::Value = serde_json::from_str(&b.recv()).unwrap();
+    assert_eq!(probe["id"], "server-discover-probe-1", "{probe}");
+    assert_eq!(probe["error"]["code"], -32601, "method not found: {probe}");
+
+    b.send(
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"pm-test","version":"0"}}}"#,
+    );
+    let init: serde_json::Value = serde_json::from_str(&b.recv()).unwrap();
+    assert_eq!(init["id"], 1, "{init}");
+    assert_eq!(
+        init["result"]["capabilities"]["tools"]["listChanged"], true,
+        "the bridge advertises tool-list changes, which a reconnect announces: {init}"
+    );
+    b.send(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
+
+    sb.wait_core_healthy(CORE_HEALTH_WINDOW);
+    tool_names_listed(&mut b, 2);
+    assert!(b.is_alive(), "one process served the probe and the session");
+    assert!(
+        !mcp_log(&proj).contains("mcp exiting"),
+        "no exit logged: {}",
+        mcp_log(&proj)
+    );
+}
+
+/// Resumes a SIGSTOPped core even when the test panics, so the sandbox's
+/// own drop can stop it.
+#[cfg(unix)]
+struct Thaw(u32);
+
+#[cfg(unix)]
+impl Drop for Thaw {
+    fn drop(&mut self) {
+        let _ = Command::new("kill")
+            .args(["-CONT", &self.0.to_string()])
+            .status();
+    }
+}
+
+/// The 2026-10-30 disconnect: the core stopped answering pings for over 10 s
+/// and every bridge exited, though it was alive. A frozen core (SIGSTOP —
+/// no ping, no /health) now sends the bridge into its reconnect wait; when
+/// the core thaws, the same session carries on.
+#[cfg(unix)]
+#[test]
+fn bridge_survives_a_core_that_freezes_and_comes_back() {
+    let sb = Sandbox::new("freeze", 19620);
+    let proj = sb.project("alpha");
+    let mut b = Bridge::spawn(&sb, &proj);
+    sb.wait_core_healthy(CORE_HEALTH_WINDOW);
+    tool_names_listed(&mut b, 2);
+
+    let pid = sb.core_pid().expect("core pid");
+    let thaw = Thaw(pid);
+    assert!(
+        Command::new("kill")
+            .args(["-STOP", &pid.to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    // Heartbeat 1 s + the 10 s ping ceiling: long enough to miss a ping.
+    assert!(
+        eventually(Duration::from_secs(40), || mcp_log(&proj)
+            .contains("core ping unanswered")),
+        "the bridge noticed the frozen core: {}",
+        mcp_log(&proj)
+    );
+    assert!(b.is_alive(), "a missed ping no longer ends the bridge");
+    drop(thaw);
+
+    assert!(
+        eventually(Duration::from_secs(40), || mcp_log(&proj)
+            .contains("keeping this session")),
+        "the bridge kept its session on the thawed core (same pid, no reconnect): {}",
+        mcp_log(&proj)
+    );
+    assert!(b.is_alive(), "the bridge is still serving");
+    tool_names_listed(&mut b, 3);
+}
+
+/// A deploy is `stop` then `serve`: the bridge's session closes, and it now
+/// waits for the new core, opens a new session to it, and tells the client
+/// the tool list may have changed — no `/mcp` reconnect needed.
+#[test]
+fn bridge_reconnects_when_the_core_restarts() {
+    let sb = Sandbox::new("restart", 19640);
+    let proj = sb.project("alpha");
+    let mut b = Bridge::spawn(&sb, &proj);
+    sb.wait_core_healthy(CORE_HEALTH_WINDOW);
+    tool_names_listed(&mut b, 2);
+    let first_pid = sb.core_pid().expect("core pid");
+
+    let stop = sb.cmd(&["stop"], &proj).output().unwrap();
+    assert!(stop.status.success(), "stop failed: {stop:?}");
+    let serve = sb
+        .cmd(
+            &["serve", "--db", ".engram/graph.db", "--fake-embeddings"],
+            &proj,
+        )
+        .output()
+        .unwrap();
+    assert!(serve.status.success(), "serve failed: {serve:?}");
+    sb.wait_core_healthy(CORE_HEALTH_WINDOW);
+    assert_ne!(sb.core_pid(), Some(first_pid), "a new core runs");
+
+    assert!(
+        eventually(Duration::from_secs(60), || mcp_log(&proj)
+            .contains("reconnected to")),
+        "the bridge reconnected: {}",
+        mcp_log(&proj)
+    );
+    assert!(b.is_alive(), "the bridge outlived the restart");
+    let (_, before) = tool_names_listed(&mut b, 3);
+    assert!(
+        before
+            .iter()
+            .any(|l| l.contains("notifications/tools/list_changed")),
+        "the client was told to reload tools: {before:?}"
+    );
+}
+
+/// `stop` stays a stop: with no core coming back, the bridge exits once its
+/// reconnect window runs out, and says why.
+#[test]
+fn bridge_exits_when_no_core_returns_within_the_window() {
+    let sb = Sandbox::new("gone", 19660).with_env("ENGRAM_BRIDGE_RECONNECT_SECS", "3");
+    let proj = sb.project("alpha");
+    let mut b = Bridge::spawn(&sb, &proj);
+    let port = sb.wait_core_healthy(CORE_HEALTH_WINDOW);
+    tool_names_listed(&mut b, 2);
+
+    let stop = sb.cmd(&["stop"], &proj).output().unwrap();
+    assert!(stop.status.success(), "stop failed: {stop:?}");
+    assert!(
+        eventually(Duration::from_secs(10), || http_get(port, "/health")
+            .is_none()),
+        "the core is gone"
+    );
+    assert!(
+        eventually(Duration::from_secs(30), || !b.is_alive()),
+        "the bridge exits after its window"
+    );
+    let log = mcp_log(&proj);
+    assert!(log.contains("none answered for 3s"), "it says why: {log}");
+    assert!(
+        http_get(port, "/health").is_none(),
+        "waiting never spawned a core back"
     );
 }

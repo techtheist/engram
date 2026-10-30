@@ -1995,6 +1995,9 @@ fn engram_server_info() -> ServerInfo {
     ServerInfo::new(
         ServerCapabilities::builder()
             .enable_tools()
+            // A bridge that reconnects to a restarted (maybe newer) core
+            // says so with notifications/tools/list_changed (0.10.4).
+            .enable_tool_list_changed()
             .enable_resources()
             .build(),
     )
@@ -2417,9 +2420,53 @@ struct BridgeState {
     startup: Option<StartupProbe>,
     /// See [`BRIDGE_GRACE`].
     grace: std::time::Duration,
+    /// Generations only ever grow, even across a dropped upstream — a stale
+    /// watcher must never match a newer session.
+    next_generation: std::sync::atomic::AtomicU64,
+    /// The current upstream's watcher reports here when the core closes it.
+    lost: tokio::sync::mpsc::UnboundedSender<u64>,
+    /// How the current binding was resolved, for [`Self::reconnect`].
+    rebind: std::sync::Mutex<Option<FixedResolver>>,
+    /// The current core's origin, e.g. `http://127.0.0.1:8787`.
+    origin: std::sync::Mutex<Option<String>>,
+    /// The pid the core's `/health` named when this session connected —
+    /// how a reconnect tells a restarted core from a busy one.
+    core_pid: std::sync::Mutex<Option<u64>>,
+    /// The stdio client, for `notifications/tools/list_changed`.
+    client: std::sync::Mutex<Option<rmcp::service::Peer<rmcp::RoleServer>>>,
 }
 
 impl BridgeState {
+    /// A bridge with nothing bound yet, and the receiver its upstream
+    /// watchers report closed sessions to (the supervisor's).
+    fn new(
+        http: reqwest::Client,
+        exit: tokio::sync::mpsc::Sender<anyhow::Error>,
+        startup: Option<StartupProbe>,
+        grace: std::time::Duration,
+    ) -> (Arc<Self>, tokio::sync::mpsc::UnboundedReceiver<u64>) {
+        let (bound, _) = tokio::sync::watch::channel(0u64);
+        let (lost, lost_rx) = tokio::sync::mpsc::unbounded_channel();
+        let state = Arc::new(Self {
+            http,
+            slot: std::sync::Mutex::new(None),
+            bound,
+            lease: std::sync::Mutex::new(None),
+            client_name: std::sync::Mutex::new(None),
+            exit,
+            failed: std::sync::Mutex::new(None),
+            startup,
+            grace,
+            next_generation: std::sync::atomic::AtomicU64::new(0),
+            lost,
+            rebind: std::sync::Mutex::new(None),
+            origin: std::sync::Mutex::new(None),
+            core_pid: std::sync::Mutex::new(None),
+            client: std::sync::Mutex::new(None),
+        });
+        (state, lost_rx)
+    }
+
     /// The current upstream peer if the first binding lands within the
     /// grace, `None` if it is still in flight — the caller answers itself.
     /// A binding that failed answers with its error, as
@@ -2430,18 +2477,7 @@ impl BridgeState {
         if let Some((peer, _)) = self.current_peer() {
             return Ok(Some(peer));
         }
-        let mut rx = self.bound.subscribe();
-        let bound = async {
-            loop {
-                if *rx.borrow_and_update() > 0 {
-                    return;
-                }
-                if rx.changed().await.is_err() {
-                    return;
-                }
-            }
-        };
-        let _ = tokio::time::timeout(self.grace, bound).await;
+        self.wait_bound(self.grace).await;
         if let Some((peer, _)) = self.current_peer() {
             return Ok(Some(peer));
         }
@@ -2493,18 +2529,7 @@ impl BridgeState {
         if let Some((peer, _)) = self.current_peer() {
             return Ok(peer);
         }
-        let mut rx = self.bound.subscribe();
-        let bound = async {
-            loop {
-                if *rx.borrow_and_update() > 0 {
-                    return;
-                }
-                if rx.changed().await.is_err() {
-                    return;
-                }
-            }
-        };
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(210), bound).await;
+        self.wait_bound(std::time::Duration::from_secs(210)).await;
         self.current_peer().map(|(peer, _)| peer).ok_or_else(|| {
             let why = self.failed.lock().unwrap().clone().unwrap_or_else(|| {
                 "the engram bridge has no project binding yet — the core may be unreachable \
@@ -2513,6 +2538,23 @@ impl BridgeState {
             });
             ErrorData::internal_error(why, None)
         })
+    }
+
+    /// Wait, at most `limit`, until there is an upstream to use or the
+    /// binding failed for good — the first binding and a reconnect alike.
+    async fn wait_bound(&self, limit: std::time::Duration) {
+        let mut rx = self.bound.subscribe();
+        let bound = async {
+            loop {
+                if self.current_peer().is_some() || self.failed.lock().unwrap().is_some() {
+                    return;
+                }
+                if rx.changed().await.is_err() {
+                    return;
+                }
+            }
+        };
+        let _ = tokio::time::timeout(limit, bound).await;
     }
 
     /// Record a fatal binding failure and wake everything waiting in
@@ -2566,7 +2608,10 @@ impl BridgeState {
         let cancel = client.cancellation_token();
         let (old, generation) = {
             let mut slot = self.slot.lock().unwrap();
-            let generation = slot.as_ref().map(|u| u.generation).unwrap_or(0) + 1;
+            let generation = self
+                .next_generation
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
             let old = slot.replace(Upstream {
                 peer,
                 generation,
@@ -2575,21 +2620,19 @@ impl BridgeState {
             (old, generation)
         };
         // The upstream ending while still current means the core closed the
-        // session (orchestrated shutdown) — exit right away instead of
-        // waiting out a heartbeat. A cancelled predecessor lands here too,
-        // sees its generation is history, and stays quiet.
+        // session (a stop, or a deploy's restart) — the supervisor reconnects
+        // right away instead of waiting out a heartbeat. A cancelled
+        // predecessor lands here too, sees its generation is history, and
+        // stays quiet.
         let state = self.clone();
         tokio::spawn(async move {
             let _ = client.waiting().await;
             if state.current_generation() == generation {
-                let _ = state
-                    .exit
-                    .send(anyhow::anyhow!(
-                        "the engram core closed the session — bridge exiting"
-                    ))
-                    .await;
+                let _ = state.lost.send(generation);
             }
         });
+        *self.origin.lock().unwrap() = origin_of(url);
+        *self.core_pid.lock().unwrap() = self.core_health().await;
         if let Some(mut old) = old
             && let Some(token) = old.cancel.take()
         {
@@ -2634,71 +2677,317 @@ impl BridgeState {
         });
     }
 
-    /// Satellites die with the core (v0.6.2). The HTTP client transport
-    /// auto-reconnects, so a dead core never surfaces as a closed connection
-    /// — liveness has to be probed: ping the core on a heartbeat and treat a
-    /// timed-out or failed ping as its death, unless a rebind swapped the
-    /// session out from under the ping. Census lease renewals ride the same
-    /// beat. Returns the fatal error when the core is gone.
-    async fn heartbeat(self: Arc<Self>) -> anyhow::Error {
+    /// Satellites follow the core (v0.6.2, reworked 0.10.4). The HTTP client
+    /// transport auto-reconnects, so a dead core never surfaces as a closed
+    /// connection — liveness is probed: an MCP ping on every beat.
+    ///
+    /// One missed ping used to read as death, and a core busy for 10 s (a
+    /// sweep holding the runtime) killed every bridge on the machine while it
+    /// lived on (Problem 00fkvifk0v8a). Now a miss is checked against the
+    /// core's `/health`: a core that answers there is busy, not gone, and the
+    /// session stays until [`stall_patience`] runs out. A core that doesn't
+    /// answer, or a session it closed (a deploy's restart), goes through
+    /// [`Self::reconnect`], which waits for a core to come back instead of
+    /// exiting. Census lease renewals ride the same beat. Returns the fatal
+    /// error once no core came back.
+    async fn supervise(
+        self: Arc<Self>,
+        mut lost: tokio::sync::mpsc::UnboundedReceiver<u64>,
+    ) -> anyhow::Error {
+        let beat = std::time::Duration::from_secs(heartbeat_secs());
+        let mut last_beat = std::time::SystemTime::now();
+        let mut misses = 0u32;
+        let mut first_miss: Option<std::time::Instant> = None;
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(heartbeat_secs())).await;
+            let closed = tokio::select! {
+                _ = tokio::time::sleep(beat) => None,
+                Some(generation) = lost.recv() => Some(generation),
+            };
+            // Wall clock, not the monotonic one: a sleeping Mac stops the
+            // monotonic clock, so only the wall clock shows the gap.
+            let now = std::time::SystemTime::now();
+            let gap = now.duration_since(last_beat).unwrap_or_default();
+            last_beat = now;
+            if let Some(slept) = slept_through(gap, beat) {
+                tracing::info!(
+                    "{}s since the last heartbeat (every {}s) — the machine likely slept; \
+                     re-checking the core",
+                    slept.as_secs(),
+                    beat.as_secs()
+                );
+                misses = 0;
+                first_miss = None;
+            }
+            if let Some(generation) = closed {
+                if generation != self.current_generation() {
+                    continue; // a rebind retired that session — not a loss
+                }
+                self.drop_upstream(generation);
+                if let Err(e) = self.reconnect("the core closed the session").await {
+                    return e;
+                }
+                misses = 0;
+                first_miss = None;
+                continue;
+            }
             let Some((peer, generation)) = self.current_peer() else {
                 // Not bound yet — the initial binding is still in flight.
                 continue;
             };
-            let ping = peer.send_request(rmcp::model::ClientRequest::PingRequest(
-                rmcp::model::PingRequest {
-                    method: Default::default(),
-                    extensions: Default::default(),
-                },
-            ));
-            match tokio::time::timeout(std::time::Duration::from_secs(10), ping).await {
-                Ok(Ok(_)) => {}
-                _ => {
-                    if self.current_generation() == generation {
-                        return anyhow::anyhow!("the engram core went away — bridge exiting");
+            match ping_core(&peer).await {
+                Ok(took) => {
+                    if took >= SLOW_PING {
+                        tracing::warn!("the core took {:.1}s to answer a ping", took.as_secs_f64());
                     }
-                    continue; // a rebind cut this ping mid-flight — not a death
+                    if let Some(since) = first_miss.take() {
+                        tracing::info!(
+                            "the core answers pings again after {misses} miss(es) over {:.0}s",
+                            since.elapsed().as_secs_f64()
+                        );
+                    }
+                    misses = 0;
+                    self.renew_lease().await;
                 }
-            }
-            // Renew the census lease. Best-effort: a 404 means the lease
-            // expired (or the core restarted its table) — re-register
-            // instead of silently vanishing from the census.
-            let lease = self.lease.lock().unwrap().clone();
-            if let Some(l) = lease {
-                let name = self.client_name.lock().unwrap().clone();
-                let renewed = match &l.lease_id {
-                    Some(id) => {
-                        ping_lease(&self.http, &l.base_url, id, Some(&l.root), name.as_deref())
-                            .await
+                Err(why) => {
+                    if self.current_generation() != generation {
+                        continue; // a rebind cut this ping mid-flight — not a loss
                     }
-                    None => false,
-                };
-                if !renewed {
-                    let id =
-                        register_lease(&self.http, &l.base_url, &l.root, name.as_deref()).await;
-                    let mut slot = self.lease.lock().unwrap();
-                    match slot.as_mut() {
-                        // Only fill the row we renewed for — a rebind that
-                        // raced this re-register owns the slot now.
-                        Some(cur) if cur.base_url == l.base_url && cur.root == l.root => {
-                            cur.lease_id = id;
+                    misses += 1;
+                    let since = *first_miss.get_or_insert_with(std::time::Instant::now);
+                    let healthy = self.core_health().await.is_some();
+                    tracing::warn!(
+                        "core ping {why} (miss {misses}, {:.0}s since the first); /health {}",
+                        since.elapsed().as_secs_f64(),
+                        if healthy {
+                            "answers — the core is busy, not gone"
+                        } else {
+                            "does not answer"
                         }
-                        _ => {
-                            if let Some(id) = id {
-                                let http = self.http.clone();
-                                let base = l.base_url.clone();
-                                tokio::spawn(async move {
-                                    delete_lease(&http, &base, &id).await;
-                                });
-                            }
-                        }
+                    );
+                    if healthy && since.elapsed() < stall_patience() {
+                        continue;
                     }
+                    let reason = if healthy {
+                        format!(
+                            "the core's /health answers but this session missed pings for {}s",
+                            since.elapsed().as_secs()
+                        )
+                    } else {
+                        "the core stopped answering".to_string()
+                    };
+                    if let Err(e) = self.reconnect(&reason).await {
+                        return e;
+                    }
+                    misses = 0;
+                    first_miss = None;
                 }
             }
         }
     }
+
+    /// Get back to a working upstream after a loss, or give up. Never
+    /// spawns a core: `stop` must stay a stop, so this waits up to
+    /// [`reconnect_window`] for one to answer `/health` at the old origin (a
+    /// deploy's stop-then-serve restarts it in seconds). A core that answers
+    /// keeps the current session when it still takes a ping (a stall that
+    /// ended); otherwise the stored target is re-resolved and a new session
+    /// opened, and the stdio client is told the tool list may have changed —
+    /// a new core can be a new version.
+    async fn reconnect(self: &Arc<Self>, reason: &str) -> Result<(), anyhow::Error> {
+        let window = reconnect_window();
+        let start = std::time::Instant::now();
+        tracing::warn!(
+            "{reason} — waiting up to {}s for a core to reconnect to",
+            window.as_secs()
+        );
+        let mut attempts = 0u32;
+        loop {
+            if let Some(pid) = self.core_health().await {
+                if let Some((peer, _)) = self.current_peer()
+                    && ping_core(&peer).await.is_ok()
+                {
+                    // The HTTP transport re-initializes a session a new core
+                    // answers 404 for, so a kept session can sit on a new
+                    // core — maybe a new version. Only the pid tells.
+                    let was = self.core_pid.lock().unwrap().replace(pid);
+                    if was.is_some_and(|was| was != pid) {
+                        tracing::info!(
+                            "reconnected to a new core (pid {pid}) after {:.1}s — the session \
+                             re-initialized on it",
+                            start.elapsed().as_secs_f64()
+                        );
+                        self.announce_tools_changed().await;
+                    } else {
+                        tracing::info!(
+                            "the core answers again after {:.1}s — keeping this session",
+                            start.elapsed().as_secs_f64()
+                        );
+                    }
+                    return Ok(());
+                }
+                attempts += 1;
+                match self.reopen().await {
+                    Ok(info) => {
+                        tracing::info!(
+                            "reconnected to core v{} after {:.1}s ({attempts} attempt(s))",
+                            info.server_info.version,
+                            start.elapsed().as_secs_f64()
+                        );
+                        self.announce_tools_changed().await;
+                        return Ok(());
+                    }
+                    Err(e) => tracing::warn!("reconnect attempt {attempts} failed: {e:#}"),
+                }
+            }
+            if start.elapsed() >= window {
+                let why = format!(
+                    "the engram core went away ({reason}) and none answered for {}s — bridge \
+                     exiting",
+                    window.as_secs()
+                );
+                self.fail(format!("engram bridge: {why}"));
+                return Err(anyhow::anyhow!(why));
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    }
+
+    /// Re-resolve the stored target and open a new session to it.
+    async fn reopen(self: &Arc<Self>) -> anyhow::Result<rmcp::model::ServerInfo> {
+        let resolve = self
+            .rebind
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("no binding to reconnect"))?;
+        let target = tokio::task::spawn_blocking(move || resolve()).await??;
+        self.connect(&target.url, Some(&target.lease_root), target.bound_by)
+            .await
+    }
+
+    /// Forget a session the core closed, so new client requests wait for the
+    /// reconnect in [`Self::peer_when_bound`] instead of failing on it.
+    fn drop_upstream(&self, generation: u64) {
+        let mut slot = self.slot.lock().unwrap();
+        if slot.as_ref().is_some_and(|u| u.generation == generation) {
+            *slot = None;
+        }
+    }
+
+    /// `GET /health` on the current core's origin — a second opinion that
+    /// shares nothing with the MCP session. The answering core's pid when it
+    /// answers (0 from a core older than 0.10.4, which doesn't say).
+    async fn core_health(&self) -> Option<u64> {
+        let origin = self.origin.lock().unwrap().clone()?;
+        let reply = self
+            .http
+            .get(format!("{origin}/health"))
+            .timeout(std::time::Duration::from_secs(3))
+            .send()
+            .await
+            .ok()
+            .filter(|r| r.status().is_success())?;
+        let body: serde_json::Value = reply.json().await.unwrap_or_default();
+        Some(body["pid"].as_u64().unwrap_or(0))
+    }
+
+    async fn announce_tools_changed(&self) {
+        let client = self.client.lock().unwrap().clone();
+        if let Some(client) = client {
+            let _ = client.notify_tool_list_changed().await;
+        }
+    }
+
+    /// Renew the census lease. Best-effort: a 404 means the lease expired
+    /// (or the core restarted its table) — re-register instead of silently
+    /// vanishing from the census.
+    async fn renew_lease(&self) {
+        let lease = self.lease.lock().unwrap().clone();
+        let Some(l) = lease else { return };
+        let name = self.client_name.lock().unwrap().clone();
+        let renewed = match &l.lease_id {
+            Some(id) => {
+                ping_lease(&self.http, &l.base_url, id, Some(&l.root), name.as_deref()).await
+            }
+            None => false,
+        };
+        if renewed {
+            return;
+        }
+        let id = register_lease(&self.http, &l.base_url, &l.root, name.as_deref()).await;
+        let mut slot = self.lease.lock().unwrap();
+        match slot.as_mut() {
+            // Only fill the row we renewed for — a rebind that raced this
+            // re-register owns the slot now.
+            Some(cur) if cur.base_url == l.base_url && cur.root == l.root => {
+                cur.lease_id = id;
+            }
+            _ => {
+                if let Some(id) = id {
+                    let http = self.http.clone();
+                    let base = l.base_url.clone();
+                    tokio::spawn(async move {
+                        delete_lease(&http, &base, &id).await;
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// A ping slower than this is logged even when it lands.
+const SLOW_PING: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// One MCP ping with a 10 s ceiling: how long it took, or why it failed.
+async fn ping_core(
+    peer: &rmcp::service::Peer<rmcp::RoleClient>,
+) -> Result<std::time::Duration, String> {
+    let start = std::time::Instant::now();
+    let ping = peer.send_request(rmcp::model::ClientRequest::PingRequest(
+        rmcp::model::PingRequest {
+            method: Default::default(),
+            extensions: Default::default(),
+        },
+    ));
+    match tokio::time::timeout(std::time::Duration::from_secs(10), ping).await {
+        Ok(Ok(_)) => Ok(start.elapsed()),
+        Ok(Err(e)) => Err(format!("failed ({e})")),
+        Err(_) => Err("unanswered after 10s".into()),
+    }
+}
+
+/// How far past the beat a gap must run to read as the machine sleeping.
+const SLEEP_GAP: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The time slept through, when a heartbeat gap is too long for a busy
+/// runtime alone — the bridge does nothing between beats.
+fn slept_through(
+    gap: std::time::Duration,
+    beat: std::time::Duration,
+) -> Option<std::time::Duration> {
+    (gap > beat + SLEEP_GAP).then(|| gap - beat)
+}
+
+/// How long a core that answers `/health` may leave this session's pings
+/// unanswered before the bridge opens a new session. `ENGRAM_BRIDGE_STALL_SECS`
+/// overrides the 120 s default for tests.
+fn stall_patience() -> std::time::Duration {
+    env_secs("ENGRAM_BRIDGE_STALL_SECS", 120)
+}
+
+/// How long a bridge waits for a lost core to come back before exiting.
+/// `ENGRAM_BRIDGE_RECONNECT_SECS` overrides the 90 s default for tests.
+fn reconnect_window() -> std::time::Duration {
+    env_secs("ENGRAM_BRIDGE_RECONNECT_SECS", 90)
+}
+
+fn env_secs(key: &str, default: u64) -> std::time::Duration {
+    std::time::Duration::from_secs(
+        std::env::var(key)
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(default),
+    )
 }
 
 /// The roots half of the bridge's one bounded brain (0.8.8): which project
@@ -2779,6 +3068,15 @@ impl RootsBinding {
         self.state
             .connect(&target.url, Some(&target.lease_root), bound_by)
             .await?;
+        // A reconnect re-resolves this same root the same way.
+        let (resolve, bound_root) = (self.resolve.clone(), root.clone());
+        *self.state.rebind.lock().unwrap() = Some(Arc::new(move || {
+            let mut target = resolve(bound_root.clone())?;
+            if from_roots && target.bound_by == BoundBy::Cwd {
+                target.bound_by = BoundBy::Roots;
+            }
+            Ok(target)
+        }));
         tracing::info!(
             "bridge bound to {} ({}) by {}",
             target.lease_root,
@@ -2972,6 +3270,83 @@ async fn delete_lease(client: &reqwest::Client, base_url: &str, id: &str) {
         .await;
 }
 
+/// The stdio transport with a gate before `initialize` (0.10.4). Claude Code
+/// opens with a `server/discover` version probe; rmcp's handshake takes only
+/// initialize (or ping) first and hard-exits on anything else, so every
+/// connect cost a failed spawn, an ERROR line and a legacy respawn. The gate
+/// answers any other pre-init request "method not found" itself and drops
+/// pre-init notifications; from the first initialize on it is a plain
+/// passthrough.
+struct PreInitGate<T> {
+    inner: T,
+    open: bool,
+}
+
+impl<T: rmcp::transport::Transport<rmcp::RoleServer>> rmcp::transport::Transport<rmcp::RoleServer>
+    for PreInitGate<T>
+{
+    type Error = T::Error;
+
+    fn send(
+        &mut self,
+        item: rmcp::service::TxJsonRpcMessage<rmcp::RoleServer>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
+        self.inner.send(item)
+    }
+
+    async fn receive(&mut self) -> Option<rmcp::service::RxJsonRpcMessage<rmcp::RoleServer>> {
+        use rmcp::model::{ClientRequest, JsonRpcMessage};
+        loop {
+            let msg = self.inner.receive().await?;
+            if self.open {
+                return Some(msg);
+            }
+            match &msg {
+                JsonRpcMessage::Request(req) => match &req.request {
+                    ClientRequest::InitializeRequest(_) => {
+                        self.open = true;
+                        return Some(msg);
+                    }
+                    ClientRequest::PingRequest(_) => return Some(msg),
+                    other => {
+                        let method = pre_init_method(other);
+                        tracing::info!(
+                            "answered pre-initialize {method} with method-not-found (the client's \
+                             version probe — the handshake goes on)"
+                        );
+                        let reply = JsonRpcMessage::Error(rmcp::model::JsonRpcError::new(
+                            Some(req.id.clone()),
+                            ErrorData::new(
+                                rmcp::model::ErrorCode::METHOD_NOT_FOUND,
+                                format!("{method} is not supported before initialize"),
+                                None,
+                            ),
+                        ));
+                        if self.inner.send(reply).await.is_err() {
+                            return None;
+                        }
+                    }
+                },
+                _ => tracing::debug!("dropped a pre-initialize message"),
+            }
+        }
+    }
+
+    fn close(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        self.inner.close()
+    }
+}
+
+fn pre_init_method(request: &rmcp::model::ClientRequest) -> String {
+    match request {
+        rmcp::model::ClientRequest::CustomRequest(c) => c.method.clone(),
+        other => serde_json::to_value(other)
+            .ok()
+            .and_then(|v| v.get("method").and_then(|m| m.as_str()).map(str::to_owned))
+            .unwrap_or_else(|| "a request".into()),
+    }
+}
+
 /// Serve stdio by bridging every message to a core's MCP endpoint until the
 /// stdio client disconnects (or the core goes away — satellites die with the
 /// core, v0.6.2). Both shapes serve the handshake FIRST and connect after —
@@ -3001,19 +3376,8 @@ pub async fn serve_stdio_bridge_with(
         .no_proxy()
         .build()
         .map_err(|e| anyhow::anyhow!("building the bridge HTTP client: {e}"))?;
-    let (bound, _bound_rx) = tokio::sync::watch::channel(0u64);
     let (exit, mut exit_rx) = tokio::sync::mpsc::channel::<anyhow::Error>(4);
-    let state = Arc::new(BridgeState {
-        http,
-        slot: std::sync::Mutex::new(None),
-        bound,
-        lease: std::sync::Mutex::new(None),
-        client_name: std::sync::Mutex::new(None),
-        exit,
-        failed: std::sync::Mutex::new(None),
-        startup,
-        grace: bridge_grace(),
-    });
+    let (state, lost_rx) = BridgeState::new(http, exit, startup, bridge_grace());
     // In both shapes the upstream doesn't exist yet when the stdio client's
     // initialize arrives (handshake-first), so it is answered from this
     // crate's own contract — identical to what any 0.8.x core negotiates,
@@ -3042,8 +3406,18 @@ pub async fn serve_stdio_bridge_with(
         info,
         roots: roots.clone(),
     };
-    let service = proxy.serve(rmcp::transport::io::stdio()).await?;
+    let stdio = rmcp::transport::IntoTransport::<rmcp::RoleServer, _, _>::into_transport(
+        rmcp::transport::io::stdio(),
+    );
+    let service = proxy
+        .serve(PreInitGate {
+            inner: stdio,
+            open: false,
+        })
+        .await?;
+    *state.client.lock().unwrap() = Some(service.peer().clone());
     if let Some(resolve) = fixed {
+        *state.rebind.lock().unwrap() = Some(resolve.clone());
         // The Fixed connect runs AFTER the transport is serving, so the
         // handshake answers while the core comes up (a first-run provision
         // can take minutes); early tool calls hold in `peer_when_bound`.
@@ -3093,12 +3467,12 @@ pub async fn serve_stdio_bridge_with(
         });
     }
     // Whichever side ends first ends the bridge — stdio closing is a normal
-    // disconnect; the upstream dying (watcher) or going silent (heartbeat)
-    // means the core is gone and lingering would only strand the client.
+    // disconnect; a failed binding, or a core that didn't come back within
+    // the reconnect window, means lingering would only strand the client.
     let result = tokio::select! {
         served = service.waiting() => served.map(|_| ()).map_err(anyhow::Error::from),
         Some(err) = exit_rx.recv() => Err(err),
-        err = state.clone().heartbeat() => Err(err),
+        err = state.clone().supervise(lost_rx) => Err(err),
     };
     // Clean exit withdraws the lease instead of letting it lapse.
     let parting = state.lease.lock().unwrap().take();
@@ -4100,19 +4474,13 @@ mod tests {
     /// still answers with its error.
     #[tokio::test]
     async fn an_unbound_bridge_answers_after_the_grace() {
-        let (bound, _bound_rx) = tokio::sync::watch::channel(0u64);
         let (exit, _exit_rx) = tokio::sync::mpsc::channel(4);
-        let state = Arc::new(BridgeState {
-            http: reqwest::Client::new(),
-            slot: std::sync::Mutex::new(None),
-            bound,
-            lease: std::sync::Mutex::new(None),
-            client_name: std::sync::Mutex::new(None),
+        let (state, _lost_rx) = BridgeState::new(
+            reqwest::Client::new(),
             exit,
-            failed: std::sync::Mutex::new(None),
-            startup: Some(Arc::new(|| Some("Downloading local models.".into()))),
-            grace: std::time::Duration::from_millis(80),
-        });
+            Some(Arc::new(|| Some("Downloading local models.".into()))),
+            std::time::Duration::from_millis(80),
+        );
         let t0 = std::time::Instant::now();
         let peer = state.peer_within_grace().await.unwrap();
         assert!(peer.is_none(), "nothing is bound yet");
@@ -4126,6 +4494,27 @@ mod tests {
         state.fail("engram bridge: no core".into());
         let err = state.peer_within_grace().await.unwrap_err();
         assert!(err.message.contains("no core"), "{err:?}");
+    }
+
+    /// A heartbeat gap reads as sleep only well past the beat (0.10.4): a
+    /// busy runtime delays a beat by seconds, a closed lid by minutes.
+    #[test]
+    fn only_a_long_heartbeat_gap_reads_as_sleep() {
+        let beat = std::time::Duration::from_secs(15);
+        let secs = std::time::Duration::from_secs;
+        assert_eq!(slept_through(secs(15), beat), None);
+        assert_eq!(
+            slept_through(secs(40), beat),
+            None,
+            "a slow beat is not sleep"
+        );
+        assert_eq!(
+            slept_through(secs(45), beat),
+            None,
+            "the boundary is exclusive"
+        );
+        assert_eq!(slept_through(secs(46), beat), Some(secs(31)));
+        assert_eq!(slept_through(secs(3615), beat), Some(secs(3600)));
     }
 
     /// The tools a bridge lists before it is bound are the core's own — the
@@ -4145,19 +4534,8 @@ mod tests {
     /// unanswered when the bridge exits.
     #[tokio::test]
     async fn failed_binding_answers_held_and_future_requests() {
-        let (bound, _bound_rx) = tokio::sync::watch::channel(0u64);
         let (exit, _exit_rx) = tokio::sync::mpsc::channel(4);
-        let state = Arc::new(BridgeState {
-            http: reqwest::Client::new(),
-            slot: std::sync::Mutex::new(None),
-            bound,
-            lease: std::sync::Mutex::new(None),
-            client_name: std::sync::Mutex::new(None),
-            exit,
-            failed: std::sync::Mutex::new(None),
-            startup: None,
-            grace: BRIDGE_GRACE,
-        });
+        let (state, _lost_rx) = BridgeState::new(reqwest::Client::new(), exit, None, BRIDGE_GRACE);
         // A request already waiting on the binding…
         let held = {
             let state = state.clone();
@@ -5798,19 +6176,8 @@ mod transport_tests {
 
         // The bridge: stdio-shaped duplex → Passthrough → the same endpoint,
         // wired through the real BridgeState::connect path (Fixed shape).
-        let (bound, _bound_rx) = tokio::sync::watch::channel(0u64);
         let (exit, _exit_rx) = tokio::sync::mpsc::channel(4);
-        let state = Arc::new(BridgeState {
-            http: reqwest::Client::new(),
-            slot: std::sync::Mutex::new(None),
-            bound,
-            lease: std::sync::Mutex::new(None),
-            client_name: std::sync::Mutex::new(None),
-            exit,
-            failed: std::sync::Mutex::new(None),
-            startup: None,
-            grace: BRIDGE_GRACE,
-        });
+        let (state, _lost_rx) = BridgeState::new(reqwest::Client::new(), exit, None, BRIDGE_GRACE);
         let info = state.connect(&url, None, BoundBy::Route).await.unwrap();
         let proxy = Passthrough {
             state: state.clone(),

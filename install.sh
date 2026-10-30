@@ -22,12 +22,15 @@
 # Environment:
 #   ENGRAM_VERSION   pin a release tag (default: latest)
 #   ENGRAM_BIN_DIR   install directory (default: ~/.local/bin)
+#   ENGRAM_RELEASES_URL  where release assets live (default: GitHub releases;
+#                        a mirror, or a file:// directory in tests)
 
 set -eu
 
 REPO="techtheist/engram"
 BIN_DIR="${ENGRAM_BIN_DIR:-$HOME/.local/bin}"
 VERSION="${ENGRAM_VERSION:-latest}"
+RELEASES="${ENGRAM_RELEASES_URL:-https://github.com/$REPO/releases/download}"
 SKILL="relaxed"
 CLI=""
 BIN_ONLY=0
@@ -72,7 +75,7 @@ if [ "$VERSION" = "latest" ]; then
     [ -n "$VERSION" ] || die "could not resolve the latest release tag"
 fi
 ASSET="engram-alpha-$VERSION-$TARGET.tar.gz"
-URL="https://github.com/$REPO/releases/download/$VERSION/$ASSET"
+URL="$RELEASES/$VERSION/$ASSET"
 
 # ---- download + verify + install --------------------------------------------
 TMP="$(mktemp -d)"
@@ -92,8 +95,19 @@ say "verifying checksum"
 say "installing engram-alpha to $BIN_DIR"
 mkdir -p "$BIN_DIR"
 tar -xzf "$TMP/$ASSET" -C "$TMP"
-mv "$TMP/engram-alpha" "$BIN_DIR/engram-alpha"
-chmod +x "$BIN_DIR/engram-alpha"
+# Shakedown before the swap (issue #17): start the new binary once, staged
+# where it will run (a noexec temp dir can't fail a good one), and never let
+# one that can't start replace one that can.
+STAGED="$BIN_DIR/.engram-alpha.new"
+mv "$TMP/engram-alpha" "$STAGED"
+chmod +x "$STAGED"
+if ! SHAKEDOWN="$("$STAGED" --version 2>&1)" || [ "${SHAKEDOWN#engram-alpha }" = "$SHAKEDOWN" ]; then
+    rm -f "$STAGED"
+    printf '%s\n' "$SHAKEDOWN" >&2
+    die "the $VERSION binary does not start on this machine — nothing was replaced. Pin a release that works here with ENGRAM_VERSION=<tag> (see docs/troubleshooting.md)"
+fi
+say "shakedown: $SHAKEDOWN starts on this machine"
+mv "$STAGED" "$BIN_DIR/engram-alpha"
 
 case ":$PATH:" in *":$BIN_DIR:"*) ;; *)
     say "NOTE: $BIN_DIR is not on your PATH — add it to your shell profile" ;;

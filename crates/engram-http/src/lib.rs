@@ -809,6 +809,9 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
         "status": "ok",
         "version": engram_core::advertised_version(),
         "db": state.db_path,
+        // Which process answered (0.10.4): a reconnecting bridge compares it
+        // to tell a restarted core from one that was only busy.
+        "pid": std::process::id(),
     }))
 }
 

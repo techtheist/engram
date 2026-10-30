@@ -75,7 +75,8 @@ an optional `project`:
 ## How it works underneath
 
 The core process is the sole owner of every open store; assistants connect
-through lightweight bridges that die with the core (no orphan processes),
+through lightweight bridges that follow the core — they reconnect when it
+restarts and exit when it stays gone (no orphan processes),
 and the session brief and `doctor` read through it the same way. This
 matters most on the [TepinDB backend](./storage.md), whose single-file
 stores allow exactly one owning process — the core *is* that process, for
