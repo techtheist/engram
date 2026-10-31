@@ -28,7 +28,7 @@ const provisionalCount = computed(
     () =>
         activeNodes.value.filter(
             (n) =>
-                n.source === 'claude' &&
+                n.source !== 'user' &&
                 n.approved_at == null &&
                 n.trust_override == null &&
                 !n.stale,

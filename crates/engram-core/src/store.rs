@@ -512,7 +512,7 @@ pub trait Store: Send {
             .into_iter()
             .filter(|n| {
                 n.valid_until.is_none()
-                    && n.source == Source::Claude
+                    && n.source == Source::Agent
                     && n.approved_at.is_none()
                     && n.trust_override.is_none()
                     && matches!(n.durability, Durability::Episodic | Durability::Volatile)

@@ -408,7 +408,22 @@ fn check_wiring(r: &mut Report, repo: &Path, db_abs: &Path) {
         r.note("no supported assistants detected on this machine");
         return;
     }
-    for agent in detected {
+    // An assistant installed on the machine but not wired here is only worth
+    // a warning when nothing is: a repo set up for Windsurf alone shouldn't
+    // be nagged about Claude (issue #18).
+    let wired_elsewhere = |agent: &str| {
+        detected
+            .iter()
+            .any(|&other| other != agent && setup::is_wired(repo, other))
+    };
+    for &agent in &detected {
+        let plugin = agent == "claude" && setup::claude_plugin_installed();
+        if !plugin && !setup::is_wired(repo, agent) && wired_elsewhere(agent) {
+            r.note(&format!(
+                "{agent}: installed, not wired here — `engram-alpha setup --cli {agent}` if you use it"
+            ));
+            continue;
+        }
         match agent {
             "claude" => check_claude(r, repo, db_abs),
             "codex" => check_codex(r),

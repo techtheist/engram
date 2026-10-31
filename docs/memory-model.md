@@ -70,6 +70,20 @@ Every node declares how long it should matter, and
 Open Problems and Intents never fade while open — a worklist is not
 archaeology.
 
+## Who wrote a note
+
+Every note records its `source`: `user` for a person (the pane, the CLI)
+and `agent` for an AI assistant writing over MCP. A `user` note starts out
+approved; an `agent` note waits in the Review drawer, and an unapproved
+episodic or volatile one can decay out. Before 0.11.0 the agent value was
+`claude` whatever the assistant (issue #18); older graphs and exports still
+carry it, and it reads as `agent`.
+
+Which assistant wrote a note is not recorded yet: a note keeps its
+`session_id`, and the pane's System panel lists which clients bound to the
+graph. Naming the agent per note would add a field to every note, so it waits
+for a real need.
+
 ## Capture modes
 
 How much your assistant writes is a setting, not a negotiation

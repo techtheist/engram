@@ -165,6 +165,18 @@ fn never_rewrites_unparseable_config() {
     assert_dbless_engram_entry(&sb.json_at(&sb.legacy_path()));
 }
 
+#[test]
+fn an_empty_config_is_filled_in() {
+    // Issue #18: a fresh Windsurf plugin leaves an empty mcp_config.json.
+    let sb = Sandbox::new("emptyjson");
+    std::fs::create_dir_all(sb.xdg_path().parent().unwrap()).unwrap();
+    std::fs::write(sb.xdg_path(), "\n").unwrap();
+
+    let out = sb.run_setup();
+    assert!(out.status.success(), "setup succeeds: {out:?}");
+    assert_dbless_engram_entry(&sb.json_at(&sb.xdg_path()));
+}
+
 /// The claude adapter's project entry went db-less too (its launch cwd IS
 /// the project, and Claude Code answers roots) — locked here so a future
 /// adapter edit doesn't silently reintroduce the per-repo pin.

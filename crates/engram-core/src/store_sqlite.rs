@@ -1166,7 +1166,7 @@ impl Store for SqliteStore {
     fn decay_candidates(&self, ttl_secs: i64, now_ts: i64) -> Result<Vec<Node>> {
         let policy = self.policy();
         let sql = format!(
-            "{NODE_SELECT} WHERE valid_until IS NULL AND source='claude' \
+            "{NODE_SELECT} WHERE valid_until IS NULL AND source IN ('agent','claude') \
              AND approved_at IS NULL AND trust_override IS NULL \
              AND durability IN ('episodic','volatile') \
              ORDER BY created_at"

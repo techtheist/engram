@@ -411,7 +411,7 @@ fn write(
         body: Some(body.to_string()),
         created_at: Some(created_at),
         durability: Durability::Stable,
-        source: Source::Claude,
+        source: Source::Agent,
         session_id: Some("authority".into()),
         status: None,
         code_refs: Vec::new(),

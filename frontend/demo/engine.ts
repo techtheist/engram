@@ -156,7 +156,7 @@ function seedNode(s: SeedNode, now: number): GraphNode {
         body: s.body ?? null,
         durability: s.durability,
         source: s.source,
-        session_id: s.session ?? (s.source === 'claude' ? 'demo-session' : null),
+        session_id: s.session ?? (s.source === 'agent' ? 'demo-session' : null),
         created_at: now - s.days * DAY,
         valid_from: null,
         valid_until: at(s.archived),
@@ -408,7 +408,7 @@ function stressSeeds(n: number): { nodes: SeedNode[]; edges: SeedEdge[] } {
     while (edges.length < Math.round(n * 1.5) && guard++ < n * 20) {
         const from = keyList[Math.floor(rnd() * keyList.length)]!
         const to = keyList[Math.floor(rnd() * keyList.length)]!
-        add({ type: verbs[Math.floor(rnd() * verbs.length)]!, from, to, source: 'claude', days: Math.floor(rnd() * 100) })
+        add({ type: verbs[Math.floor(rnd() * verbs.length)]!, from, to, source: 'agent', days: Math.floor(rnd() * 100) })
     }
     return { nodes, edges }
 }

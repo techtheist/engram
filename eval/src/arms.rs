@@ -514,7 +514,7 @@ impl EngramArm {
                 edge_type: engram_core::EdgeType::parse(e.verb)?,
                 from_id: from_id.clone(),
                 to_id: to_id.clone(),
-                source: engram_core::Source::Claude,
+                source: engram_core::Source::Agent,
                 note: None,
                 confidence: None,
                 strength: None,
@@ -537,7 +537,7 @@ impl EngramArm {
                     edge_type: engram_core::EdgeType::parse("replaces")?,
                     from_id: newer.clone(),
                     to_id: older.clone(),
-                    source: engram_core::Source::Claude,
+                    source: engram_core::Source::Agent,
                     note: None,
                     confidence: None,
                     strength: None,
@@ -631,7 +631,7 @@ pub(crate) fn new_node(f: &Fact) -> NewNode {
         body: Some(f.body.clone()),
         created_at,
         durability: engram_core::Durability::Stable,
-        source: engram_core::Source::Claude,
+        source: engram_core::Source::Agent,
         // The sessions bench assigns per-fact sessions; every other corpus
         // keeps the historical single-session write.
         session_id: Some(f.session.clone().unwrap_or_else(|| "eval".to_string())),

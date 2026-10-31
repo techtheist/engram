@@ -122,7 +122,7 @@ fn node(f_title: String, body: String, f: &Fact, tags: Vec<String>) -> NewNode {
         body: Some(body),
         created_at: None,
         durability: Durability::Stable,
-        source: Source::Claude,
+        source: Source::Agent,
         session_id: None,
         status: f.kind.status(),
         code_refs: vec![],

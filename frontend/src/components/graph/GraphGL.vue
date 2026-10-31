@@ -302,7 +302,7 @@ const PROBE_NODE: GraphNode = {
     title: 'Probe',
     body: 'Probe **strong** `code` https://example.dev\n\n- item',
     durability: 'stable',
-    source: 'claude',
+    source: 'agent',
     session_id: null,
     created_at: 0,
     valid_from: null,

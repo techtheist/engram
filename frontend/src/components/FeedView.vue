@@ -67,7 +67,7 @@ const active = (n: GraphNode): boolean => n.valid_until == null
 function needsReview(n: GraphNode): boolean {
     if (!active(n)) return false
     return (
-        (n.source === 'claude' && n.approved_at == null && n.trust_override == null) ||
+        (n.source !== 'user' && n.approved_at == null && n.trust_override == null) ||
         n.stale ||
         driftByNode.value.has(n.id)
     )

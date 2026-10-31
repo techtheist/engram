@@ -824,51 +824,59 @@ impl Setup {
     fn wire_windsurf_file(&self, path: &Path, shown: &str) -> anyhow::Result<()> {
         let entry = serde_json::json!({ "command": self.bin, "args": ["mcp"] });
         match fs::read_to_string(path) {
-            Ok(current) => match serde_json::from_str::<serde_json::Value>(&current) {
-                Ok(mut v) if v.is_object() => {
-                    if let Some(engram) = v.pointer_mut("/mcpServers/engram") {
-                        let cmd = engram.get("command").and_then(|c| c.as_str());
-                        if cmd.is_some_and(is_prerename_bin) {
-                            // The global repair is db-less on purpose — a
-                            // --db here would pin every project to one repo.
-                            engram["command"] = serde_json::json!(self.bin);
-                            engram["args"] = serde_json::json!(["mcp"]);
-                            fs::write(path, serde_json::to_string_pretty(&v)? + "\n")?;
-                            say(&format!(
-                                "windsurf: re-pointed {shown}'s engram entry at this binary (was the pre-rename `engram`)"
-                            ));
-                        } else {
-                            say(&format!(
-                                "windsurf: {shown} already has engram — leaving it"
-                            ));
-                        }
-                    } else {
-                        v.as_object_mut()
-                            .expect("checked is_object")
-                            .entry("mcpServers")
-                            .or_insert_with(|| serde_json::json!({}));
-                        match v["mcpServers"].as_object_mut() {
-                            Some(servers) => {
-                                servers.insert("engram".into(), entry);
+            // An empty file (a fresh Windsurf plugin leaves one, issue #18)
+            // is an empty config, not a broken one.
+            Ok(current) => {
+                match serde_json::from_str::<serde_json::Value>(if current.trim().is_empty() {
+                    "{}"
+                } else {
+                    &current
+                }) {
+                    Ok(mut v) if v.is_object() => {
+                        if let Some(engram) = v.pointer_mut("/mcpServers/engram") {
+                            let cmd = engram.get("command").and_then(|c| c.as_str());
+                            if cmd.is_some_and(is_prerename_bin) {
+                                // The global repair is db-less on purpose — a
+                                // --db here would pin every project to one repo.
+                                engram["command"] = serde_json::json!(self.bin);
+                                engram["args"] = serde_json::json!(["mcp"]);
                                 fs::write(path, serde_json::to_string_pretty(&v)? + "\n")?;
-                                say(&format!("windsurf: added engram to {shown}"));
-                            }
-                            None => {
                                 say(&format!(
-                                    "windsurf: {shown} has a non-object mcpServers — add this to it manually:"
+                                    "windsurf: re-pointed {shown}'s engram entry at this binary (was the pre-rename `engram`)"
                                 ));
-                                println!("    {}", self.mcp_snippet(false));
+                            } else {
+                                say(&format!(
+                                    "windsurf: {shown} already has engram — leaving it"
+                                ));
+                            }
+                        } else {
+                            v.as_object_mut()
+                                .expect("checked is_object")
+                                .entry("mcpServers")
+                                .or_insert_with(|| serde_json::json!({}));
+                            match v["mcpServers"].as_object_mut() {
+                                Some(servers) => {
+                                    servers.insert("engram".into(), entry);
+                                    fs::write(path, serde_json::to_string_pretty(&v)? + "\n")?;
+                                    say(&format!("windsurf: added engram to {shown}"));
+                                }
+                                None => {
+                                    say(&format!(
+                                        "windsurf: {shown} has a non-object mcpServers — add this to it manually:"
+                                    ));
+                                    println!("    {}", self.mcp_snippet(false));
+                                }
                             }
                         }
                     }
+                    _ => {
+                        say(&format!(
+                            "windsurf: {shown} isn't valid JSON — add this to its mcpServers manually:"
+                        ));
+                        println!("    {}", self.mcp_snippet(false));
+                    }
                 }
-                _ => {
-                    say(&format!(
-                        "windsurf: {shown} isn't valid JSON — add this to its mcpServers manually:"
-                    ));
-                    println!("    {}", self.mcp_snippet(false));
-                }
-            },
+            }
             Err(_) => {
                 if let Some(parent) = path.parent() {
                     fs::create_dir_all(parent)?;

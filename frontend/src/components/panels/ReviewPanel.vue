@@ -69,7 +69,7 @@ const provisional = computed(() =>
         .filter(
             (n) =>
                 active(n) &&
-                ((n.source === 'claude' && n.approved_at == null && n.trust_override == null) ||
+                ((n.source !== 'user' && n.approved_at == null && n.trust_override == null) ||
                     n.stale),
         )
         .sort((a, b) => Number(b.stale) - Number(a.stale) || b.created_at - a.created_at),

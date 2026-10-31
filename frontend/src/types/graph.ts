@@ -9,7 +9,8 @@ export type NodeType = string
 export type EdgeType = string
 
 export type Durability = 'stable' | 'episodic' | 'volatile'
-export type Source = 'user' | 'claude'
+// 'claude' is the pre-0.11.0 name of 'agent' (issue #18); old graphs still carry it.
+export type Source = 'user' | 'agent' | 'claude'
 export type NodeStatus = 'open' | 'resolved' | 'obsolete'
 
 export interface GraphNode {

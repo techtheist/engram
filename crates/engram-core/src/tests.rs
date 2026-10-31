@@ -16,7 +16,7 @@ fn new_node(t: NodeType, title: &str, body: &str) -> NewNode {
         body: Some(body.to_string()),
         created_at: None,
         durability: Durability::Stable,
-        source: Source::Claude,
+        source: Source::Agent,
         session_id: Some("s1".to_string()),
         status: None,
         code_refs: vec![],
@@ -115,7 +115,7 @@ fn delete_node_cascades_edges() {
         edge_type: EdgeType::Because,
         from_id: a.id.clone(),
         to_id: b.id.clone(),
-        source: Source::Claude,
+        source: Source::Agent,
         note: Some("justified by".into()),
         confidence: None,
         strength: None,
@@ -141,7 +141,7 @@ fn foreign_key_blocks_dangling_edge() {
         edge_type: EdgeType::Because,
         from_id: a.id.clone(),
         to_id: "nonexistent".into(),
-        source: Source::Claude,
+        source: Source::Agent,
         note: None,
         confidence: None,
         strength: None,
@@ -483,7 +483,7 @@ fn engine_reembeds_on_text_update() {
 fn trust_boost_prefers_user_source() {
     let e = engine();
     let mut claude = new_node(NodeType::Decision, "shared title here", "shared body text");
-    claude.source = Source::Claude;
+    claude.source = Source::Agent;
     claude.durability = Durability::Episodic;
     let c = e.add_node(claude).unwrap();
 
@@ -535,7 +535,7 @@ fn export_import_roundtrip() {
         edge_type: EdgeType::Because,
         from_id: a.id.clone(),
         to_id: b.id.clone(),
-        source: Source::Claude,
+        source: Source::Agent,
         note: Some("justified by".into()),
         confidence: None,
         strength: None,
@@ -1828,7 +1828,7 @@ fn conflict_edges_demote_the_older_endpoint_but_never_pins() {
         edge_type: EdgeType::ConflictsWith,
         from_id: newer.id.clone(),
         to_id: old.id.clone(),
-        source: Source::Claude,
+        source: Source::Agent,
         note: None,
         confidence: None,
         strength: None,
@@ -1855,7 +1855,7 @@ fn conflict_edges_demote_the_older_endpoint_but_never_pins() {
         edge_type: EdgeType::ConflictsWith,
         from_id: challenger.id.clone(),
         to_id: pinned.id.clone(),
-        source: Source::Claude,
+        source: Source::Agent,
         note: None,
         confidence: None,
         strength: None,
@@ -1922,7 +1922,7 @@ fn withdrawing_conflict_evidence_withdraws_the_demotion() {
         edge_type: EdgeType::ConflictsWith,
         from_id: from.to_string(),
         to_id: to.to_string(),
-        source: Source::Claude,
+        source: Source::Agent,
         note: None,
         confidence: None,
         strength: None,
@@ -1993,7 +1993,7 @@ fn claude_replaces_verdict_cannot_archive_a_pinned_node() {
     assert_eq!(s.b.id, pinned.id);
 
     let err = e
-        .resolve_suspect(&s.id, SuspectVerdict::Replaces, Source::Claude)
+        .resolve_suspect(&s.id, SuspectVerdict::Replaces, Source::Agent)
         .unwrap_err();
     assert!(matches!(err, crate::Error::Pinned(_)), "got: {err:?}");
     let still = e.get_node(&pinned.id).unwrap().unwrap();
@@ -2024,7 +2024,7 @@ fn import_backfills_confirmed_at_like_the_migration() {
         title: "healthy on v0.4.1".into(),
         body: None,
         durability: Durability::Episodic,
-        source: Source::Claude,
+        source: Source::Agent,
         session_id: None,
         created_at: now() - 200 * day,
         valid_from: None,
@@ -2121,7 +2121,15 @@ fn node_json_uses_canonical_strings() {
     let v: serde_json::Value = serde_json::to_value(&n).unwrap();
     assert_eq!(v["type"], "Caution");
     assert_eq!(v["durability"], "stable");
-    assert_eq!(v["source"], "claude");
+    assert_eq!(v["source"], "agent");
+}
+
+#[test]
+fn the_pre_0_11_agent_source_still_reads() {
+    // Before 0.11.0 every MCP client wrote "claude" (issue #18).
+    assert_eq!(Source::parse("claude").unwrap(), Source::Agent);
+    let s: Source = serde_json::from_value(serde_json::json!("claude")).unwrap();
+    assert_eq!(s.as_str(), "agent");
 }
 
 // ---- retrieval upgrade / brief / checked writes / edge repair -------------
@@ -2131,7 +2139,7 @@ fn link(s: &dyn Store, t: EdgeType, from: &str, to: &str) -> Edge {
         edge_type: t,
         from_id: from.to_string(),
         to_id: to.to_string(),
-        source: Source::Claude,
+        source: Source::Agent,
         note: None,
         confidence: None,
         strength: None,
@@ -2424,7 +2432,7 @@ fn legacy_uuid_ids_shrink_with_edges_and_embeddings_intact() {
         title: "legacy node a".into(),
         body: None,
         durability: Durability::Stable,
-        source: Source::Claude,
+        source: Source::Agent,
         session_id: None,
         created_at: 1,
         valid_from: Some(1),
@@ -2453,7 +2461,7 @@ fn legacy_uuid_ids_shrink_with_edges_and_embeddings_intact() {
         edge_type: EdgeType::Because,
         from_id: uuid_a.clone(),
         to_id: uuid_b.clone(),
-        source: Source::Claude,
+        source: Source::Agent,
         created_at: 1,
         confidence: None,
         strength: None,
@@ -2597,7 +2605,7 @@ fn resolve_replaces_archives_the_older_node() {
     assert_eq!(s.b.id, old.id);
 
     let edge = e
-        .resolve_suspect(&s.id, SuspectVerdict::Replaces, Source::Claude)
+        .resolve_suspect(&s.id, SuspectVerdict::Replaces, Source::Agent)
         .unwrap()
         .unwrap();
     assert_eq!(edge.edge_type, EdgeType::Replaces);
@@ -3008,7 +3016,7 @@ fn a_replaces_edge_retires_the_node_it_replaces() {
         edge_type: verb,
         from_id: from.to_string(),
         to_id: to.to_string(),
-        source: Source::Claude,
+        source: Source::Agent,
         note: None,
         confidence: None,
         strength: None,
@@ -3082,7 +3090,7 @@ fn validation_retires_nodes_replaced_before_the_rule_existed() {
             edge_type: EdgeType::Replaces,
             from_id: new.id.clone(),
             to_id: old.id.clone(),
-            source: Source::Claude,
+            source: Source::Agent,
             note: None,
             confidence: None,
             strength: None,
@@ -3116,7 +3124,7 @@ fn timeline_walks_the_replaces_chain_oldest_first() {
         edge_type: EdgeType::Replaces,
         from_id: from.to_string(),
         to_id: to.to_string(),
-        source: Source::Claude,
+        source: Source::Agent,
         note: Some(note.to_string()),
         confidence: None,
         strength: None,
@@ -3251,7 +3259,7 @@ fn audit_journals_edges_with_sentence_labels() {
             edge_type: EdgeType::Because,
             from_id: a.id.clone(),
             to_id: b.id.clone(),
-            source: Source::Claude,
+            source: Source::Agent,
             note: None,
             confidence: None,
             strength: None,
@@ -3898,7 +3906,7 @@ fn store_battery(s: &dyn Store, backend: &str) {
             edge_type: EdgeType::Because,
             from_id: a.id.clone(),
             to_id: user.id.clone(),
-            source: Source::Claude,
+            source: Source::Agent,
             confidence: None,
             strength: None,
             note: Some("triple reads as a sentence".into()),
@@ -3910,7 +3918,7 @@ fn store_battery(s: &dyn Store, backend: &str) {
             edge_type: EdgeType::About,
             from_id: a.id.clone(),
             to_id: "missing-node".into(),
-            source: Source::Claude,
+            source: Source::Agent,
             confidence: None,
             strength: None,
             note: None,
@@ -3930,7 +3938,7 @@ fn store_battery(s: &dyn Store, backend: &str) {
             edge_type: EdgeType::ConflictsWith,
             from_id: secret.id.clone(),
             to_id: a.id.clone(),
-            source: Source::Claude,
+            source: Source::Agent,
             confidence: None,
             strength: None,
             note: None,
@@ -4630,7 +4638,7 @@ fn tepin_edge_indexes_answer_correctly_at_volume() {
             edge_type: EdgeType::BuildsOn,
             from_id: nodes[i].id.clone(),
             to_id: nodes[i - 1].id.clone(),
-            source: Source::Claude,
+            source: Source::Agent,
             confidence: None,
             strength: None,
             note: None,
@@ -4641,7 +4649,7 @@ fn tepin_edge_indexes_answer_correctly_at_volume() {
             edge_type: EdgeType::About,
             from_id: nodes[i].id.clone(),
             to_id: nodes[0].id.clone(),
-            source: Source::Claude,
+            source: Source::Agent,
             confidence: None,
             strength: None,
             note: None,
@@ -4686,7 +4694,7 @@ fn tepin_write_read_sequences_hold_across_reopen() {
             edge_type: EdgeType::Because,
             from_id: a.id.clone(),
             to_id: b.id.clone(),
-            source: Source::Claude,
+            source: Source::Agent,
             confidence: None,
             strength: None,
             note: None,
@@ -4860,7 +4868,7 @@ fn tepin_import_is_idempotent_at_volume() {
         title: format!("imported insight number {i}"),
         body: Some(format!("body of note {i}")),
         durability: Durability::Stable,
-        source: Source::Claude,
+        source: Source::Agent,
         session_id: Some("bulk".into()),
         created_at: 1_000_000 + i as i64,
         valid_from: Some(1_000_000 + i as i64),
@@ -4886,7 +4894,7 @@ fn tepin_import_is_idempotent_at_volume() {
             edge_type: EdgeType::BuildsOn,
             from_id: nodes[i].id.clone(),
             to_id: nodes[i - 1].id.clone(),
-            source: Source::Claude,
+            source: Source::Agent,
             created_at: 1_000_000,
             confidence: None,
             strength: None,
@@ -5004,7 +5012,7 @@ fn tepin_embed_model_swap_keeps_writes_working() {
         title: "imported without a vector".into(),
         body: None,
         durability: Durability::Stable,
-        source: Source::Claude,
+        source: Source::Agent,
         session_id: None,
         created_at: 1,
         valid_from: Some(1),
@@ -5808,7 +5816,7 @@ fn custom_ontology_runs_every_role_on_both_backends() {
                 edge_type: EdgeType::Replaces,
                 from_id: b.id.clone(),
                 to_id: a.id.clone(),
-                source: Source::Claude,
+                source: Source::Agent,
                 note: None,
                 confidence: None,
                 strength: None,
@@ -5822,7 +5830,7 @@ fn custom_ontology_runs_every_role_on_both_backends() {
                 edge_type: EdgeType::parse("supersedes").unwrap(),
                 from_id: b.id.clone(),
                 to_id: a.id.clone(),
-                source: Source::Claude,
+                source: Source::Agent,
                 note: None,
                 confidence: None,
                 strength: None,
@@ -5848,7 +5856,7 @@ fn custom_ontology_runs_every_role_on_both_backends() {
                 edge_type: EdgeType::parse("contradicts").unwrap(),
                 from_id: d.id.clone(),
                 to_id: c.id.clone(),
-                source: Source::Claude,
+                source: Source::Agent,
                 note: None,
                 confidence: None,
                 strength: None,
@@ -7287,7 +7295,7 @@ fn an_authored_tombstone_that_replaces_its_victim_buries_it_traceably() {
         edge_type: EdgeType::Replaces,
         from_id: t.id.clone(),
         to_id: victim.id.clone(),
-        source: Source::Claude,
+        source: Source::Agent,
         note: None,
         confidence: None,
         strength: None,
@@ -8034,7 +8042,7 @@ fn answered_sweep_penalizes_already_linked_pairs() {
         edge_type: EdgeType::BuildsOn,
         from_id: fix.id.clone(),
         to_id: problem.id.clone(),
-        source: Source::Claude,
+        source: Source::Agent,
         note: None,
         confidence: None,
         strength: None,
@@ -8053,7 +8061,7 @@ fn answered_sweep_penalizes_already_linked_pairs() {
         edge_type: EdgeType::Answers,
         from_id: fix.id.clone(),
         to_id: problem.id.clone(),
-        source: Source::Claude,
+        source: Source::Agent,
         note: None,
         confidence: None,
         strength: None,
@@ -8611,7 +8619,7 @@ fn edge(e: &Engine, t: EdgeType, from: &str, to: &str) -> Edge {
         edge_type: t,
         from_id: from.to_string(),
         to_id: to.to_string(),
-        source: Source::Claude,
+        source: Source::Agent,
         note: None,
         confidence: None,
         strength: None,
@@ -8650,7 +8658,7 @@ fn merge_nodes_unions_rehomes_and_supersedes() {
             &[v1.id.clone(), v2.id.clone()],
             None,
             Some("the merged canonical form".into()),
-            Source::Claude,
+            Source::Agent,
         )
         .unwrap();
 
@@ -8716,7 +8724,7 @@ fn merge_refuses_pinned_victims_for_the_assistant_but_not_the_user() {
         std::slice::from_ref(&v.id),
         None,
         None,
-        Source::Claude,
+        Source::Agent,
     );
     assert!(matches!(refused, Err(Error::Pinned(_))));
     assert!(e.get_node(&v.id).unwrap().unwrap().valid_until.is_none());
@@ -8750,7 +8758,7 @@ fn merge_moves_outgoing_supersession_but_never_incoming() {
         std::slice::from_ref(&v.id),
         None,
         None,
-        Source::Claude,
+        Source::Agent,
     )
     .unwrap();
 
@@ -8802,7 +8810,7 @@ fn merge_rehomes_a_live_conflict_and_the_survivor_inherits_reconciliation() {
         std::slice::from_ref(&v.id),
         None,
         None,
-        Source::Claude,
+        Source::Agent,
     )
     .unwrap();
 
@@ -9358,7 +9366,7 @@ fn history_search_and_session_listing_take_the_same_time_window() {
             body: Some(format!("{title} — the daemon leaked memory")),
             created_at: Some(ts),
             durability: Durability::Stable,
-            source: Source::Claude,
+            source: Source::Agent,
             session_id: Some(sid.into()),
             status: None,
             code_refs: vec![],
@@ -9456,7 +9464,7 @@ fn recent_ordering_folds_restatements_without_ever_cutting_one() {
             body: Some(text.into()),
             created_at: Some(ts),
             durability: Durability::Stable,
-            source: Source::Claude,
+            source: Source::Agent,
             session_id: Some(format!("sess-{ts}")),
             status: None,
             code_refs: vec![],
@@ -9569,7 +9577,7 @@ fn born_in_provenance_parks_and_resolves() {
             body: Some("text".into()),
             created_at: Some(ts),
             durability: Durability::Stable,
-            source: Source::Claude,
+            source: Source::Agent,
             session_id: Some(sid.into()),
             status: None,
             code_refs: vec![],
@@ -10093,7 +10101,7 @@ fn history_sealing_end_to_end() {
             body: Some(text.into()),
             created_at: Some(now() - 50 + turn as i64),
             durability: Durability::Stable,
-            source: Source::Claude,
+            source: Source::Agent,
             session_id: Some("seal-sess".into()),
             status: None,
             code_refs: vec![],
@@ -10297,7 +10305,7 @@ fn graph_encryption_round_trip_preserves_everything() {
             edge_type: EdgeType::Because,
             from_id: nodes[0].id.clone(),
             to_id: nodes[2].id.clone(),
-            source: Source::Claude,
+            source: Source::Agent,
             note: Some("the ops-burden analysis".into()),
             confidence: None,
             strength: None,
@@ -10591,7 +10599,7 @@ fn sealed_store_brief_merge_timeline_and_tombstone_read_prose() {
         edge_type: EdgeType::Replaces,
         from_id: v2.id.clone(),
         to_id: nodes[1].id.clone(),
-        source: Source::Claude,
+        source: Source::Agent,
         note: Some("cadence tightened".into()),
         confidence: None,
         strength: None,
@@ -10610,7 +10618,7 @@ fn sealed_store_brief_merge_timeline_and_tombstone_read_prose() {
             &[nodes[4].id.clone()],
             None,
             None,
-            Source::Claude,
+            Source::Agent,
         )
         .unwrap();
     assert_eq!(survivor.survivor.title, "Retry with jitter");
@@ -12488,7 +12496,7 @@ fn a_link_settles_the_pending_suspect_between_its_notes() {
             edge_type: verb,
             from_id: from.id.clone(),
             to_id: to.id.clone(),
-            source: Source::Claude,
+            source: Source::Agent,
             note: None,
             confidence: None,
             strength: None,

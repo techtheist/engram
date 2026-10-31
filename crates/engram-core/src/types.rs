@@ -121,10 +121,46 @@ str_enum!(Durability {
     Volatile => "volatile",
 });
 
-str_enum!(Source {
-    User => "user",
-    Claude => "claude",
-});
+/// Who wrote a node: a person (the pane, the CLI) or an agent over MCP. The
+/// agent value was `"claude"` before 0.11.0 (issue #18 — any MCP client wrote
+/// it); stored graphs and imports still carry it, so it parses as `Agent`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Source {
+    User,
+    Agent,
+}
+
+impl Source {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Agent => "agent",
+        }
+    }
+    pub fn parse(s: &str) -> crate::Result<Self> {
+        match s {
+            "user" => Ok(Self::User),
+            "agent" | "claude" => Ok(Self::Agent),
+            _ => Err(crate::Error::Parse {
+                kind: "Source",
+                value: s.to_string(),
+            }),
+        }
+    }
+}
+
+impl Serialize for Source {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for Source {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Self::parse(&s).map_err(serde::de::Error::custom)
+    }
+}
 
 str_enum!(NodeStatus {
     Open => "open",

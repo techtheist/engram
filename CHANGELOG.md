@@ -91,6 +91,21 @@ consolidate them, without adding any structure to the graph.
   Apple Silicon download. The Mac binary now builds on `macos-15`; `macos-14`
   retires on 2026-11-02.
 
+### Engram stops assuming Claude (issue #18)
+
+- **Notes an agent writes say `source: "agent"`, not `"claude"`.** The value
+  always meant "written by an agent over MCP", whichever agent it was —
+  Windsurf, Codex, Cursor or Claude Code. Graphs and exports from earlier
+  versions keep their `"claude"` notes and read them as `agent`; nothing is
+  migrated. The pane, the HTTP API and `export` write `agent` from now on.
+- **`doctor` no longer nags about assistants a repo doesn't use.** An
+  assistant installed on the machine but not wired in this repo is a quiet
+  note when another one is wired here (a Windsurf repo on a machine that also
+  has Claude Code), and a warning only when nothing is.
+- **`setup --cli windsurf` fills in an empty `mcp_config.json`.** A fresh
+  Windsurf plugin leaves the file empty; setup used to call it invalid JSON
+  and ask for a manual edit.
+
 ## v0.10.4
 
 ### The Linux binary runs on Ubuntu 24.04 and Debian again (issue #17)

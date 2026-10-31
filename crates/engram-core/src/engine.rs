@@ -370,7 +370,7 @@ impl Engine {
         };
         let mut reparked = 0;
         for node in self.store.all_nodes()? {
-            if node.source != crate::types::Source::Claude
+            if node.source != crate::types::Source::Agent
                 || node.valid_until.is_some()
                 || now - node.created_at > window_secs
                 || already.contains(&node.id)
@@ -453,7 +453,7 @@ impl Engine {
                 edge_type: crate::types::EdgeType::parse(crate::history::VERB_BORN_IN)?,
                 from_id: note,
                 to_id: msg,
-                source: crate::types::Source::Claude,
+                source: crate::types::Source::Agent,
                 created_at: ts,
                 confidence: None,
                 strength: None,
@@ -4106,7 +4106,7 @@ impl Engine {
                 .store
                 .get_node(id)?
                 .ok_or_else(|| crate::Error::NotFound(id.clone()))?;
-            if source == Source::Claude && node.trust_override.is_some() {
+            if source == Source::Agent && node.trust_override.is_some() {
                 return Err(crate::Error::Pinned(format!(
                     "\"{}\" ({}) is user-pinned; merging would archive it — \
                      tell the user and let them merge this pair in the pane",
@@ -5638,7 +5638,7 @@ impl Engine {
                 // A pin is the user's "never fade" — an assistant verdict
                 // must not archive it. Surface instead; the user can still
                 // replace it from the pane (a user verdict proceeds).
-                if source == Source::Claude
+                if source == Source::Agent
                     && let Some(older) = self.store.get_node(&suspect.b_id)?
                     && older.trust_override.is_some()
                 {

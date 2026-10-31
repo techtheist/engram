@@ -125,7 +125,7 @@ pub fn cascade(cfg: &Config) -> anyhow::Result<CascadeReport> {
                         source: if role == "user" {
                             Source::User
                         } else {
-                            Source::Claude
+                            Source::Agent
                         },
                         session_id: Some(sid.clone()),
                         status: None,

@@ -1112,7 +1112,7 @@ impl Engram {
                 body: a.body,
                 created_at,
                 durability,
-                source: Source::Claude,
+                source: Source::Agent,
                 session_id: a.session_id.or_else(|| Some(self.session_id.to_string())),
                 status: None,
                 code_refs: a.code_refs,
@@ -1413,7 +1413,7 @@ impl Engram {
                 edge_type,
                 from_id: a.from,
                 to_id: a.to,
-                source: Source::Claude,
+                source: Source::Agent,
                 note: a.note,
                 confidence: a.confidence,
                 strength: None,
@@ -1482,7 +1482,7 @@ impl Engram {
         let engine = self.write_engine_for(&a.project)?;
         let edge = self
             .mcp(&engine)
-            .resolve_suspect(&a.id, verdict, Source::Claude)
+            .resolve_suspect(&a.id, verdict, Source::Agent)
             .map_err(map_err)?;
         if matches!(verdict, SuspectVerdict::Conflict) {
             // The judge doesn't need its own verdict pushed back at it.
@@ -1625,7 +1625,7 @@ impl Engram {
         let engine = self.write_engine_for(&a.project)?;
         let outcome = self
             .mcp(&engine)
-            .merge_nodes(&a.survivor, &a.victims, a.title, a.body, Source::Claude)
+            .merge_nodes(&a.survivor, &a.victims, a.title, a.body, Source::Agent)
             .map_err(map_err)?;
         let mut out = json!({
             "ok": true,
@@ -5606,7 +5606,7 @@ pub(crate) mod tool_tests {
                     body: Some(text.to_string()),
                     created_at: Some(base - 100 + i as i64),
                     durability: engram_core::Durability::Stable,
-                    source: engram_core::Source::Claude,
+                    source: engram_core::Source::Agent,
                     session_id: Some(sid.into()),
                     status: None,
                     code_refs: vec![],
@@ -5703,7 +5703,7 @@ pub(crate) mod tool_tests {
                         body: None,
                         created_at: Some(engram_core::parse_day(day).unwrap()),
                         durability: engram_core::Durability::Stable,
-                        source: engram_core::Source::Claude,
+                        source: engram_core::Source::Agent,
                         session_id: Some(sid.into()),
                         status: None,
                         code_refs: vec![],
@@ -5830,7 +5830,7 @@ pub(crate) mod tool_tests {
                         body: None,
                         created_at: Some(ts),
                         durability: engram_core::Durability::Stable,
-                        source: engram_core::Source::Claude,
+                        source: engram_core::Source::Agent,
                         session_id: Some(sid.into()),
                         status: None,
                         code_refs: vec![],
@@ -5907,7 +5907,7 @@ pub(crate) mod tool_tests {
                         body: Some(text.to_string()),
                         created_at: Some(*ts),
                         durability: engram_core::Durability::Stable,
-                        source: engram_core::Source::Claude,
+                        source: engram_core::Source::Agent,
                         session_id: Some("sess-born".into()),
                         status: None,
                         code_refs: vec![],
@@ -6377,7 +6377,7 @@ mod scoped_transport_tests {
                 title: "beta owns this decision".into(),
                 body: None,
                 durability: engram_core::Durability::Stable,
-                source: engram_core::Source::Claude,
+                source: engram_core::Source::Agent,
                 session_id: None,
                 status: None,
                 code_refs: vec![],
@@ -7214,7 +7214,7 @@ mod sleep_tests {
                     body: Some("a body long enough to snip".into()),
                     created_at: None,
                     durability: Durability::Stable,
-                    source: Source::Claude,
+                    source: Source::Agent,
                     session_id: None,
                     status: None,
                     code_refs: vec![],
