@@ -35,6 +35,7 @@ pub mod rng;
 pub mod run;
 pub mod sessions;
 pub mod shapes;
+pub mod sleep;
 pub mod variants;
 pub mod window;
 pub mod writes;

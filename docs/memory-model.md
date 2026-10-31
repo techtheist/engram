@@ -144,12 +144,12 @@ without a new structure:
   standing `conflicts-with` edges and pending suspects), settled first, and
   **islands** (`view: "islands"` — notes no edge and no tag reaches, which
   only a lucky text search finds), each listed with its nearest notes so it
-  can be linked, tagged, merged or buried. The brief's `## Sleep queue` line
-  counts all three.
+  can be linked, tagged, merged or buried. The brief stays out of it: the
+  capture skills carry the cue to offer a sleep.
 - **The `engram-sleep` skill** (`/engram-sleep [subject]`; `/engram:sleep`
   with the plugin) runs on request. The agent suggests it — one line, run on
   a yes — when search keeps returning restatements of one subject or the
-  user finds memory noisy; the brief's crowded line says the same. It works one
+  user finds memory noisy. It works one
   subject at a time: write a state-of note for settled history (linked
   `builds-on` what stays, `replaces` only what it fully covers), merge
   restatements (`merge_nodes` — the victims stay archived behind

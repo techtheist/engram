@@ -1476,6 +1476,53 @@ a generated bench needs real-prose negatives.
 
 </details>
 
+## 0.11.0 — the sleep bench
+
+`--sleep` is a regression floor for the review queue's discrete mechanisms,
+not a retrieval score: the [crowding](../crates/engram-core/src/crowding.rs)
+that finds subjects, the class TF-IDF that [names](../crates/engram-core/src/naming.rs)
+them, the worth that ranks them, and the islands view. Six **piles** are
+planted among the background, each about one invented subject (each pile on a
+different component, so piles do not chain into each other). Half of a pile
+restates one claim across releases; the other half is other claims moved onto
+the subject, sharing only its name. Two piles per worth class: settled across
+five versions, settled in one version, and this cycle's live work. Eight
+background notes carry no tag and no edge; every other note carries a tag. No
+model writes anything and no judge reads anything, so a seed reproduces the
+run exactly.
+
+| notes | band | min | subjects (background-only) | A found | A purity | restated covered | other claims covered | B named | C worth order | D islands |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 100 | 0.895 | 5 | 2 (0) | 0/6 | 1.00 | 0.33 | 0.07 | 0.33 | 0.17 | 8/8, precision 1.00 |
+| 500 | 0.870 | 10 | 10 (7) | 0/6 | 0.57 | 0.83 | 0.47 | 1.00 | 0.92 | 8/8, precision 1.00 |
+| 1500 | 0.869 | 30 | 5 (2) | 0/6 | 0.52 | 0.83 | 0.49 | 0.83 | 0.67 | 8/8, precision 1.00 |
+
+bge-small-en-v1.5, seed 1. Receipt `results/2026-10-31-0.11.0-sleep.{json,log}`.
+
+What it says:
+
+- **Restatements are found.** Wherever a pile's restated half reaches the
+  subject minimum on its own, it is all inside one subject (coverage 1.00).
+  The 0.83 average is the one pile per size whose restated half is smaller
+  than the minimum: those notes are a pocket, by design not a subject.
+- **Claims that share only a name are not.** About half of the other-claims
+  half joins its pile at 500 and 1500 notes, and almost none at 100. The
+  vectors read what a note says, not which invented name it carries: a
+  subject made only of a shared name is beyond single-link crowding at the
+  band.
+- **Purity is about half.** A found subject also takes in background notes
+  about the same component, because the generator's bodies share a register.
+  A strict "found" (≥80% of the pile at ≥80% purity) is therefore 0/6 at
+  every size. This is the number a better subject cut should move.
+- **Names carry the subject** (B 1.00 at 500, 0.83 at 1500), next to
+  filler phrases from the generator's register ("engineer follows").
+- **Worth puts settled history first** (C 0.92 at 500). Where it misses, a
+  live pile drew a large share of background notes, and size outweighs
+  settledness.
+- **Islands are exact** at every size.
+- **At 100 notes, piles of 5–7 rarely form subjects:** half of each pile is
+  restatements, and 2–3 restatements are below the minimum of 5.
+
 ## What this does not show
 
 <details>
@@ -1569,6 +1616,7 @@ Results will be added here once they are measured.
 | `run.rs` | the suite, the fusion sweep, the strategy grid, the floor sweep, the contradiction bench |
 | `chains.rs` | supersession chains: current-state recall, pollution, the flat ablation |
 | `window.rs` | time-scoped search: what a window costs against the same question unscoped, swept over candidate-pool depth |
+| `sleep.rs` | the sleep bench: planted piles found as subjects, named, ranked by worth; planted islands found |
 | `sessions.rs` | session-diverse delivery: cluster coverage as the gain, the regular questions as the price |
 | `longmem.rs` | the LongMemEval adapter: pinned download, as-is ingestion, retrieval grading, the `--lme-turns` tuning loop |
 | `CONTRADICTIONS.md` | the logic layer's own metric — the model swap, the gate, the real-graph check |

@@ -4616,41 +4616,6 @@ impl Engine {
                 }
             }
 
-            // Sleep (0.11.0): one line when unreviewed subjects of close
-            // notes pile up, or islands do — the cue for an offered sleep,
-            // never a task. Conflicts and suspects have their own sections;
-            // the line only counts them.
-            let q = self.sleep_queue()?;
-            if q.subjects > 0 || (q.min_size > 0 && q.islands >= q.min_size) {
-                let mut parts = Vec::new();
-                if q.subjects > 0 {
-                    let (name, size) = q.top.clone().unwrap_or_default();
-                    parts.push(format!(
-                        "{} subject{} of {}+ close notes (most worth it: \"{}\", {size} notes)",
-                        q.subjects,
-                        if q.subjects == 1 { "" } else { "s" },
-                        q.min_size,
-                        crate::harvest::truncate_words(&name, 90),
-                    ));
-                }
-                for (n, one, many) in [
-                    (q.standing, "standing conflict", "standing conflicts"),
-                    (q.suspects, "suspect", "suspects"),
-                    (q.islands, "island", "islands"),
-                ] {
-                    if n > 0 {
-                        parts.push(format!("{n} {}", if n == 1 { one } else { many }));
-                    }
-                }
-                let line = format!(
-                    "\n## Sleep queue\n{}. Offer a sleep when search keeps returning restatements or the user finds memory noisy; on a yes the engram-sleep skill works them (`list_nodes` with `view` conflicts, review, islands; an island is a note no edge and no tag reaches).",
-                    parts.join(", "),
-                );
-                if !push_line(&mut out, &line) {
-                    break 'assemble;
-                }
-            }
-
             // What changed lately, right after the judgment queue: recency is
             // the context the assistant continues from, so it must never fall
             // into the budget-cut tail. A node shown here is claimed — later

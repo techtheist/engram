@@ -28,7 +28,7 @@ consolidate them, without adding any structure to the graph.
   from titles and tags that most of a subject's notes share and the rest of
   the graph rarely uses (class TF-IDF) — *retrieval · oblique recall · NLI*,
   *TepinDB · multi-project · hub*, *tombstone · write path · decay*. The
-  queue, Checkup and the brief show them.
+  review queue and Checkup show them.
 - **The review queue** ranks subjects by how much they are worth
   consolidating: big, spread over many releases, and settled (old notes from
   past versions) comes first; a pile of this cycle's notes is live work and
@@ -55,7 +55,7 @@ consolidate them, without adding any structure to the graph.
   once new or changed notes outnumber the reviewed ones; an island is hidden
   until it changes. It never moves trust, and an older binary simply ignores it.
 - **The `engram-sleep` skill** (`/engram-sleep [subject]`; `/engram:sleep` in the plugin) loads only when
-  asked; the capture skills and the brief suggest it when one subject is
+  asked; the capture skills suggest it when one subject is
   restated all over or the user finds memory noisy. It explains the problem, hands each subject to a fresh subagent,
   writes one state-of note for settled history (linked `builds-on` what
   stays, `replaces` only what it fully covers), merges restatements (the
@@ -72,10 +72,6 @@ consolidate them, without adding any structure to the graph.
   islands come from the core and can be kept the same way. The Review panel
   tags suspects, conflicts and provisional notes with their subject's name
   and groups provisional notes by subject, with *Approve all* per subject.
-- **In the brief.** When unreviewed subjects (or as many islands as a
-  subject's minimum) are waiting, the brief adds a one-line `## Sleep queue`
-  section: subjects with the one most worth it, standing conflicts, suspects
-  and islands, and when to offer a sleep.
 - **A link settles the suspect between its two notes.** Linking two notes
   with a pending conflict suspect between them now settles it: `replaces` or
   `conflicts-with` confirms it, any other verb dismisses it. A state-of note
@@ -86,6 +82,16 @@ consolidate them, without adding any structure to the graph.
   a squashed slice of two labels until the next zoom; the label font now
   also counts as a card font, so its late load repaints the atlas.
 
+
+### The macOS binary builds again
+
+- **v0.10.4 shipped without its macOS binary.** A scheduled brownout of
+  GitHub's `macos-14` runner image cancelled that one job, so the release had
+  7 of its 9 assets, and `install.sh` and `engram-alpha update` found no
+  Apple Silicon download. The Mac binary now builds on `macos-15`; `macos-14`
+  retires on 2026-11-02.
+
+## v0.10.4
 
 ### The Linux binary runs on Ubuntu 24.04 and Debian again (issue #17)
 

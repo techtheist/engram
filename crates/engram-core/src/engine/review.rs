@@ -282,18 +282,6 @@ pub struct IslandPage {
     pub islands: Vec<Island>,
 }
 
-/// The brief's sleep line: what a sleep would work through.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct SleepQueue {
-    pub subjects: usize,
-    /// The subject most worth it: its name (or central title) and size.
-    pub top: Option<(String, usize)>,
-    pub min_size: usize,
-    pub islands: usize,
-    pub standing: usize,
-    pub suspects: usize,
-}
-
 /// What the review queue admits.
 #[derive(Debug, Clone, Default)]
 pub struct ReviewQuery {
@@ -1013,32 +1001,6 @@ impl Engine {
             islands,
         })
     }
-
-    /// The brief's sleep line: subjects, islands and conflicts waiting.
-    pub(crate) fn sleep_queue(&self) -> Result<SleepQueue> {
-        if self.embeddings_are_fake() {
-            return Ok(SleepQueue::default()); // fake vectors crowd at random
-        }
-        let index = self.crowding()?;
-        let (subjects, _, nodes) = self.review_subjects(&index, &ReviewQuery::default())?;
-        let top = subjects.first().map(|(s, _, name)| {
-            let title = name.clone().unwrap_or_else(|| {
-                nodes
-                    .get(&s.members[0])
-                    .map(|n| n.title.clone())
-                    .unwrap_or_default()
-            });
-            (title, s.members.len())
-        });
-        Ok(SleepQueue {
-            subjects: subjects.len(),
-            top,
-            min_size: index.subject_bounds().min,
-            islands: self.island_notes(false)?.0.len(),
-            standing: self.store.active_conflict_edges()?.len(),
-            suspects: self.store.suspects_pending()?.len(),
-        })
-    }
 }
 
 #[cfg(test)]
@@ -1503,33 +1465,6 @@ mod tests {
     }
 
     #[test]
-    fn the_brief_names_big_unreviewed_piles_only() {
-        let e = engine();
-        for i in 0..6 {
-            add(&e, &format!("#delivery note {i} on the floor"));
-        }
-        for i in 0..30 {
-            add(&e, &format!("stranger {i} about something else"));
-        }
-        let brief = e.brief(20_000).unwrap();
-        assert!(brief.contains("## Sleep queue"), "{brief}");
-        assert!(brief.contains("1 subject of 5+ close notes"), "{brief}");
-        assert!(brief.contains("most worth it: \"delivery"), "{brief}");
-        assert!(brief.contains(", 6 notes)"), "{brief}");
-
-        let all: Vec<String> = e
-            .crowding()
-            .unwrap()
-            .nodes
-            .iter()
-            .filter(|(_, c)| c.crowding > 0)
-            .map(|(id, _)| id.clone())
-            .collect();
-        e.mark_reviewed(&all, true).unwrap();
-        assert!(!e.brief(20_000).unwrap().contains("close notes"));
-    }
-
-    #[test]
     fn islands_are_notes_no_edge_and_no_tag_reaches() {
         let e = engine();
         let lone = add(&e, "#delivery the floor is calibrated per graph");
@@ -1600,7 +1535,7 @@ mod tests {
     }
 
     #[test]
-    fn small_piles_and_fake_vectors_stay_out_of_the_brief() {
+    fn a_pile_below_the_minimum_is_no_subject() {
         let e = engine();
         for i in 0..4 {
             add(&e, &format!("#bridge note {i} on reconnects"));
@@ -1608,18 +1543,11 @@ mod tests {
         for i in 0..30 {
             add(&e, &format!("stranger {i} about something else entirely"));
         }
-        assert!(
-            !e.brief(20_000).unwrap().contains("close notes"),
+        assert_eq!(
+            e.review_page(&query()).unwrap().total,
+            0,
             "a pile of 4 is a pocket"
         );
-        let fake = Engine::new(
-            SqliteStore::open_in_memory().unwrap(),
-            Box::new(crate::FakeEmbedder::default()),
-        );
-        for i in 0..8 {
-            add(&fake, &format!("#x note {i}"));
-        }
-        assert!(!fake.brief(20_000).unwrap().contains("Sleep queue"));
     }
 
     #[test]

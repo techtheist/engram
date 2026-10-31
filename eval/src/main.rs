@@ -96,6 +96,11 @@ OPTIONS:
                           the subject's sessions is the gain; the regular
                           single-gold questions re-asked under the same knob
                           are the price
+    --sleep               0.11.0 sleep bench: six planted piles of notes about
+                          one invented subject among the background — are they
+                          found as subjects (A), named by their subject (B),
+                          ranked settled-spread > settled-one > live (C), and
+                          are planted untagged notes exactly the islands (D)?
     --window              0.8.7 time-window bench: what a time-scoped search
                           costs against the same question asked unscoped, swept
                           over the candidate-pool depth (policy.window_overfetch)
@@ -205,6 +210,7 @@ fn cli() -> anyhow::Result<()> {
     let mut authority_mode = false;
     let mut writes_mode: Option<usize> = None;
     let mut window_mode = false;
+    let mut sleep_mode = false;
     let mut sessions_mode = false;
     let mut chain_count: Option<usize> = None;
     let mut chain_len: usize = 3;
@@ -283,6 +289,7 @@ fn cli() -> anyhow::Result<()> {
             "--writes" => writes_mode = Some(value()?.parse()?),
             "--twin-order" => cfg.twin_order = Some(value()?.parse()?),
             "--window" => window_mode = true,
+            "--sleep" => sleep_mode = true,
             "--sessions" => sessions_mode = true,
             "--chain-count" => chain_count = Some(value()?.parse()?),
             "--chain-len" => chain_len = value()?.parse()?,
@@ -346,6 +353,15 @@ fn cli() -> anyhow::Result<()> {
 
     if sample {
         print_sample(&cfg);
+        return Ok(());
+    }
+    if sleep_mode {
+        let report = engram_eval::sleep::run(&cfg)?;
+        engram_eval::sleep::print(&report);
+        if let Some(path) = json_out {
+            std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
+            println!("\nwrote {path}");
+        }
         return Ok(());
     }
     if window_mode {

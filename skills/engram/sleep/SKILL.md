@@ -1,6 +1,6 @@
 ---
 name: engram-sleep
-description: Consolidate an Engram graph ("sleep") — settle standing conflicts, work the subjects (named piles of close notes) into one state-of note each, merge restatements, link what supersedes what, tie islands (notes nothing reaches) back in, and mark the rest reviewed. On demand only - use when the user asks to sleep, consolidate, tidy or deduplicate memory, invokes /engram-sleep, complains about too many, duplicate or noisy memories, or when the brief shows a "Sleep queue" section and you are at a natural pause with nothing in flight. Not for routine capture — the engram skill covers that.
+description: Consolidate an Engram graph ("sleep") — settle standing conflicts, work the subjects (named piles of close notes) into one state-of note each, merge restatements, link what supersedes what, tie islands (notes nothing reaches) back in, and mark the rest reviewed. On demand only - use when the user asks to sleep, consolidate, tidy or deduplicate memory, invokes /engram-sleep, or complains about too many, duplicate or noisy memories. Not for routine capture — the engram skill covers that.
 ---
 
 # Engram sleep — consolidate after the fact
@@ -17,7 +17,7 @@ The daemon nominates; you judge. Engram measures closeness from the stored vecto
 
 - The user asks: "sleep", "consolidate memory", "tidy the graph", "dedupe", `/engram-sleep [subject]` (`/engram:sleep` in the plugin).
 - **Suggest it** in one line, run it on a yes: the user complains about reviewing or too many, duplicate or noisy memories; or `search` keeps returning restatements of one subject and you can't tell which is current (offer `/engram-sleep <that subject>`).
-- On your own only when the brief shows `## Sleep queue` **and** you are at a natural pause with no task in flight. Then work **one subject** and report. Never interrupt work for it.
+- Never on your own, and never in the middle of other work.
 
 ## The three queues, in order
 

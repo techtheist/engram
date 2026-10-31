@@ -1,0 +1,30 @@
+sleep bench — embedder bge-small-en-v1.5, seed 1
+
+── 100 notes  band 0.895  subjects 2 (min 5, max 20), 0 background-only  13871 ms
+   A recovered 0.00  purity 1.00   B named 0.33   C worth order 0.17   D islands recall 1.00 precision 1.00
+   SettledSpread    5 notes  cover 0.00 (restated 0.00, aspects 0.00) pure 0.00  rank   -  (none)                                   Kelulnor telemetry mast
+   SettledOne       5 notes  cover 0.00 (restated 0.00, aspects 0.00) pure 0.00  rank   -  (none)                                   Quenyrvor provenance ledger
+   Live             7 notes  cover 0.00 (restated 0.00, aspects 0.00) pure 0.00  rank   -  (none)                                   Yssarsen sweep worker
+   SettledSpread    7 notes  cover 0.00 (restated 0.00, aspects 0.00) pure 0.00  rank   -  (none)                                   Kelulthi shard router
+   SettledOne      10 notes  cover 0.70 (restated 1.00, aspects 0.40) pure 1.00  rank   1  escrow chamber · fan-out limit · melenqui Melenqui escrow chamber
+   Live            10 notes  cover 0.50 (restated 1.00, aspects 0.00) pure 1.00  rank   2  station quota · refresh hours · zanyrrin assay Zanyrrin assay station
+
+── 500 notes  band 0.870  subjects 10 (min 10, max 40), 7 background-only  55657 ms
+   A recovered 0.00  purity 0.57   B named 1.00   C worth order 0.92   D islands recall 1.00 precision 1.00
+   SettledSpread   10 notes  cover 0.80 (restated 1.00, aspects 0.60) pure 0.40  rank   1  assay station · quenornor · quota refresh Quenornor assay station
+   SettledOne      10 notes  cover 0.80 (restated 1.00, aspects 0.60) pure 0.33  rank   4  calibration bench · druenmar · patched around Druenmar calibration bench
+   Live            15 notes  cover 0.33 (restated 0.00, aspects 0.62) pure 0.42  rank   7  token vault · brearbek · engineer follows Brearbek token vault
+   SettledSpread   15 notes  cover 0.67 (restated 1.00, aspects 0.38) pure 0.71  rank   3  breentek sweep · worker decay · half-life hours Breentek sweep worker
+   SettledOne      20 notes  cover 0.75 (restated 1.00, aspects 0.50) pure 0.56  rank   2  telemetry mast · melirwyn · grace period Melirwyn telemetry mast
+   Live            20 notes  cover 0.55 (restated 1.00, aspects 0.10) pure 1.00  rank   9  kelynmar escrow · chamber retry · budget attempts Kelynmar escrow chamber
+
+── 1500 notes  band 0.869  subjects 5 (min 30, max 120), 2 background-only  169850 ms
+   A recovered 0.00  purity 0.52   B named 0.83   C worth order 0.67   D islands recall 1.00 precision 1.00
+   SettledSpread   30 notes  cover 0.77 (restated 1.00, aspects 0.53) pure 0.55  rank   3  lease broker · keleirin · hours reproduced Keleirin lease broker
+   SettledOne      30 notes  cover 0.77 (restated 1.00, aspects 0.53) pure 0.44  rank   4  telemetry mast · zanavor · cursor lag    Zanavor telemetry mast
+   Live            45 notes  cover 0.22 (restated 0.00, aspects 0.43) pure 0.11  rank   2  ulmeisen sweep · worker compaction · floor segments Haroulun index writer
+   SettledSpread   45 notes  cover 0.87 (restated 1.00, aspects 0.74) pure 0.42  rank   1  provenance ledger · yssyrmar · shard router Yssyrmar provenance ledger
+   SettledOne      60 notes  cover 0.85 (restated 1.00, aspects 0.70) pure 0.59  rank   2  ulmeisen sweep · worker compaction · floor segments Ulmeisen sweep worker
+   Live            60 notes  cover 0.50 (restated 1.00, aspects 0.00) pure 1.00  rank   5  station eviction · ratio percent · lorullun assay Lorullun assay station
+
+wrote eval/results/2026-10-31-0.11.0-sleep.json
