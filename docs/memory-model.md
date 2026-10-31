@@ -106,3 +106,55 @@ Two ways to fill a graph from a codebase that predates Engram:
 Both run through the same write checks as normal capture — deduplication,
 warnings, conflict detection — so seeding can't flood the graph with
 duplicates.
+
+## Sleep: consolidating a crowded graph
+
+A graph that is used grows piles: one subject restated across versions, an
+investigation captured as a dozen findings. Each pile costs twice — search
+delivers near-identical notes where one would do, and nobody can review
+thousands of notes by hand. **Sleep** (0.11.0) consolidates after the fact,
+without a new structure:
+
+- **Crowding** is measured from the vectors the graph already stores: for
+  each note, how many others sit inside this graph's *close band* — the
+  cosine only its own top 1% of note pairs reach (relative, because absolute
+  similarity levels differ between graphs). No model runs; nothing about
+  search ranking changes.
+- **Subjects** are what gets reviewed: notes joined by chains of close
+  pairs, at least 2% of the graph's notes (never fewer than 5). At the band
+  a graph's subjects touch and chain into one blob, so a group larger than
+  four times the minimum is re-cut at a stricter cosine, branch by branch,
+  until its pieces fit. On this repo's 562-note graph the band chained 409
+  notes together; the adaptive cut found six subjects of 12–45 notes
+  (retrieval and eval, the process model, tombstones, releases, the TepinDB
+  move, LongMemEval).
+- **Names** come without a model: class TF-IDF over the members' titles
+  and tags — the terms most of a subject's notes share and the rest of the
+  graph rarely uses, two or three of them (*retrieval · oblique recall ·
+  NLI*, *TepinDB · multi-project · hub*). A tag and the same words in titles
+  count as one term, and a phrase replaces the words it holds.
+- **The review queue** ranks subjects by how much they are worth
+  consolidating: size × (1 + ln versions spanned) × how settled they are
+  (members from past versions, older than two weeks). An agent reads it
+  with `list_nodes` `view: "review"`, one subject per page, or one note's
+  neighbourhood with `around: <id>`; the pane shows it as Checkup →
+  *Crowded subjects*, subject chips in the Review panel, and the graph
+  view's heat glow.
+- **Two more queues** ride along: **conflicts** (`view: "conflicts"` —
+  standing `conflicts-with` edges and pending suspects), settled first, and
+  **islands** (`view: "islands"` — notes no edge and no tag reaches, which
+  only a lucky text search finds), each listed with its nearest notes so it
+  can be linked, tagged, merged or buried. The brief's `## Sleep queue` line
+  counts all three.
+- **The `engram-sleep` skill** (`/engram-sleep [subject]`; `/engram:sleep`
+  with the plugin) runs on request. The agent suggests it — one line, run on
+  a yes — when search keeps returning restatements of one subject or the
+  user finds memory noisy; the brief's crowded line says the same. It works one
+  subject at a time: write a state-of note for settled history (linked
+  `builds-on` what stays, `replaces` only what it fully covers), merge
+  restatements (`merge_nodes` — the victims stay archived behind
+  `replaces`), link what superseded or answered what, and mark the notes left
+  standing **reviewed**. A subject stays hidden while more than half its
+  notes carry a mark (a changed note loses its mark), so it comes back once new
+  or changed notes outnumber the reviewed ones; a mark never moves trust. Every write of a sweep
+  can be undone at once from the pane's Audit panel ("Undo session").

@@ -12,7 +12,7 @@ import {
     type NodeMouseEvent,
 } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
-import { Controls } from '@vue-flow/controls'
+import { ControlButton, Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
 import { storeToRefs } from 'pinia'
 import EngramNode from '@/components/nodes/EngramNode.vue'
@@ -20,6 +20,7 @@ import EngramEdge from '@/components/nodes/EngramEdge.vue'
 import ConnectDialog from '@/components/panels/ConnectDialog.vue'
 import { layoutGraph, type XY } from '@/composables/useLayout'
 import { useConfigStore } from '@/stores/config'
+import { heatColor, useCrowdingStore } from '@/stores/crowding'
 import { useGraphStore } from '@/stores/graph'
 import { useLayoutStore } from '@/stores/layout'
 import { useProjectsStore } from '@/stores/projects'
@@ -228,8 +229,13 @@ function onPaneClick(): void {
     store.select(null)
 }
 
+const crowding = useCrowdingStore()
+
+/** The minimap follows the cards: type colors, or crowding heat (0.11.0). */
 const minimapColor = (node: Node<GraphNode>): string =>
-    config.accent(node.data?.type ?? '')
+    crowding.heatOn
+        ? (heatColor(crowding.heatOf(node.id)) ?? 'var(--border-default)')
+        : config.accent(node.data?.type ?? '')
 
 /** Click-to-navigate: center the viewport on the clicked minimap spot (flow
  * coords), keeping the current zoom — replaces drag-panning, whose axes felt
@@ -278,7 +284,16 @@ watch(
         @connect="onConnect"
     >
         <Background :gap="22" :size="1.4" pattern-color="var(--canvas-dots)" />
-        <Controls position="bottom-left" :fit-view-params="FIT_VIEW_PARAMS" />
+        <Controls position="bottom-left" :fit-view-params="FIT_VIEW_PARAMS">
+            <ControlButton
+                :class="{ 'heat-on': crowding.heatOn }"
+                :title="crowding.heatOn ? 'crowding heat: on — the minimap colors notes by how crowded they are in vector space' : 'crowding heat — color the minimap by how crowded each note is in vector space'"
+                aria-label="toggle crowding heat"
+                @click="crowding.toggleHeat()"
+            >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 32"><path d="M13.5 0S16 6.5 11 11.5C7.6 14.9 4 18.4 4 23.2 4 28.1 7.6 32 12 32s8-3.9 8-8.8c0-3.5-1.7-6.2-3.4-8.2.1 2.6-1 4.6-2.8 5.4.9-4.6-.1-9.4-1.3-12.1C11.4 4.6 13.5 0 13.5 0z" /></svg>
+            </ControlButton>
+        </Controls>
         <MiniMap
             zoomable
             position="bottom-right"
@@ -407,5 +422,9 @@ watch(
 
 .engram-canvas .vue-flow__edge-text {
     font-family: var(--font-sans);
+}
+
+.engram-canvas .vue-flow__controls-button.heat-on svg {
+    fill: var(--node-caution);
 }
 </style>

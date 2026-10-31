@@ -35,7 +35,8 @@ stopping points; never store secrets, credentials or line numbers.
 
 **Maintain.** Judge the brief's suspects first. A Resolution that answers a
 Problem/Intent → set that node resolved. Several notes saying one thing →
-`merge_nodes`. `list_drift` → fix moved paths and re-check the claim. Stale
+`merge_nodes`; one subject restated all over, or the user finds memory noisy →
+suggest a sleep (the engram-sleep skill), run it on a yes. `list_drift` → fix moved paths and re-check the claim. Stale
 hits: verify; still true → `update_node`. `approve_node` only on the user's
 explicit word. Settings (ontology, fields, history, knobs, models) change only
 on the user's ask, over the core's HTTP API — read `GET /guide` first.

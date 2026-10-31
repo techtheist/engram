@@ -16,10 +16,13 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use crate::setup::{CLAUDE_DIGEST, agent_block, claude_skill, is_symlink};
+use crate::setup::{CLAUDE_DIGEST, CLAUDE_SLEEP, agent_block, claude_skill, is_symlink};
 use crate::shipped_skills::LEGACY;
 
 /// Skill directories setup installs into, per harness.
+/// The release that first shipped the sleep skill.
+const SLEEP_SINCE: &str = "0.11.0";
+
 const SKILL_DIRS: [&str; 5] = [
     ".claude/skills",
     ".cursor/skills",
@@ -52,10 +55,11 @@ fn older(a: &str, b: &str) -> bool {
     parse(a) < parse(b)
 }
 
-/// The skill text for an installed name (`engram` / `engram-digest`).
+/// The skill text for an installed kind (`engram` / `digest` / `sleep`).
 fn shipped(kind: &str, variant: &str) -> &'static str {
     match kind {
         "digest" => CLAUDE_DIGEST,
+        "sleep" => CLAUDE_SLEEP,
         _ => claude_skill(variant),
     }
 }
@@ -142,6 +146,9 @@ pub enum State {
     Refreshed { from: String, variant: String },
     /// Ours, but someone edited it: left as it is.
     Edited,
+    /// A skill this binary ships that the repo predates (the sleep skill,
+    /// 0.11.0) — written beside the engram skill the same refresh updates.
+    Added { variant: String },
 }
 
 #[derive(Debug)]
@@ -282,7 +289,10 @@ pub fn refresh(repo: &Path, apply: bool) -> Vec<Found> {
             // A write that fails (read-only checkout) reports nothing.
             if apply
                 && let Some(next) = next
-                && std::fs::write(&path, next).is_err()
+                && (path
+                    .parent()
+                    .is_some_and(|d| std::fs::create_dir_all(d).is_err())
+                    || std::fs::write(&path, next).is_err())
             {
                 return;
             }
@@ -290,14 +300,40 @@ pub fn refresh(repo: &Path, apply: bool) -> Vec<Found> {
         }
     };
     for dir in SKILL_DIRS {
-        for (name, kind) in [("engram", "engram"), ("engram-digest", "digest")] {
+        // Whether this pass lifts the engram skill from before 0.11.0: the
+        // one moment a missing sleep skill is added (later, a deleted one
+        // stays deleted).
+        let mut upgrading = false;
+        for (name, kind) in [
+            ("engram", "engram"),
+            ("engram-digest", "digest"),
+            ("engram-sleep", "sleep"),
+        ] {
             let skill_dir = repo.join(dir).join(name);
             let path = skill_dir.join("SKILL.md");
             if is_symlink(&skill_dir) || is_symlink(&path) {
                 continue;
             }
-            if let Ok(file) = std::fs::read_to_string(&path) {
-                visit(path, plan_skill(&file, kind));
+            match std::fs::read_to_string(&path) {
+                Ok(file) => {
+                    let plan = plan_skill(&file, kind);
+                    if let Some((State::Refreshed { from, .. }, _)) = &plan
+                        && kind == "engram"
+                    {
+                        upgrading = older(from, SLEEP_SINCE);
+                    }
+                    visit(path, plan);
+                }
+                Err(_) if kind == "sleep" && upgrading => visit(
+                    path,
+                    Some((
+                        State::Added {
+                            variant: "sleep".into(),
+                        },
+                        Some(stamp_skill(CLAUDE_SLEEP, "sleep", "sleep")),
+                    )),
+                ),
+                Err(_) => {}
             }
         }
     }
@@ -327,6 +363,10 @@ pub fn report(repo: &Path, found: &[Found]) -> Vec<String> {
                 )),
                 State::Edited => Some(format!(
                     "kept {rel} — it was edited, so updates skip it (delete it and run `engram-alpha setup` for the current text)"
+                )),
+                State::Added { variant } => Some(format!(
+                    "added {rel} (the {variant} skill, new in v{})",
+                    version()
                 )),
             }
         })
@@ -377,6 +417,42 @@ mod tests {
         let found = refresh(&repo, true);
         assert_eq!(found[0].state, State::Edited);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn upgrading_from_before_sleep_adds_the_sleep_skill_once() {
+        let repo = tmp("sleep");
+        let engram = repo.join(".claude/skills/engram/SKILL.md");
+        let sleep = repo.join(".claude/skills/engram-sleep/SKILL.md");
+        let old = stamp_skill(claude_skill("relaxed"), "engram", "relaxed")
+            .replace(&format!("v{} ", version()), "v0.10.4 ");
+        std::fs::write(&engram, &old).unwrap();
+
+        // A dry run (doctor) reports it and writes nothing.
+        let dry = refresh(&repo, false);
+        assert!(dry.iter().any(|f| f.path == sleep
+            && matches!(&f.state, State::Added { variant } if variant == "sleep")));
+        assert!(!sleep.exists());
+
+        let found = refresh(&repo, true);
+        assert!(found.iter().any(|f| f.path == sleep));
+        assert_eq!(
+            std::fs::read_to_string(&sleep).unwrap(),
+            stamp_skill(CLAUDE_SLEEP, "sleep", "sleep")
+        );
+        let lines = report(&repo, &found);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("added .claude/skills/engram-sleep")),
+            "{lines:?}"
+        );
+
+        // Deleted after the upgrade: it stays deleted.
+        std::fs::remove_dir_all(sleep.parent().unwrap()).unwrap();
+        assert!(refresh(&repo, true).iter().all(|f| f.path != sleep));
+        assert!(!sleep.exists());
         let _ = std::fs::remove_dir_all(&repo);
     }
 
@@ -437,7 +513,13 @@ mod tests {
         )
         .unwrap();
         let found = refresh(&repo, true);
-        assert_eq!(found.len(), 2, "{found:?}");
+        // The skill, the block, and the sleep skill a pre-0.11.0 repo lacks.
+        assert_eq!(found.len(), 3, "{found:?}");
+        assert!(
+            found
+                .iter()
+                .any(|f| matches!(&f.state, State::Added { variant } if variant == "sleep"))
+        );
         assert_eq!(
             std::fs::read_to_string(&skill).unwrap(),
             stamp_skill(claude_skill("relaxed"), "engram", "relaxed")
@@ -446,7 +528,7 @@ mod tests {
             std::fs::read_to_string(&agents).unwrap(),
             format!("my own rules\n\n{}", stamped_block("aggressive"))
         );
-        // A second pass finds both current.
+        // A second pass finds all three current.
         assert!(
             refresh(&repo, true)
                 .iter()

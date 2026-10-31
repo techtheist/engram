@@ -1,5 +1,6 @@
 pub mod config;
 pub mod cortex;
+pub mod crowding;
 pub mod digest;
 mod engine;
 mod error;
@@ -10,6 +11,7 @@ mod hub;
 pub mod id;
 pub mod laya;
 mod migrate;
+mod naming;
 pub mod nli;
 #[cfg(feature = "fastembed")]
 pub mod onnx;
@@ -31,8 +33,11 @@ pub use config::GraphConfig;
 #[cfg(test)]
 pub(crate) use engine::claim_texts as engine_claims_for_tests;
 pub use engine::{
-    AuditOrigin, ChangeEvent, EMBED_COMPOSITION, Engine, Listener, SearchFilter, title_clause,
-    title_pair_admissible, title_pair_admission,
+    AroundView, AuditOrigin, ChangeEvent, ConflictsView, CrowdHeat, CrowdingReport,
+    EMBED_COMPOSITION, Engine, Island, IslandPage, Listener, Neighbor, ReviewEdge, ReviewLine,
+    ReviewMember, ReviewPage, ReviewPair, ReviewQuery, ReviewSubject, SearchFilter,
+    StandingConflict, SubjectSummary, Worth, title_clause, title_pair_admissible,
+    title_pair_admission,
 };
 pub use error::{Error, Result};
 pub use hub::{

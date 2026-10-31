@@ -31,3 +31,11 @@ All variants share the same recall behavior, ontology rules, secret/PII prohibit
 ```sh
 mkdir -p .claude/skills && cp -R skills/engram/digest .claude/skills/engram-digest
 ```
+
+## The sleep skill
+
+[`sleep/`](./sleep/SKILL.md) (`engram-sleep`, 0.11.0) is the other on-demand skill: consolidating a graph that has grown piles. It explains the problem — the same subject restated across versions, near-identical notes crowding each other out of search — and walks an agent through three queues — standing conflicts (`view: "conflicts"`), named subjects (`view: "review"`, settled history first) and islands nobody reaches (`view: "islands"`): write one state-of note per subject, merge restatements, link what replaced what, mark the rest reviewed, and report with a one-click session undo. It runs when the user asks ("sleep", `/engram-sleep [subject]`; `/engram:sleep` in the plugin), suggests itself when one subject is restated all over or the user finds memory noisy, or works one subject when the brief shows a `## Sleep queue` line at a natural pause. `engram-alpha setup` installs it beside the others, and the first refresh after upgrading from an older release adds it once:
+
+```sh
+mkdir -p .claude/skills && cp -R skills/engram/sleep .claude/skills/engram-sleep
+```

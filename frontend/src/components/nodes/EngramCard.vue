@@ -111,9 +111,13 @@ const isUser = computed(() => node.value.source === 'user')
         transparent 100%
     );
 
-    background-image: var(--card-strip);
+    /* --heat-bg: the graph's crowding tint (0.11.0), set on the GPU card's
+       HTML twin only — a flat layer under the strip, as the shader draws it. */
+    --heat-layer: linear-gradient(var(--heat-bg, transparent), var(--heat-bg, transparent));
+
+    background-image: var(--card-strip), var(--heat-layer);
     background-repeat: no-repeat;
-    background-size: 6.4rem 100%;
+    background-size: 6.4rem 100%, 100% 100%;
     /* Frosted glass behind the node — resolves to a blur only in engram-purple
        (where --glass-backdrop is a blur); every other theme sets it to `none`.
        Invisible at rest (opaque surface) and revealed on hover, where the
@@ -137,8 +141,8 @@ const isUser = computed(() => node.value.source === 'user')
        IDE list row hovers. Elsewhere the hover surface is the background
        (engram-purple's is translucent on purpose — the glass shows). */
     background-color: var(--node-hover-base, var(--node-hover-surface));
-    background-image: var(--card-strip), var(--node-hover-tint, none);
-    background-size: 6.4rem 100%, 100% 100%;
+    background-image: var(--card-strip), var(--node-hover-tint, none), var(--heat-layer);
+    background-size: 6.4rem 100%, 100% 100%, 100% 100%;
     box-shadow: var(--shadow-lg);
     transition:
         margin var(--duration-slow) var(--ease-default),

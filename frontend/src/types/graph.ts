@@ -459,6 +459,41 @@ export interface ClaimReport {
     silent: ClaimVerdict[]
 }
 
+/**
+ * Crowding (0.11.0, GET /crowding): how many notes sit inside this graph's
+ * close band around each note (the cosine only its own top 1% of pairs
+ * reach), heat 0..1 against the graph's crowded end, and the unreviewed
+ * subjects — the sleep queue — most worth consolidating first.
+ */
+/** Why a subject ranks where it does: size × (1 + ln versions) × (0.3 + 0.7 × settled). */
+export interface SubjectWorth {
+    score: number
+    versions: number
+    /** Share of members from a past version and older than two weeks. */
+    settled: number
+    span_days: number
+}
+
+export interface CrowdingReport {
+    band: number
+    size: number
+    /** A subject's size floor on this graph (2% of its notes, at least 5). */
+    min_size: number
+    nodes: Record<string, { crowding: number; heat: number }>
+    /** Unreviewed subjects, most worth consolidating first; members most central first. */
+    /** `name`: two or three terms its titles and tags share and the rest of the graph rarely uses. */
+    subjects: { name?: string; members: string[]; worth: SubjectWorth }[]
+    hidden_reviewed: number
+    /** Unreviewed islands: notes no edge and no tag reaches. */
+    islands: string[]
+}
+
+/** POST /review/marks — the ids that were (un)marked. */
+export interface ReviewMarkResult {
+    marked: string[]
+    reviewed: boolean
+}
+
 /** What a Checkup sweep did (POST /audit/conflicts | /audit/duplicates). */
 export interface AuditSweep {
     queued: number

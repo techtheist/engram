@@ -12,6 +12,8 @@ import {
     EDGE_SEGS,
     EDGE_VS,
     FULLSCREEN_VS,
+    GLOW_FS,
+    GLOW_VS,
     LABEL_FS,
     LABEL_VS,
 } from './shaders'
@@ -44,6 +46,18 @@ export interface CardDraw {
     /** Renderer-clock seconds the card first appeared (the spring). */
     appear: number
     layout: CardLayout
+    /** Crowding heat (0.11.0): the surface tint, straight rgb + opacity; null = none. */
+    heat: RGBA | null
+}
+
+/** A crowding halo (0.11.0): the card's rect, the ramp color and its intensity 0..1. */
+export interface GlowDraw {
+    x: number
+    y: number
+    w: number
+    h: number
+    color: [number, number, number]
+    intensity: number
 }
 
 export interface EdgeDraw {
@@ -101,9 +115,10 @@ const RETRY_FRAMES = 30
 const FAST_SLIDE_PX = 24
 /** A slot not drawn for this many frames (~1 s) is reused before the atlas grows. */
 const IDLE_FRAMES = 60
-const CARD_FLOATS = 20
+const CARD_FLOATS = 24
 const EDGE_FLOATS = 13
 const LABEL_FLOATS = 12
+const GLOW_FLOATS = 8
 
 /** The tier to paint at: the smallest whose scale still covers the zoom. */
 export function tierFor(zoom: number): number {
@@ -230,6 +245,7 @@ export class GraphRenderer {
     private downProg: Program
     private blurProg: Program
     private copyProg: Program
+    private glowProg: Program
     private emptyVao: WebGLVertexArrayObject
     private quad: WebGLBuffer
 
@@ -269,6 +285,14 @@ export class GraphRenderer {
 
     private cardVao: WebGLVertexArrayObject
     private cardBuf: WebGLBuffer
+
+    private glowVao: WebGLVertexArrayObject
+    private glowBuf: WebGLBuffer
+    private glowCount = 0
+    /** Halo reach past the card's edge, world units (≈ half a card width). */
+    glowSpread = 170
+    /** Peak opacity of a halo at intensity 1. */
+    glowAlpha = 0.09
     private cardData = new Float32Array(CARD_FLOATS * 256)
 
     private atlas: WebGLTexture | null = null
@@ -326,6 +350,7 @@ export class GraphRenderer {
         this.downProg = new Program(gl, FULLSCREEN_VS, DOWNSAMPLE_FS)
         this.blurProg = new Program(gl, FULLSCREEN_VS, BLUR_FS)
         this.copyProg = new Program(gl, FULLSCREEN_VS, COPY_FS)
+        this.glowProg = new Program(gl, GLOW_VS, GLOW_FS)
         this.emptyVao = gl.createVertexArray()!
 
         this.quad = gl.createBuffer()!
@@ -373,7 +398,7 @@ export class GraphRenderer {
         gl.vertexAttribPointer(4, 3, gl.FLOAT, false, ls, 36)
         gl.vertexAttribDivisor(4, 1)
 
-        // cards: rect4 accent4 uv4 misc4 parts4
+        // cards: rect4 accent4 uv4 misc4 parts4 heat4
         this.cardVao = gl.createVertexArray()!
         this.cardBuf = gl.createBuffer()!
         gl.bindVertexArray(this.cardVao)
@@ -382,9 +407,23 @@ export class GraphRenderer {
         gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0)
         gl.bindBuffer(gl.ARRAY_BUFFER, this.cardBuf)
         const cs = CARD_FLOATS * 4
-        for (let i = 0; i < 5; i++) {
+        for (let i = 0; i < 6; i++) {
             gl.enableVertexAttribArray(1 + i)
             gl.vertexAttribPointer(1 + i, 4, gl.FLOAT, false, cs, i * 16)
+            gl.vertexAttribDivisor(1 + i, 1)
+        }
+
+        // glows: rect4 color4
+        this.glowVao = gl.createVertexArray()!
+        this.glowBuf = gl.createBuffer()!
+        gl.bindVertexArray(this.glowVao)
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.quad)
+        gl.enableVertexAttribArray(0)
+        gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0)
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.glowBuf)
+        for (let i = 0; i < 2; i++) {
+            gl.enableVertexAttribArray(1 + i)
+            gl.vertexAttribPointer(1 + i, 4, gl.FLOAT, false, GLOW_FLOATS * 4, i * 16)
             gl.vertexAttribDivisor(1 + i, 1)
         }
         gl.bindVertexArray(null)
@@ -639,6 +678,38 @@ export class GraphRenderer {
         return true
     }
 
+    // ---- crowding glow -------------------------------------------------------
+
+    /** The heat halos, drawn in the given order (hottest last reads best). Empty = off. */
+    setGlows(glows: GlowDraw[]): void {
+        const d = new Float32Array(glows.length * GLOW_FLOATS)
+        let o = 0
+        for (const g of glows) {
+            d[o] = g.x
+            d[o + 1] = g.y
+            d[o + 2] = g.w
+            d[o + 3] = g.h
+            d[o + 4] = g.color[0]
+            d[o + 5] = g.color[1]
+            d[o + 6] = g.color[2]
+            d[o + 7] = g.intensity
+            o += GLOW_FLOATS
+        }
+        const gl = this.gl
+        gl.bindVertexArray(null)
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.glowBuf)
+        gl.bufferData(gl.ARRAY_BUFFER, d, gl.DYNAMIC_DRAW)
+        this.glowCount = glows.length
+        this.backdropDirty = true
+    }
+
+    /** Tuning knobs: reach (world units) and peak opacity. */
+    setGlowStyle(spread: number, alpha: number): void {
+        this.glowSpread = spread
+        this.glowAlpha = alpha
+        this.backdropDirty = true
+    }
+
     // ---- edges & labels -----------------------------------------------------
 
     setEdges(edges: EdgeDraw[]): void {
@@ -650,6 +721,12 @@ export class GraphRenderer {
         const boxes: number[] = []
         const edgeLabel: number[] = []
         const off = (dx: number): number => (dx >= 0 ? 0.5 * dx : 6.25 * Math.sqrt(-dx))
+        // Every verb into the atlas before any uv is read: a rebuild changes
+        // the atlas height, and with it every v already handed out — built
+        // mid-loop, the earlier edges sampled a squashed slice of two labels.
+        const fresh = new Set<string>()
+        for (const e of edges) if (e.label && !this.labelUv.has(e.label)) fresh.add(e.label)
+        if (fresh.size) this.buildLabelAtlas([...this.labelUv.keys(), ...fresh])
         let o = 0
         for (const e of edges) {
             d[o] = e.sx
@@ -676,7 +753,7 @@ export class GraphRenderer {
             boxes.push(bx0, by0, bx1, by1)
             if (e.animated) anim.push(bx0, by0, bx1, by1)
             if (e.label) {
-                const lu = this.labelInfo(e.label)
+                const lu = this.labelUv.get(e.label)!
                 const cx = e.sx * 0.125 + c1x * 0.375 + c2x * 0.375 + e.tx * 0.125
                 const cy = e.sy * 0.5 + e.ty * 0.5
                 labels.push({ edgeId: e.id, x: cx - lu.w / 2, y: cy - lu.h / 2, w: lu.w, h: lu.h })
@@ -784,14 +861,6 @@ export class GraphRenderer {
     }
 
     /** Edge labels: the verb in a soft box (EngramEdge's look), one atlas for all. */
-    private labelInfo(label: string): { u0: number; v0: number; u1: number; v1: number; w: number; h: number } {
-        let hit = this.labelUv.get(label)
-        if (hit) return hit
-        this.buildLabelAtlas([...this.labelUv.keys(), label])
-        hit = this.labelUv.get(label)!
-        return hit
-    }
-
     private buildLabelAtlas(labels: string[]): void {
         const gl = this.gl
         const t = this.tokens
@@ -905,6 +974,18 @@ export class GraphRenderer {
             .f1('u_rem', t.rem)
         this.fullscreen(this.bg, null)
         gl.enable(gl.BLEND)
+        if (this.glowCount) {
+            // Under the edges and the cards; glass cards pick it up through the blur.
+            this.glowProg
+                .use()
+                .f3('u_cam', cam.x, cam.y, z)
+                .f2('u_view', this.cssW, this.cssH)
+                .f1('u_spread', this.glowSpread)
+                .f1('u_alpha', this.glowAlpha)
+                .f1('u_radius', this.radius)
+            gl.bindVertexArray(this.glowVao)
+            gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, this.glowCount)
+        }
         if (this.edgeCount) {
             // Fewer segments as edges shrink on screen: zoomed out, 40 per
             // curve was most of the frame's vertex work for no visible gain.
@@ -1089,6 +1170,11 @@ export class GraphRenderer {
             d[o + 17] = parts.body
             d[o + 18] = parts.refs
             d[o + 19] = parts.tags
+            const heat = card.heat
+            d[o + 20] = heat ? heat[0] : 0
+            d[o + 21] = heat ? heat[1] : 0
+            d[o + 22] = heat ? heat[2] : 0
+            d[o + 23] = heat ? heat[3] : 0
             o += CARD_FLOATS
         }
         this.blank = blank

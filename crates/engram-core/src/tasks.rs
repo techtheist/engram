@@ -297,7 +297,7 @@ fn version_parts(s: &str) -> Option<Vec<u64>> {
 }
 
 /// Compare two versions numerically when both parse; `None` otherwise.
-fn version_cmp(a: &str, b: &str) -> Option<std::cmp::Ordering> {
+pub(crate) fn version_cmp(a: &str, b: &str) -> Option<std::cmp::Ordering> {
     let (mut x, mut y) = (version_parts(a)?, version_parts(b)?);
     let n = x.len().max(y.len());
     x.resize(n, 0);

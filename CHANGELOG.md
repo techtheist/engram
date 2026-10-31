@@ -3,7 +3,89 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
-## v0.10.4
+## v0.11.0
+
+### Sleep: consolidate a crowded graph
+
+A graph that is used grows piles: the same subject restated across versions,
+an investigation captured as a dozen findings, a decision and its
+paraphrases. Each pile costs twice. Search hands your assistant several
+near-identical notes where one would do, and nobody can review thousands of
+notes by hand. 0.11.0 measures the piles and gives your assistant a way to
+consolidate them, without adding any structure to the graph.
+
+- **Crowding.** For every note, Engram counts how many others sit unusually
+  close to it: inside the cosine that only this graph's top 1% of note pairs
+  reach. It works from the vectors the graph already stores, runs no model,
+  and changes nothing about search ranking.
+- **Subjects.** What gets reviewed is a subject: notes joined by chains of
+  close pairs, at least 2% of the graph's notes (never fewer than 5). Close
+  subjects touch and chain together at the band, so an oversized group is
+  re-cut at a stricter cosine until its pieces fit. On Engram's own
+  562-note graph that turns one 409-note blob into six real subjects of
+  12 to 45 notes.
+- **Subjects have names**, picked without a model: the two or three terms
+  from titles and tags that most of a subject's notes share and the rest of
+  the graph rarely uses (class TF-IDF) — *retrieval · oblique recall · NLI*,
+  *TepinDB · multi-project · hub*, *tombstone · write path · decay*. The
+  queue, Checkup and the brief show them.
+- **The review queue** ranks subjects by how much they are worth
+  consolidating: big, spread over many releases, and settled (old notes from
+  past versions) comes first; a pile of this cycle's notes is live work and
+  ranks low. Over MCP there is no new tool: `list_nodes` takes
+  `view: "review"` (one subject per page: its worth, shared tags and
+  anchors, the central members with snippet, edges, version and trust, the
+  rest as titles, and the closest pairs), `around: <id>` (a note's nearest notes and the
+  notes sharing its anchors, tags or code refs, with no search cut-off) and
+  `sort: "crowded"`.
+- **History written before version stamping still counts.** A note with no
+  version stamp takes the version that was current when it was written, read
+  from the graph's `set_version` history; notes older than that history count
+  as one version together ("<0.7.0"). A subject that ran from 0.6 to 0.8 no
+  longer looks like a single release.
+- **Conflicts and islands are sleep queues too.** `list_nodes`
+  `view: "conflicts"` lists standing `conflicts-with` edges (with which side
+  is newer) beside pending suspects; `view: "islands"` lists notes no edge
+  and no tag reaches, each with its three nearest notes, so tying one back
+  in needs no extra search. A sleep settles conflicts first, then subjects,
+  then islands. HTTP: `GET /review/conflicts`, `GET /review/islands`.
+- **Reviewed marks.** `update_node` / `update_nodes` take `reviewed: true`.
+  A subject counts as reviewed while more than half its notes are, so a worked
+  subject stays hidden when it re-forms around its state-of note and comes back
+  once new or changed notes outnumber the reviewed ones; an island is hidden
+  until it changes. It never moves trust, and an older binary simply ignores it.
+- **The `engram-sleep` skill** (`/engram-sleep [subject]`; `/engram:sleep` in the plugin) loads only when
+  asked; the capture skills and the brief suggest it when one subject is
+  restated all over or the user finds memory noisy. It explains the problem, hands each subject to a fresh subagent,
+  writes one state-of note for settled history (linked `builds-on` what
+  stays, `replaces` only what it fully covers), merges restatements (the
+  victims stay archived behind `replaces`), links
+  what superseded or answered what, marks the rest reviewed, and reports
+  with a one-click undo: the Audit panel's "Undo session". `setup` installs
+  it beside the other skills, and the first refresh after upgrading from an
+  older release adds it once.
+- **In the pane.** A flame button in the graph's controls lights crowded
+  cards with a soft glow and a tinted surface, yellow through orange to red,
+  readable from the zoomed-out view; resting on any control explains it.
+  Checkup gains a *Crowded subjects* section listing the queue, where a
+  subject you have looked at can be kept (marked reviewed); its reachability
+  islands come from the core and can be kept the same way. The Review panel
+  tags suspects, conflicts and provisional notes with their subject's name
+  and groups provisional notes by subject, with *Approve all* per subject.
+- **In the brief.** When unreviewed subjects (or as many islands as a
+  subject's minimum) are waiting, the brief adds a one-line `## Sleep queue`
+  section: subjects with the one most worth it, standing conflicts, suspects
+  and islands, and when to offer a sleep.
+- **A link settles the suspect between its two notes.** Linking two notes
+  with a pending conflict suspect between them now settles it: `replaces` or
+  `conflicts-with` confirms it, any other verb dismisses it. A state-of note
+  raises suspects against the notes it summarises as soon as it is written;
+  its `builds-on` links now clear them.
+- **Edge labels draw sharp from the first frame.** A verb new to the graph
+  rebuilt the label atlas mid-pass, and the edges handled before it sampled
+  a squashed slice of two labels until the next zoom; the label font now
+  also counts as a card font, so its late load repaints the atlas.
+
 
 ### The Linux binary runs on Ubuntu 24.04 and Debian again (issue #17)
 

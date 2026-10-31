@@ -1439,3 +1439,64 @@ async fn task_board_round_trip() {
     let (status, _) = req(&app, "GET", &format!("/tasks/{aid}"), None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+/// Crowding and the review queue over HTTP (0.11.0) — the pane's heat view
+/// and Checkup section. Plumbing only: clustering quality is engram-core's.
+#[tokio::test]
+async fn crowding_review_and_marks_round_trip() {
+    let app = test_app();
+    let mut ids = Vec::new();
+    for title in [
+        "Bridges reconnect after the core restarts",
+        "Bridges reconnect after the core restarts, twice",
+        "Something unrelated about the pane",
+    ] {
+        let (status, node) = req(&app, "POST", "/nodes", Some(decision(title, "x"))).await;
+        assert_eq!(status, StatusCode::OK, "{node}");
+        ids.push(node["id"].as_str().unwrap().to_string());
+    }
+
+    let (status, report) = req(&app, "GET", "/crowding", None).await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert_eq!(report["size"], 3);
+    assert!(report["nodes"][&ids[0]]["heat"].is_number(), "{report}");
+    assert!(report["subjects"].is_array() && report["min_size"] == 5);
+
+    let (status, page) = req(&app, "GET", "/review?limit=5", None).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert!(page["band"].is_number() && page["subjects"].is_array());
+
+    let (status, marked) = req(
+        &app,
+        "POST",
+        "/review/marks",
+        Some(json!({ "ids": [ids[0], "missing"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{marked}");
+    assert_eq!(marked["marked"], json!([ids[0]]));
+    assert_eq!(marked["reviewed"], true);
+
+    // A reviewed island leaves the report's island list and the page.
+    let (_, report) = req(&app, "GET", "/crowding", None).await;
+    assert_eq!(report["islands"].as_array().unwrap().len(), 2, "{report}");
+    let (status, islands) = req(&app, "GET", "/review/islands", None).await;
+    assert_eq!(status, StatusCode::OK, "{islands}");
+    assert_eq!(
+        (islands["total"].clone(), islands["hidden_reviewed"].clone()),
+        (json!(2), json!(1))
+    );
+    let (status, conflicts) = req(&app, "GET", "/review/conflicts", None).await;
+    assert_eq!(status, StatusCode::OK, "{conflicts}");
+    assert!(conflicts["standing"].is_array() && conflicts["suspects"].is_array());
+
+    let (status, cleared) = req(
+        &app,
+        "POST",
+        "/review/marks",
+        Some(json!({ "ids": [ids[0]], "reviewed": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cleared["reviewed"], false);
+}

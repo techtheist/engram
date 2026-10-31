@@ -231,7 +231,9 @@ Everything recently added, everything awaiting review with its computed
 trust, one-click **Approve** for what you vouch for — and above the queue,
 the conflict worklist: suspected look-alike pairs awaiting your
 **Conflict / Replaces / Dismiss** verdict (see
-[Conflicts & Checkup](./conflicts-and-checkup.md)).
+[Conflicts & Checkup](./conflicts-and-checkup.md)). Since 0.11.0 a pair and a
+note carry a chip naming their crowded subject, and the approval queue
+groups by subject with **Approve all** per group.
 
 ## Every change on the record
 

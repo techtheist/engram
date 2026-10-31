@@ -12445,3 +12445,64 @@ fn home_launched_hub_serves_home_from_its_own_engine() {
     unsafe { std::env::remove_var("ENGRAM_HOME") };
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+#[test]
+fn a_link_settles_the_pending_suspect_between_its_notes() {
+    let e = engine();
+    let summary = e
+        .add_node(new_node(
+            NodeType::Insight,
+            "The store move as of 0.8",
+            "every graph on one core",
+        ))
+        .unwrap();
+    let member = e
+        .add_node(new_node(
+            NodeType::Decision,
+            "One core owns every store",
+            "lock",
+        ))
+        .unwrap();
+    let other = e
+        .add_node(new_node(
+            NodeType::Decision,
+            "Old stores stay read-only",
+            "legacy",
+        ))
+        .unwrap();
+    let s1 = e
+        .store()
+        .add_suspect(
+            &summary.id,
+            &member.id,
+            0.9,
+            Some(("contradiction", 0.91, None)),
+        )
+        .unwrap();
+    let s2 = e
+        .store()
+        .add_suspect(&summary.id, &other.id, 0.9, None)
+        .unwrap();
+    let link = |from: &Node, to: &Node, verb: EdgeType| {
+        e.add_edge(NewEdge {
+            edge_type: verb,
+            from_id: from.id.clone(),
+            to_id: to.id.clone(),
+            source: Source::Claude,
+            note: None,
+            confidence: None,
+            strength: None,
+            status: None,
+        })
+        .unwrap()
+    };
+    // A summary building on a member says they agree: dismissed.
+    link(&summary, &member, EdgeType::BuildsOn);
+    let s1 = e.store().get_suspect(&s1.id).unwrap().unwrap();
+    assert_eq!(s1.status, SuspectStatus::Dismissed);
+    // Replacing one is the suspect's own verdict: confirmed.
+    link(&summary, &other, EdgeType::Replaces);
+    let s2 = e.store().get_suspect(&s2.id).unwrap().unwrap();
+    assert_eq!(s2.status, SuspectStatus::Confirmed);
+    assert!(e.store().suspects_pending().unwrap().is_empty());
+}

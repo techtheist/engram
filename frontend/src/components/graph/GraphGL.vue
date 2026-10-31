@@ -5,6 +5,8 @@ import EngramCard from '@/components/nodes/EngramCard.vue'
 import ConnectDialog from '@/components/panels/ConnectDialog.vue'
 import { layoutGraph, type XY } from '@/composables/useLayout'
 import { useConfigStore } from '@/stores/config'
+import { useCrowdingStore } from '@/stores/crowding'
+import { heatColor, heatRgb } from '@/utils/heat'
 import { useGraphStore } from '@/stores/graph'
 import { useLayoutStore } from '@/stores/layout'
 import { useProjectsStore } from '@/stores/projects'
@@ -13,7 +15,7 @@ import GraphControls from './GraphControls.vue'
 import GraphMiniMap, { type MiniNode } from './GraphMiniMap.vue'
 import { layoutCard, resetMeasures, setTextHost, type CardLayout } from './cardPainter'
 import { calibrate, cardFonts, css, readTokens, resolveColor, type CardMetrics, type RGBA, type Tokens } from './palette'
-import { GraphRenderer, type CardDraw, type EdgeDraw } from './renderer'
+import { GraphRenderer, type CardDraw, type EdgeDraw, type GlowDraw } from './renderer'
 import { edgeFocus, FOCUS_EASE, selectionHops } from './focus'
 
 /**
@@ -30,7 +32,55 @@ const store = useGraphStore()
 const config = useConfigStore()
 const layout = useLayoutStore()
 const projects = useProjectsStore()
+const crowding = useCrowdingStore()
 const { visibleNodeList, visibleEdgeList, selectedId } = storeToRefs(store)
+
+/**
+ * Crowding heat (0.11.0): a glow around each crowded card, yellow through
+ * orange to red — a strip color alone did not read from far out. Notes
+ * below GLOW_MIN stay dark. The knobs are live in dev: `engramGlow({...})`.
+ */
+const glow = { spread: 170, alpha: 0.09, min: 0.08, tint: 0.11 }
+
+/** The card surface's heat tint: the ramp color at `tint` × heat opacity. */
+function heatTint(id: string): RGBA | null {
+    if (!crowding.heatOn) return null
+    const heat = crowding.heatOf(id)
+    if (heat == null || heat < glow.min) return null
+    const [r, g, b] = heatRgb(heat)
+    // A floor of 40%: the coolest lit card must still read as tinted.
+    return [r, g, b, glow.tint * (0.4 + 0.6 * Math.min(1, heat))]
+}
+
+/** The HTML twin's matching tint (EngramCard's --heat-bg). */
+function heatBg(id: string): string | undefined {
+    const t = heatTint(id)
+    return t ? `rgb(${t[0] * 255} ${t[1] * 255} ${t[2] * 255} / ${t[3]})` : undefined
+}
+
+function rebuildGlows(): void {
+    if (!renderer) return
+    const out: GlowDraw[] = []
+    if (crowding.heatOn && crowding.report) {
+        for (const c of cards) {
+            const heat = crowding.heatOf(c.id)
+            if (heat == null || heat < glow.min) continue
+            out.push({ x: c.x, y: c.y, w: c.w, h: c.h, color: heatRgb(heat), intensity: Math.min(1, heat) })
+        }
+        // Hottest last: red reads over the yellow fringe of its neighbours.
+        out.sort((a, b) => a.intensity - b.intensity)
+    }
+    renderer.setGlowStyle(glow.spread, glow.alpha)
+    renderer.setGlows(out)
+}
+
+if (import.meta.env.DEV) {
+    ;(window as unknown as { engramGlow: (o: Partial<typeof glow>) => typeof glow }).engramGlow = (o) => {
+        Object.assign(glow, o)
+        rebuild()
+        return { ...glow }
+    }
+}
 
 const MAX_ZOOM = 1
 /**
@@ -187,12 +237,13 @@ function recalibrate(): void {
     resetMeasures()
     const t = readTokens(el)
     const family = getComputedStyle(el).fontFamily
+    labelFont = `11px ${family}`
     renderer.setTheme(t, {
         width: m.width,
         maxH: m.maxH,
         radius: m.radius,
         border: m.border,
-        labelFont: `11px ${family}`,
+        labelFont,
         greek: {
             left: m.border + m.padX,
             top: m.border + m.padY,
@@ -208,7 +259,7 @@ function recalibrate(): void {
     fontsSeen = fontState()
     // Load every card font now: the one recalibration that brings lands at
     // startup, not on a later click that happens to show the face first.
-    for (const f of cardFonts(m)) void document.fonts?.load(f)
+    for (const f of [...cardFonts(m), labelFont]) void document.fonts?.load(f)
 }
 
 /** `<html>`'s classes minus the drag marker — what a theme change could touch. */
@@ -216,12 +267,16 @@ function themeClassOf(): string {
     return [...document.documentElement.classList].filter((c) => c !== 'ui-dragging').join(' ')
 }
 
-/** Which card fonts are loaded, as of the last calibration. */
+/** The edge verbs' font: painted into the renderer's label atlas. */
+let labelFont = ''
+/** Which card and label fonts are loaded, as of the last calibration. The
+ * label face counts too: a verb atlas painted before it loads kept the
+ * fallback font until some later recalibration. */
 let fontsSeen = ''
 function fontState(): string {
     const m = metrics.value
     if (!m || !document.fonts) return ''
-    return cardFonts(m)
+    return [...cardFonts(m), labelFont]
         .map((f) => (document.fonts.check(f) ? '1' : '0'))
         .join('')
 }
@@ -374,6 +429,7 @@ function rebuild(): void {
             w: metrics.value.width,
             h: l.h,
             accent: colorOf(config.accent(n.type)),
+            heat: heatTint(n.id),
             archived: n.valid_until != null,
             appear,
             layout: l,
@@ -406,6 +462,7 @@ function rebuild(): void {
     updateMinZoom()
     nodeById.value = nodes
     rebuildEdges()
+    rebuildGlows()
     sceneTick.value++
     invalidate()
 }
@@ -493,7 +550,10 @@ watch(selectedId, () => {
     invalidate()
 })
 
-watch([visibleNodeList, visibleEdgeList, positions, metrics, () => config.cfg], rebuild)
+watch(
+    [visibleNodeList, visibleEdgeList, positions, metrics, () => config.cfg, () => crowding.heatOn, () => crowding.report],
+    rebuild,
+)
 
 // ---- frame loop ---------------------------------------------------------------
 
@@ -901,7 +961,14 @@ function zoomBy(factor: number): void {
 const miniNodes = computed<MiniNode[]>(() => {
     void sceneTick.value
     void tokens.value
-    return cards.map((c) => ({ x: c.x, y: c.y, w: c.w, h: c.h, color: css(c.accent) }))
+    const heat = crowding.heatOn
+    return cards.map((c) => ({
+        x: c.x,
+        y: c.y,
+        w: c.w,
+        h: c.h,
+        color: (heat && heatColor(crowding.heatOf(c.id))) || css(c.accent),
+    }))
 })
 const maskColor = computed(() => (tokens.value && probe.value ? css(resolveColor(probe.value, 'var(--surface-overlay)')) : 'transparent'))
 
@@ -1121,7 +1188,7 @@ watch(
                 class="gl-card"
                 :class="{ pending: pendingTwins.has(h.id) }"
                 :data-node-id="h.id"
-                :style="{ left: `${h.card.x}px`, top: `${h.card.y}px`, '--rest-h': `${h.card.h}px` }"
+                :style="{ left: `${h.card.x}px`, top: `${h.card.y}px`, '--rest-h': `${h.card.h}px`, '--heat-bg': heatBg(h.id) }"
             >
                 <EngramCard :node="h.node" :selected="h.id === selectedId" :expanded="h.id === expandedId" :appear="false">
                     <template #handles>
@@ -1142,10 +1209,12 @@ watch(
         :locked="locked"
         :can-zoom-in="view.zoom < MAX_ZOOM"
         :can-zoom-out="view.zoom > minZoom + 1e-6"
+        :heat="crowding.heatOn"
         @zoom-in="zoomBy(1.2)"
         @zoom-out="zoomBy(1 / 1.2)"
         @fit="fitView(300)"
         @toggle-lock="locked = !locked"
+        @toggle-heat="crowding.toggleHeat()"
     />
     <GraphMiniMap
         :nodes="miniNodes"

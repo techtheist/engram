@@ -6,6 +6,7 @@ import { FOCUS_RINGS, edgeFocus, focusWidth, selectionHops } from '../src/compon
 import { hyphenPieces } from '../src/components/graph/cardPainter'
 import { parseCodeRefs } from '../src/utils/codeRefs'
 import { actionLabel } from '../src/utils/auditAction'
+import { heatColor, heatRgb } from '../src/utils/heat'
 
 const edge = (from_id: string, to_id: string) => ({ from_id, to_id })
 
@@ -127,5 +128,23 @@ describe('confirmDialog', () => {
         expect(pending.value?.title).toBe('Second')
         settle(false)
         expect(await second).toBe(false)
+    })
+})
+
+describe('crowding heat ramp (0.11.0)', () => {
+    test('yellow through orange to red', () => {
+        expect(heatColor(0)).toBe('rgb(250, 204, 21)')
+        expect(heatColor(0.5)).toBe('rgb(249, 115, 22)')
+        expect(heatColor(1)).toBe('rgb(220, 38, 38)')
+        expect(heatRgb(2)).toEqual(heatRgb(1))
+        expect(heatRgb(0.25)[1]).toBeCloseTo((204 + 115) / 2 / 255)
+    })
+
+    test('ten steps, clamped, and null outside the index', () => {
+        const seen = new Set<string>()
+        for (let h = -0.5; h <= 1.5; h += 0.01) seen.add(heatColor(h)!)
+        expect(seen.size).toBe(11)
+        expect(heatColor(0.74)).toBe(heatColor(0.66))
+        expect(heatColor(null)).toBeNull()
     })
 })

@@ -9,6 +9,7 @@ import SidePanel from '@/components/common/SidePanel.vue'
 import { api } from '@/services/api'
 import { onProjectSwitch } from '@/composables/onProjectSwitch'
 import { useConfigStore } from '@/stores/config'
+import { useCrowdingStore } from '@/stores/crowding'
 import { useGraphStore } from '@/stores/graph'
 import type { GraphEdge, GraphNode } from '@/types/graph'
 
@@ -17,6 +18,8 @@ import type { GraphEdge, GraphNode } from '@/types/graph'
  * recently, what is still provisional (approve → trusted), and which
  * conflicts are unresolved (resolve / dismiss). Rows focus the node on the
  * canvas, so this drawer and the right-hand NodeDetail work as a pair.
+ * Rows carry their crowding subject's name (0.11.0), and provisional notes
+ * group by subject, so a pile on one subject is judged together.
  */
 const store = useGraphStore()
 const config = useConfigStore()
@@ -29,6 +32,26 @@ const scanning = ref(false)
 const scanNote = ref<string | null>(null)
 
 const RECENT_COUNT = 8
+
+const crowding = useCrowdingStore()
+/** An open panel reads crowding, so the store keeps it fresh while open. */
+watch(open, (isOpen) => {
+    crowding.readers += isOpen ? 1 : -1
+})
+
+/** Note id → the name of the open subject it belongs to. */
+const subjectOf = computed(() => {
+    const names = new Map<string, string>()
+    for (const s of crowding.report?.subjects ?? []) {
+        if (s.name) for (const id of s.members) names.set(id, s.name)
+    }
+    return names
+})
+
+/** A pair's subject: the one both ends share, else either end's. */
+function pairSubject(a: string, b: string): string | undefined {
+    return subjectOf.value.get(a) ?? subjectOf.value.get(b)
+}
 
 const active = (n: GraphNode): boolean => n.valid_until == null
 
@@ -51,6 +74,27 @@ const provisional = computed(() =>
         )
         .sort((a, b) => Number(b.stale) - Number(a.stale) || b.created_at - a.created_at),
 )
+
+/** Provisional notes by subject — named piles first, biggest first; the
+ *  rest in one unnamed group, in the order above. */
+const provisionalGroups = computed(() => {
+    const groups = new Map<string, GraphNode[]>()
+    for (const n of provisional.value) {
+        const name = subjectOf.value.get(n.id) ?? ''
+        groups.set(name, [...(groups.get(name) ?? []), n])
+    }
+    const loose = groups.get('') ?? []
+    groups.delete('')
+    const named = [...groups].filter(([, ns]) => ns.length > 1)
+    for (const [, ns] of [...groups].filter(([, ns]) => ns.length === 1)) loose.unshift(...ns)
+    named.sort((a, b) => b[1].length - a[1].length)
+    const out = named.map(([name, notes]) => ({ name, notes }))
+    if (loose.length) {
+        loose.sort((a, b) => Number(b.stale) - Number(a.stale) || b.created_at - a.created_at)
+        out.push({ name: '', notes: loose })
+    }
+    return out
+})
 
 const recent = computed(() =>
     [...nodeList.value]
@@ -110,6 +154,10 @@ async function run(id: string, action: () => Promise<void>): Promise<void> {
 }
 
 const approve = (n: GraphNode) => run(n.id, () => store.approve(n.id))
+const approveAll = (name: string, notes: GraphNode[]) =>
+    run(`subject:${name}`, async () => {
+        for (const n of notes) await store.approve(n.id)
+    })
 const settleConflict = (e: GraphEdge, status: 'resolved' | 'dismissed') =>
     run(e.id, () => store.setEdgeStatus(e.id, status))
 const judge = (id: string, verdict: 'conflict' | 'replaces' | 'dismiss') =>
@@ -175,6 +223,7 @@ async function scanNow(): Promise<void> {
                         {{ s.b.title }}
                     </button>
                     <span class="trust">{{ Math.round(s.similarity * 100) }}%</span>
+                    <span v-if="pairSubject(s.a.id, s.b.id)" class="subject-chip" title="The crowded subject these notes belong to">{{ pairSubject(s.a.id, s.b.id) }}</span>
                     <span
                         v-if="s.nli_label"
                         class="nli-hint"
@@ -208,6 +257,7 @@ async function scanNow(): Promise<void> {
                     <button class="row-link" type="button" :title="title(e.to_id)" @click="store.select(e.to_id)">
                         {{ title(e.to_id) }}
                     </button>
+                    <span v-if="pairSubject(e.from_id, e.to_id)" class="subject-chip" title="The crowded subject these notes belong to">{{ pairSubject(e.from_id, e.to_id) }}</span>
                 </div>
                 <div class="row-actions">
                     <UiButton size="sm" :disabled="busyId === e.id" @click="settleConflict(e, 'resolved')">
@@ -240,18 +290,34 @@ async function scanNow(): Promise<void> {
         </PanelSection>
 
         <PanelSection v-if="provisional.length" title="Needs review — approve what's right">
-            <div v-for="n in provisional" :key="n.id" class="item">
-                <button class="row" type="button" @click="store.select(n.id)">
-                    <span class="dot" :style="{ background: accent(n) }" />
-                    <span class="row-title">{{ n.title }}</span>
-                    <InfoBadge v-if="decayIds.has(n.id)" pill tone="warn" title="Will be archived by the next decay pass">decaying</InfoBadge>
-                    <InfoBadge v-if="n.stale" pill tone="danger">stale</InfoBadge>
-                    <span class="trust">{{ Math.round(n.trust * 100) }}%</span>
-                </button>
-                <UiButton size="sm" :disabled="busyId === n.id" @click="approve(n)">
-                    Approve
-                </UiButton>
-            </div>
+            <template v-for="g in provisionalGroups" :key="g.name">
+                <div v-if="g.name" class="subject-head">
+                    <span class="subject-chip" title="A crowded subject: these notes sit close together in vector space">{{ g.name }}</span>
+                    <span class="date">{{ g.notes.length }} notes</span>
+                    <span class="grow" />
+                    <UiButton
+                        size="sm"
+                        variant="ghost"
+                        :disabled="busyId != null"
+                        title="Approve every provisional note of this subject"
+                        @click="approveAll(g.name, g.notes)"
+                    >
+                        {{ busyId === `subject:${g.name}` ? 'Approving…' : 'Approve all' }}
+                    </UiButton>
+                </div>
+                <div v-for="n in g.notes" :key="n.id" class="item" :class="{ grouped: g.name }">
+                    <button class="row" type="button" @click="store.select(n.id)">
+                        <span class="dot" :style="{ background: accent(n) }" />
+                        <span class="row-title">{{ n.title }}</span>
+                        <InfoBadge v-if="decayIds.has(n.id)" pill tone="warn" title="Will be archived by the next decay pass">decaying</InfoBadge>
+                        <InfoBadge v-if="n.stale" pill tone="danger">stale</InfoBadge>
+                        <span class="trust">{{ Math.round(n.trust * 100) }}%</span>
+                    </button>
+                    <UiButton size="sm" :disabled="busyId === n.id" @click="approve(n)">
+                        Approve
+                    </UiButton>
+                </div>
+            </template>
         </PanelSection>
 
         <PanelSection v-if="recent.length" title="Recently added">
@@ -371,6 +437,36 @@ async function scanNow(): Promise<void> {
 .row-link:hover {
     text-decoration: underline;
     color: var(--interactive-primary);
+}
+
+.subject-head {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.6rem 0.7rem 0.2rem;
+}
+
+.item.grouped {
+    padding-left: 1.2rem;
+}
+
+.subject-chip {
+    flex: none;
+    max-width: 24rem;
+    overflow: hidden;
+    padding: 0.1rem 0.6rem;
+    border-radius: var(--radius-full);
+    border: 1px solid color-mix(in srgb, rgb(249 115 22) 40%, transparent);
+    background-color: color-mix(in srgb, rgb(249 115 22) 12%, transparent);
+    color: var(--text-secondary);
+    font-size: var(--text-caption);
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.grow {
+    flex: 1;
 }
 
 .verb {

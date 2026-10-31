@@ -144,6 +144,12 @@ and updating: [Getting started](./docs/getting-started.md).
   against what the graph already says, and sweeps for hidden conflicts and
   duplicates. The model only nominates; you or your assistant decide.
   → [Conflicts & Checkup](./docs/conflicts-and-checkup.md)
+- **A memory that tidies itself on request** — Engram measures where notes
+  pile up (one subject restated across releases) without a model, names each
+  pile, and ranks them. Ask your assistant to **sleep** (`/engram-sleep`):
+  it writes one state-of note per pile, merges restatements, settles leftover
+  conflicts and ties lone notes back in. Every step can be undone.
+  → [Memory model](./docs/memory-model.md#sleep-consolidating-a-crowded-graph)
 - **Search that admits when it doesn't know** — every answer says how sure
   it is (`strong` / `weak` / `none`), so the assistant says "I don't have
   that" instead of making something up. Search can also be scoped in time

@@ -219,6 +219,55 @@ void main() {
 `
 
 /**
+ * Crowding heat (0.11.0): a soft glow around each crowded card, drawn on
+ * the canvas under the edges. One instanced quad per card, grown by
+ * `u_spread` on every side; its alpha is a gaussian of the distance to the
+ * card's rounded rect, so it reads as a halo near and as a colored cloud
+ * from far out. Overlapping halos stack — a crowded pile glows hotter.
+ */
+export const GLOW_VS = /* glsl */ `${HEADER}
+layout(location = 0) in vec2 a_corner;
+layout(location = 1) in vec4 a_rect;  // x, y, w, h (world)
+layout(location = 2) in vec4 a_color; // straight rgb, intensity 0..1
+uniform vec3 u_cam;
+uniform vec2 u_view;
+uniform float u_spread;
+out vec2 v_local;
+flat out vec2 v_size;
+flat out vec4 v_color;
+void main() {
+    vec2 local = mix(vec2(-u_spread), a_rect.zw + u_spread, a_corner);
+    vec2 screen = (a_rect.xy + local) * u_cam.z + u_cam.xy;
+    vec2 clip = screen / u_view * 2.0 - 1.0;
+    gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+    v_local = local;
+    v_size = a_rect.zw;
+    v_color = a_color;
+}
+`
+
+export const GLOW_FS = /* glsl */ `${HEADER}
+uniform float u_spread;
+uniform float u_alpha;
+uniform float u_radius;
+in vec2 v_local;
+flat in vec2 v_size;
+flat in vec4 v_color;
+out vec4 o;
+float sdRound(vec2 p, vec2 b, float r) {
+    vec2 q = abs(p) - b + r;
+    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+}
+void main() {
+    float d = max(sdRound(v_local - v_size * 0.5, v_size * 0.5, u_radius), 0.0);
+    // sigma = spread / 2.5: the halo has faded out by the quad's edge.
+    float s = u_spread * 0.4;
+    float a = exp(-(d * d) / (2.0 * s * s)) * v_color.a * u_alpha;
+    o = vec4(v_color.rgb * a, a);
+}
+`
+
+/**
  * Cards: one instanced quad each — shadow (CSS --shadow-md, Evan Wallace's
  * closed-form rounded-box gaussian), surface (frosted in the brand theme:
  * the blurred backdrop, saturate 180% contrast 105%, under the surface
@@ -233,6 +282,7 @@ layout(location = 2) in vec4 a_accent; // straight rgba
 layout(location = 3) in vec4 a_uv;     // u0, v0, u1, v1 in the atlas layer
 layout(location = 4) in vec4 a_misc;   // layer, archived, appear start, has texture
 layout(location = 5) in vec4 a_parts;  // title, body, refs, tags heights (px)
+layout(location = 6) in vec4 a_heat;   // crowding tint: straight rgb, opacity
 uniform vec3 u_cam;
 uniform vec2 u_view;
 uniform float u_time;
@@ -243,6 +293,7 @@ flat out vec4 v_accent;
 flat out vec4 v_uv;
 flat out vec4 v_misc;
 flat out vec4 v_parts;
+flat out vec4 v_heat;
 flat out float v_alpha;
 void main() {
     float t = clamp((u_time - a_misc.z) / 0.32, 0.0, 1.0);
@@ -262,6 +313,7 @@ void main() {
     v_uv = a_uv;
     v_misc = a_misc;
     v_parts = a_parts;
+    v_heat = a_heat;
     v_alpha = clamp(e, 0.0, 1.0);
 }
 `
@@ -294,6 +346,7 @@ flat in vec4 v_accent;
 flat in vec4 v_uv;
 flat in vec4 v_misc;
 flat in vec4 v_parts;
+flat in vec4 v_heat;
 flat in float v_alpha;
 out vec4 o;
 
@@ -416,6 +469,9 @@ void main() {
         } else {
             body = surf;
         }
+        // Crowding heat: a flat tint over the surface, under the strip (the
+        // HTML card's --heat-bg background layer).
+        if (v_heat.a > 0.0) body = over(pm(v_heat), body);
         // background-origin is the padding box: the strip's gradient starts
         // inside the border (3px solid, wash to 64px), under the border is
         // only the surface.

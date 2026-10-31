@@ -674,6 +674,11 @@ fn api_router(state: Arc<AppState>) -> Router {
         .route("/audit/answered", post(audit_answered))
         .route("/audit/promotions", post(audit_promotions))
         .route("/drift", get(drift))
+        .route("/crowding", get(crowding))
+        .route("/review", get(review_page))
+        .route("/review/marks", post(review_marks))
+        .route("/review/conflicts", get(review_conflicts))
+        .route("/review/islands", get(review_islands))
         .route("/digest/scan", post(digest_scan))
         .route("/nodes/{id}/timeline", get(timeline))
         .route("/decay", post(decay))
@@ -1615,6 +1620,90 @@ async fn drift(
     let root = state.scoped_root(&engine);
     let drifted = pane(&engine).scan_code_refs(&root)?;
     Ok(Json(drifted))
+}
+
+/// Crowding (0.11.0): per-note close-neighbour counts and heat for the
+/// graph view, plus the unreviewed subjects and islands for Checkup.
+async fn crowding(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+) -> Result<Json<engram_core::CrowdingReport>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    let report = pane(&engine).crowding_report()?;
+    Ok(Json(report))
+}
+
+#[derive(Deserialize)]
+struct ReviewParams {
+    offset: Option<usize>,
+    limit: Option<usize>,
+    include_reviewed: Option<bool>,
+    tag: Option<String>,
+}
+
+/// The sleep queue, the same page MCP's `list_nodes` `view: "review"` reads.
+async fn review_page(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+    Query(p): Query<ReviewParams>,
+) -> Result<Json<engram_core::ReviewPage>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    let page = pane(&engine).review_page(&engram_core::ReviewQuery {
+        types: Vec::new(),
+        tag: p.tag,
+        include_reviewed: p.include_reviewed.unwrap_or(false),
+        offset: p.offset.unwrap_or(0),
+        limit: p.limit.unwrap_or(1).min(10),
+    })?;
+    Ok(Json(page))
+}
+
+/// Sleep's first queue: standing contradiction edges and pending suspects
+/// (MCP: `list_nodes` `view: "conflicts"`).
+async fn review_conflicts(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+) -> Result<Json<engram_core::ConflictsView>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    Ok(Json(pane(&engine).conflicts_view()?))
+}
+
+/// Notes no edge and no tag reaches, with their nearest notes (MCP:
+/// `list_nodes` `view: "islands"`).
+async fn review_islands(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+    Query(p): Query<ReviewParams>,
+) -> Result<Json<engram_core::IslandPage>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    Ok(Json(pane(&engine).islands_page(
+        p.include_reviewed.unwrap_or(false),
+        p.offset.unwrap_or(0),
+        p.limit.unwrap_or(20).min(100),
+    )?))
+}
+
+#[derive(Deserialize)]
+struct ReviewMarks {
+    ids: Vec<String>,
+    #[serde(default = "yes")]
+    reviewed: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// Mark notes reviewed (a subject the user looked at and kept), or clear
+/// the marks with `reviewed: false`.
+async fn review_marks(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+    Json(p): Json<ReviewMarks>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    let done = pane(&engine).mark_reviewed(&p.ids, p.reviewed)?;
+    Ok(Json(json!({ "marked": done, "reviewed": p.reviewed })))
 }
 
 /// Digestion tier 1 (PLAN §7B): the gitignore-aware FIXME/TODO scan of the

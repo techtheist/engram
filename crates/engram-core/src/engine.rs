@@ -8,6 +8,13 @@ use crate::rag::{Embedder, Reranker};
 use crate::types::*;
 use crate::{Result, Store};
 
+mod review;
+pub use review::{
+    AroundView, ConflictsView, CrowdHeat, CrowdingReport, Island, IslandPage, Neighbor, ReviewEdge,
+    ReviewLine, ReviewMember, ReviewPage, ReviewPair, ReviewQuery, ReviewSubject, StandingConflict,
+    SubjectSummary, Worth,
+};
+
 /// A graph mutation, broadcast to listeners (the HTTP layer turns these into
 /// SSE so the pane updates live — regardless of whether the write came from
 /// the API or from Claude over MCP).
@@ -140,6 +147,9 @@ pub struct Engine {
     /// trigger consults this so back-to-back connects don't re-sweep. Per
     /// graph, not per process: this engine IS the graph's process-side.
     last_validated: std::sync::atomic::AtomicI64,
+    /// The crowding index (0.11.0), rebuilt when the note set or a note's
+    /// text changes — see [`Engine::crowding`].
+    crowd_cache: std::sync::Mutex<Option<std::sync::Arc<crate::crowding::CrowdIndex>>>,
 }
 
 impl Engine {
@@ -170,6 +180,7 @@ impl Engine {
             audit_op: std::sync::Mutex::new(None),
             audit_version: env!("CARGO_PKG_VERSION").to_string(),
             last_validated: std::sync::atomic::AtomicI64::new(0),
+            crowd_cache: std::sync::Mutex::new(None),
         }
     }
 
@@ -2511,9 +2522,46 @@ impl Engine {
         self.audit_edge("created", None, Some(&edge))?;
         self.notify(ChangeEvent::EdgeAdded(edge.clone()));
         self.reconcile_conflict_demotion(&edge)?;
+        // Before the retirement: a pending list drops archived pairs.
+        self.settle_linked_suspects(&edge)?;
         self.retire_superseded(&edge)?;
         self.propagate_from_edge(&edge)?;
         Ok(edge)
+    }
+
+    /// A live link says how two notes relate, so a pending suspect between
+    /// them is settled by it (0.11.0): `replaces` / `conflicts-with` confirm
+    /// it, any other verb dismisses it. A sleep's state-of note raises
+    /// suspects against the notes it summarises the moment it is written;
+    /// its `builds-on` links clear them.
+    fn settle_linked_suspects(&self, edge: &Edge) -> Result<()> {
+        if matches!(
+            edge.status,
+            Some(EdgeStatus::Resolved | EdgeStatus::Dismissed)
+        ) {
+            return Ok(());
+        }
+        let cfg = self.store.config();
+        let verb = edge.edge_type.as_str();
+        let status = if verb == cfg.supersession_verb() || verb == cfg.contradiction_verb() {
+            SuspectStatus::Confirmed
+        } else {
+            SuspectStatus::Dismissed
+        };
+        let pair = |a: &str, b: &str| {
+            (a == edge.from_id && b == edge.to_id) || (a == edge.to_id && b == edge.from_id)
+        };
+        let mut settled = false;
+        for s in self.store.suspects_pending()? {
+            if pair(&s.a.id, &s.b.id) {
+                self.store.set_suspect_status(&s.id, status)?;
+                settled = true;
+            }
+        }
+        if settled {
+            self.notify(ChangeEvent::SuspectsChanged);
+        }
+        Ok(())
     }
 
     /// Live edges per node id (resolved/dismissed edges don't count) — the
@@ -4564,6 +4612,41 @@ impl Engine {
                         &format!("- …and {overflow} more — `list_suspects` has the full queue."),
                     )
                 {
+                    break 'assemble;
+                }
+            }
+
+            // Sleep (0.11.0): one line when unreviewed subjects of close
+            // notes pile up, or islands do — the cue for an offered sleep,
+            // never a task. Conflicts and suspects have their own sections;
+            // the line only counts them.
+            let q = self.sleep_queue()?;
+            if q.subjects > 0 || (q.min_size > 0 && q.islands >= q.min_size) {
+                let mut parts = Vec::new();
+                if q.subjects > 0 {
+                    let (name, size) = q.top.clone().unwrap_or_default();
+                    parts.push(format!(
+                        "{} subject{} of {}+ close notes (most worth it: \"{}\", {size} notes)",
+                        q.subjects,
+                        if q.subjects == 1 { "" } else { "s" },
+                        q.min_size,
+                        crate::harvest::truncate_words(&name, 90),
+                    ));
+                }
+                for (n, one, many) in [
+                    (q.standing, "standing conflict", "standing conflicts"),
+                    (q.suspects, "suspect", "suspects"),
+                    (q.islands, "island", "islands"),
+                ] {
+                    if n > 0 {
+                        parts.push(format!("{n} {}", if n == 1 { one } else { many }));
+                    }
+                }
+                let line = format!(
+                    "\n## Sleep queue\n{}. Offer a sleep when search keeps returning restatements or the user finds memory noisy; on a yes the engram-sleep skill works them (`list_nodes` with `view` conflicts, review, islands; an island is a note no edge and no tag reaches).",
+                    parts.join(", "),
+                );
+                if !push_line(&mut out, &line) {
                     break 'assemble;
                 }
             }

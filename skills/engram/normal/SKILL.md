@@ -55,6 +55,7 @@ Engram is a local, user-owned graph of *why this project is the way it is*: deci
 - **Close the loop:** a Resolution that `answers` a Problem/Intent → set that node `resolved`.
 - **Merge** several notes with the same knowledge via `merge_nodes` (you write the merged body).
 - **Bury, don't delete:** when something is killed on purpose with no successor, add a Tombstone `Removed: <title>` with the why, then link it `replaces` → the victim. Hard delete is user-only.
+- **Too crowded:** search keeps returning restatements of one subject, or the user finds memory noisy → suggest a sleep in one line (`/engram-sleep [subject]`); run it only on a yes.
 - **Drift:** `list_drift` → fix moved paths, and re-read the claim — if the code change made it false, supersede it.
 - **Stale hits:** verify; still true → `update_node` (that re-confirms it); wrong → supersede or conflict.
 - **Version:** notes are stamped automatically; when a release is cut or a cycle opens, `set_version`.

@@ -23,6 +23,7 @@ import type {
     AuditEntry,
     AuditPage,
     ConfigPreset,
+    CrowdingReport,
     ExportGraph,
     GraphConfig,
     GraphNode,
@@ -186,6 +187,127 @@ function memoryHits(query: string, limit: number): SearchHit[] {
     return scored.sort((a, b) => b.score - a.score || b.created_at - a.created_at).slice(0, limit)
 }
 
+/**
+ * Crowding without vectors: the demo has no embedder, so closeness is a
+ * blend of what two notes share — title words (Jaccard over words of 4+
+ * letters), tags, and a direct link. The real core measures cosine between
+ * stored embeddings against the graph's own top 1% of pairs; this keeps the
+ * same shape — counts, heat, subjects, reviewed marks — so the
+ * pane's heat view and Checkup section have data. Heat is the note's rank
+ * among the crowded ones, so the demo shows the whole ramp, yellow to red.
+ */
+const DEMO_CLOSE = 0.26
+const reviewed = new Map<string, Set<string>>()
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+    let shared = 0
+    for (const w of a) if (b.has(w)) shared++
+    const union = a.size + b.size - shared
+    return union ? shared / union : 0
+}
+
+function demoCrowding(): CrowdingReport {
+    const nodes = engine
+        .readNodes()
+        .filter((n) => n.valid_until == null && n.type !== 'Anchor' && n.type !== 'Tombstone')
+    const words = nodes.map((n) => new Set(n.title.toLowerCase().match(/[a-z]{4,}/g) ?? []))
+    const tags = nodes.map((n) => new Set(n.tags ?? []))
+    const linked = new Set<string>()
+    for (const e of engine.state().edges.values()) {
+        linked.add(`${e.from_id} ${e.to_id}`)
+        linked.add(`${e.to_id} ${e.from_id}`)
+    }
+    const near: Array<Array<[number, number]>> = nodes.map(() => [])
+    for (let i = 0; i < nodes.length; i++) {
+        for (let j = i + 1; j < nodes.length; j++) {
+            const sim =
+                0.55 * jaccard(words[i]!, words[j]!) +
+                0.3 * jaccard(tags[i]!, tags[j]!) +
+                (linked.has(`${nodes[i]!.id} ${nodes[j]!.id}`) ? 0.15 : 0)
+            if (sim >= DEMO_CLOSE) {
+                near[i]!.push([j, sim])
+                near[j]!.push([i, sim])
+            }
+        }
+    }
+    const counts = near.map((l) => l.length)
+    // Rank among the crowded notes: the least crowded of them is pale
+    // yellow, the most crowded red.
+    const crowded = [...new Set(counts.filter((c) => c > 0))].sort((a, b) => a - b)
+    const heatOf = (c: number): number =>
+        c === 0 ? 0 : crowded.length < 2 ? 1 : 0.1 + (0.9 * crowded.indexOf(c)) / (crowded.length - 1)
+    // Subjects: notes joined by chains of close pairs, at least 2% of the
+    // notes (5 at the least) — the core also re-cuts an oversized group at
+    // stricter cosines; 45 notes never need it, so the demo stops here.
+    const parent = nodes.map((_, i) => i)
+    const root = (x: number): number => (parent[x] === x ? x : (parent[x] = root(parent[x]!)))
+    near.forEach((list, i) => list.forEach(([j]) => (parent[root(i)] = root(j))))
+    const groups = new Map<number, number[]>()
+    nodes.forEach((_, i) => groups.set(root(i), [...(groups.get(root(i)) ?? []), i]))
+    const min = Math.max(5, Math.ceil(nodes.length * 0.02))
+    const marks = reviewed.get(engine.activeProject()) ?? new Set<string>()
+    const working = engine.state().version
+    const day = 86_400
+    const now = Date.now() / 1000
+    // Names: the core's class TF-IDF, shortened — words and tags a subject
+    // shares, by how rare they are in the rest of the graph.
+    const terms = nodes.map((_, i) => new Set([...words[i]!, ...tags[i]!]))
+    const df = new Map<string, number>()
+    for (const t of terms) for (const w of t) df.set(w, (df.get(w) ?? 0) + 1)
+    const nameOf = (g: number[]): string | undefined => {
+        const count = new Map<string, number>()
+        for (const i of g) for (const w of terms[i]!) count.set(w, (count.get(w) ?? 0) + 1)
+        const picked: string[] = []
+        const ranked = [...count]
+            .filter(([, c]) => c >= 2)
+            .map(([w, c]) => [w, (c / g.length) * Math.log(nodes.length / df.get(w)!)] as const)
+            .sort((a, b) => b[1] - a[1])
+        for (const [w] of ranked) {
+            if (picked.length === 3) break
+            if (!picked.some((p) => p.startsWith(w.slice(0, 5)) || w.startsWith(p.slice(0, 5)))) picked.push(w)
+        }
+        return picked.length ? picked.join(' · ') : undefined
+    }
+    const subjects: CrowdingReport['subjects'] = []
+    let hidden = 0
+    for (const g of groups.values()) {
+        if (g.length < min) continue
+        // Most central first: summed closeness inside the group.
+        const weight = (i: number): number => near[i]!.filter(([j]) => g.includes(j)).reduce((a, [, s]) => a + s, 0)
+        const members = [...g].sort((a, b) => weight(b) - weight(a)).slice(0, min * 4)
+        const ns = members.map((i) => nodes[i]!)
+        if (ns.every((n) => marks.has(n.id))) {
+            hidden++
+            continue
+        }
+        const versions = new Set(ns.map((n) => n.version?.replace(/^v/, '')).filter(Boolean)).size
+        const settled = ns.filter((n) => n.version !== working && now - n.created_at > 14 * day).length / ns.length
+        const times = ns.map((n) => n.created_at)
+        subjects.push({
+            name: nameOf(members),
+            members: ns.map((n) => n.id),
+            worth: {
+                score: Math.round(ns.length * (1 + Math.log(Math.max(1, versions))) * (0.3 + 0.7 * settled) * 10) / 10,
+                versions,
+                settled: Math.round(settled * 100) / 100,
+                span_days: Math.floor((Math.max(...times) - Math.min(...times)) / day),
+            },
+        })
+    }
+    subjects.sort((a, b) => b.worth.score - a.worth.score)
+    return {
+        band: DEMO_CLOSE,
+        size: nodes.length,
+        min_size: min,
+        nodes: Object.fromEntries(nodes.map((n, i) => [n.id, { crowding: counts[i]!, heat: heatOf(counts[i]!) }])),
+        subjects,
+        hidden_reviewed: hidden,
+        islands: nodes
+            .filter((n) => !marks.has(n.id) && !(n.tags ?? []).length && ![...linked].some((k) => k.startsWith(`${n.id} `)))
+            .map((n) => n.id),
+    }
+}
+
 export const api: EngramApi = {
     graph: () => ok({ nodes: engine.readNodes(), edges: [...engine.state().edges.values()] }),
 
@@ -273,6 +395,19 @@ export const api: EngramApi = {
         ),
 
     drift: () => ok(engine.activeProject() === LAUNCH ? DRIFT : []),
+
+    crowding: () => ok(demoCrowding()),
+
+    reviewMarks: (ids, flag = true) => {
+        const project = engine.activeProject()
+        const marks = reviewed.get(project) ?? new Set<string>()
+        for (const id of ids) {
+            if (flag) marks.add(id)
+            else marks.delete(id)
+        }
+        reviewed.set(project, marks)
+        return ok({ marked: ids, reviewed: flag })
+    },
 
     timeline: (id) => ok(engine.timeline(id)),
 

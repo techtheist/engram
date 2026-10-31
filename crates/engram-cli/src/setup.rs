@@ -22,6 +22,9 @@ const CLAUDE_AGGRESSIVE: &str = include_str!("../../../skills/engram/aggressive/
 // The digest skill (PLAN §7B) has no variants: one explicit-invocation
 // ingestion doc, installed alongside whichever capture variant was chosen.
 pub const CLAUDE_DIGEST: &str = include_str!("../../../skills/engram/digest/SKILL.md");
+// The sleep skill (0.11.0): on-demand consolidation of a crowded graph, no
+// variants either.
+pub const CLAUDE_SLEEP: &str = include_str!("../../../skills/engram/sleep/SKILL.md");
 // Harness-neutral variants for AGENTS.md / GEMINI.md / rules files.
 const AGENT_RELAXED: &str = include_str!("../../../skills/engram/agents/relaxed.md");
 const AGENT_NORMAL: &str = include_str!("../../../skills/engram/agents/normal.md");
@@ -371,6 +374,7 @@ impl Setup {
         for (name, body) in [
             ("engram", claude_skill(&self.variant)),
             ("engram-digest", CLAUDE_DIGEST),
+            ("engram-sleep", CLAUDE_SLEEP),
         ] {
             let dir = self.repo.join(base).join(name);
             if is_symlink(&dir) || is_symlink(&dir.join("SKILL.md")) {
@@ -380,7 +384,11 @@ impl Setup {
                 continue;
             }
             let path = dir.join("SKILL.md");
-            let kind = if name == "engram" { "engram" } else { "digest" };
+            let kind = match name {
+                "engram" => "engram",
+                "engram-sleep" => "sleep",
+                _ => "digest",
+            };
             if crate::skillsync::is_edited(&path, kind) {
                 say(&format!(
                     "{label}: {base}/{name} was edited — kept as it is (delete it to get the current text)"
@@ -388,15 +396,15 @@ impl Setup {
                 continue;
             }
             fs::create_dir_all(&dir)?;
-            let variant = if kind == "digest" {
-                "digest"
-            } else {
+            let variant = if kind == "engram" {
                 self.variant.as_str()
+            } else {
+                kind
             };
             fs::write(&path, crate::skillsync::stamp_skill(body, kind, variant))?;
         }
         say(&format!(
-            "{label}: installed the '{}' + digest skills to {base}",
+            "{label}: installed the '{}' + digest + sleep skills to {base}",
             self.variant
         ));
         Ok(())
@@ -1222,6 +1230,15 @@ mod tests {
         assert_eq!(
             plugin, CLAUDE_DIGEST,
             "claude-plugin/skills/engram-digest/SKILL.md drifted from skills/engram/digest/SKILL.md — re-copy it"
+        );
+    }
+
+    #[test]
+    fn plugin_sleep_skill_matches_canonical() {
+        let plugin = include_str!("../../../claude-plugin/skills/engram-sleep/SKILL.md");
+        assert_eq!(
+            plugin, CLAUDE_SLEEP,
+            "claude-plugin/skills/engram-sleep/SKILL.md drifted from skills/engram/sleep/SKILL.md — re-copy it"
         );
     }
 

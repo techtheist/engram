@@ -101,6 +101,9 @@ fn check_skills(r: &mut Report, repo: &Path) {
             State::Edited => r.ok(&format!(
                 "{rel}: edited by hand — updates leave it alone (delete it and run setup for the current text)"
             )),
+            State::Added { variant } => r.warn(&format!(
+                "{rel}: the {variant} skill is missing — `engram-alpha serve` or `setup` adds it"
+            )),
         }
     }
 }

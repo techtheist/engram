@@ -220,7 +220,14 @@ close it (`done`) or drop it (`dropped`).
 resolve), `POST /audit/conflicts`, `POST /audit/duplicates`,
 `POST /audit/answered`, `POST /audit/promotions`, `POST /audit/stale`
 (checkup sweeps — nominations, never verdicts), `GET /export` / `POST /import`
-(the whole graph as JSON, config included). Hard delete, pinning and undo
+(the whole graph as JSON, config included), `GET /crowding` (per-note
+crowding and heat, plus the unreviewed subjects, each with a model-free
+name), `GET /review`,
+`GET /review/conflicts`, `GET /review/islands` and `POST /review/marks` (the
+sleep queues — over MCP an agent reads them with `list_nodes` `view:
+"review" | "conflicts" | "islands"` and marks with `update_node` `reviewed: true`;
+the `engram-sleep` skill runs a sweep when the user asks or takes the
+agent's suggestion). Hard delete, pinning and undo
 (`POST /audit/{seq}/undo`, `POST /audit/sessions/{sid}/undo`, the audit
 view's buttons) stay pane-only: point the user at the audit view rather than
 calling them.

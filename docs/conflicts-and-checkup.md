@@ -84,6 +84,13 @@ Below, instant structural checks with no models at all: Decisions missing a
 recorded reason, nodes with no connections. Everything a sweep finds lands
 as a *nomination* in the Review drawer.
 
+**Crowded subjects** (0.11.0) lists the piles of close notes a sleep would
+consolidate, each named by the terms its notes share, with **Keep** to mark
+one reviewed as it is. Notes nothing reaches (no edge, no tag) are listed as
+islands with **Keep all**. Both are measured from the stored vectors, with no
+model. To consolidate, ask your assistant to sleep (`/engram-sleep`); see
+[Memory model](./memory-model.md#sleep-consolidating-a-crowded-graph).
+
 ## The assistant's side
 
 Your assistant has the same power as the `check_claim` MCP tool — *"does the

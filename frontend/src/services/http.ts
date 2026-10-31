@@ -10,7 +10,9 @@ import type {
     AuditSweep,
     NliAgreement,
     ClaimReport,
+    CrowdingReport,
     DriftEntry,
+    ReviewMarkResult,
     ExportGraph,
     FsListing,
     Graph,
@@ -200,6 +202,13 @@ export const api = {
 
     /** Nodes whose path-shaped code_refs no longer exist in the project. */
     drift: () => request<DriftEntry[]>('/drift'),
+
+    /** Crowding per note and the unreviewed subjects (the sleep queue). */
+    crowding: () => request<CrowdingReport>('/crowding'),
+
+    /** Mark notes reviewed (a cluster looked at and kept), or clear the marks. */
+    reviewMarks: (ids: string[], reviewed = true) =>
+        request<ReviewMarkResult>('/review/marks', { method: 'POST', body: JSON.stringify({ ids, reviewed }) }),
 
     /** The node's `replaces` chain, oldest generation first. */
     timeline: (id: string) => request<TimelineEntry[]>(`/nodes/${id}/timeline`),

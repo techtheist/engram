@@ -1523,6 +1523,31 @@ impl Engram {
 
     /// The update_node core, shared with the batch form.
     fn patch_node(&self, a: UpdateArgs) -> Result<serde_json::Value, ErrorData> {
+        let reviewed = a.reviewed;
+        let content = a.node_type.is_some()
+            || a.title.is_some()
+            || a.body.is_some()
+            || a.durability.is_some()
+            || a.status.is_some()
+            || a.code_refs.is_some()
+            || a.tags.is_some()
+            || a.version.is_some()
+            || a.fields.is_some();
+        if let (Some(mark), false) = (reviewed, content) {
+            // A bare mark is not an update: no confirmed_at, no verdict.
+            let engine = self.write_engine_for(&a.project)?;
+            let done = self
+                .mcp(&engine)
+                .mark_reviewed(std::slice::from_ref(&a.id), mark)
+                .map_err(map_err)?;
+            if done.is_empty() {
+                return Err(ErrorData::invalid_params(
+                    format!("node {} not found", a.id),
+                    None,
+                ));
+            }
+            return Ok(json!({ "ok": true, "id": a.id, "reviewed": mark }));
+        }
         let patch = NodePatch {
             version: a.version,
             node_type: a
@@ -1557,6 +1582,13 @@ impl Engram {
         } = Engine::update_node_checked_shared(&engine, self.writer(), &a.id, patch)
             .map_err(map_err)?;
         let mut out = json!({ "ok": true, "id": node.id });
+        if let Some(mark) = reviewed {
+            // After the edit, so the mark vouches for the new text.
+            self.mcp(&engine)
+                .mark_reviewed(std::slice::from_ref(&node.id), mark)
+                .map_err(map_err)?;
+            out["reviewed"] = json!(mark);
+        }
         if !warnings.is_empty() {
             out["warnings"] = json!(warnings);
         }
@@ -1642,7 +1674,14 @@ impl Engram {
     #[tool(description = "Lossless paged read: complete nodes with filters \
         (types, status, tag, pinned, include_archived) — the bulk read for \
         reviews and exports where snippets won't do. Newest first; page with \
-        limit/offset; sort: recent | most-connected | least-connected.")]
+        limit/offset; sort: recent | most-connected | least-connected | \
+        crowded. `around: <id>` = that note's nearest notes and the notes \
+        sharing its anchors/tags/refs, no search cut-off. Sleep queues: \
+        `view: \"conflicts\"` = standing conflicts-with edges + pending \
+        suspects; `\"review\"` = named subjects (piles of close notes), most \
+        worth consolidating first, central members in full, the closest \
+        pairs; `\"islands\"` = notes no edge and no tag reaches, with their \
+        nearest notes. Reviewed ones hidden.")]
     async fn list_nodes(
         &self,
         Parameters(a): Parameters<ListNodesArgs>,
@@ -1658,6 +1697,45 @@ impl Engram {
             .map(|t| engram_core::normalize_tags(&[t]))
             .and_then(|mut v| v.pop());
         let engine = self.engine_for(&a.project)?;
+        if let Some(id) = &a.around {
+            let view = self.mcp(&engine).around(id).map_err(map_err)?;
+            return self.reply(&view);
+        }
+        match a.view.as_deref() {
+            None | Some("nodes") => {}
+            Some("review") => {
+                let q = engram_core::ReviewQuery {
+                    types,
+                    tag,
+                    include_reviewed: a.include_reviewed.unwrap_or(false),
+                    offset: a.offset.unwrap_or(0),
+                    limit: a.limit.unwrap_or(1).min(10),
+                };
+                let page = self.mcp(&engine).review_page(&q).map_err(map_err)?;
+                return self.reply(&page);
+            }
+            Some("conflicts") => {
+                let view = self.mcp(&engine).conflicts_view().map_err(map_err)?;
+                return self.reply(&view);
+            }
+            Some("islands") => {
+                let page = self
+                    .mcp(&engine)
+                    .islands_page(
+                        a.include_reviewed.unwrap_or(false),
+                        a.offset.unwrap_or(0),
+                        a.limit.unwrap_or(20).min(100),
+                    )
+                    .map_err(map_err)?;
+                return self.reply(&page);
+            }
+            Some(other) => {
+                return Err(ErrorData::invalid_params(
+                    format!("view {other:?}: use nodes | conflicts | review | islands"),
+                    None,
+                ));
+            }
+        }
         let (mut nodes, _) = self.mcp(&engine).graph().map_err(map_err)?;
         nodes.retain(|n| {
             (a.include_archived.unwrap_or(false) || n.valid_until.is_none())
@@ -1692,9 +1770,36 @@ impl Engram {
                     }
                 });
             }
+            Some("crowded") => {
+                let index = self.mcp(&engine).crowding().map_err(map_err)?;
+                let total = nodes.len();
+                let offset = a.offset.unwrap_or(0);
+                let limit = a.limit.unwrap_or(30).min(200);
+                let crowding = |id: &str| index.nodes.get(id).map_or(0, |c| c.crowding);
+                nodes.sort_by(|x, y| crowding(&y.id).cmp(&crowding(&x.id)).then(y.id.cmp(&x.id)));
+                let page: Vec<serde_json::Value> = nodes
+                    .into_iter()
+                    .skip(offset)
+                    .take(limit)
+                    .map(|n| {
+                        let c = crowding(&n.id);
+                        let mut v = json!(n);
+                        v["crowding"] = json!(c);
+                        v
+                    })
+                    .collect();
+                return self.reply(&json!({
+                    "total": total,
+                    "offset": offset,
+                    "band": index.band,
+                    "nodes": page,
+                }));
+            }
             Some(other) => {
                 return Err(ErrorData::invalid_params(
-                    format!("sort {other:?}: use recent | most-connected | least-connected"),
+                    format!(
+                        "sort {other:?}: use recent | most-connected | least-connected | crowded"
+                    ),
                     None,
                 ));
             }
@@ -3852,6 +3957,10 @@ struct UpdateArgs {
     /// Definitions (kinds, required, enum vocabularies): describe_ontology.
     #[serde(default)]
     fields: Option<serde_json::Map<String, serde_json::Value>>,
+    /// true = mark reviewed in a sleep sweep (hides its subject or island from the
+    /// review queue until the note changes; trust untouched); false clears.
+    #[serde(default)]
+    reviewed: Option<bool>,
     /// Omit = current project; a name, id, or the project's directory =
     /// that project; "home".
     #[serde(default)]
@@ -3908,9 +4017,25 @@ struct ListNodesArgs {
     tag: Option<String>,
     /// Ordering: "recent" (default, newest first), "most-connected" or
     /// "least-connected" (by live edge count — the least-connected end is
-    /// where unreachable knowledge hides).
+    /// where unreachable knowledge hides), "crowded" (most close neighbours
+    /// first; each node carries `crowding`).
     #[serde(default)]
     sort: Option<String>,
+    /// The sleep queues: "conflicts" = standing contradiction edges and
+    /// pending suspects; "review" = subjects of close notes, most worth
+    /// consolidating first (limit counts subjects, default 1; types/tag
+    /// filter members); "islands" = notes no edge and no tag reaches, with
+    /// their nearest notes (default limit 20). Default "nodes".
+    #[serde(default)]
+    view: Option<String>,
+    /// A note id: return its neighbourhood instead of a list — nearest
+    /// notes by embedding and subject-mates (shared anchor/tag/code ref).
+    #[serde(default)]
+    around: Option<String>,
+    /// With view "review" / "islands": also show subjects or islands
+    /// already marked reviewed. Default false.
+    #[serde(default)]
+    include_reviewed: Option<bool>,
     /// Also return archived (superseded) generations. Default false.
     #[serde(default)]
     include_archived: Option<bool>,
@@ -4706,6 +4831,7 @@ pub(crate) mod tool_tests {
                         .collect(),
                 ),
                 project: None,
+                reviewed: None,
             }))
             .await
             .unwrap_err();
@@ -5352,6 +5478,9 @@ pub(crate) mod tool_tests {
                 limit: None,
                 offset: None,
                 project: None,
+                view: None,
+                around: None,
+                include_reviewed: None,
             }))
             .await
             .unwrap();
@@ -5377,6 +5506,9 @@ pub(crate) mod tool_tests {
                 limit: None,
                 offset: None,
                 project: None,
+                view: None,
+                around: None,
+                include_reviewed: None,
             }))
             .await
             .unwrap();
@@ -5405,6 +5537,7 @@ pub(crate) mod tool_tests {
             tags: None,
             fields: None,
             project: None,
+            reviewed: None,
         };
         let res = s
             .update_nodes(Parameters(UpdateNodesArgs {
@@ -6624,6 +6757,7 @@ mod scoped_transport_tests {
                         version: None,
                         fields: None,
                         project: None,
+                        reviewed: None,
                     }))
                     .await
                     .is_err(),
@@ -7007,6 +7141,9 @@ mod push_and_params_tests {
                         offset: None,
                         limit: None,
                         project: None,
+                        view: None,
+                        around: None,
+                        include_reviewed: None,
                     }))
                     .await
                     .unwrap(),
@@ -7023,5 +7160,222 @@ mod push_and_params_tests {
             most.find("well connected hub").unwrap() < most.find("island nobody").unwrap(),
             "most-connected surfaces the hubs first"
         );
+    }
+}
+
+/// Sleep's reading side over MCP (0.11.0): `list_nodes` options and the
+/// `reviewed` mark on update_node.
+#[cfg(test)]
+mod sleep_tests {
+    use super::*;
+    use engram_core::{Durability, Embedder, NewNode, Source, SqliteStore};
+
+    /// Same-subject texts (`#word`) share an axis; everything else is far.
+    struct TopicEmbedder;
+
+    fn axis(text: &str) -> usize {
+        (engram_core::crowding::fnv(&[text.as_bytes()]) % 384) as usize
+    }
+
+    impl Embedder for TopicEmbedder {
+        fn dim(&self) -> usize {
+            384
+        }
+        fn name(&self) -> &str {
+            "topic-test"
+        }
+        fn embed(&self, texts: &[String]) -> engram_core::Result<Vec<Vec<f32>>> {
+            Ok(texts
+                .iter()
+                .map(|t| {
+                    let mut v = vec![0.0f32; 384];
+                    if let Some(tag) = t.split_whitespace().find(|w| w.starts_with('#')) {
+                        v[axis(tag)] += 1.0;
+                    }
+                    for salt in ["a", "b", "c"] {
+                        v[axis(&format!("{salt}{t}"))] += 0.17;
+                    }
+                    v
+                })
+                .collect())
+        }
+    }
+
+    fn server() -> (Engram, Vec<String>) {
+        let engine = Engine::new(
+            SqliteStore::open_in_memory().unwrap(),
+            Box::new(TopicEmbedder),
+        );
+        let add = |title: String| {
+            engine
+                .add_node(NewNode {
+                    node_type: engram_core::NodeType::Decision,
+                    title,
+                    body: Some("a body long enough to snip".into()),
+                    created_at: None,
+                    durability: Durability::Stable,
+                    source: Source::Claude,
+                    session_id: None,
+                    status: None,
+                    code_refs: vec![],
+                    tags: vec![],
+                    version: None,
+                    props: None,
+                    fields: None,
+                })
+                .unwrap()
+                .id
+        };
+        let pile: Vec<String> = (0..6)
+            .map(|i| add(format!("#bridge restatement {i}")))
+            .collect();
+        for i in 0..30 {
+            add(format!("stranger number {i}"));
+        }
+        (Engram::new(engine), pile)
+    }
+
+    fn json_of(r: &CallToolResult) -> serde_json::Value {
+        let raw = r.content[0].as_text().unwrap().text.clone();
+        serde_json::from_str(&raw).unwrap()
+    }
+
+    async fn list(s: &Engram, args: serde_json::Value) -> Result<serde_json::Value, ErrorData> {
+        let r = s
+            .list_nodes(Parameters(serde_json::from_value(args).unwrap()))
+            .await?;
+        Ok(json_of(&r))
+    }
+
+    #[tokio::test]
+    async fn conflicts_and_islands_are_sleep_views_too() {
+        let (s, pile) = server();
+        let conflicts = list(&s, json!({ "view": "conflicts" })).await.unwrap();
+        // Empty lists are pruned from replies. Suspects come from the
+        // background scan, so their count is timing-dependent.
+        assert!(conflicts.get("standing").is_none(), "{conflicts}");
+
+        // Nothing is linked or tagged: every note is an island.
+        let page = list(&s, json!({ "view": "islands" })).await.unwrap();
+        assert_eq!(page["total"], 36);
+        assert_eq!(page["islands"].as_array().unwrap().len(), 20);
+        // The pile leads: its notes have the closest neighbours.
+        let first = &page["islands"][0];
+        assert!(pile.contains(&first["id"].as_str().unwrap().to_string()));
+        assert_eq!(first["nearest"].as_array().unwrap().len(), 3);
+        assert_eq!(first["nearest"][0]["close"], true);
+
+        let err = list(&s, json!({ "view": "piles" })).await.unwrap_err();
+        assert!(err.message.contains("islands"), "{}", err.message);
+    }
+
+    #[tokio::test]
+    async fn the_review_view_pages_subjects_with_dossiers() {
+        let (s, pile) = server();
+        let page = list(&s, json!({ "view": "review" })).await.unwrap();
+        assert_eq!(page["total"], 1);
+        assert_eq!(page["min_size"], 5);
+        let subject = &page["subjects"][0];
+        assert_eq!(subject["size"], 6);
+        assert!(subject["worth"]["score"].as_f64().unwrap() > 0.0);
+        let members = subject["members"].as_array().unwrap();
+        assert_eq!(members.len(), 6);
+        for m in members {
+            assert!(pile.contains(&m["id"].as_str().unwrap().to_string()));
+            assert_eq!(m["crowding"], 5);
+            assert!(m["snippet"].as_str().unwrap().contains("body"));
+        }
+        assert_eq!(
+            subject["pairs"].as_array().unwrap().len(),
+            12,
+            "15 close pairs, capped"
+        );
+        assert!(page["band"].as_f64().unwrap() > 0.5);
+
+        let err = list(&s, json!({ "view": "graph" })).await.unwrap_err();
+        assert!(err.message.contains("review"));
+    }
+
+    #[tokio::test]
+    async fn around_and_sort_crowded() {
+        let (s, pile) = server();
+        let view = list(&s, json!({ "around": pile[0] })).await.unwrap();
+        assert_eq!(view["node"]["id"], pile[0]);
+        let near: Vec<&str> = view["nearest"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .take(5)
+            .map(|n| n["id"].as_str().unwrap())
+            .collect();
+        for p in &pile[1..] {
+            assert!(near.contains(&p.as_str()));
+        }
+
+        let sorted = list(&s, json!({ "sort": "crowded", "limit": 4 }))
+            .await
+            .unwrap();
+        let nodes = sorted["nodes"].as_array().unwrap();
+        assert!(nodes.iter().all(|n| n["crowding"] == 5), "the pile leads");
+        assert_eq!(sorted["total"], 36);
+    }
+
+    #[tokio::test]
+    async fn a_bare_reviewed_mark_is_not_an_update() {
+        let (s, pile) = server();
+        let before = s
+            .mcp(&s.session_engine())
+            .get_node(&pile[0])
+            .unwrap()
+            .unwrap();
+        for id in &pile {
+            let r = s
+                .update_node(Parameters(
+                    serde_json::from_value(json!({ "id": id, "reviewed": true })).unwrap(),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(json_of(&r)["reviewed"], true);
+        }
+        let after = s
+            .mcp(&s.session_engine())
+            .get_node(&pile[0])
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.confirmed_at, before.confirmed_at, "no trust refresh");
+        let page = list(&s, json!({ "view": "review" })).await.unwrap();
+        assert_eq!(page["total"], 0);
+        assert_eq!(page["hidden_reviewed"], 1);
+
+        // An edit with the mark re-vouches for the new text; one without
+        // voids it.
+        s.update_nodes(Parameters(
+            serde_json::from_value(json!({ "updates": [
+                { "id": pile[1], "body": "edited and re-marked", "reviewed": true },
+                { "id": pile[2], "body": "edited, mark gone" },
+            ]}))
+            .unwrap(),
+        ))
+        .await
+        .unwrap();
+        // Five of six still marked: the subject stays reviewed.
+        let page = list(&s, json!({ "view": "review", "include_reviewed": true }))
+            .await
+            .unwrap();
+        assert_eq!(page["total"], 1);
+        let reviewed: Vec<bool> = page["subjects"][0]["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["reviewed"].as_bool().unwrap_or(false))
+            .collect();
+        assert_eq!(reviewed.iter().filter(|r| **r).count(), 5);
+
+        let missing = s
+            .update_node(Parameters(
+                serde_json::from_value(json!({ "id": "nope", "reviewed": true })).unwrap(),
+            ))
+            .await;
+        assert!(missing.is_err());
     }
 }

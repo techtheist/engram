@@ -10,6 +10,7 @@ import { useConfigStore } from '@/stores/config'
 import { api } from '@/services/api'
 import { onProjectSwitch } from '@/composables/onProjectSwitch'
 import { useGraphStore } from '@/stores/graph'
+import { useCrowdingStore } from '@/stores/crowding'
 import type {
     AnsweredHint,
     AuditSweep,
@@ -31,6 +32,7 @@ const config = useConfigStore()
 const { nodeList, edgeList, driftByNode } = storeToRefs(store)
 
 const open = ref(false)
+const crowding = useCrowdingStore()
 const nliReady = ref<boolean | null>(null)
 const agreement = ref<NliAgreement | null>(null)
 
@@ -47,6 +49,40 @@ watch(open, async (isOpen) => {
         agreement.value = null
     }
 })
+
+// --- crowded subjects: the sleep queue (0.11.0) -----------------------------
+
+/** An open panel reads crowding, so the store keeps it fresh while open. */
+watch(open, (isOpen) => {
+    crowding.readers += isOpen ? 1 : -1
+})
+
+const byId = computed(() => new Map(nodeList.value.map((n) => [n.id, n])))
+const expanded = ref<string | null>(null)
+const keeping = ref<string | null>(null)
+const SUBJECT_CAP = 8
+
+/** Subjects whose notes this pane has loaded, most central first. */
+const crowded = computed(() =>
+    (crowding.report?.subjects ?? [])
+        .map((s) => ({
+            name: s.name,
+            worth: s.worth,
+            members: s.members.map((id) => byId.value.get(id)).filter((n): n is GraphNode => n != null),
+        }))
+        .filter((s) => s.members.length > 1),
+)
+
+async function keepSubject(members: GraphNode[]): Promise<void> {
+    keeping.value = members[0]!.id
+    try {
+        await crowding.markReviewed(members.map((n) => n.id))
+    } catch (e) {
+        sweepNote.value.crowded = e instanceof Error ? e.message : String(e)
+    } finally {
+        keeping.value = null
+    }
+}
 
 // --- deep sweeps -----------------------------------------------------------
 
@@ -208,6 +244,7 @@ async function runClaim(): Promise<void> {
 
 /** Every report on this panel names nodes of the graph we are leaving. */
 onProjectSwitch(() => {
+    expanded.value = null
     nliReady.value = null
     agreement.value = null
     sweepNote.value = {}
@@ -241,11 +278,25 @@ const orphans = computed(() => {
 
 /**
  * Unreachable knowledge: no edges AND no tags — text search is the only road
- * in, so a differently-phrased future query may never find these.
+ * in, so a differently-phrased future query may never find these. The core
+ * lists them too (a sleep's islands queue), without the reviewed ones.
  */
 const unreachable = computed(() =>
-    orphans.value.filter((n) => !(n.tags && n.tags.length)),
+    crowding.report
+        ? crowding.report.islands.map((id) => byId.value.get(id)).filter((n): n is GraphNode => n != null)
+        : orphans.value.filter((n) => !(n.tags && n.tags.length)),
 )
+
+async function keepIslands(): Promise<void> {
+    keeping.value = 'islands'
+    try {
+        await crowding.markReviewed(unreachable.value.map((n) => n.id))
+    } catch (e) {
+        sweepNote.value.crowded = e instanceof Error ? e.message : String(e)
+    } finally {
+        keeping.value = null
+    }
+}
 
 /** Nodes carrying at least one path-shaped code_ref that no longer exists —
  *  open one from here to fix it by hand in the edit drawer. */
@@ -280,6 +331,72 @@ const STRUCT_CAP = 8
             The local NLI model isn't loaded yet (it downloads on daemon startup, 27 MB) —
             the sweeps below will report it; structural checks still work.
         </p>
+
+        <PanelSection title="Crowded subjects — the sleep queue">
+            <NoteText v-if="!crowding.report && crowding.loading">measuring crowding…</NoteText>
+            <NoteText v-else-if="crowding.error" tone="error">{{ crowding.error }}</NoteText>
+            <template v-else-if="crowding.report">
+                <p class="struct-line">
+                    <b>{{ crowded.length }}</b> subject{{ crowded.length === 1 ? '' : 's' }} of {{ crowding.report.min_size }}+ close notes
+                    <span class="verb">(close = cosine ≥ {{ crowding.report.band.toFixed(2) }}, this graph's top 1% of pairs; a subject is 2% of the notes or more)</span>
+                    <template v-if="crowding.report.hidden_reviewed">
+                        · {{ crowding.report.hidden_reviewed }} reviewed and hidden
+                    </template>
+                </p>
+                <NoteText>
+                    Piles of notes on one subject crowd each other out of search. Ask your
+                    assistant to <b>sleep</b> (<code>/engram-sleep</code> in Claude Code): it
+                    writes one state-of note per subject, merges restatements and links what
+                    replaced what. Settled history spread over many releases comes first. Keep a
+                    subject here to drop it from the queue until most of its notes are new or changed. The
+                    flame on the graph's controls shows crowding on the cards.
+                </NoteText>
+                <div v-for="{ name, members, worth } in crowded.slice(0, SUBJECT_CAP)" :key="members[0]!.id" class="cluster">
+                    <div class="cluster-head">
+                        <button
+                            class="row-link cluster-title"
+                            type="button"
+                            :title="members[0]!.title"
+                            :aria-expanded="expanded === members[0]!.id"
+                            @click="expanded = expanded === members[0]!.id ? null : members[0]!.id"
+                        >
+                            <span class="dot" :style="{ background: config.accent(members[0]!.type) }" />
+                            <span class="row-title">{{ name ?? members[0]!.title }}</span>
+                        </button>
+                        <span
+                            class="verb"
+                            :title="`worth ${worth.score}: ${worth.versions} versions over ${worth.span_days} days, ${Math.round(worth.settled * 100)}% settled history`"
+                        >{{ members.length }} notes · {{ worth.versions }} versions</span>
+                        <UiButton
+                            size="sm"
+                            :disabled="keeping != null"
+                            title="Mark these notes reviewed: the subject leaves the queue until most of its notes are new or changed"
+                            @click="keepSubject(members)"
+                        >
+                            {{ keeping === members[0]!.id ? 'Keeping…' : 'Keep' }}
+                        </UiButton>
+                    </div>
+                    <div v-if="expanded === members[0]!.id" class="cluster-members">
+                        <button
+                            v-for="n in members"
+                            :key="n.id"
+                            class="verdict-row"
+                            type="button"
+                            :title="n.title"
+                            @click="store.select(n.id)"
+                        >
+                            <span class="dot" :style="{ background: config.accent(n.type) }" />
+                            <span class="row-title">{{ n.title }}</span>
+                            <span class="pct">{{ crowding.report.nodes[n.id]?.crowding ?? 0 }}</span>
+                        </button>
+                    </div>
+                </div>
+                <NoteText v-if="crowded.length > SUBJECT_CAP">
+                    …and {{ crowded.length - SUBJECT_CAP }} more — a sleep pages through them all
+                </NoteText>
+                <NoteText v-if="sweepNote.crowded" as="span">{{ sweepNote.crowded }}</NoteText>
+            </template>
+        </PanelSection>
 
         <PanelSection title="Deep sweeps — local models, zero tokens">
             <div class="sweep">
@@ -486,7 +603,18 @@ const STRUCT_CAP = 8
                 <span class="row-title">{{ n.title }}</span>
             </button>
             <p class="struct-line">
-                <b>{{ unreachable.length }}</b> reachability islands (no edges <i>and</i> no tags — only text search finds these)
+                <b>{{ unreachable.length }}</b> reachability islands (no edges <i>and</i> no tags — only text search finds these; a
+                <b>sleep</b> links, tags or buries them)
+                <UiButton
+                    v-if="crowding.report && unreachable.length"
+                    size="sm"
+                    variant="ghost"
+                    :disabled="keeping != null"
+                    title="Mark every island reviewed: they leave this list and the sleep queue until edited"
+                    @click="keepIslands"
+                >
+                    {{ keeping === 'islands' ? 'Keeping…' : 'Keep all' }}
+                </UiButton>
             </p>
             <button
                 v-for="n in unreachable.slice(0, STRUCT_CAP)"
@@ -683,6 +811,31 @@ const STRUCT_CAP = 8
     margin: 0.6rem 0 0.3rem;
     font-size: var(--text-body-sm);
     color: var(--text-secondary);
+}
+
+.cluster {
+    margin-top: 0.4rem;
+}
+
+.cluster-head {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    min-width: 0;
+}
+
+.cluster-title {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex: 1;
+}
+
+.cluster-members {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    margin: 0.2rem 0 0.4rem 1.4rem;
 }
 
 .promo-row {
