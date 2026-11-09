@@ -862,6 +862,15 @@ impl Hub {
                 None => format!("# Engram brief — project '{}'", self.project_name(&id)),
             }
         };
+        // Installed instructions the core's upkeep held back because git
+        // tracks them (0.11.1): the agent is the one who can tell the user.
+        let header = match self
+            .project_root(&id)
+            .and_then(|root| crate::setup_record::brief_notice(std::path::Path::new(&root)))
+        {
+            Some(notice) => format!("{header}\n{notice}"),
+            None => header,
+        };
         if let Some(rest) = out.strip_prefix("# Engram brief\n") {
             out = format!("{header}\n{rest}");
         }

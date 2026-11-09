@@ -160,6 +160,7 @@ wrote what, with before/after values.
 | Path | What it is |
 |---|---|
 | `<repo>/.engram/graph.db` / `graph.tepin` | The repository's graph (git-ignored) |
+| `<repo>/.engram/setup.json` | What `setup` wired here (version, assistants, skill variant) and which installed instructions the core's upkeep held back because git tracks them |
 | `<repo>/.engram/daemon.json` | The repo's pointer at the machine core (port, pid) — written by `serve`, scraped by the plugins |
 | `<repo>/.engram/mcp.log` | The stdio MCP bridge's log (append; `ENGRAM_MCP_LOG=0` disables) |
 | `~/.engram/core.log` | Output of the auto-spawned machine core — the first place to look when a core won't come up |

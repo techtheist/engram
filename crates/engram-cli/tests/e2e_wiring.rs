@@ -329,3 +329,94 @@ fn setup_defers_mcp_to_the_claude_plugin() {
     assert!(out.status.success());
     assert!(repo.join(".mcp.json").exists());
 }
+
+/// 0.11.1 (issue #19): a bridge binding a project is what brings its
+/// installed instructions up to the core's binary. The core rewrites the
+/// copy git doesn't track, holds the tracked one (the brief and the setup
+/// record say so), and `setup --refresh` updates it on purpose.
+#[test]
+fn a_bridge_binding_makes_the_core_keep_the_project_up() {
+    let sb = Sandbox::new("upkeep", 19680);
+    let proj = sb.project("alpha");
+    let out = sb
+        .cmd(&["setup", "--cli", "devin", "--skill", "normal"], &proj)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "setup failed: {out:?}");
+    let record: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(proj.join(".engram/setup.json")).unwrap())
+            .unwrap();
+    assert_eq!(record["setup_version"], REAL_VERSION);
+    assert_eq!(record["agents"], serde_json::json!(["devin"]));
+    assert_eq!(record["variant"], "normal");
+
+    // Age both copies to an older release; commit only AGENTS.md.
+    let skill = proj.join(".devin/skills/engram/SKILL.md");
+    let agents = proj.join("AGENTS.md");
+    for f in [&skill, &agents] {
+        let text = std::fs::read_to_string(f).unwrap();
+        let aged = text.replace(&format!("v{REAL_VERSION} "), "v0.10.2 ");
+        assert_ne!(text, aged, "{} carries a stamp", f.display());
+        std::fs::write(f, aged).unwrap();
+    }
+    let aged_agents = std::fs::read_to_string(&agents).unwrap();
+    let git = |args: &[&str]| {
+        let ok = Command::new("git")
+            .arg("-C")
+            .arg(&proj)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["add", "AGENTS.md"]);
+    git(&["commit", "-q", "-m", "instructions"]);
+
+    let mut bridge = Bridge::spawn(&sb, &proj);
+    let current = format!("engram-skill engram v{REAL_VERSION} normal");
+    assert!(
+        eventually(CORE_HEALTH_WINDOW, || std::fs::read_to_string(&skill)
+            .is_ok_and(|s| s.contains(&current))),
+        "the core never refreshed the untracked skill"
+    );
+    assert!(
+        eventually(std::time::Duration::from_secs(10), || {
+            std::fs::read_to_string(proj.join(".engram/setup.json"))
+                .is_ok_and(|r| r.contains("\"held\"") && r.contains("AGENTS.md"))
+        }),
+        "the tracked AGENTS.md is recorded as held"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&agents).unwrap(),
+        aged_agents,
+        "the tracked copy is left byte for byte"
+    );
+    let brief = bridge.call(2, "brief", "{}");
+    assert!(
+        brief.contains("AGENTS.md (0.10.2)") && brief.contains("setup --refresh"),
+        "the brief flags the held copy: {brief}"
+    );
+
+    let out = sb.cmd(&["setup", "--refresh"], &proj).output().unwrap();
+    assert!(out.status.success(), "setup --refresh failed: {out:?}");
+    assert!(
+        std::fs::read_to_string(&agents)
+            .unwrap()
+            .contains(&format!("engram:begin v{REAL_VERSION} normal"))
+    );
+    let record = std::fs::read_to_string(proj.join(".engram/setup.json")).unwrap();
+    assert!(!record.contains("\"held\""), "{record}");
+    let brief = bridge.call(3, "brief", "{}");
+    assert!(!brief.contains("setup --refresh"), "{brief}");
+}

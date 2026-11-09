@@ -22,6 +22,7 @@ pub mod registry;
 mod schema;
 pub mod seal;
 pub mod settings;
+pub mod setup_record;
 mod store;
 mod store_sqlite;
 mod store_tepin;

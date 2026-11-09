@@ -68,6 +68,11 @@ pub trait SkillAdmin: Send + Sync {
         cfg: &engram_core::GraphConfig,
         variant: &str,
     ) -> engram_core::Result<serde_json::Value>;
+
+    /// Bring a project's installed skills and instruction blocks up to this
+    /// binary (0.11.1): the core calls it, off the async runtime, the first
+    /// time a bridge binds `repo_root` in this core's life.
+    fn upkeep(&self, _repo_root: &std::path::Path) {}
 }
 
 pub struct AppState {
@@ -92,6 +97,10 @@ pub struct AppState {
     /// Running encrypt/decrypt migrations (0.9.0), keyed `{project}:{target}`
     /// — the poll target behind the pane's progress loader.
     enc_jobs: Arc<Mutex<HashMap<String, EncJob>>>,
+    /// Bridge and project roots upkeep has settled (`None`: done — it runs
+    /// once per project per core lifetime, 0.11.1), or the last time a root
+    /// was looked up and named no project (`Some(unix secs)`).
+    upkept: Mutex<HashMap<String, Option<i64>>>,
 }
 
 /// One whole-store encrypt/decrypt migration's observable state.
@@ -443,6 +452,7 @@ impl AppState {
             runtime: None,
             refs_seen: Mutex::new(HashMap::new()),
             enc_jobs: Arc::default(),
+            upkept: Mutex::default(),
         }
     }
 
@@ -1005,8 +1015,51 @@ async fn clients_register(
     Json(body): Json<RegisterClientBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let lease = core_runtime(&state)?.register(body.pid, body.kind, body.root, body.client);
+    upkeep_project(&state, &lease.root);
     Ok(Json(json!({ "lease_id": lease.lease_id })))
 }
+
+/// A bridge bound `root`: the first time this core sees a registered project
+/// there, bring its installed skills up to this binary (0.11.1). The bridge
+/// only reports where it is; the core, always the newest binary on the
+/// machine, does the work — once, off the async runtime, and never in a
+/// folder the registry doesn't know.
+fn upkeep_project(state: &Arc<AppState>, root: &str) {
+    let Some(admin) = state.skill_admin.clone() else {
+        return;
+    };
+    let now = engram_core::now();
+    {
+        // Every ping carries its root: a root settled before costs nothing,
+        // and one that named no project is looked up again once a minute
+        // (it may be registered by then).
+        let mut seen = state.upkept.lock().unwrap();
+        match seen.get(root) {
+            Some(None) => return,
+            Some(Some(miss)) if now - miss < UPKEEP_RETRY_SECS => return,
+            _ => {}
+        }
+        seen.insert(root.to_string(), Some(now));
+    }
+    let Some(entry) = registry::load()
+        .resolve_root(std::path::Path::new(root))
+        .cloned()
+    else {
+        return;
+    };
+    let mut seen = state.upkept.lock().unwrap();
+    seen.insert(root.to_string(), None);
+    // A root inside a project already kept up (a subfolder) adds nothing.
+    if entry.root != root && seen.insert(entry.root.clone(), None) == Some(None) {
+        return;
+    }
+    drop(seen);
+    tokio::task::spawn_blocking(move || admin.upkeep(std::path::Path::new(&entry.root)));
+}
+
+/// How long a bridge root that named no registered project waits before the
+/// core looks it up again.
+const UPKEEP_RETRY_SECS: i64 = 60;
 
 #[derive(Deserialize)]
 struct PingClientBody {
@@ -1028,6 +1081,10 @@ async fn clients_ping(
     body: Option<Json<PingClientBody>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let (root, client) = body.map(|Json(b)| (b.root, b.client)).unwrap_or_default();
+    // A roots rebind lands a bridge in another project: same upkeep rule.
+    if let Some(root) = &root {
+        upkeep_project(&state, root);
+    }
     if core_runtime(&state)?.renew(&lease_id, root, client) {
         Ok(Json(json!({ "ok": true })))
     } else {

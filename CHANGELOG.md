@@ -3,6 +3,29 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
+## v0.11.1
+
+### Every project keeps its skills current (#19, #18)
+
+- **The core does the upkeep.** Installed skills and the engram block in
+  `AGENTS.md` / `GEMINI.md` used to update only in the repo where `serve` or
+  `setup` ran. Now the machine core updates a project the first time an
+  assistant session binds it, once per core run. The bridge only says where
+  it is. The core does the writing because it is always the newest binary on
+  the machine.
+- **Tracked files stay yours.** An automatic pass rewrites only copies git
+  doesn't track, so a session never leaves your working tree dirty. A tracked
+  copy that is out of date is held: the brief and `doctor` name it, and
+  `engram-alpha setup --refresh` updates it when you choose to. Edited copies
+  are kept as before, and hooks and rules are never updated automatically.
+- **Setup remembers.** `setup` records the binary version, the assistants it
+  wired and the skill variant in `.engram/setup.json`. Re-running `setup`
+  without `--cli` or `--skill` reuses them, so an aggressive repo is no longer
+  reset to relaxed. `doctor` checks the recorded assistants instead of
+  guessing from what is installed, and says which version last wired the
+  hooks and rules. `update` names the projects still set up by an older
+  version.
+
 ## v0.11.0
 
 ### Sleep: consolidate a crowded graph

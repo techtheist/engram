@@ -76,6 +76,11 @@ impl engram_http::SkillAdmin for SkillInstaller {
             "variant": variant,
         }))
     }
+
+    fn upkeep(&self, repo_root: &Path) {
+        let found = crate::upkeep::run(repo_root);
+        crate::upkeep::log(repo_root, &found);
+    }
 }
 
 // Keep in sync with frontend/src/constants/trust.ts (pct/humanDays): same

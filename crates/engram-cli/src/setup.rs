@@ -112,7 +112,7 @@ impl Setup {
         self.ensure_gitignore()?;
         self.ensure_graph_dir()?;
         let unique: BTreeSet<&str> = agents.iter().copied().collect();
-        for agent in unique {
+        for &agent in &unique {
             match agent {
                 "claude" => self.wire_claude()?,
                 "codex" => self.wire_codex()?,
@@ -129,10 +129,14 @@ impl Setup {
         }
         // Copies this run didn't touch (other harnesses wired earlier) follow
         // the binary too; edited ones are reported and kept.
-        let found = crate::skillsync::refresh(&self.repo, true);
+        let found = crate::skillsync::refresh(&self.repo, crate::skillsync::Mode::All);
         for line in crate::skillsync::report(&self.repo, &found) {
             say(&line);
         }
+        // What was wired, by which binary, in which variant (issues #18/#19).
+        let variant = (!self.mcp_only).then_some(self.variant.as_str());
+        let wired: Vec<&str> = unique.iter().copied().collect();
+        crate::upkeep::record_setup(&self.repo, &wired, variant, &found);
         say("done — restart your assistant sessions so they pick up the MCP server");
         Ok(())
     }

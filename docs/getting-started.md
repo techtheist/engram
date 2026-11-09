@@ -90,11 +90,25 @@ engram-alpha setup --cli kilo --skill aggressive
 installs, and the engram section between the `<!-- engram:begin … -->`
 markers in `AGENTS.md` / `GEMINI.md`, carries a small stamp: the version that
 wrote it, its variant, and a fingerprint of the text. When you update
-`engram-alpha`, the next `serve` or `setup` in a repo rewrites the copies that
-are still exactly as installed, keeping your variant. A copy you edited no
-longer matches its fingerprint and is left alone (`doctor` lists it; delete it
-and run setup to take the new text). Your own text around the markers is never
-touched, and symlinked skills are never followed.
+`engram-alpha`, the machine core rewrites the copies that are still exactly
+as installed, keeping your variant, the first time an assistant session binds
+each project (since 0.11.1; `serve` and `setup` do the same in their repo). A
+copy you edited no longer matches its fingerprint and is left alone (`doctor`
+lists it; delete it and run setup to take the new text). Your own text around
+the markers is never touched, and symlinked skills are never followed.
+
+Copies **git tracks** are not rewritten automatically, so a session never
+leaves your working tree dirty: the brief and `doctor` name them, and
+`engram-alpha setup --refresh` updates them when you choose to (a change to
+commit). Hooks and rules (`.claude/settings.json`, `.windsurf/rules/`,
+`.cursor/hooks.json`, …) are never updated automatically; re-run
+`engram-alpha setup` to rewire them.
+
+**Setup remembers.** `setup` records the binary version, the assistants it
+wired, and the skill variant in `.engram/setup.json` (git-ignored, like the
+graph). Re-running `setup` without `--cli` or `--skill` reuses them, `doctor`
+checks the recorded assistants instead of guessing from what is installed,
+and `update` names the projects still set up by an older version.
 
 Windsurf support is freshly added and still being field-tested — reports
 welcome. One Windsurf-specific note: its JetBrains plugin spawns the MCP

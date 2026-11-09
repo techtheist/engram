@@ -23,6 +23,7 @@ mod shipped_skills;
 mod skillgen;
 mod skillsync;
 mod update;
+mod upkeep;
 mod watchdog;
 
 #[derive(Parser)]
@@ -266,14 +267,20 @@ struct SetupArgs {
     /// rest wire this repository.
     #[arg(long)]
     cli: Option<String>,
-    /// Capture intensity for the installed instructions/skill.
-    #[arg(long, default_value = "relaxed", value_parser = ["relaxed", "normal", "aggressive"])]
-    skill: String,
+    /// Capture intensity for the installed instructions/skill. Default: the
+    /// variant this repo was set up with, else relaxed.
+    #[arg(long, value_parser = ["relaxed", "normal", "aggressive"])]
+    skill: Option<String>,
     /// Only register the MCP server (and git-ignore the graph) — skip the
     /// skill, instruction blocks, and hooks. For setups where something else
     /// already ships those, like the Claude Code plugin.
     #[arg(long)]
     mcp_only: bool,
+    /// Only bring the installed skills and instruction blocks up to this
+    /// binary — tracked ones included, which automatic upkeep leaves alone —
+    /// without rewiring anything. Edited copies are still kept.
+    #[arg(long, conflicts_with_all = ["cli", "mcp_only"])]
+    refresh: bool,
 }
 
 #[tokio::main]
@@ -809,6 +816,38 @@ fn run_migrate(args: MigrateArgs) -> anyhow::Result<()> {
 }
 
 fn run_setup(args: SetupArgs) -> anyhow::Result<()> {
+    let cwd = std::env::current_dir()?;
+    if args.refresh {
+        let found = skillsync::refresh(&cwd, skillsync::Mode::All);
+        let lines = skillsync::report(&cwd, &found);
+        if lines.is_empty() {
+            println!("installed skills and instruction blocks are current");
+        }
+        for line in lines {
+            println!("{line}");
+        }
+        upkeep::record_setup(&cwd, &[], None, &found);
+        return Ok(());
+    }
+    // A repo set up before remembers its assistants (issue #18): re-running
+    // `setup` rewires those, not whatever happens to be installed.
+    let record = engram_core::setup_record::load(&cwd);
+    let skill = args
+        .skill
+        .clone()
+        .or_else(|| record.as_ref().and_then(|r| r.variant.clone()))
+        .or_else(|| skillsync::installed_variant(&cwd))
+        .unwrap_or_else(|| "relaxed".into());
+    let recorded: Vec<&str> = record
+        .as_ref()
+        .map(|r| {
+            setup::AGENTS
+                .iter()
+                .copied()
+                .filter(|a| r.agents.iter().any(|x| x == a))
+                .collect()
+        })
+        .unwrap_or_default();
     let agents: Vec<&str> = match args.cli.as_deref() {
         Some("all") => setup::AGENTS.to_vec(),
         Some(list) => {
@@ -823,6 +862,10 @@ fn run_setup(args: SetupArgs) -> anyhow::Result<()> {
             }
             v
         }
+        None if !recorded.is_empty() => {
+            println!("==> set up before for: {}", recorded.join(", "));
+            recorded
+        }
         None => {
             let detected = setup::detect_agents();
             anyhow::ensure!(
@@ -834,7 +877,7 @@ fn run_setup(args: SetupArgs) -> anyhow::Result<()> {
         }
     };
     anyhow::ensure!(!agents.is_empty(), "nothing to wire");
-    setup::Setup::new(&args.skill, args.mcp_only)?.run(&agents)?;
+    setup::Setup::new(&skill, args.mcp_only)?.run(&agents)?;
     // Wiring a repo makes it a project — put it on the machine registry so
     // every other project's hub can see it (PLAN §7C). Best-effort.
     if let Ok(cwd) = std::env::current_dir()
@@ -959,6 +1002,9 @@ fn run_update(args: UpdateArgs) -> anyhow::Result<()> {
         "updated {} to {tag} — restart your daemon (engram-alpha serve)",
         exe.display()
     );
+    for line in upkeep::after_update(&tag) {
+        println!("{line}");
+    }
     drop(cleanup);
     Ok(())
 }
@@ -2275,9 +2321,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 None => tracing::warn!("couldn't resolve this repo's root — not registered"),
             }
             // Installed skills and instruction blocks follow the binary
-            // (0.9.12): untouched copies update in place, edited ones stay.
+            // (0.9.12): untouched copies update in place, edited ones stay,
+            // and copies git tracks are held for `setup --refresh` (0.11.1).
             if let Some(root) = repo_root_of(&db_abs) {
-                let found = skillsync::refresh(&root, true);
+                let found = upkeep::run(&root);
                 for line in skillsync::report(&root, &found) {
                     println!("{line}");
                 }

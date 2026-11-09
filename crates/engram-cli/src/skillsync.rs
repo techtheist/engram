@@ -149,6 +149,21 @@ pub enum State {
     /// A skill this binary ships that the repo predates (the sleep skill,
     /// 0.11.0) — written beside the engram skill the same refresh updates.
     Added { variant: String },
+    /// Ours, untouched and outdated (or missing), but git tracks it: an
+    /// automatic pass leaves it alone, since rewriting it would dirty the
+    /// working tree (0.11.1). `setup --refresh` updates it on purpose.
+    Held { from: String },
+}
+
+/// How far a refresh pass may write.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Mode {
+    /// Write nothing; report what a pass would do (doctor).
+    Check,
+    /// Rewrite only copies git doesn't track — the core's upkeep and `serve`.
+    Untracked,
+    /// Rewrite every untouched copy — `setup`, a deliberate act.
+    All,
 }
 
 #[derive(Debug)]
@@ -280,30 +295,44 @@ pub fn is_edited(path: &Path, kind: &str) -> bool {
         .is_some_and(|(state, _)| state == State::Edited)
 }
 
-/// Walk every installed copy in `repo`; rewrite the untouched outdated ones
-/// when `apply`. Only copies that are ours appear in the result.
-pub fn refresh(repo: &Path, apply: bool) -> Vec<Found> {
+/// Walk every installed copy in `repo` and rewrite the untouched outdated
+/// ones as far as `mode` allows. Only copies that are ours appear in the
+/// result.
+pub fn refresh(repo: &Path, mode: Mode) -> Vec<Found> {
     let mut found = Vec::new();
-    let mut visit = |path: PathBuf, plan: Option<(State, Option<String>)>| {
-        if let Some((state, next)) = plan {
-            // A write that fails (read-only checkout) reports nothing.
-            if apply
-                && let Some(next) = next
-                && (path
-                    .parent()
-                    .is_some_and(|d| std::fs::create_dir_all(d).is_err())
-                    || std::fs::write(&path, next).is_err())
-            {
-                return;
-            }
-            found.push(Found { path, state });
+    // `probe` is the file whose git status decides: the copy itself, or for
+    // a skill being added, the engram skill it is added beside.
+    let mut visit = |path: PathBuf, probe: &Path, plan: Option<(State, Option<String>)>| {
+        let Some((state, next)) = plan else { return };
+        if next.is_some() && mode != Mode::All && git_tracked(repo, probe) {
+            let from = match state {
+                State::Refreshed { from, .. } => from,
+                _ => "not installed".into(),
+            };
+            found.push(Found {
+                path,
+                state: State::Held { from },
+            });
+            return;
         }
+        // A write that fails (read-only checkout) reports nothing.
+        if mode != Mode::Check
+            && let Some(next) = next
+            && (path
+                .parent()
+                .is_some_and(|d| std::fs::create_dir_all(d).is_err())
+                || std::fs::write(&path, next).is_err())
+        {
+            return;
+        }
+        found.push(Found { path, state });
     };
     for dir in SKILL_DIRS {
         // Whether this pass lifts the engram skill from before 0.11.0: the
         // one moment a missing sleep skill is added (later, a deleted one
         // stays deleted).
         let mut upgrading = false;
+        let engram_skill = repo.join(dir).join("engram/SKILL.md");
         for (name, kind) in [
             ("engram", "engram"),
             ("engram-digest", "digest"),
@@ -322,10 +351,11 @@ pub fn refresh(repo: &Path, apply: bool) -> Vec<Found> {
                     {
                         upgrading = older(from, SLEEP_SINCE);
                     }
-                    visit(path, plan);
+                    visit(path.clone(), &path, plan);
                 }
                 Err(_) if kind == "sleep" && upgrading => visit(
                     path,
+                    &engram_skill,
                     Some((
                         State::Added {
                             variant: "sleep".into(),
@@ -343,10 +373,45 @@ pub fn refresh(repo: &Path, apply: bool) -> Vec<Found> {
             continue;
         }
         if let Ok(file) = std::fs::read_to_string(&path) {
-            visit(path, plan_block(&file));
+            visit(path.clone(), &path, plan_block(&file));
         }
     }
     found
+}
+
+/// Does git track `path` in `repo`? No git, or not a repository: no.
+pub fn git_tracked(repo: &Path, path: &Path) -> bool {
+    let rel = path.strip_prefix(repo).unwrap_or(path);
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["ls-files", "--error-unmatch", "--"])
+        .arg(rel)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// The variant this repo's instructions were installed in, read off the
+/// first stamped engram skill or instructions block.
+pub fn installed_variant(repo: &Path) -> Option<String> {
+    for dir in SKILL_DIRS {
+        if let Ok(file) = std::fs::read_to_string(repo.join(dir).join("engram/SKILL.md"))
+            && let Some((stamp, _)) = read_stamp(&file)
+            && stamp.kind == "engram"
+        {
+            return Some(stamp.variant);
+        }
+    }
+    BLOCK_FILES.iter().find_map(|name| {
+        let file = std::fs::read_to_string(repo.join(name)).ok()?;
+        let (_, _, begin, _) = find_block(&file)?;
+        match begin.split_whitespace().collect::<Vec<_>>().as_slice() {
+            [_, _, _, variant, _, ..] => Some(variant.to_string()),
+            _ => None,
+        }
+    })
 }
 
 /// One line per copy a refresh changed or kept because it was edited.
@@ -367,6 +432,9 @@ pub fn report(repo: &Path, found: &[Found]) -> Vec<String> {
                 State::Added { variant } => Some(format!(
                     "added {rel} (the {variant} skill, new in v{})",
                     version()
+                )),
+                State::Held { from } => Some(format!(
+                    "kept {rel} ({from}) — git tracks it, so only `engram-alpha setup --refresh` updates it"
                 )),
             }
         })
@@ -403,7 +471,7 @@ mod tests {
         let old = stamp_skill(claude_skill("aggressive"), "engram", "aggressive")
             .replace(&format!("v{} ", version()), "v0.9.11 ");
         std::fs::write(&path, &old).unwrap();
-        let found = refresh(&repo, true);
+        let found = refresh(&repo, Mode::All);
         assert!(
             matches!(&found[0].state, State::Refreshed { variant, .. } if variant == "aggressive")
         );
@@ -414,7 +482,7 @@ mod tests {
         // The same copy edited by hand → left byte for byte.
         let edited = old.replace("Engram is a local", "Engram (ours) is a local");
         std::fs::write(&path, &edited).unwrap();
-        let found = refresh(&repo, true);
+        let found = refresh(&repo, Mode::All);
         assert_eq!(found[0].state, State::Edited);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
         let _ = std::fs::remove_dir_all(&repo);
@@ -430,12 +498,12 @@ mod tests {
         std::fs::write(&engram, &old).unwrap();
 
         // A dry run (doctor) reports it and writes nothing.
-        let dry = refresh(&repo, false);
+        let dry = refresh(&repo, Mode::Check);
         assert!(dry.iter().any(|f| f.path == sleep
             && matches!(&f.state, State::Added { variant } if variant == "sleep")));
         assert!(!sleep.exists());
 
-        let found = refresh(&repo, true);
+        let found = refresh(&repo, Mode::All);
         assert!(found.iter().any(|f| f.path == sleep));
         assert_eq!(
             std::fs::read_to_string(&sleep).unwrap(),
@@ -451,7 +519,7 @@ mod tests {
 
         // Deleted after the upgrade: it stays deleted.
         std::fs::remove_dir_all(sleep.parent().unwrap()).unwrap();
-        assert!(refresh(&repo, true).iter().all(|f| f.path != sleep));
+        assert!(refresh(&repo, Mode::All).iter().all(|f| f.path != sleep));
         assert!(!sleep.exists());
         let _ = std::fs::remove_dir_all(&repo);
     }
@@ -470,12 +538,12 @@ mod tests {
             "---\nname: engram\n---\n\n# Engram — project memory (Relaxed)\nmine\n",
         )
         .unwrap();
-        let found = refresh(&repo, true);
+        let found = refresh(&repo, Mode::All);
         assert_eq!(found[0].state, State::Edited);
         assert!(std::fs::read_to_string(&path).unwrap().contains("mine"));
         // A foreign skill under our name is not ours at all.
         std::fs::write(&path, "---\nname: engram\n---\nsomeone else's\n").unwrap();
-        assert!(refresh(&repo, true).is_empty());
+        assert!(refresh(&repo, Mode::All).is_empty());
         let _ = std::fs::remove_dir_all(&repo);
     }
 
@@ -485,7 +553,7 @@ mod tests {
         let path = repo.join("AGENTS.md");
         let old = stamped_block("normal").replace(&format!("v{} ", version()), "v0.9.11 ");
         std::fs::write(&path, format!("# Mine\n\nmy rules\n\n{old}\nafter\n")).unwrap();
-        let found = refresh(&repo, true);
+        let found = refresh(&repo, Mode::All);
         assert!(matches!(&found[0].state, State::Refreshed { variant, .. } if variant == "normal"));
         let now = std::fs::read_to_string(&path).unwrap();
         assert_eq!(
@@ -495,7 +563,7 @@ mod tests {
         // Edited inside the markers → kept.
         let edited = now.replace("Not code structure", "Not code structure (really)");
         std::fs::write(&path, &edited).unwrap();
-        assert_eq!(refresh(&repo, true)[0].state, State::Edited);
+        assert_eq!(refresh(&repo, Mode::All)[0].state, State::Edited);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
         let _ = std::fs::remove_dir_all(&repo);
     }
@@ -512,7 +580,7 @@ mod tests {
             format!("my own rules\n\n<!-- engram:begin -->\n{block}<!-- engram:end -->\n"),
         )
         .unwrap();
-        let found = refresh(&repo, true);
+        let found = refresh(&repo, Mode::All);
         // The skill, the block, and the sleep skill a pre-0.11.0 repo lacks.
         assert_eq!(found.len(), 3, "{found:?}");
         assert!(
@@ -530,7 +598,7 @@ mod tests {
         );
         // A second pass finds all three current.
         assert!(
-            refresh(&repo, true)
+            refresh(&repo, Mode::All)
                 .iter()
                 .all(|f| f.state == State::Current)
         );

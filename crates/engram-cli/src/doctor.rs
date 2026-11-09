@@ -87,7 +87,7 @@ pub fn run(db: &Path) -> anyhow::Result<()> {
 /// a dry run of the refresh `serve` and `setup` apply.
 fn check_skills(r: &mut Report, repo: &Path) {
     use crate::skillsync::State;
-    let found = crate::skillsync::refresh(repo, false);
+    let found = crate::skillsync::refresh(repo, crate::skillsync::Mode::Check);
     if found.is_empty() {
         return r.ok("no engram skills installed in this repo (or symlinked ones)");
     }
@@ -96,15 +96,38 @@ fn check_skills(r: &mut Report, repo: &Path) {
         match &f.state {
             State::Current => r.ok(&format!("{rel}: current")),
             State::Refreshed { from, .. } => r.warn(&format!(
-                "{rel}: from {from} — `engram-alpha serve` or `setup` updates it"
+                "{rel}: from {from} — the core updates it the next time a session binds this repo \
+                 (or `engram-alpha setup --refresh` now)"
+            )),
+            State::Held { from } => r.warn(&format!(
+                "{rel}: {from} and tracked by git, so automatic upkeep leaves it — \
+                 `engram-alpha setup --refresh` updates it (a change to commit)"
             )),
             State::Edited => r.ok(&format!(
                 "{rel}: edited by hand — updates leave it alone (delete it and run setup for the current text)"
             )),
             State::Added { variant } => r.warn(&format!(
-                "{rel}: the {variant} skill is missing — `engram-alpha serve` or `setup` adds it"
+                "{rel}: the {variant} skill is missing — the core adds it the next time a session \
+                 binds this repo (or `engram-alpha setup --refresh` now)"
             )),
         }
+    }
+}
+
+/// The setup record's age: hooks and rules only change when `setup` runs,
+/// so a record older than this binary is worth one line (issue #19).
+fn check_record(r: &mut Report, record: Option<&engram_core::setup_record::SetupRecord>) {
+    let this = env!("CARGO_PKG_VERSION");
+    match record.and_then(|rec| rec.setup_version.as_deref()) {
+        Some(v) if v == this => r.ok(&format!("set up by v{v}")),
+        Some(v) => r.note(&format!(
+            "set up by v{v} — hooks and rules are as that version wrote them; \
+             `engram-alpha setup` rewires them with v{this}"
+        )),
+        None if record.is_some() => r.note(
+            "set up before v0.11.1 — `engram-alpha setup` rewires the hooks and rules and records it",
+        ),
+        None => {}
     }
 }
 
@@ -403,7 +426,18 @@ fn check_wiring(r: &mut Report, repo: &Path, db_abs: &Path) {
         r.warn(".engram/ is not in .gitignore — the graph is personal, keep it out of the repo");
     }
 
-    let detected = setup::detect_agents();
+    // The setup record names the assistants this repo was set up for
+    // (0.11.1, issue #18): check those, not whatever PATH happens to show.
+    let record = engram_core::setup_record::load(repo);
+    check_record(r, record.as_ref());
+    let detected: Vec<&str> = match record.as_ref().filter(|rec| !rec.agents.is_empty()) {
+        Some(rec) => setup::AGENTS
+            .iter()
+            .copied()
+            .filter(|a| rec.agents.iter().any(|x| x == a))
+            .collect(),
+        None => setup::detect_agents(),
+    };
     if detected.is_empty() {
         r.note("no supported assistants detected on this machine");
         return;
