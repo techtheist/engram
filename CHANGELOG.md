@@ -26,6 +26,11 @@ body of its GitHub Release (draft-release.yml lifts it automatically).
   hooks and rules. `update` names the projects still set up by an older
   version.
 
+### Fixes
+
+- `update`'s check that the new binary starts retries for a moment when the
+  freshly written file is still "busy" on Linux, instead of failing the update.
+
 ## v0.11.0
 
 ### Sleep: consolidate a crowded graph
