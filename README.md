@@ -23,7 +23,7 @@ graph your assistant reads before it acts and adds to as it works, and that
 you can see, edit, and own. It is one file inside your repo, every model it
 uses runs on your machine, and one memory serves every assistant you use.
 
-**[Open the live demo →](https://techtheist.github.io/engram/demo/)**
+**[Open the live demo →](https://techtheist.github.io/engram/demo/)** · **[Read the docs →](https://techtheist.github.io/engram/docs/)**
 
 ![The Engram pane: the live memory graph with the review queue open on the left and the theme & layout menu on the right](.screenshots/engram-alpha-standalone.png)
 
@@ -223,19 +223,12 @@ output of a run published next to the code.
 
 Method, tables, and the honest caveats: [`eval/`](./eval/README.md).
 
-<details>
-<summary><b>Documentation, security, and status</b> <i>(click to expand)</i></summary>
+## Documentation
 
-All user documentation lives in [`docs/`](./docs/README.md) — install and
-wiring, the memory model, trust, the pane, conflicts, multi-project memory,
-the [runtime architecture](./docs/runtime.md), storage, local models, and
-troubleshooting (`engram-alpha doctor` diagnoses the whole chain,
-`engram-alpha status` shows what's running, `engram-alpha stop` halts it).
-
-Security posture: [`SECURITY.md`](./SECURITY.md). The roadmap lives in the
-project's own memory graph — dogfooding is the spec.
-
-</details>
+**[techtheist.github.io/engram/docs](https://techtheist.github.io/engram/docs/)** —
+install and wiring, the memory model, trust, the pane, conflicts,
+multi-project memory, runtime, storage, local models and troubleshooting,
+with search. Security posture: [`SECURITY.md`](./SECURITY.md).
 
 <details>
 <summary><b>Benchmark results</b> <i>(click to expand)</i></summary>

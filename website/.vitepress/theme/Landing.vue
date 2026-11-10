@@ -3,6 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { withBase } from 'vitepress'
 import BrandIcon from './BrandIcon.vue'
 import { skin } from './theme'
+import type Lenis from 'lenis'
+import 'lenis/dist/lenis.css'
 
 const INSTALL = 'curl -fsSL https://raw.githubusercontent.com/techtheist/engram/main/install.sh | sh'
 
@@ -172,13 +174,27 @@ function jump(i: number): void {
   const el = tour.value
   if (!el) return
   const land = chapters[i].land ?? 0.02
-  scrollTo({ top: chapterTop(i) + land * ((el.offsetHeight - innerHeight) / chapters.length), behavior: 'smooth' })
+  const top = chapterTop(i) + land * ((el.offsetHeight - innerHeight) / chapters.length)
+  if (lenis) lenis.scrollTo(top, { duration: 1.2 })
+  else scrollTo({ top, behavior: 'smooth' })
 }
+
+/**
+ * Smooth wheel scrolling on this page (Lenis): a mouse wheel's notches
+ * become one glide, as a touchpad's already are, so the tour reads the same
+ * on any machine. Touch keeps native scrolling; reduced motion skips it.
+ */
+let lenis: Lenis | undefined
 
 let resize: ResizeObserver | undefined
 let near: IntersectionObserver | undefined
 
 onMounted(() => {
+  if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    void import('lenis').then(({ default: Smooth }) => {
+      lenis = new Smooth({ autoRaf: true, lerp: 0.1 })
+    })
+  }
   measure()
   addEventListener('scroll', onScroll, { passive: true })
   addEventListener('resize', onScroll)
@@ -211,6 +227,8 @@ onBeforeUnmount(() => {
   removeEventListener('resize', onScroll)
   removeEventListener('message', onMessage)
   cancelAnimationFrame(raf)
+  lenis?.destroy()
+  lenis = undefined
   resize?.disconnect()
   near?.disconnect()
 })
