@@ -122,6 +122,9 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
+/// "Text file busy" — the same number on Linux and macOS.
+const ETXTBSY: i32 = 26;
+
 /// The shakedown before a swap (0.10.4, from the issue #17 report): run the
 /// new binary with `--version` and refuse it unless it starts and names
 /// itself. A binary built against a newer glibc fails right here with the
@@ -129,13 +132,29 @@ fn unix_now() -> u64 {
 /// the one that worked. Bounded by `limit` so a binary that hangs can't hang
 /// the update. Returns the version line it printed.
 pub fn smoke_test(bin: &Path, limit: Duration) -> anyhow::Result<String> {
-    let mut child = std::process::Command::new(bin)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("the new binary could not be started ({})", bin.display()))?;
+    // A file just written can be "busy" for a moment: a process forked
+    // elsewhere while its write handle was open still holds it until that
+    // child execs (Linux ETXTBSY — a CI flake). Retry briefly before failing.
+    let mut attempts = 0;
+    let mut child = loop {
+        match std::process::Command::new(bin)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Err(e) if cfg!(unix) && e.raw_os_error() == Some(ETXTBSY) && attempts < 40 => {
+                attempts += 1;
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            spawned => {
+                break spawned.with_context(|| {
+                    format!("the new binary could not be started ({})", bin.display())
+                })?;
+            }
+        }
+    };
     let deadline = Instant::now() + limit;
     let status = loop {
         if let Some(status) = child.try_wait()? {
