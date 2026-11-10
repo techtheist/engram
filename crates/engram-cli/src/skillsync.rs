@@ -45,7 +45,7 @@ fn sha(text: &str) -> String {
     format!("{:x}", Sha256::digest(text.as_bytes()))
 }
 
-fn older(a: &str, b: &str) -> bool {
+pub fn older(a: &str, b: &str) -> bool {
     let parse = |v: &str| -> Vec<u64> {
         v.trim_start_matches('v')
             .split('.')

@@ -383,6 +383,27 @@ fn a_bridge_binding_makes_the_core_keep_the_project_up() {
     git(&["add", "AGENTS.md"]);
     git(&["commit", "-q", "-m", "instructions"]);
 
+    // status --setup reads the registry without a core (issue #19).
+    let status = |args: &[&str]| {
+        let out = sb.cmd(args, &proj).output().unwrap();
+        assert!(out.status.success(), "{args:?} failed: {out:?}");
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let before = status(&["status", "--setup"]);
+    assert!(
+        before.contains("alpha (")
+            && before.contains(&format!("set up by v{REAL_VERSION} · devin · normal"))
+            && before.contains("1 skill copy — the core updates")
+            && before.contains("1 outdated copy tracked by git (AGENTS.md)"),
+        "{before}"
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&status(&["status", "--setup", "--json"])).unwrap();
+    let setup = &json["projects"][0]["setup"];
+    assert_eq!(setup["wiring"], "current");
+    assert_eq!(setup["held"], serde_json::json!(["AGENTS.md"]));
+    assert_eq!(setup["current"], false);
+
     let mut bridge = Bridge::spawn(&sb, &proj);
     let current = format!("engram-skill engram v{REAL_VERSION} normal");
     assert!(
@@ -419,4 +440,17 @@ fn a_bridge_binding_makes_the_core_keep_the_project_up() {
     assert!(!record.contains("\"held\""), "{record}");
     let brief = bridge.call(3, "brief", "{}");
     assert!(!brief.contains("setup --refresh"), "{brief}");
+    let after = status(&["status", "--setup"]);
+    assert!(
+        after.contains("project setup: 1 project current"),
+        "{after}"
+    );
+    // The full status carries the same line under the project.
+    let full = status(&["status"]);
+    assert!(
+        full.contains(&format!(
+            "set up by v{REAL_VERSION} · devin · normal · current"
+        )),
+        "{full}"
+    );
 }

@@ -108,7 +108,14 @@ commit). Hooks and rules (`.claude/settings.json`, `.windsurf/rules/`,
 wired, and the skill variant in `.engram/setup.json` (git-ignored, like the
 graph). Re-running `setup` without `--cli` or `--skill` reuses them, `doctor`
 checks the recorded assistants instead of guessing from what is installed,
-and `update` names the projects still set up by an older version.
+`engram-alpha status` shows each project's setup under it, and
+`engram-alpha status --setup` lists only the projects with something due
+(it reads the registry, so no core is needed). After `engram-alpha update`
+swaps the binary, it asks the new binary for the same list, judged against
+the new release: skill copies the core will update on the next session,
+tracked copies waiting for `setup --refresh`, and projects whose hooks and
+rules predate a release that changed them (`engram-alpha setup` there
+rewires them).
 
 Windsurf support is freshly added and still being field-tested — reports
 welcome. One Windsurf-specific note: its JetBrains plugin spawns the MCP

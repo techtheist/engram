@@ -114,16 +114,15 @@ fn check_skills(r: &mut Report, repo: &Path) {
     }
 }
 
-/// The setup record's age: hooks and rules only change when `setup` runs,
-/// so a record older than this binary is worth one line (issue #19).
+/// Which version wired the hooks and rules: they only change when `setup`
+/// runs, so a wiring older than this binary's is worth a warning (issue #19).
 fn check_record(r: &mut Report, record: Option<&engram_core::setup_record::SetupRecord>) {
-    let this = env!("CARGO_PKG_VERSION");
+    let since = crate::upkeep::WIRING_SINCE;
     match record.and_then(|rec| rec.setup_version.as_deref()) {
-        Some(v) if v == this => r.ok(&format!("set up by v{v}")),
-        Some(v) => r.note(&format!(
-            "set up by v{v} — hooks and rules are as that version wrote them; \
-             `engram-alpha setup` rewires them with v{this}"
+        Some(v) if crate::skillsync::older(v, since) => r.warn(&format!(
+            "set up by v{v} — hooks and rules changed in v{since}; `engram-alpha setup` rewires them"
         )),
+        Some(v) => r.ok(&format!("set up by v{v} — hooks and rules are current")),
         None if record.is_some() => r.note(
             "set up before v0.11.1 — `engram-alpha setup` rewires the hooks and rules and records it",
         ),

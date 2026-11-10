@@ -153,6 +153,10 @@ struct StatusArgs {
     /// Machine-readable output for scripts.
     #[arg(long)]
     json: bool,
+    /// Only each registered project's setup: which version wired it, for
+    /// which assistants, and what is due. Reads the registry, no core needed.
+    #[arg(long)]
+    setup: bool,
 }
 
 #[derive(clap::Args)]
@@ -614,6 +618,9 @@ fn terminate_pid(pid: u32) -> bool {
 /// and GET /projects — core identity, model residency, registered projects
 /// with their lock state, and every connected client, in humane terms.
 fn run_status(args: StatusArgs) -> anyhow::Result<()> {
+    if args.setup {
+        return run_status_setup(args.json);
+    }
     let Some(port) = machine_core() else {
         if args.json {
             println!("{}", serde_json::json!({ "running": false }));
@@ -628,9 +635,20 @@ fn run_status(args: StatusArgs) -> anyhow::Result<()> {
     let system = doctor::http_get(port, "/system")
         .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
         .context("the core answered /health but not /system")?;
-    let projects = doctor::http_get(port, "/projects")
+    let mut projects = doctor::http_get(port, "/projects")
         .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
         .unwrap_or_else(|| serde_json::json!([]));
+    if let Some(list) = projects.as_array_mut() {
+        for p in list {
+            let setup = p["root"]
+                .as_str()
+                .and_then(|r| upkeep::inspect(Path::new(r)))
+                .map(|i| i.to_json());
+            if let Some(setup) = setup {
+                p["setup"] = setup;
+            }
+        }
+    }
 
     if args.json {
         println!(
@@ -693,6 +711,13 @@ fn run_status(args: StatusArgs) -> anyhow::Result<()> {
                     "registered"
                 };
                 println!("  {name} · {place} · {state}");
+                // The home graph has no repo; a project's setup (issue #19).
+                if let Some(i) = p["root"]
+                    .as_str()
+                    .and_then(|r| upkeep::inspect(Path::new(r)))
+                {
+                    println!("    {}", i.describe());
+                }
             }
         }
         None => println!("  (none registered)"),
@@ -721,6 +746,57 @@ fn run_status(args: StatusArgs) -> anyhow::Result<()> {
             }
         }
         None => println!("  (none connected)"),
+    }
+    Ok(())
+}
+
+/// `engram-alpha status --setup` (issue #19): every registered project's
+/// setup as this binary judges it — also what `update` prints, asked of the
+/// new binary after a swap. Only projects with something due are listed in
+/// text; `--json` lists all.
+fn run_status_setup(json: bool) -> anyhow::Result<()> {
+    let projects = upkeep::inspect_registered();
+    if json {
+        let list: Vec<serde_json::Value> = projects
+            .iter()
+            .map(|(p, i)| {
+                serde_json::json!({
+                    "name": p.name,
+                    "root": p.root,
+                    "setup": i.as_ref().map(upkeep::Inspection::to_json),
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "projects": list })
+        );
+        return Ok(());
+    }
+    let due: Vec<_> = projects
+        .iter()
+        .filter_map(|(p, i)| i.as_ref().filter(|i| !i.is_current()).map(|i| (p, i)))
+        .collect();
+    let known = projects.iter().filter(|(_, i)| i.is_some()).count();
+    if due.is_empty() {
+        println!(
+            "project setup: {} current for v{}",
+            match known {
+                0 => "no projects registered,".to_string(),
+                1 => "1 project".into(),
+                n => format!("all {n} projects"),
+            },
+            env!("CARGO_PKG_VERSION")
+        );
+        return Ok(());
+    }
+    println!(
+        "project setup against v{} ({} of {known} with something due):",
+        env!("CARGO_PKG_VERSION"),
+        due.len()
+    );
+    for (p, i) in due {
+        println!("  {} ({}): {}", p.name, p.root, i.describe());
     }
     Ok(())
 }
@@ -1002,7 +1078,7 @@ fn run_update(args: UpdateArgs) -> anyhow::Result<()> {
         "updated {} to {tag} — restart your daemon (engram-alpha serve)",
         exe.display()
     );
-    for line in upkeep::after_update(&tag) {
+    for line in upkeep::report_from(&exe) {
         println!("{line}");
     }
     drop(cleanup);

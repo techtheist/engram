@@ -23,8 +23,15 @@ body of its GitHub Release (draft-release.yml lifts it automatically).
   without `--cli` or `--skill` reuses them, so an aggressive repo is no longer
   reset to relaxed. `doctor` checks the recorded assistants instead of
   guessing from what is installed, and says which version last wired the
-  hooks and rules. `update` names the projects still set up by an older
-  version.
+  hooks and rules.
+- **Status and update tell you what is due.** `engram-alpha status` shows
+  each project's setup under it: the version that set it up, its assistants
+  and variant, and what is due. `engram-alpha status --setup` lists only the
+  projects with something to do and works without a running core. After
+  `update` swaps the binary, it asks the new binary for that list, so each
+  release judges your projects by its own skills and wiring. A project is
+  told to re-run `setup` only when a release actually changed the hooks,
+  rules or MCP entries `setup` writes, not on every version bump.
 
 ### Fixes
 
