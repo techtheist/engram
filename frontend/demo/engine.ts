@@ -15,8 +15,10 @@
  * memory tool cannot afford.
  *
  * State lives in sessionStorage: edits survive a reload, and closing the tab
- * throws them away.
+ * throws them away. Embedded in the docs (`?embed`), storage is in-memory and
+ * every load starts fresh — embed.ts swaps it in, so it is imported first.
  */
+import './embed'
 import type {
     AuditEntry,
     Durability,

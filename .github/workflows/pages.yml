@@ -1,16 +1,24 @@
-name: Demo (GitHub Pages)
+name: Site (GitHub Pages)
 
-# Publishes the browser-only pane demo (frontend/demo/) to
-# https://techtheist.github.io/engram/demo/ — the real pane running against a
-# mock daemon that lives in the visitor's tab. Nothing here touches the
-# release artifacts: the demo builds to dist-demo/, never dist/.
+# Publishes https://techtheist.github.io/engram/: the documentation site
+# (website/, built from docs/, CHANGELOG.md and SECURITY.md) at the root, and
+# the browser-only pane demo (frontend/demo/) at /demo/ — the real pane
+# running against a mock daemon that lives in the visitor's tab. Nothing here
+# touches the release artifacts: the demo builds to dist-demo/, never dist/.
 #
 # One-time setup in the repo: Settings → Pages → Source = "GitHub Actions".
 
 on:
   push:
     branches: [main]
-    paths: ['frontend/**', '.github/workflows/pages.yml']
+    paths:
+      - 'frontend/**'
+      - 'website/**'
+      - 'docs/**'
+      - '.screenshots/**'
+      - 'CHANGELOG.md'
+      - 'SECURITY.md'
+      - '.github/workflows/pages.yml'
   workflow_dispatch:
 
 permissions:
@@ -25,7 +33,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build the demo
+    name: Build the site
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -46,33 +54,23 @@ jobs:
         run: bun run build:demo
         working-directory: frontend
 
+      - name: Install the docs site
+        run: bun install --frozen-lockfile
+        working-directory: website
+
+      # Fails on a dead internal link, so a broken docs link fails the deploy.
+      - name: Build the docs site
+        run: bun run build
+        working-directory: website
+
       - name: Assemble the site
         run: |
+          mkdir -p site
+          cp -R website/.vitepress/dist/. site/
           mkdir -p site/demo
           cp -R frontend/dist-demo/. site/demo/
           # Pages runs Jekyll otherwise, which drops files it dislikes.
           touch site/.nojekyll
-          # Browsers ask the site root for /favicon.ico; give the redirect
-          # page the same icon the demo carries.
-          cp frontend/public/favicon.ico frontend/public/favicon.svg site/
-          # The demo owns /demo/ so the site root stays free for docs later;
-          # anyone landing on the root gets sent there.
-          cat > site/index.html <<'HTML'
-          <!doctype html>
-          <html lang="en">
-            <head>
-              <meta charset="utf-8" />
-              <title>Engram Alpha</title>
-              <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
-              <link rel="alternate icon" href="./favicon.ico" />
-              <meta http-equiv="refresh" content="0; url=./demo/" />
-              <link rel="canonical" href="./demo/" />
-            </head>
-            <body>
-              <p><a href="./demo/">Open the Engram Alpha demo</a></p>
-            </body>
-          </html>
-          HTML
 
       - uses: actions/configure-pages@v6
 

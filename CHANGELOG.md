@@ -417,7 +417,7 @@ holds 60 frames per second with no pauses. Fixed along the way:
   closes itself when its last task closes, and reopens if one of them does.
 - **Tasks can close or wake on their own.** A rule is a version
   ("0.10.0", or ">0.9.12" for once the project moves past it), a date
-  ("2026-10-20", "in 3 days") or a note ("node:<id>", when that note is
+  ("2026-10-20", "in 3 days") or a note (`node:<id>`, when that note is
   resolved). A task titled like a release step ("publish 0.9.12") closes
   itself when the working version moves on. Each automatic change says why.
 - **Tasks point at memory.** A task can reference the notes it is about;

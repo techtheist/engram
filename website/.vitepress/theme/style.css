@@ -1,0 +1,116 @@
+/*
+ * The pane's own tokens and skins, imported rather than copied: a palette
+ * change in the pane is a palette change here. The VitePress variables below
+ * only read the pane's semantic tokens.
+ */
+@import "../../../frontend/src/assets/tokens.css";
+@import "../../../frontend/src/assets/themes.css";
+
+:root {
+    --vp-font-family-base: "Inter", -apple-system, blinkmacsystemfont, "Segoe UI", sans-serif;
+    --vp-font-family-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+}
+
+html[data-theme] {
+    --vp-c-bg: var(--surface-base);
+    --vp-c-bg-alt: var(--surface-sunken);
+    --vp-c-bg-elv: var(--surface-elevated);
+    --vp-c-bg-soft: var(--surface-muted);
+
+    --vp-c-text-1: var(--text-primary);
+    --vp-c-text-2: var(--text-secondary);
+    --vp-c-text-3: var(--text-tertiary);
+
+    --vp-c-border: var(--border-default);
+    --vp-c-divider: var(--border-subtle);
+    --vp-c-gutter: var(--border-subtle);
+
+    --vp-c-brand-1: var(--interactive-primary-hover);
+    --vp-c-brand-2: var(--interactive-primary-hover);
+    --vp-c-brand-3: var(--interactive-primary);
+    --vp-c-brand-soft: var(--interactive-ghost-hover);
+
+    --vp-c-default-soft: var(--surface-muted);
+
+    --vp-button-brand-bg: var(--interactive-primary);
+    --vp-button-brand-hover-bg: var(--interactive-primary-hover);
+    --vp-button-brand-active-bg: var(--interactive-primary);
+    --vp-button-brand-text: #fff;
+    --vp-button-brand-hover-text: #fff;
+    --vp-button-brand-active-text: #fff;
+
+    --vp-nav-bg-color: var(--surface-base);
+    --vp-nav-screen-bg-color: var(--surface-base);
+    --vp-local-nav-bg-color: var(--surface-base);
+    --vp-sidebar-bg-color: var(--surface-sunken);
+
+    --vp-code-block-bg: var(--surface-sunken);
+    --vp-code-bg: var(--surface-muted);
+    --vp-code-color: var(--text-primary);
+
+    --vp-local-search-bg: var(--surface-base);
+    --vp-local-search-result-bg: var(--surface-elevated);
+    --vp-local-search-result-border: var(--border-subtle);
+    --vp-local-search-result-selected-bg: var(--surface-elevated);
+    --vp-local-search-result-selected-border: var(--interactive-primary);
+    --vp-local-search-highlight-bg: var(--interactive-primary);
+    --vp-local-search-highlight-text: #fff;
+}
+
+/* Light links read the accent itself; the hover shade is for dark grounds. */
+html[data-theme="vscode-light"] {
+    --vp-c-brand-1: var(--interactive-primary);
+    --vp-c-brand-2: var(--interactive-primary-hover);
+}
+
+/* Engram: the brand look — the canvas glow behind everything, glass bars. */
+html[data-theme="engram-purple"] body {
+    background:
+        radial-gradient(60rem 40rem at 85% -10%, var(--canvas-glow-2), transparent 70%),
+        radial-gradient(50rem 40rem at -10% 20%, var(--canvas-glow-1), transparent 70%),
+        var(--surface-base);
+    background-attachment: fixed;
+}
+
+html[data-theme="engram-purple"] {
+    --vp-c-bg: transparent;
+    --vp-nav-bg-color: var(--surface-glass);
+    --vp-local-nav-bg-color: var(--surface-glass);
+    --vp-sidebar-bg-color: rgb(8 8 15 / 55%);
+}
+
+/* VitePress paints the bar in pieces (the title box, .content-body, and an
+   unpainted gutter right of it on doc pages); glass needs one surface, so
+   the whole bar carries it and the pieces go clear. */
+html[data-theme="engram-purple"] .VPNavBar {
+    /* !important: VitePress's scoped :not(.home.top) rules outrank any
+       selector a theme file can reasonably write. */
+    background-color: var(--surface-glass) !important;
+    backdrop-filter: var(--glass-backdrop);
+}
+
+html[data-theme="engram-purple"] .VPNavBar .content-body,
+html[data-theme="engram-purple"] .VPNavBar .title {
+    background-color: transparent !important;
+}
+
+html[data-theme="engram-purple"] .VPLocalNav,
+html[data-theme="engram-purple"] .VPSidebar {
+    backdrop-filter: var(--glass-backdrop);
+}
+
+.nav-logo {
+    margin-right: 10px;
+}
+
+body {
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+/* Screenshots: framed like the pane's panels. */
+.vp-doc img {
+    border-radius: 10px;
+    border: 1px solid var(--border-default);
+}

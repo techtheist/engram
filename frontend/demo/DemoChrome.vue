@@ -2,10 +2,17 @@
 /**
  * The demo's only piece of extra UI: a corner badge that says what this is,
  * what is real about it and what is faked, plus the reset. Mounted through
- * `services/hostChrome` so App.vue stays unaware a demo exists.
+ * `services/hostChrome` so App.vue stays unaware a demo exists — which also
+ * makes it the home of the landing-page tour bridge (`?embed`, tour.ts).
  */
 import { ref } from 'vue'
+import { embedded } from './embed'
 import { resetWorld } from './engine'
+import { startTour } from './tour'
+
+// Inside the docs' landing page the page itself says what this is; the
+// badge would only cover the pane the tour is showing.
+if (embedded) startTour()
 
 const open = ref(false)
 
@@ -17,7 +24,7 @@ function reset(): void {
 </script>
 
 <template>
-<div class="demo-chrome" :class="{ open }">
+<div v-if="!embedded" class="demo-chrome" :class="{ open }">
     <button class="badge" type="button" @click="open = !open">
         <span class="dot" />
         <span>Demo</span>

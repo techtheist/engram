@@ -74,3 +74,21 @@ state Engram's load-bearing rules (research-first, models nominate and people
 judge, trust reads deliberate acts, retired means retired, conflicts are
 surfaced never auto-resolved). Those hold across releases — which is why they
 are safe to put in a demo that nobody will re-check for a year.
+
+## Embedded in the docs landing page
+
+`?embed` (`demo/embed.ts`) is the same build running inside the
+documentation site's landing page (`website/`), driven by the page's scroll.
+Two things change:
+
+- **Storage is in-memory.** The frame shares an origin with the full demo and
+  the docs, so a tour that switches themes and screens would otherwise leave
+  them in the visitor's real `localStorage`. Every embedded load starts from
+  the shipped graph, and nothing it does outlives the frame.
+- **The tour bridge runs** (`demo/tour.ts`, started from `DemoChrome.vue`,
+  which hides its badge). The page posts `{ type: 'engram-tour', chapter, t }`;
+  each chapter maps to a scene (a screen, a selection, an open panel, a task
+  moved, a session opened), applied through the pane's own stores. Scenes are
+  states, so scrolling back walks the pane back, and a virtual cursor plays
+  the clicks. `{ theme }` follows the page's skin. The embedded pane is
+  watch-only (no pointer events): the full demo is a link away.

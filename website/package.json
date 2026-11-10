@@ -1,0 +1,16 @@
+{
+  "name": "engram-website",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vitepress dev --port 5181",
+    "build": "vitepress build",
+    "preview": "vitepress preview --port 5181",
+    "demo": "cd ../frontend && bun install --frozen-lockfile && bun run build:demo"
+  },
+  "devDependencies": {
+    "vitepress": "1.6.4",
+    "vue": "^3.5.38"
+  }
+}
