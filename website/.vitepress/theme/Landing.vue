@@ -233,7 +233,7 @@ async function copy(): Promise<void> {
   <div class="landing">
     <section class="hero" :style="{ '--p': heroP }">
       <div class="hero-inner">
-        <BrandIcon :size="256" class="mark" />
+        <BrandIcon :size="128" class="mark" />
         <h1>Engram Alpha</h1>
         <p class="what">
           Long-term project memory for AI coding assistants — a graph of your project's decisions you can read and edit.
