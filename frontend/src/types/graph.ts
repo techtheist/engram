@@ -127,6 +127,16 @@ export interface SuspectView {
     via?: SuspectEndpoint
 }
 
+/**
+ * A found bridge (0.11.2): a note a bridge note ties to the selected one
+ * while no edge joins them. Read off titles — no model judged it, nothing
+ * is stored. `via` is the bridge; absent when the selected note IS the
+ * bridge and this is a note it names.
+ */
+export interface FoundBridge extends SuspectEndpoint {
+    via?: SuspectEndpoint
+}
+
 export interface SuspectEndpoint {
     id: string
     type: NodeType

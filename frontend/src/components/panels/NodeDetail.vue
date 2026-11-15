@@ -28,7 +28,7 @@ import { useHistoryStore } from '@/stores/history'
 import { useTasksStore } from '@/stores/tasks'
 import { useLayoutStore } from '@/stores/layout'
 import { parseCodeRefs } from '@/utils/codeRefs'
-import type { BornIn, EdgeType, GraphEdge, Standing, TimelineEntry } from '@/types/graph'
+import type { BornIn, EdgeType, FoundBridge, GraphEdge, Standing, TimelineEntry } from '@/types/graph'
 
 const store = useGraphStore()
 const config = useConfigStore()
@@ -121,6 +121,38 @@ watch(
     },
     { immediate: true },
 )
+
+// --- found bridges (0.11.2): virtual `about` ties ----------------------------
+
+/**
+ * Notes a bridge note ties to this one while no edge joins them — gathered
+ * when the view opens (and again when this note's edges change: a new link
+ * retires the row). Shown as a virtual `about`, never written to the graph.
+ */
+const bridges = ref<FoundBridge[]>([])
+
+watch(
+    standingKey,
+    async (key) => {
+        const id = selected.value?.id
+        if (!key || !id) {
+            bridges.value = []
+            return
+        }
+        try {
+            const { bridges: found } = await api.bridges(id)
+            if (selected.value?.id === id) bridges.value = found
+        } catch {
+            bridges.value = [] // an older daemon without the route
+        }
+    },
+    { immediate: true },
+)
+
+const BRIDGE_TIP =
+    'Found bridge — not an edge. A bridge note ties these two subjects together ' +
+    '(“same”, “reuses”, “renamed”…) while nothing in the graph links them. ' +
+    'Read from titles: no model judged it, nothing is stored.'
 
 const standingOther = computed(() => {
     const other = standing.value?.other
@@ -589,6 +621,33 @@ function close(): void {
             <NoteText>Drag between node handles on the canvas to add a connection.</NoteText>
         </PanelSection>
 
+        <PanelSection v-if="bridges.length" title="Found bridges">
+            <ul class="relations">
+                <li v-for="b in bridges" :key="b.id" class="bridge-row">
+                    <span class="virtual-verb" :title="BRIDGE_TIP">⇢ about</span>
+                    <div class="bridge-text">
+                        <button class="bridge-target" type="button" @click="store.select(b.id)">
+                            {{ b.title }}
+                        </button>
+                        <button
+                            v-if="b.via"
+                            class="bridge-via"
+                            type="button"
+                            :title="`The bridge note: ${b.via.title}`"
+                            @click="store.select(b.via.id)"
+                        >
+                            via {{ b.via.title }}
+                        </button>
+                        <span v-else class="bridge-via self">named by this note</span>
+                    </div>
+                </li>
+            </ul>
+            <NoteText>
+                Not in the graph: a bridge note ties these subjects together while no edge does —
+                worth a look when facts about them disagree.
+            </NoteText>
+        </PanelSection>
+
         <PanelSection v-if="timeline.length > 1" title="History">
             <ol class="timeline">
                 <li
@@ -942,6 +1001,68 @@ function close(): void {
     flex: none;
     font-size: var(--text-caption);
     font-weight: 600;
+}
+
+/* A found bridge's virtual verb: dashed, muted — read, not stored. */
+.virtual-verb {
+    flex: none;
+    padding: 0.1rem 0.5rem;
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-size: var(--text-caption);
+    font-weight: 600;
+    cursor: help;
+}
+
+.bridge-row {
+    display: flex;
+    gap: 0.6rem;
+    align-items: flex-start;
+    min-width: 0;
+    padding: 0.4rem 0.8rem 0.4rem 0;
+}
+
+.bridge-text {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 0.15rem;
+    min-width: 0;
+}
+
+.bridge-target,
+.bridge-via {
+    display: -webkit-box;
+    overflow: hidden;
+    padding: 0;
+    border: none;
+    background: none;
+    text-align: left;
+    cursor: pointer;
+    -webkit-box-orient: vertical;
+}
+
+.bridge-target {
+    color: var(--text-primary);
+    font-size: var(--text-body-sm);
+    -webkit-line-clamp: 2;
+}
+
+.bridge-via {
+    color: var(--text-tertiary);
+    font-size: var(--text-caption);
+    -webkit-line-clamp: 1;
+}
+
+.bridge-via.self {
+    cursor: default;
+}
+
+.bridge-target:hover,
+.bridge-via:not(.self):hover {
+    color: var(--interactive-primary);
+    text-decoration: underline;
 }
 
 

@@ -83,6 +83,27 @@ const ONE_WORDS: [&str; 8] = [
     "standardized",
 ];
 
+/// The words that close a tie: "the same datastore AS", "the old name OF",
+/// "inherits its limits FROM", "identical TO", "shared WITH".
+const LINKS: [&str; 7] = ["as", "with", "from", "of", "to", "for", "like"];
+
+/// Cues that take the other subject directly: "X mirrors Y", "X reuses
+/// Y's writer", "X, formerly Y", "X aka Y".
+const DIRECT: [&str; 12] = [
+    "mirror",
+    "mirrors",
+    "mirrored",
+    "reuses",
+    "reused",
+    "inherits",
+    "inherited",
+    "copies",
+    "copied",
+    "clones",
+    "formerly",
+    "aka",
+];
+
 /// Function words that never name a subject or carry a claim.
 const STOP: [&str; 30] = [
     "the", "a", "an", "is", "are", "was", "were", "it", "its", "in", "on", "of", "for", "to",
@@ -152,6 +173,60 @@ pub(crate) fn is_bridge(title: &str) -> bool {
         return false;
     }
     has(&RELATION_WORDS) || RELATION_PHRASES.iter().any(|p| lower.contains(p))
+}
+
+/// The tie's frame, for display (found bridges, which no judge reads): the
+/// stretches of the title where its two subjects may stand. English ties
+/// come in two shapes — "**X** uses the same datastore as **Y**" (one
+/// before the cue, one after the word that closes it) and "**X** and **Y**
+/// share one language" (both before the cue, joined by "and"). A real tie
+/// names one subject in each of two stretches. `None` when the title has
+/// fewer than two: "one shared component, points at …", "a build-time alias
+/// turns it into …", "scores the same" with nothing linked after it.
+pub(crate) fn frame(bridge: &str) -> Option<Vec<HashSet<String>>> {
+    let main = strip_asides(crate::engine::title_clause(bridge));
+    let words: Vec<String> = lower_words(&main).collect();
+    let phrase_at = |i: usize| {
+        RELATION_PHRASES.iter().find_map(|p| {
+            let parts: Vec<&str> = p.split(' ').collect();
+            (words.len() >= i + parts.len()
+                && parts.iter().enumerate().all(|(k, w)| words[i + k] == *w))
+            .then_some(parts.len())
+        })
+    };
+    let (cue, len) = (0..words.len()).find_map(|i| {
+        if RELATION_WORDS.contains(&words[i].as_str()) {
+            Some((i, 1))
+        } else {
+            phrase_at(i).map(|n| (i, n))
+        }
+    })?;
+    let after = cue + len;
+    let right_from = if len == 1 && DIRECT.contains(&words[cue].as_str()) {
+        Some(after)
+    } else if len > 1 && words[cue + len - 1].as_str() != "name" {
+        // "known as", "taken from", "based on" carry their own link.
+        Some(after)
+    } else {
+        words[after..]
+            .iter()
+            .position(|w| LINKS.contains(&w.as_str()))
+            .map(|p| after + p + 1)
+    };
+    let set = |ws: &[String]| -> HashSet<String> { ws.iter().cloned().collect() };
+    let mut sides = Vec::new();
+    // "X and Y <cue> …": the stretch before the cue splits at its last "and".
+    match words[..cue].iter().rposition(|w| w == "and") {
+        Some(and) => {
+            sides.push(set(&words[..and]));
+            sides.push(set(&words[and + 1..cue]));
+        }
+        None => sides.push(set(&words[..cue])),
+    }
+    if let Some(r) = right_from.filter(|r| *r < words.len()) {
+        sides.push(set(&words[r..]));
+    }
+    (sides.len() >= 2).then_some(sides)
 }
 
 /// The words through which `bridge` names the subject of `note` — empty
@@ -238,6 +313,36 @@ mod tests {
             b,
             "Release notes for the dashboard mention the Export worker"
         ));
+    }
+
+    #[test]
+    fn a_tie_names_its_two_subjects_in_two_stretches() {
+        let in_two = |t: &str, x: &str, y: &str| {
+            frame(t).is_some_and(|sides| {
+                let at = |w: &str| sides.iter().position(|s| s.contains(w));
+                matches!((at(x), at(y)), (Some(a), Some(b)) if a != b)
+            })
+        };
+        assert!(in_two(
+            "The Export worker uses the same datastore as the Import worker",
+            "export",
+            "import"
+        ));
+        assert!(in_two(
+            "Replay buffer is the old name of the Ingest job",
+            "replay",
+            "ingest"
+        ));
+        assert!(in_two("Billing mirrors Payments", "billing", "payments"));
+        assert!(in_two(
+            "The Export worker and the Import worker share one implementation language",
+            "export",
+            "import"
+        ));
+        // Sameness as an adjective, or a cue with nothing linked after it.
+        assert!(frame("The empty-graph card is one shared component, points at digest").is_none());
+        assert!(frame("A build-time alias turns it into the static demo").is_none());
+        assert!(frame("Lantern scores the same").is_none());
     }
 
     #[test]

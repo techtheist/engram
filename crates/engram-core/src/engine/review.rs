@@ -15,7 +15,7 @@ use serde::Serialize;
 
 use super::{Engine, is_anchor, is_tombstone};
 use crate::crowding::{CrowdIndex, fnv};
-use crate::{Node, NodeType, Result, SuspectView};
+use crate::{FoundBridge, Node, NodeType, Result, SuspectView};
 
 /// The kv key holding reviewed marks: a JSON object {node id: content
 /// fingerprint in hex}.
@@ -37,6 +37,10 @@ const SETTLED_DAYS: i64 = 14;
 const ISLAND_NEAR: usize = 3;
 /// Characters of a linked note's title a member's edge carries.
 const EDGE_TITLE: usize = 80;
+/// Found bridges an island lists, and a subject lists leaving it (0.11.2):
+/// notes a bridge note ties in while no edge does — where a link may go.
+const ISLAND_BRIDGES: usize = 2;
+const SUBJECT_BRIDGES: usize = 3;
 
 /// "v0.7.0" and "0.7.0" are one version.
 fn bare(v: &str) -> &str {
@@ -190,6 +194,18 @@ pub struct ReviewSubject {
     /// Pending suspect ids between members (judge with resolve_suspect).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub suspects: Vec<String>,
+    /// Notes outside the subject that a bridge note ties to a member while
+    /// no edge does (0.11.2): `from` is the member.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub bridges: Vec<SubjectBridge>,
+}
+
+/// A found bridge leaving a subject: which member it starts from.
+#[derive(Debug, Clone, Serialize)]
+pub struct SubjectBridge {
+    pub from: String,
+    #[serde(flatten)]
+    pub found: FoundBridge,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -271,6 +287,9 @@ pub struct Island {
     pub version: Option<String>,
     /// Its nearest notes by embedding: where a link would go.
     pub nearest: Vec<Neighbor>,
+    /// Notes a bridge note ties it to (0.11.2) — a tie the text states.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub bridges: Vec<FoundBridge>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -716,6 +735,24 @@ impl Engine {
                 .filter(|s| ids.contains(s.a.id.as_str()) && ids.contains(s.b.id.as_str()))
                 .map(|s| s.id.clone())
                 .collect();
+            let shown: Vec<String> = all.iter().take(SHOWN).map(|n| n.id.clone()).collect();
+            let mut bridges: Vec<SubjectBridge> = Vec::new();
+            for (from, found) in shown
+                .iter()
+                .zip(self.found_bridges_many(&shown, SUBJECT_BRIDGES)?)
+            {
+                for f in found {
+                    if bridges.len() < SUBJECT_BRIDGES
+                        && !ids.contains(f.note.id.as_str())
+                        && !bridges.iter().any(|b| b.found.note.id == f.note.id)
+                    {
+                        bridges.push(SubjectBridge {
+                            from: from.clone(),
+                            found: f,
+                        });
+                    }
+                }
+            }
             page.push(ReviewSubject {
                 name,
                 size: all.len(),
@@ -727,6 +764,7 @@ impl Engine {
                 more,
                 pairs,
                 suspects,
+                bridges,
             });
         }
         Ok(ReviewPage {
@@ -968,7 +1006,10 @@ impl Engine {
         });
         let total = notes.len();
         let mut islands = Vec::new();
-        for n in notes.into_iter().skip(offset).take(limit) {
+        let paged: Vec<Node> = notes.into_iter().skip(offset).take(limit).collect();
+        let ids: Vec<String> = paged.iter().map(|n| n.id.clone()).collect();
+        let found = self.found_bridges_many(&ids, ISLAND_BRIDGES)?;
+        for (n, bridges) in paged.into_iter().zip(found) {
             let mut nearest = Vec::new();
             if let Some(c) = index.nodes.get(&n.id) {
                 for (other, s) in c.nearest.iter().take(ISLAND_NEAR) {
@@ -992,6 +1033,7 @@ impl Engine {
                 title: n.title,
                 version: n.version,
                 nearest,
+                bridges,
             });
         }
         Ok(IslandPage {

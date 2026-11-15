@@ -12704,3 +12704,60 @@ fn the_conflict_sweep_reads_bridges_written_before_the_path_existed() {
     let again = e.audit_conflicts().unwrap();
     assert_eq!(again.bridged, 0, "{again:?}");
 }
+
+#[test]
+fn found_bridges_show_the_notes_a_bridge_ties_in_until_an_edge_does() {
+    let e = bridge_engine();
+    let x = e
+        .add_node(new_node(NodeType::Decision, FACT_X, ""))
+        .unwrap();
+    let y = e.add_node(new_node(NodeType::Caution, FACT_Y, "")).unwrap();
+    let bridge = e.add_node(new_node(NodeType::Insight, BRIDGE, "")).unwrap();
+    let other = e
+        .add_node(new_node(
+            NodeType::Principle,
+            "Billing keeps its records in MongoDB",
+            "",
+        ))
+        .unwrap();
+    // A fact: the other subject's fact, through the bridge.
+    let found = e.found_bridges(&x.id, 3).unwrap();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].note.id, y.id);
+    assert_eq!(
+        found[0].via.as_ref().map(|v| v.id.as_str()),
+        Some(bridge.id.as_str())
+    );
+    // The bridge: the notes it names, no via.
+    let named = e.found_bridges(&bridge.id, 3).unwrap();
+    let ids: Vec<&str> = named.iter().map(|f| f.note.id.as_str()).collect();
+    assert!(ids.contains(&x.id.as_str()) && ids.contains(&y.id.as_str()));
+    assert!(named.iter().all(|f| f.via.is_none()));
+    // A subject no bridge names finds nothing; the cap holds.
+    assert!(e.found_bridges(&other.id, 3).unwrap().is_empty());
+    assert_eq!(e.found_bridges(&bridge.id, 1).unwrap().len(), 1);
+    // Sleep's island queue carries them: a tie the text already states.
+    let islands = e.islands_page(true, 0, 10).unwrap();
+    let island = islands.islands.iter().find(|i| i.id == x.id).unwrap();
+    assert_eq!(island.bridges.len(), 1, "{island:?}");
+    assert_eq!(island.bridges[0].note.id, y.id);
+    // Once an edge joins them, it is no longer a found bridge.
+    e.add_edge(NewEdge {
+        edge_type: EdgeType::BuildsOn,
+        from_id: x.id.clone(),
+        to_id: y.id.clone(),
+        source: Source::Agent,
+        note: None,
+        confidence: None,
+        strength: None,
+        status: None,
+    })
+    .unwrap();
+    assert!(e.found_bridges(&x.id, 3).unwrap().is_empty());
+    // The many form keeps the asked order; an unknown id finds nothing.
+    let many = e
+        .found_bridges_many(&[bridge.id.clone(), "nope".into()], 3)
+        .unwrap();
+    assert_eq!(many.len(), 2);
+    assert!(many[1].is_empty());
+}

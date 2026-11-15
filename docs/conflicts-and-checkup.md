@@ -35,6 +35,32 @@ pair as a contradiction — the two notes name different subjects. Judge it
 like any other suspect: dismiss it if the dependent still stands on its own.
 Which verbs carry this is the `inherits` role in the graph's ontology.
 
+Some contradictions need no edge at all, only a sentence (0.11.2). "Stats
+export reuses the same CSV writer as Annotation export" is a **bridge
+note**: its title ties one subject to another with a relation word ("same …
+as", "shares … with", "renamed from", "inherits … from", "mirrors"). Once
+such a note exists, "Annotation export writes every timestamp in UTC" and
+"Stats export writes timestamps in the reader's local time" disagree, though
+the two never mention each other. When a bridge, or a fact about a subject a
+bridge names, is written, the local model reads each pair *through* the
+bridge ("bridge. one fact ⟹ the other"), and a disagreement queues with
+the hint `bridged`. The Review drawer names the bridge (**via**) beside the
+pair. `conflict_bridge_gate` in the policy sets the bar (0.80; `null`
+turns it off).
+
+**Found bridges.** A note's detail view lists the notes a bridge ties to it
+while no edge does, as a dashed, virtual *about*: a connection the text
+states but the graph doesn't hold yet. Nothing judged it and nothing is
+stored, so it is a place to look, not a verdict. Your assistant sees the
+same thing, kept small: `get_node` carries up to three `bridges`, and the
+top three search hits one each. A sleep (`/engram-sleep`) reads them on the
+islands it ties back in and on each subject's way out. Only a title that
+names its two subjects on either side of the tie counts ("X … same … as Y",
+"X and Y share …"), so a passing "shared" or "same" in a long title lists
+nothing.
+
+<img src="../.screenshots/engram-alpha-found-bridges-feature.png" width="420" alt="A note's detail view: under Connections, Found bridges lists the other export's decision as a dashed virtual about, via the note that says both exports share one CSV writer">
+
 ## Checkup: interrogate the canon
 
 Beyond finding what the graph *says*, the **Checkup** panel asks whether it
@@ -61,7 +87,8 @@ Above the claim box, one-click sweeps over the whole graph:
 - **Find hidden conflicts** — look-alike pairs the model reads as
   contradictions, plus less similar pairs whose *titles* name the same
   subject and contradict each other — the same second way in the write path
-  uses.
+  uses — and every bridge note's pairs. Crowded subjects are read first,
+  so a click that runs out of budget has spent it where conflicts pile up.
 - **Find duplicates** — pairs that state the same thing; judge as Replaces
   to merge their histories.
 

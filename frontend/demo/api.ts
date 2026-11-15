@@ -526,6 +526,8 @@ export const api: EngramApi = {
 
     standing: (id: string) => ok(engine.standing(id)),
 
+    bridges: (id: string) => ok({ bridges: engine.foundBridges(id) }),
+
     config: () => ok(engine.state().config),
     putConfig: (cfg: GraphConfig) => {
         engine.state().config = cfg

@@ -136,7 +136,8 @@ async function capture(browser, shot, url, outDir) {
     // The app is up once its shell rendered and the graph arrived.
     await page.waitForSelector('.topbar', { timeout: 15_000 })
     if ((shot.view ?? 'graph') === 'graph') {
-        await page.waitForSelector('.vue-flow__node', { timeout: 15_000 })
+        // WebGL cards since 0.10.1; Vue Flow where the GPU path is off.
+        await page.waitForSelector('.gl-canvas, .vue-flow__node', { timeout: 15_000 })
     }
     await page.addStyleTag({ content: STILL })
     if (shot.hide?.length) {

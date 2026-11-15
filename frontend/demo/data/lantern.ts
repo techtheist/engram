@@ -676,6 +676,42 @@ export const LANTERN_NODES: SeedNode[] = [
         tags: ['ux', 'process'],
         version: '0.5.0',
     },
+    // A bridged trio (0.11.2): two facts about two exports that disagree
+    // only through the note tying the exports together. No edge joins
+    // them, so the detail view lists them as found bridges.
+    {
+        key: 'd-anno-export-utc',
+        type: 'Decision',
+        title: 'Annotation export writes every timestamp in UTC',
+        body: 'Exported highlights get merged across devices in other time zones; a local timestamp would reorder them on import. UTC with an explicit offset of zero, ISO 8601.',
+        durability: 'stable',
+        source: 'agent',
+        days: 64,
+        session: 'mcp-00ax9dst0rm4',
+        version: '0.4.0',
+    },
+    {
+        key: 'i-export-shared-writer',
+        type: 'Insight',
+        title: 'Stats export reuses the same CSV writer as Annotation export',
+        body: 'One writer module, two callers: column order, quoting and the timestamp format come from the writer, not from either export.',
+        durability: 'stable',
+        source: 'agent',
+        days: 30,
+        session: 'mcp-00b2gpr0f1le',
+        version: '0.5.0',
+    },
+    {
+        key: 'd-stats-export-local',
+        type: 'Decision',
+        title: "Stats export writes timestamps in the reader's local time",
+        body: 'People read their own stats in a spreadsheet; "you read at 23:10" should mean their 23:10, not UTC.',
+        durability: 'stable',
+        source: 'agent',
+        days: 3,
+        session: 'mcp-00b6tbeta40r',
+        version: '0.5.0',
+    },
     {
         key: 'i-demo-library',
         type: 'Insight',
@@ -768,6 +804,16 @@ export const LANTERN_NODES: SeedNode[] = [
         code_refs: ['src/reader/paginate.ts'],
         version: '0.5.0',
     },
+]
+
+/**
+ * Found bridges (0.11.2): a bridge note and the two notes it ties. The
+ * daemon reads these off titles (relation words like "same", "reuses",
+ * "renamed"); the demo states them, and lists a pair only while no edge
+ * joins it — exactly what `GET /nodes/{id}/bridges` returns.
+ */
+export const LANTERN_BRIDGES: { bridge: string; ties: [string, string] }[] = [
+    { bridge: 'i-export-shared-writer', ties: ['d-anno-export-utc', 'd-stats-export-local'] },
 ]
 
 export const LANTERN_EDGES: SeedEdge[] = [

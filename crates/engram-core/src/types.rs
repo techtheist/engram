@@ -575,6 +575,19 @@ pub struct SuspectEndpoint {
     pub title: String,
 }
 
+/// A found bridge (0.11.2): a note tied to the asked one by a bridge note
+/// ("X uses the same datastore as Y") while no edge joins the two. A
+/// structural reading of titles — no model judged it, nothing was written.
+/// `via` is the bridge; absent when the asked note is itself the bridge and
+/// this is a note it names.
+#[derive(Debug, Clone, Serialize)]
+pub struct FoundBridge {
+    #[serde(flatten)]
+    pub note: SuspectEndpoint,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub via: Option<SuspectEndpoint>,
+}
+
 /// The "models nominate, people judge" loop, scored: over judged suspect
 /// pairs that carried an NLI hint, how often the hint matched the verdict.
 /// The row keeps no finer grain than confirmed/dismissed (conflict and

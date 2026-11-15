@@ -221,7 +221,10 @@ close it (`done`) or drop it (`dropped`).
 `dry_run` to run it), `GET /drift` (nodes whose `code_refs` no longer
 resolve), `POST /audit/conflicts`, `POST /audit/duplicates`,
 `POST /audit/answered`, `POST /audit/promotions`, `POST /audit/stale`
-(checkup sweeps — nominations, never verdicts), `GET /export` / `POST /import`
+(checkup sweeps — nominations, never verdicts; the conflict sweep reads
+crowded subjects first and every bridge note), `GET /nodes/{id}/bridges`
+(found bridges: notes a bridge note ties to this one while no edge does),
+`GET /export` / `POST /import`
 (the whole graph as JSON, config included), `GET /crowding` (per-note
 crowding and heat, plus the unreviewed subjects, each with a model-free
 name), `GET /review`,

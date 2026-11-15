@@ -12,7 +12,7 @@ mod review;
 pub use review::{
     AroundView, ConflictsView, CrowdHeat, CrowdingReport, Island, IslandPage, Neighbor, ReviewEdge,
     ReviewLine, ReviewMember, ReviewPage, ReviewPair, ReviewQuery, ReviewSubject, StandingConflict,
-    SubjectSummary, Worth,
+    SubjectBridge, SubjectSummary, Worth,
 };
 
 /// A graph mutation, broadcast to listeners (the HTTP layer turns these into
@@ -4005,6 +4005,104 @@ impl Engine {
         Ok(out)
     }
 
+    /// Found bridges for one note (0.11.2), closest first, at most `limit`:
+    /// notes a bridge note ties to this one while no edge joins them. For a
+    /// bridge, the notes it names; for a fact, the facts about the other
+    /// subjects of every bridge that names its own. Title reading only — no
+    /// judge, nothing written. Empty for an archived, anchor or tombstone
+    /// note.
+    pub fn found_bridges(&self, id: &str, limit: usize) -> Result<Vec<FoundBridge>> {
+        Ok(self
+            .found_bridges_many(&[id.to_string()], limit)?
+            .into_iter()
+            .next()
+            .unwrap_or_default())
+    }
+
+    /// [`Engine::found_bridges`] for several notes over one read of the
+    /// live notes, in the order asked.
+    pub fn found_bridges_many(
+        &self,
+        ids: &[String],
+        limit: usize,
+    ) -> Result<Vec<Vec<FoundBridge>>> {
+        if limit == 0 || ids.is_empty() {
+            return Ok(vec![Vec::new(); ids.len()]);
+        }
+        let notes = self.store.scannable_nodes()?;
+        let bridges: Vec<&Node> = notes
+            .iter()
+            .filter(|n| crate::bridges::is_bridge(&n.title))
+            .collect();
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            let Some(node) = notes.iter().find(|n| &n.id == id) else {
+                out.push(Vec::new()); // archived, anchor, tombstone, or gone
+                continue;
+            };
+            out.push(self.found_bridges_in(&notes, &bridges, node, limit)?);
+        }
+        Ok(out)
+    }
+
+    fn found_bridges_in(
+        &self,
+        notes: &[Node],
+        bridges: &[&Node],
+        node: &Node,
+        limit: usize,
+    ) -> Result<Vec<FoundBridge>> {
+        let endpoint = |n: &Node| SuspectEndpoint {
+            id: n.id.clone(),
+            node_type: n.node_type.clone(),
+            title: n.title.clone(),
+        };
+        let mut raw: Vec<(&Node, Option<&Node>)> = Vec::new();
+        if crate::bridges::is_bridge(&node.title) {
+            raw.extend(
+                pair_bridge_facts(notes, node)
+                    .into_iter()
+                    .map(|(f, _)| (f, None)),
+            );
+        } else {
+            for b in bridges.iter().filter(|b| b.id != node.id) {
+                let ax = crate::bridges::anchors(&b.title, &node.title);
+                if ax.is_empty() {
+                    continue;
+                }
+                for (y, ay) in pair_bridge_facts(notes, b) {
+                    if ax.is_disjoint(&ay) && shared_subject(&node.title, &y.title).is_none() {
+                        raw.push((y, Some(*b)));
+                    }
+                }
+            }
+        }
+        let mine = self.store.embedding_of(&node.id)?;
+        let mut seen = std::collections::HashSet::new();
+        let mut found: Vec<(f64, FoundBridge)> = Vec::new();
+        for (other, via) in raw {
+            if other.id == node.id
+                || !seen.insert(other.id.clone())
+                || self.store.pair_linked(&node.id, &other.id)?
+            {
+                continue;
+            }
+            let similarity = match (&mine, self.store.embedding_of(&other.id)?) {
+                (Some(a), Some(b)) => cosine(a, &b),
+                _ => 0.0,
+            };
+            found.push((
+                similarity,
+                FoundBridge {
+                    note: endpoint(other),
+                    via: via.map(endpoint),
+                },
+            ));
+        }
+        found.sort_by(|a, b| b.0.total_cmp(&a.0));
+        Ok(found.into_iter().take(limit).map(|(_, f)| f).collect())
+    }
+
     /// Queue judged bridged pairs, each re-checked under the lock (either
     /// side or the bridge may have changed while the judge ran). Returns the
     /// new suspects' ids.
@@ -5231,12 +5329,34 @@ impl Engine {
         // The scan meets every close pair from both sides; whatever happened
         // to it the first time (judged, queued, skipped) holds for the second.
         let mut seen = std::collections::HashSet::new();
-        'nodes: for node in self.store.scannable_nodes()? {
+        // Crowding order (0.11.2): the subjects first, largest first and
+        // each from its most central member, then every other note newest
+        // first. Conflicts and restatements pile up where notes crowd, so a
+        // run the budget cuts has spent itself there. Order only: reading
+        // subject-mates beyond the twelve nearest was tried and dropped —
+        // on this repo's graph it judged 13 more pairs and raised one more
+        // false alarm with Laya, nothing found (2026-11-15 replay).
+        let index = self.crowding()?;
+        let rank: std::collections::HashMap<String, usize> = index
+            .subjects(|_| true)
+            .iter()
+            .flat_map(|s| s.members.iter())
+            .enumerate()
+            .map(|(i, m)| (m.clone(), i))
+            .collect();
+        let mut notes = self.store.scannable_nodes()?;
+        // Stable: notes outside every subject keep the store's newest-first.
+        notes.sort_by_key(|n| rank.get(&n.id).copied().unwrap_or(usize::MAX));
+        'nodes: for node in notes {
             let Some(vec) = self.store.embedding_of(&node.id)? else {
                 continue;
             };
-            for (id, distance) in self.store.search_vec(&vec, 12)? {
-                let similarity = 1.0 - distance;
+            let near = self
+                .store
+                .search_vec(&vec, 12)?
+                .into_iter()
+                .map(|(id, d)| (id, 1.0 - d));
+            for (id, similarity) in near {
                 if id == node.id {
                     continue;
                 }
@@ -6979,6 +7099,57 @@ fn bridge_facts<'a>(notes: &'a [Node], bridge: &Node) -> Vec<(&'a Node, Anchor)>
     }
     out.retain(|(n, _)| !crate::bridges::is_bridge(&n.title));
     out
+}
+
+/// [`bridge_facts`] for display (found bridges): only when the bridge names
+/// exactly two subjects. Facts whose anchors overlap are one subject; a
+/// title that reaches three or more is prose that says "same" or "shared"
+/// in passing, not a tie between two things — the judge filters those on
+/// the write path, but nothing judges what is only shown.
+///
+/// And the two must sit in the tie's frame ([`crate::bridges::frame`]): one
+/// subject before the cue, the other after the word that closes it — so
+/// "one shared component" or "scores the same" pair nothing. A subject
+/// reached through a chain hop stands on whichever side is left.
+fn pair_bridge_facts<'a>(notes: &'a [Node], bridge: &Node) -> Vec<(&'a Node, Anchor)> {
+    let Some(sides) = crate::bridges::frame(&bridge.title) else {
+        return Vec::new();
+    };
+    let facts = bridge_facts(notes, bridge);
+    let mut groups: Vec<Anchor> = Vec::new();
+    for (_, a) in &facts {
+        let (joined, mut rest): (Vec<Anchor>, Vec<Anchor>) =
+            groups.into_iter().partition(|g| !g.is_disjoint(a));
+        let mut merged = a.clone();
+        for g in joined {
+            merged.extend(g);
+        }
+        rest.push(merged);
+        groups = rest;
+    }
+    if groups.len() != 2 {
+        return Vec::new();
+    }
+    // Which stretch of the frame a subject stands in: None for a chain hop
+    // (it stands wherever the other does not), Err when its words span
+    // stretches or none — not a framed subject.
+    let side = |g: &Anchor| -> std::result::Result<Option<usize>, ()> {
+        let words: Vec<&String> = g.iter().filter(|w| !w.starts_with("hop:")).collect();
+        if words.is_empty() {
+            return Ok(None);
+        }
+        sides
+            .iter()
+            .position(|s| words.iter().all(|w| s.contains(*w)))
+            .map(Some)
+            .ok_or(())
+    };
+    let framed = match (side(&groups[0]), side(&groups[1])) {
+        (Ok(Some(a)), Ok(Some(b))) => a != b,
+        (Ok(None), Ok(Some(_))) | (Ok(Some(_)), Ok(None)) => true,
+        _ => false,
+    };
+    if framed { facts } else { Vec::new() }
 }
 
 /// A bridged pair's sweep memory key: both facts' content and the bridge's.

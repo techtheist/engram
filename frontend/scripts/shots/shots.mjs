@@ -206,6 +206,24 @@ export const shots = [
         settle: 700,
     },
     {
+        name: 'engram-alpha-found-bridges-feature',
+        doc: 'docs/conflicts-and-checkup.md § Suspected conflicts (found bridges)',
+        viewport: [1280, 760],
+        // Opened through search: the graph's cards are WebGL, not DOM.
+        act: async (page) => {
+            await page.getByPlaceholder('Search memory…').fill('Annotation export writes every timestamp')
+            await page
+                .getByText('Annotation export writes every timestamp in UTC', { exact: true })
+                .first()
+                .click()
+            await page
+                .locator(`${PANEL} h3.ui-section-title`, { hasText: 'Found bridges' })
+                .evaluate((el) => el.scrollIntoView({ block: 'center' }))
+        },
+        clip: PANEL,
+        settle: 700,
+    },
+    {
         name: 'engram-alpha-delete-tombstone-feature',
         doc: 'docs/pane.md § Edit everything by hand (hard delete leaves a Tombstone)',
         viewport: [1280, 700],

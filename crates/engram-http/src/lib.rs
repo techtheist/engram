@@ -717,6 +717,7 @@ fn api_router(state: Arc<AppState>) -> Router {
         .route("/history", get(history_stats).delete(history_reset))
         .route("/nodes/{id}/born-in", get(node_born_in))
         .route("/nodes/{id}/standing", get(node_standing))
+        .route("/nodes/{id}/bridges", get(node_bridges))
         .route("/history/sessions", get(history_sessions))
         .route(
             "/history/sessions/{sid}",
@@ -1960,6 +1961,22 @@ async fn node_standing(
     let standing = pane(&engine).node_standing(&id)?;
     standing.map(Json).ok_or(AppError::NotFound)
 }
+
+/// Found bridges (0.11.2) for the pane's detail view: notes a bridge note
+/// ties to this one while no edge does. Read on open, never stored.
+async fn node_bridges(
+    State(state): State<Arc<AppState>>,
+    scope: Scope,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let engine = state.engine_arc(&scope)?;
+    let bridges = pane(&engine).found_bridges(&id, NODE_BRIDGES)?;
+    Ok(Json(json!({ "bridges": bridges })))
+}
+
+/// Found bridges the detail view lists — a little more room than the MCP
+/// reply's three, the pane is not paying for context.
+const NODE_BRIDGES: usize = 6;
 
 async fn history_sessions(
     State(state): State<Arc<AppState>>,

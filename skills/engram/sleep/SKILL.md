@@ -61,6 +61,7 @@ For each **suspect**: `resolve_suspect` with `conflict`, `replaces` or `dismiss`
 
 For each island, its `nearest` list says where it belongs:
 - a nearest note it builds on, answers, or is about → `link` it (one sentence-shaped verb);
+- `bridges` (when present) → notes a bridge note already ties it to (`via`): the text states the tie, so check it first — link it if it holds, and if the island disagrees with the note it is tied to, treat it as a conflict;
 - a restatement of a nearest note → merge it into that note (`merge_nodes`);
 - no sensible link but a clear subject → add the tag that subject's notes carry (reuse the brief's tags);
 - obsolete with nothing replacing it → a Tombstone "Removed: <title>" with the why, linked `replaces`;
@@ -74,7 +75,8 @@ Each subject carries:
 - `members`: the most central notes in full: type, title, snippet, version, trust, edges, crowding, similarity to the centre;
 - `more`: the rest as id + type + title + version lines; `get_node` any of them before you change it;
 - `pairs`: the closest member pairs, closest first, with the verb already joining them. Restatements hide here;
-- `suspects`: pending conflict suspects between members.
+- `suspects`: pending conflict suspects between members;
+- `bridges` (when present): notes outside the subject that a bridge note (`via`, a title saying "same", "reuses", "renamed"…) ties to a member while no edge does. Read both: if they disagree, that is a conflict to raise; if the tie matters, link it.
 
 Read the titles of every member first, in `members` and `more`, so you know the whole story before you touch anything.
 

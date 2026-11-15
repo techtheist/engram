@@ -858,7 +858,33 @@ impl Engram {
         };
         hits.iter_mut().for_each(debracket);
         let hit_ids: Vec<String> = hits.iter().map(|h| h.id.clone()).collect();
+        // Found bridges (0.11.2): the top few hits name one note a bridge
+        // note ties them to while no edge does — kept small, and left off
+        // the compact scan.
+        let bridge_ids: Vec<String> = hits
+            .iter()
+            .filter(|h| !h.tombstone)
+            .take(SEARCH_BRIDGE_HITS)
+            .map(|h| h.id.clone())
+            .collect();
         let mut hits = self.shape_hits(&detail, hits, Some(&engine));
+        if !matches!(detail, Detail::Compact)
+            && let Some(arr) = hits.as_array_mut()
+        {
+            let found = engine
+                .lock()
+                .unwrap()
+                .found_bridges_many(&bridge_ids, 1)
+                .unwrap_or_default();
+            for (id, f) in bridge_ids.iter().zip(found) {
+                if f.is_empty() {
+                    continue;
+                }
+                if let Some(shaped) = arr.iter_mut().find(|h| h["id"] == json!(id)) {
+                    shaped["bridges"] = json!(f);
+                }
+            }
+        }
         // Provenance line (0.8.4): a curated hit born in a recorded exchange
         // says so — the birth dialogue is one expand_history away.
         if let Some(arr) = hits.as_array_mut() {
@@ -1006,7 +1032,9 @@ impl Engram {
         description = "Fetch one node by id with its edges, computed trust/stale, \
         and `born_in` provenance when recorded (expand_history reads the birth \
         dialogue). `parents`/`children` (depth 0-3) walk the reasoning hierarchy: \
-        parents = what it points at (its reasons), children = what points at it."
+        parents = what it points at (its reasons), children = what points at it. \
+        `bridges` (when present) = notes a bridge note ties to this one while no \
+        edge does (`via` = the bridge): read-only hints, not judgements."
     )]
     async fn get_node(
         &self,
@@ -1027,6 +1055,12 @@ impl Engram {
         // was born, when the history layer recorded the exchange.
         if let Some(born) = engine.born_in_of(&a.id) {
             payload["born_in"] = json!(born);
+        }
+        // Found bridges (0.11.2): notes a bridge note ties to this one while
+        // no edge does — a connection the text states, not a judgement.
+        let bridges = engine.found_bridges(&a.id, NODE_BRIDGES).map_err(map_err)?;
+        if !bridges.is_empty() {
+            payload["bridges"] = json!(bridges);
         }
         let up = a.parents.unwrap_or(0).min(HIERARCHY_MAX_DEPTH);
         let down = a.children.unwrap_or(0).min(HIERARCHY_MAX_DEPTH);
@@ -3712,7 +3746,8 @@ struct SearchArgs {
     date_field: Option<String>,
     /// Progressive disclosure: "compact" = id/type/title/score/trust only
     /// (cheapest — start here when scanning), "snippet" (default) = compact
-    /// plus matched snippet and 1-hop neighbors, "full" = snippet plus the
+    /// plus matched snippet, 1-hop neighbors and (top 3 hits) one found
+    /// bridge — a note a bridge note ties it to with no edge, "full" = snippet plus the
     /// complete body of every hit. Expand on demand instead of paying for
     /// depth up front.
     #[serde(default)]
@@ -4377,6 +4412,11 @@ mod tidy_tests {
 }
 
 const HIERARCHY_MAX_DEPTH: usize = 3;
+/// Found bridges (0.11.2) a `get_node` carries, and the search hits that
+/// carry one each (snippet/full only): the economical shape — a bridge is a
+/// pointer worth following, not context to read.
+const NODE_BRIDGES: usize = 3;
+const SEARCH_BRIDGE_HITS: usize = 3;
 const HIERARCHY_MAX_BREADTH: usize = 8;
 
 /// Recursive reasoning hierarchy around a node. `up` follows outgoing edges

@@ -28,6 +28,7 @@ import type {
     NewEdge,
     NewNode,
     NodeStatus,
+    FoundBridge,
     Standing,
     PolicyConfig,
     Source,
@@ -40,7 +41,7 @@ import type {
     TimelineEntry,
 } from '@/types/graph'
 import rawConfig from './data/config.json'
-import { HOME_EDGES, HOME_NODES, LANTERN_EDGES, LANTERN_NODES, LANTERN_TASKS } from './data/lantern'
+import { HOME_EDGES, HOME_NODES, LANTERN_BRIDGES, LANTERN_EDGES, LANTERN_NODES, LANTERN_TASKS } from './data/lantern'
 import type { SeedEdge, SeedNode, SeedTask } from './data/lantern'
 
 /** The launch project's key; '' is what the pane calls the unprefixed graph. */
@@ -313,6 +314,18 @@ function seedSuspects(now: number): SuspectView[] {
             nli_score: 0.79,
             a: end('i-nobody-searched', 'Insight', 'Every note we lost was one nobody searched for before writing the second copy'),
             b: end('d-search-before-write', 'Decision', 'Search memory before writing to it, and read the write verdict'),
+        },
+        {
+            // Bridged (0.11.2): the two exports disagree only through the
+            // note that ties them — the suspect names it as `via`.
+            id: synthId('suspect:3'),
+            similarity: 0.41,
+            created_at: now - 3 * DAY,
+            nli_label: 'bridged',
+            nli_score: 0.9,
+            a: end('d-stats-export-local', 'Decision', "Stats export writes timestamps in the reader's local time"),
+            b: end('d-anno-export-utc', 'Decision', 'Annotation export writes every timestamp in UTC'),
+            via: end('i-export-shared-writer', 'Insight', 'Stats export reuses the same CSV writer as Annotation export'),
         },
     ]
 }
@@ -592,6 +605,38 @@ export function readNode(id: string, project = active): GraphNode {
     const n = p.nodes.get(id)
     if (!n) throw new Error(`GET /nodes/${id} → 404 not found`)
     return materialize(n, p.config, nowSecs())
+}
+
+/**
+ * Found bridges (0.11.2), as `GET /nodes/{id}/bridges` answers: for a fact,
+ * the other note its bridge ties it to; for the bridge, the notes it names.
+ * A pair an edge already joins (or an archived note) drops out, so linking
+ * the two in the demo makes the row disappear, as it does on the daemon.
+ */
+export function foundBridges(id: string, project = active): FoundBridge[] {
+    const p = state(project)
+    const live = (nid: string) => {
+        const n = p.nodes.get(nid)
+        return n && n.valid_until == null ? n : null
+    }
+    const linked = (a: string, b: string) =>
+        [...p.edges.values()].some((e) => (e.from_id === a && e.to_id === b) || (e.from_id === b && e.to_id === a))
+    const end = (nid: string) => {
+        const n = p.nodes.get(nid)!
+        return { id: n.id, type: n.type, title: n.title }
+    }
+    const out: FoundBridge[] = []
+    if (project !== LAUNCH) return out
+    for (const { bridge, ties } of LANTERN_BRIDGES) {
+        const [b, x, y] = [bridge, ...ties].map(synthId) as [string, string, string]
+        if (!live(b) || !live(x) || !live(y)) continue
+        if (id === b) {
+            for (const t of [x, y]) if (!linked(b, t)) out.push(end(t))
+        } else if ((id === x || id === y) && !linked(x, y)) {
+            out.push({ ...end(id === x ? y : x), via: end(b) })
+        }
+    }
+    return out
 }
 
 /**
