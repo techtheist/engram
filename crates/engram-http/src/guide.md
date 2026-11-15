@@ -148,6 +148,8 @@ Trust: `trust_created`, `trust_confirmed`, `trust_approved`,
 `decay_ttl_days` (days below stale before the decay pass archives a
 provisional node). Write-time judgment: `duplicate_similarity`,
 `conflict_suspect_similarity`, `conflict_nli_gate` (`null` = off),
+`conflict_bridge_gate` (`null` = off; two facts about different subjects
+queue when a bridge note ties the subjects together),
 `warn_similarity`, `nli_sweep_min_confidence`,
 `claim_contradiction_min_confidence`. Retrieval: `keyword_weight` (BM25 share
 of relevance), `semantic_floor`, `search_min_score`, `search_relative_cut`,

@@ -414,6 +414,13 @@ pub struct PolicyConfig {
     /// off. See [`crate::policy::CONFLICT_NLI_GATE`].
     #[serde(default = "default_conflict_nli_gate")]
     pub conflict_nli_gate: Option<f64>,
+    /// Third path (0.11.2): two facts about two different subjects queue
+    /// when a bridge note ties the subjects together ("X uses the same
+    /// datastore as Y") and the logic layer reads "bridge. y ⟹ x" as a
+    /// contradiction at or above this confidence. `null` turns it off. See
+    /// [`crate::policy::CONFLICT_BRIDGE_GATE`].
+    #[serde(default = "default_conflict_bridge_gate")]
+    pub conflict_bridge_gate: Option<f64>,
     /// Similarity at/above which a write warns about conflicted/superseded
     /// neighbors.
     pub warn_similarity: f64,
@@ -541,6 +548,10 @@ fn default_conflict_nli_gate() -> Option<f64> {
     Some(crate::policy::CONFLICT_NLI_GATE)
 }
 
+fn default_conflict_bridge_gate() -> Option<f64> {
+    Some(crate::policy::CONFLICT_BRIDGE_GATE)
+}
+
 fn default_knee_cliff() -> Option<f64> {
     Some(crate::policy::KNEE_MIN_CLIFF)
 }
@@ -599,6 +610,7 @@ impl Default for PolicyConfig {
             duplicate_similarity: DUPLICATE_SIMILARITY,
             conflict_suspect_similarity: CONFLICT_SUSPECT_SIMILARITY,
             conflict_nli_gate: Some(CONFLICT_NLI_GATE),
+            conflict_bridge_gate: Some(crate::policy::CONFLICT_BRIDGE_GATE),
             warn_similarity: WARN_SIMILARITY,
             nli_sweep_min_confidence: NLI_SWEEP_MIN_CONFIDENCE as f64,
             keyword_weight: SEARCH_KEYWORD_WEIGHT,
@@ -1787,6 +1799,11 @@ impl GraphConfig {
             && !(0.0..=1.0).contains(&g)
         {
             return fail(format!("policy.conflict_nli_gate {g} out of 0..=1"));
+        }
+        if let Some(g) = p.conflict_bridge_gate
+            && !(0.0..=1.0).contains(&g)
+        {
+            return fail(format!("policy.conflict_bridge_gate {g} out of 0..=1"));
         }
         if let Some(c) = p.knee_cliff {
             if !(0.0..=1.0).contains(&c) {

@@ -96,6 +96,16 @@ pub const CONFLICT_SUSPECT_SIMILARITY: f64 = 0.88;
 /// 1 of the 56 real false alarms through. `None` in config turns the path
 /// off.
 pub const CONFLICT_NLI_GATE: f64 = 0.80;
+/// Bridged contradictions (0.11.2): two facts about two different subjects
+/// queue when a bridge note ties the subjects together and the logic layer
+/// reads "bridge. y ⟹ x" as a contradiction at or above this confidence.
+/// KnowledgeDrift v3 + the dogfood graph (eval Finding 00ge9s5nwc1z): at
+/// 0.80, 11/66 bridged cases with tasksource and 20/66 with Laya int4, 12/13
+/// unlinked transitive cases, 0 false alarms on the real graph. `None` in
+/// config turns the path off.
+pub const CONFLICT_BRIDGE_GATE: f64 = 0.80;
+/// Bridged pairs one write may judge, closest first.
+pub const BRIDGE_CHECK_CAP: usize = 24;
 /// Content words the two titles must share beyond their subject before the
 /// NLI path may nominate them: a contradiction restates a claim (the same
 /// parameter, the same predicate) with a different value or polarity; two

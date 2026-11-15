@@ -230,8 +230,19 @@ async function scanNow(): Promise<void> {
                         :class="s.nli_label"
                         :title="s.nli_label === 'inherited'
                             ? `Inherited (${Math.round((s.nli_score ?? 0) * 100)}%): the newer note contradicts or replaces something the other builds on, needs, or holds because of — check whether it still stands`
-                            : `Local NLI hint (${Math.round((s.nli_score ?? 0) * 100)}%)${s.nli_direction ? ` — negation likely on the ${s.nli_direction} side` : ''} — a suggestion for your judgment, never a verdict`"
+                            : s.nli_label === 'bridged'
+                                ? `Bridged (${Math.round((s.nli_score ?? 0) * 100)}%): two notes about different subjects that ${s.via ? `“${s.via.title}”` : 'a third note'} ties together — they clash only if it holds`
+                                : `Local NLI hint (${Math.round((s.nli_score ?? 0) * 100)}%)${s.nli_direction ? ` — negation likely on the ${s.nli_direction} side` : ''} — a suggestion for your judgment, never a verdict`"
                     >{{ s.nli_label }}{{ s.nli_direction ? ` · ${s.nli_direction} negates` : '' }}</span>
+                    <button
+                        v-if="s.via"
+                        class="row-link via-link"
+                        type="button"
+                        :title="`Bridge: ${s.via.title}`"
+                        @click="store.select(s.via.id)"
+                    >
+                        via {{ s.via.title }}
+                    </button>
                 </div>
                 <div class="row-actions">
                     <UiButton size="sm" :disabled="busyId === s.id" title="They contradict — record a conflicts-with edge" @click="judge(s.id, 'conflict')">
@@ -530,8 +541,15 @@ async function scanNow(): Promise<void> {
 
 /* 0.9.9: queued because the newer note contradicts something this one
    builds on / needs / holds because of — a review, not a direct clash. */
-.nli-hint.inherited {
+.nli-hint.inherited,
+.nli-hint.bridged {
     color: var(--node-caution);
     background-color: color-mix(in srgb, var(--node-caution) 14%, transparent);
+}
+
+/* 0.11.2: the bridge note a bridged pair clashes through. */
+.via-link {
+    font-size: 0.85em;
+    opacity: 0.8;
 }
 </style>

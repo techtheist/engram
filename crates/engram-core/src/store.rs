@@ -305,6 +305,8 @@ pub trait Store: Send {
         hint: Option<(&str, f64, Option<&str>)>,
     ) -> Result<Suspect>;
     fn get_suspect(&self, id: &str) -> Result<Option<Suspect>>;
+    /// Record the bridge note a `bridged` suspect disagrees through.
+    fn set_suspect_via(&self, id: &str, via: &str) -> Result<()>;
     fn set_suspect_status(&self, id: &str, status: SuspectStatus) -> Result<Suspect>;
     /// Pending suspects with their endpoints' display fields, newest first.
     /// Pairs with an archived endpoint drop out.

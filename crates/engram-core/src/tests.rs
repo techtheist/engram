@@ -4042,6 +4042,20 @@ fn store_battery(s: &dyn Store, backend: &str) {
     let pending = s.suspects_pending().unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].nli_label.as_deref(), Some("contradiction"));
+    assert!(pending[0].via.is_none());
+    // A bridged pair names its bridge (0.11.2), stored and joined.
+    s.set_suspect_via(&sus.id, &a.id).unwrap();
+    assert_eq!(
+        s.get_suspect(&sus.id).unwrap().unwrap().via.as_deref(),
+        Some(a.id.as_str()),
+        "{backend}"
+    );
+    let pending = s.suspects_pending().unwrap();
+    assert_eq!(
+        pending[0].via.as_ref().map(|v| v.id.as_str()),
+        Some(a.id.as_str()),
+        "{backend}"
+    );
     let judged = s
         .set_suspect_status(&sus.id, SuspectStatus::Dismissed)
         .unwrap();
@@ -12513,4 +12527,180 @@ fn a_link_settles_the_pending_suspect_between_its_notes() {
     let s2 = e.store().get_suspect(&s2.id).unwrap().unwrap();
     assert_eq!(s2.status, SuspectStatus::Confirmed);
     assert!(e.store().suspects_pending().unwrap().is_empty());
+}
+
+// ---- bridged contradictions (0.11.2) ------------------------------------
+
+/// A judge that reads a datastore bridge: "… same datastore … . <fact>" ⟹
+/// <other fact> is a contradiction; everything else is FakeNli's call.
+struct BridgeNli;
+
+impl crate::nli::Nli for BridgeNli {
+    fn judge(&self, pairs: &[(String, String)]) -> Result<Vec<NliJudgment>> {
+        let mut out = crate::nli::FakeNli.judge(pairs)?;
+        for (j, (p, h)) in out.iter_mut().zip(pairs) {
+            let fact = |t: &str| t.contains("PostgreSQL") || t.contains("MongoDB");
+            if p.contains("same datastore") && fact(p) && fact(h) {
+                *j = NliJudgment {
+                    entailment: 0.02,
+                    neutral: 0.05,
+                    contradiction: 0.93,
+                };
+            }
+        }
+        Ok(out)
+    }
+}
+
+fn bridge_engine() -> Engine {
+    let mut e = engine();
+    e.set_nli(Box::new(BridgeNli));
+    e
+}
+
+const BRIDGE: &str = "The Export worker uses the same datastore as the Import worker";
+const FACT_X: &str = "Export worker keeps its records in PostgreSQL";
+const FACT_Y: &str = "Import worker is backed by MongoDB";
+
+fn bridged_views(views: &[SuspectView]) -> Vec<&SuspectView> {
+    views
+        .iter()
+        .filter(|s| s.nli_label.as_deref() == Some("bridged"))
+        .collect()
+}
+
+#[test]
+fn a_new_bridge_queues_the_two_facts_it_makes_disagree() {
+    let e = bridge_engine();
+    let x = e
+        .add_node(new_node(NodeType::Decision, FACT_X, ""))
+        .unwrap();
+    let y = e.add_node(new_node(NodeType::Caution, FACT_Y, "")).unwrap();
+    let WriteOutcome::Created {
+        node: bridge,
+        suspects,
+        ..
+    } = e
+        .add_node_checked(new_node(NodeType::Insight, BRIDGE, ""))
+        .unwrap()
+    else {
+        panic!("created")
+    };
+    // The verdict carries the pair even though it does not involve the
+    // written note: the writer is the one who should judge it.
+    let bridged = bridged_views(&suspects);
+    assert_eq!(bridged.len(), 1, "{suspects:?}");
+    let s = bridged[0];
+    let ends = [s.a.id.as_str(), s.b.id.as_str()];
+    assert!(ends.contains(&x.id.as_str()) && ends.contains(&y.id.as_str()));
+    assert_eq!(
+        s.via.as_ref().map(|v| v.id.as_str()),
+        Some(bridge.id.as_str())
+    );
+    // The brief names the bridge.
+    let brief = e.brief(e.brief_chars(None)).unwrap();
+    assert!(brief.contains(&format!("via \"{BRIDGE}\"")), "{brief}");
+}
+
+#[test]
+fn a_new_fact_meets_an_older_bridge_that_names_its_subject() {
+    let e = bridge_engine();
+    let y = e.add_node(new_node(NodeType::Caution, FACT_Y, "")).unwrap();
+    let bridge = e.add_node(new_node(NodeType::Insight, BRIDGE, "")).unwrap();
+    let WriteOutcome::Created {
+        node: x, suspects, ..
+    } = e
+        .add_node_checked(new_node(NodeType::Decision, FACT_X, ""))
+        .unwrap()
+    else {
+        panic!("created")
+    };
+    let bridged = bridged_views(&suspects);
+    assert_eq!(bridged.len(), 1, "{suspects:?}");
+    let s = bridged[0];
+    assert_eq!(s.a.id, x.id, "newer first");
+    assert_eq!(s.b.id, y.id);
+    assert_eq!(
+        s.via.as_ref().map(|v| v.id.as_str()),
+        Some(bridge.id.as_str())
+    );
+    // Stored, not only reported.
+    let stored = e.store().get_suspect(&s.id).unwrap().unwrap();
+    assert_eq!(stored.via.as_deref(), Some(bridge.id.as_str()));
+}
+
+#[test]
+fn a_bridge_queues_nothing_when_the_gate_is_off_or_the_facts_agree() {
+    // Gate off.
+    let e = bridge_engine();
+    let mut cfg = e.graph_config();
+    cfg.policy.conflict_bridge_gate = None;
+    e.set_graph_config(&cfg).unwrap();
+    e.add_node(new_node(NodeType::Decision, FACT_X, ""))
+        .unwrap();
+    e.add_node(new_node(NodeType::Caution, FACT_Y, "")).unwrap();
+    let WriteOutcome::Created { suspects, .. } = e
+        .add_node_checked(new_node(NodeType::Insight, BRIDGE, ""))
+        .unwrap()
+    else {
+        panic!("created")
+    };
+    assert!(bridged_views(&suspects).is_empty());
+
+    // Two notes making the same claim about the two subjects: a bridge
+    // that ties the subjects cannot make them disagree.
+    let e = bridge_engine();
+    e.add_node(new_node(
+        NodeType::Decision,
+        "Export worker drops writes when PostgreSQL fails over",
+        "",
+    ))
+    .unwrap();
+    e.add_node(new_node(
+        NodeType::Caution,
+        "Import worker drops writes when PostgreSQL fails over",
+        "",
+    ))
+    .unwrap();
+    let WriteOutcome::Created { suspects, .. } = e
+        .add_node_checked(new_node(NodeType::Insight, BRIDGE, ""))
+        .unwrap()
+    else {
+        panic!("created")
+    };
+    assert!(bridged_views(&suspects).is_empty(), "{suspects:?}");
+}
+
+#[test]
+fn a_fact_about_a_subject_no_bridge_names_pairs_nothing() {
+    let e = bridge_engine();
+    e.add_node(new_node(NodeType::Caution, FACT_Y, "")).unwrap();
+    e.add_node(new_node(NodeType::Insight, BRIDGE, "")).unwrap();
+    let WriteOutcome::Created { suspects, .. } = e
+        .add_node_checked(new_node(
+            NodeType::Decision,
+            "Billing service keeps its records in PostgreSQL",
+            "",
+        ))
+        .unwrap()
+    else {
+        panic!("created")
+    };
+    assert!(bridged_views(&suspects).is_empty(), "{suspects:?}");
+}
+
+#[test]
+fn the_conflict_sweep_reads_bridges_written_before_the_path_existed() {
+    let e = bridge_engine();
+    // Plain writes: no write-time check ran.
+    e.add_node(new_node(NodeType::Decision, FACT_X, ""))
+        .unwrap();
+    e.add_node(new_node(NodeType::Caution, FACT_Y, "")).unwrap();
+    e.add_node(new_node(NodeType::Insight, BRIDGE, "")).unwrap();
+    let sweep = e.audit_conflicts().unwrap();
+    assert_eq!(sweep.bridged, 1, "{sweep:?}");
+    assert!(sweep.queued >= 1);
+    // Raised once: the next run finds it already in the queue.
+    let again = e.audit_conflicts().unwrap();
+    assert_eq!(again.bridged, 0, "{again:?}");
 }

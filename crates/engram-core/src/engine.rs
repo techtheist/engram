@@ -3879,19 +3879,22 @@ impl Engine {
         let warnings = self.write_warnings(&near, &node.id, &node.title)?;
         let suspects = self.suspect_candidates(&node, &near)?;
         let canon = self.canon_candidates(&near)?;
+        let bridges = self.bridge_candidates(&node)?;
         Ok(CreatedPlan {
             node,
             warnings,
             missing_refs,
             suspects,
             canon,
+            bridges,
         })
     }
 
     /// The locked last half of a checked write: queue what the judge
     /// nominated and assemble the verdict.
     fn finish_created(&self, j: JudgedPlan) -> Result<WriteOutcome> {
-        let suspects = self.queue_judged(&j.node, j.suspects)?;
+        let mut suspects = self.queue_judged(&j.node, j.suspects)?;
+        self.queue_judged_bridges(j.bridges, &mut suspects)?;
         Ok(WriteOutcome::Created {
             node: j.node,
             warnings: j.warnings,
@@ -3899,6 +3902,143 @@ impl Engine {
             missing_refs: j.missing_refs,
             canon: j.canon,
         })
+    }
+
+    /// Queue judged bridged pairs and add their views to a write's verdict:
+    /// the pair may not involve the written note at all (a new bridge ties
+    /// two older facts), and the writer is the one who should judge it.
+    fn queue_judged_bridges(
+        &self,
+        judged: Vec<(BridgeCandidate, f64)>,
+        views: &mut Vec<SuspectView>,
+    ) -> Result<()> {
+        let ids = self.queue_bridges(judged)?;
+        if ids.is_empty() {
+            return Ok(());
+        }
+        self.notify(ChangeEvent::SuspectsChanged);
+        for s in self.store.suspects_pending()? {
+            if ids.contains(&s.id) && !views.iter().any(|v| v.id == s.id) {
+                views.push(s);
+            }
+        }
+        Ok(())
+    }
+
+    /// Bridged pairs to judge for `node` (0.11.2), closest first, capped.
+    /// Forward: `node` is a bridge — pair the facts about the subjects it
+    /// names. Backward: `node` is a fact — older bridges that name its
+    /// subject pair it with the facts about their other subjects. Store
+    /// reads only (a title scan over the live notes); judged off the lock by
+    /// [`judge_bridges`]. Empty without the logic layer or with the path off.
+    fn bridge_candidates(&self, node: &Node) -> Result<Vec<BridgeCandidate>> {
+        let cfg = self.store.config();
+        if cfg.policy.conflict_bridge_gate.is_none()
+            || self.nli.is_none()
+            || is_anchor(&cfg, node)
+            || is_tombstone(&cfg, node)
+            || node.valid_until.is_some()
+        {
+            return Ok(Vec::new());
+        }
+        let notes = self.store.scannable_nodes()?;
+        // Two facts are a pair only when the bridge reaches them through
+        // different words (it ties two subjects, not one) and their own
+        // titles don't share a subject.
+        let differ = |x: &Node, y: &Node| shared_subject(&x.title, &y.title).is_none();
+        let mut raw: Vec<(&Node, &Node, &Node)> = Vec::new();
+        if crate::bridges::is_bridge(&node.title) {
+            let facts = bridge_facts(&notes, node);
+            for (i, (x, ax)) in facts.iter().enumerate() {
+                for (y, ay) in &facts[i + 1..] {
+                    if ax.is_disjoint(ay) && differ(x, y) {
+                        raw.push((node, x, y));
+                    }
+                }
+            }
+        } else {
+            for b in notes
+                .iter()
+                .filter(|b| b.id != node.id && crate::bridges::is_bridge(&b.title))
+            {
+                let ax = crate::bridges::anchors(&b.title, &node.title);
+                if ax.is_empty() {
+                    continue;
+                }
+                for (y, ay) in bridge_facts(&notes, b) {
+                    if y.id != node.id && ax.is_disjoint(&ay) && differ(node, y) {
+                        raw.push((b, node, y));
+                    }
+                }
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for (bridge, x, y) in raw {
+            let key = if x.id < y.id {
+                (x.id.clone(), y.id.clone())
+            } else {
+                (y.id.clone(), x.id.clone())
+            };
+            if !seen.insert(key)
+                || crate::bridges::restates(&bridge.title, &x.title, &y.title)
+                || self.pair_blocked(x, y)?
+            {
+                continue;
+            }
+            let similarity = match (
+                self.store.embedding_of(&x.id)?,
+                self.store.embedding_of(&y.id)?,
+            ) {
+                (Some(a), Some(b)) => cosine(&a, &b),
+                _ => 0.0,
+            };
+            out.push(BridgeCandidate {
+                bridge: bridge.clone(),
+                x: x.clone(),
+                y: y.clone(),
+                similarity,
+            });
+        }
+        out.sort_by(|a, b| b.similarity.total_cmp(&a.similarity));
+        out.truncate(crate::policy::BRIDGE_CHECK_CAP);
+        Ok(out)
+    }
+
+    /// Queue judged bridged pairs, each re-checked under the lock (either
+    /// side or the bridge may have changed while the judge ran). Returns the
+    /// new suspects' ids.
+    fn queue_bridges(&self, judged: Vec<(BridgeCandidate, f64)>) -> Result<Vec<String>> {
+        let mut ids = Vec::new();
+        for (c, score) in judged {
+            let (Some(x), Some(y), Some(bridge)) = (
+                self.store.get_node(&c.x.id)?,
+                self.store.get_node(&c.y.id)?,
+                self.store.get_node(&c.bridge.id)?,
+            ) else {
+                continue;
+            };
+            if x.valid_until.is_some()
+                || bridge.valid_until.is_some()
+                || self.pair_blocked(&x, &y)?
+            {
+                continue;
+            }
+            let (newer, older) = if x.created_at >= y.created_at {
+                (&x, &y)
+            } else {
+                (&y, &x)
+            };
+            let s = self.store.add_suspect(
+                &newer.id,
+                &older.id,
+                c.similarity,
+                Some(("bridged", score, None)),
+            )?;
+            self.store.set_suspect_via(&s.id, &bridge.id)?;
+            ids.push(s.id);
+        }
+        Ok(ids)
     }
 
     /// Queue judged suspects near `node`; returns their judgeable views.
@@ -4029,6 +4169,7 @@ impl Engine {
                 missing_refs,
                 suspects: Vec::new(),
                 canon: Vec::new(),
+                bridges: Vec::new(),
             });
         }
         let vec = self.embed_one_with(
@@ -4044,7 +4185,8 @@ impl Engine {
     }
 
     fn finish_update(&self, j: JudgedPlan) -> Result<CheckedUpdate> {
-        let suspects = self.queue_judged(&j.node, j.suspects)?;
+        let mut suspects = self.queue_judged(&j.node, j.suspects)?;
+        self.queue_judged_bridges(j.bridges, &mut suspects)?;
         Ok(CheckedUpdate {
             node: j.node,
             warnings: j.warnings,
@@ -4576,7 +4718,9 @@ impl Engine {
                      `conflict` (they contradict), `replaces` (the newer supersedes — archives \
                      the older), or `dismiss` (unrelated/fine together). A hint of `inherited` \
                      means the newer note contradicts or replaces something the other one builds \
-                     on, needs, or holds because of — follow its edges before judging.";
+                     on, needs, or holds because of — follow its edges before judging. A hint of \
+                     `bridged` means the two notes are about different subjects that the `via` \
+                     note ties together — they clash only if it holds.";
                 if !push_line(&mut out, heading) {
                     break 'assemble;
                 }
@@ -4602,6 +4746,10 @@ impl Engine {
                         s.b.id,
                         s.similarity * 100.0,
                     );
+                    let line = match &s.via {
+                        Some(v) => format!("{line} via \"{}\" [{}]", v.title, v.id),
+                        None => line,
+                    };
                     if !push_line(&mut out, &line) {
                         break 'assemble;
                     }
@@ -4959,12 +5107,82 @@ impl Engine {
     /// 0.9.4: titles that name one subject and share a claim word, read as a
     /// contradiction at `policy.conflict_nli_gate` — so the button reaches
     /// what the background scan reaches, and further down the neighbour list.
+    ///
+    /// Then (0.11.2) the bridge pass: every live bridge note pairs the facts
+    /// about the subjects it ties, as a write would — so bridges written
+    /// before the path existed, or pairs a write's cap left out, are read
+    /// too. It spends what the similarity pass left of the budget.
     pub fn audit_conflicts(&self) -> Result<AuditSweep> {
-        self.audit_sweep(
+        let mut sweep = self.audit_sweep(
             "contradiction",
             self.store.config().policy.conflict_suspect_similarity,
             AUDIT_NLI_PAIR_BUDGET,
-        )
+        )?;
+        self.bridge_sweep(&mut sweep, AUDIT_NLI_PAIR_BUDGET)?;
+        Ok(sweep)
+    }
+
+    /// The conflict sweep's bridge pass (see [`Engine::audit_conflicts`]).
+    /// Pairs judged without queueing are remembered under the judge and the
+    /// gate, as the similarity pass remembers its own.
+    fn bridge_sweep(&self, sweep: &mut AuditSweep, budget: usize) -> Result<()> {
+        let cfg = self.store.config();
+        let Some(gate) = cfg.policy.conflict_bridge_gate else {
+            return Ok(());
+        };
+        let nli = self.require_nli()?;
+        let mut memory = SweepMemory::load(
+            self.store.as_ref(),
+            "bridged",
+            &format!("{}|{gate}", nli.model_id()),
+        )?;
+        let bridges: Vec<Node> = self
+            .store
+            .scannable_nodes()?
+            .into_iter()
+            .filter(|n| crate::bridges::is_bridge(&n.title))
+            .collect();
+        for bridge in bridges {
+            let mut candidates = self.bridge_candidates(&bridge)?;
+            candidates.retain(|c| {
+                if memory.contains(bridge_memo(c)) {
+                    sweep.already_judged += 1;
+                    false
+                } else {
+                    true
+                }
+            });
+            if candidates.is_empty() {
+                continue;
+            }
+            let room = budget.saturating_sub(sweep.examined);
+            if candidates.len() > room {
+                candidates.truncate(room);
+                sweep.truncated = true;
+            }
+            if candidates.is_empty() {
+                break;
+            }
+            sweep.examined += candidates.len();
+            let memos: Vec<u64> = candidates.iter().map(bridge_memo).collect();
+            let judged = judge_bridges(Some(nli), Some(gate), candidates);
+            let raised: std::collections::HashSet<u64> =
+                judged.iter().map(|(c, _)| bridge_memo(c)).collect();
+            for m in memos.into_iter().filter(|m| !raised.contains(m)) {
+                memory.insert(m);
+            }
+            let ids = self.queue_bridges(judged)?;
+            sweep.queued += ids.len();
+            sweep.bridged += ids.len();
+            if sweep.truncated {
+                break;
+            }
+        }
+        memory.save(self.store.as_ref())?;
+        if sweep.bridged > 0 {
+            self.notify(ChangeEvent::SuspectsChanged);
+        }
+        Ok(())
     }
 
     /// Duplicate sweep (the Audit panel's "Find duplicates"): mutual
@@ -6037,7 +6255,7 @@ fn subject_tokens(title: &str) -> std::collections::HashSet<String> {
 ///
 /// `None` = not the same subject as far as the titles can tell: no NLI
 /// nomination.
-pub(crate) fn shared_subject(a: &str, b: &str) -> Option<std::collections::HashSet<String>> {
+pub fn shared_subject(a: &str, b: &str) -> Option<std::collections::HashSet<String>> {
     // Names are read from the first clause only: the subject leads the
     // claim, and a name in a title's tail ("… — both signed JetBrains zips
     // published") is a detail, not what the title is about. Two release
@@ -6671,6 +6889,8 @@ struct CreatedPlan {
     missing_refs: Vec<String>,
     suspects: Vec<SuspectCandidate>,
     canon: Vec<(Node, f64)>,
+    /// Bridged pairs (0.11.2): facts about two subjects a bridge ties.
+    bridges: Vec<BridgeCandidate>,
 }
 
 impl CreatedPlan {
@@ -6683,12 +6903,14 @@ impl CreatedPlan {
             &claim(&self.node),
             self.canon,
         );
+        let bridges = judge_bridges(nli, cfg.policy.conflict_bridge_gate, self.bridges);
         JudgedPlan {
             node: self.node,
             warnings: self.warnings,
             missing_refs: self.missing_refs,
             suspects,
             canon,
+            bridges,
         }
     }
 }
@@ -6699,6 +6921,7 @@ struct JudgedPlan {
     missing_refs: Vec<String>,
     suspects: Vec<JudgedSuspect>,
     canon: Vec<CanonVerdict>,
+    bridges: Vec<(BridgeCandidate, f64)>,
 }
 
 /// One pair the conflict scan will judge. `title_path` is set for a
@@ -6712,6 +6935,100 @@ struct SuspectCandidate {
 
 /// A judged candidate that queues, with its hint.
 type JudgedSuspect = (SuspectCandidate, Option<Hint>);
+
+/// One bridged pair (0.11.2): `bridge` ties the subject of `x` to the
+/// subject of `y`; the judge reads "bridge. y ⟹ x". `similarity` is the
+/// pair's own cosine, stored on the suspect like any other.
+struct BridgeCandidate {
+    bridge: Node,
+    x: Node,
+    y: Node,
+    similarity: f64,
+}
+
+/// The words through which a bridge reaches a fact (see
+/// [`crate::bridges::anchors`]); a fact reached one chain step away is
+/// anchored by the hop bridge it came through.
+type Anchor = std::collections::HashSet<String>;
+
+/// The live plain facts a bridge names, each with its anchor, plus — one
+/// chain step — the facts named by any bridge it names. Bridges themselves
+/// are never facts.
+fn bridge_facts<'a>(notes: &'a [Node], bridge: &Node) -> Vec<(&'a Node, Anchor)> {
+    let named = |b: &Node| -> Vec<(&'a Node, Anchor)> {
+        notes
+            .iter()
+            .filter(|n| n.id != b.id)
+            .filter_map(|n| {
+                let a = crate::bridges::anchors(&b.title, &n.title);
+                (!a.is_empty()).then_some((n, a))
+            })
+            .collect()
+    };
+    let mut out: Vec<(&Node, Anchor)> = Vec::new();
+    for (n, anchor) in named(bridge) {
+        if crate::bridges::is_bridge(&n.title) {
+            for (f, _) in named(n) {
+                if f.id != bridge.id && !out.iter().any(|(o, _)| o.id == f.id) {
+                    out.push((f, [format!("hop:{}", n.id)].into()));
+                }
+            }
+        } else if !out.iter().any(|(o, _)| o.id == n.id) {
+            out.push((n, anchor));
+        }
+    }
+    out.retain(|(n, _)| !crate::bridges::is_bridge(&n.title));
+    out
+}
+
+/// A bridged pair's sweep memory key: both facts' content and the bridge's.
+fn bridge_memo(c: &BridgeCandidate) -> u64 {
+    pair_memo(
+        &c.x,
+        &c.y,
+        &format!(
+            "bridge:{}:{:x}",
+            c.bridge.id,
+            content_hash(&c.bridge.title, c.bridge.body.as_deref())
+        ),
+    )
+}
+
+/// Judge bridged pairs — no engine, no lock. One direction per pair,
+/// "bridge. y ⟹ x"; a pair queues at or above `gate`. Every judge gets the
+/// same question.
+fn judge_bridges(
+    nli: Option<&dyn Nli>,
+    gate: Option<f64>,
+    candidates: Vec<BridgeCandidate>,
+) -> Vec<(BridgeCandidate, f64)> {
+    let (Some(nli), Some(gate)) = (nli, gate) else {
+        return Vec::new();
+    };
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let pairs: Vec<(String, String)> = candidates
+        .iter()
+        .map(|c| {
+            (
+                format!("{}. {}", c.bridge.title.trim(), c.y.title.trim()),
+                c.x.title.trim().to_string(),
+            )
+        })
+        .collect();
+    let Ok(judged) = nli.judge(&pairs) else {
+        return Vec::new();
+    };
+    candidates
+        .into_iter()
+        .zip(judged)
+        .filter_map(|(c, j)| {
+            let score = f64::from(j.contradiction);
+            (score >= gate).then_some((c, score))
+        })
+        .collect()
+}
 
 /// Judge suspect candidates — no engine, no lock. A look-alike always
 /// queues, hinted when the judge is loaded; a below-floor pair queues only

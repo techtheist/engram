@@ -540,6 +540,10 @@ pub struct Suspect {
     /// the asymmetry is below the confidence margin. A hint, never a verdict.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nli_direction: Option<String>,
+    /// For a `bridged` hint (0.11.2): the note that ties the two subjects
+    /// together — the pair disagrees only through it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
 }
 
 /// A pending suspect joined with what the judge (pane or Claude) needs to see.
@@ -558,6 +562,9 @@ pub struct SuspectView {
     pub nli_direction: Option<String>,
     pub a: SuspectEndpoint,
     pub b: SuspectEndpoint,
+    /// The bridge note a `bridged` pair disagrees through (0.11.2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub via: Option<SuspectEndpoint>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -653,6 +660,9 @@ pub struct AuditSweep {
     /// notes, same judge: read again they would spend budget on the same
     /// answer.
     pub already_judged: usize,
+    /// Pairs queued through a bridge note (0.11.2) — counted in `queued`
+    /// too.
+    pub bridged: usize,
 }
 
 /// A nomination that an open Problem/Intent may already be answered by an

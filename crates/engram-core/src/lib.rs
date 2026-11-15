@@ -1,3 +1,4 @@
+mod bridges;
 pub mod config;
 pub mod cortex;
 pub mod crowding;
@@ -37,7 +38,7 @@ pub use engine::{
     AroundView, AuditOrigin, ChangeEvent, ConflictsView, CrowdHeat, CrowdingReport,
     EMBED_COMPOSITION, Engine, Island, IslandPage, Listener, Neighbor, ReviewEdge, ReviewLine,
     ReviewMember, ReviewPage, ReviewPair, ReviewQuery, ReviewSubject, SearchFilter,
-    StandingConflict, SubjectSummary, Worth, title_clause, title_pair_admissible,
+    StandingConflict, SubjectSummary, Worth, shared_subject, title_clause, title_pair_admissible,
     title_pair_admission,
 };
 pub use error::{Error, Result};

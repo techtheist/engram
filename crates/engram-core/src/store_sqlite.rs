@@ -164,6 +164,9 @@ impl SqliteStore {
             )?;
         }
         // Directional conflict hints (0.7.0): which side carries the negation.
+        if !column_exists(conn, "suspects", "via")? {
+            conn.execute_batch("ALTER TABLE suspects ADD COLUMN via TEXT;")?;
+        }
         if !column_exists(conn, "suspects", "nli_direction")? {
             conn.execute_batch("ALTER TABLE suspects ADD COLUMN nli_direction TEXT;")?;
         }
@@ -1055,11 +1058,17 @@ impl Store for SqliteStore {
             .conn
             .query_row(
                 "SELECT id, a_id, b_id, similarity, created_at, status, nli_label, nli_score, \
-                 nli_direction FROM suspects WHERE id=?1",
+                 nli_direction, via FROM suspects WHERE id=?1",
                 [id],
                 row_to_suspect,
             )
             .optional()?)
+    }
+
+    fn set_suspect_via(&self, id: &str, via: &str) -> Result<()> {
+        self.conn
+            .execute("UPDATE suspects SET via=?1 WHERE id=?2", params![via, id])?;
+        Ok(())
     }
 
     fn set_suspect_status(&self, id: &str, status: SuspectStatus) -> Result<Suspect> {
@@ -1074,10 +1083,12 @@ impl Store for SqliteStore {
     fn suspects_pending(&self) -> Result<Vec<SuspectView>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.id, s.similarity, s.created_at, s.nli_label, s.nli_score,
-                    a.id, a.type, a.title, b.id, b.type, b.title, s.nli_direction
+                    a.id, a.type, a.title, b.id, b.type, b.title, s.nli_direction,
+                    v.id, v.type, v.title
              FROM suspects s
              JOIN nodes a ON a.id = s.a_id
              JOIN nodes b ON b.id = s.b_id
+             LEFT JOIN nodes v ON v.id = s.via
              WHERE s.status='suspected'
                AND a.valid_until IS NULL AND b.valid_until IS NULL
              ORDER BY s.created_at DESC",
@@ -1102,6 +1113,17 @@ impl Store for SqliteStore {
                     node_type: conv(9, &b_type, NodeType::parse)?,
                     title: r.get(10)?,
                 },
+                via: match r.get::<_, Option<String>>(12)? {
+                    Some(id) => {
+                        let t: String = r.get(13)?;
+                        Some(SuspectEndpoint {
+                            id,
+                            node_type: conv(13, &t, NodeType::parse)?,
+                            title: r.get(14)?,
+                        })
+                    }
+                    None => None,
+                },
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -1110,7 +1132,7 @@ impl Store for SqliteStore {
     fn all_suspects(&self) -> Result<Vec<Suspect>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, a_id, b_id, similarity, created_at, status, nli_label, nli_score, \
-             nli_direction FROM suspects ORDER BY created_at",
+             nli_direction, via FROM suspects ORDER BY created_at",
         )?;
         let rows = stmt.query_map([], row_to_suspect)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -1118,12 +1140,13 @@ impl Store for SqliteStore {
 
     fn upsert_suspect(&self, s: &Suspect) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO suspects (id, a_id, b_id, similarity, created_at, status, nli_label, nli_score)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+            "INSERT INTO suspects (id, a_id, b_id, similarity, created_at, status, nli_label, nli_score, nli_direction, via)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
              ON CONFLICT(id) DO UPDATE SET
                a_id=excluded.a_id, b_id=excluded.b_id, similarity=excluded.similarity,
                created_at=excluded.created_at, status=excluded.status,
-               nli_label=excluded.nli_label, nli_score=excluded.nli_score",
+               nli_label=excluded.nli_label, nli_score=excluded.nli_score,
+               nli_direction=excluded.nli_direction, via=excluded.via",
             params![
                 s.id,
                 s.a_id,
@@ -1133,6 +1156,8 @@ impl Store for SqliteStore {
                 s.status.as_str(),
                 s.nli_label,
                 s.nli_score,
+                s.nli_direction,
+                s.via,
             ],
         )?;
         Ok(())
@@ -1500,6 +1525,7 @@ fn row_to_suspect(row: &Row) -> rusqlite::Result<Suspect> {
         nli_label: row.get(6)?,
         nli_score: row.get(7)?,
         nli_direction: row.get(8)?,
+        via: row.get(9)?,
     })
 }
 

@@ -123,6 +123,8 @@ export interface SuspectView {
     nli_direction?: string
     a: SuspectEndpoint
     b: SuspectEndpoint
+    /** For a `bridged` hint (0.11.2): the note that ties the two subjects together. */
+    via?: SuspectEndpoint
 }
 
 export interface SuspectEndpoint {
@@ -684,6 +686,8 @@ export interface PolicyConfig {
     duplicate_similarity: number
     conflict_suspect_similarity: number
     conflict_nli_gate: number | null
+    /** Bridged contradictions (0.11.2): gate for "bridge. y ⟹ x"; null = off. */
+    conflict_bridge_gate?: number | null
     warn_similarity: number
     nli_sweep_min_confidence: number
     /** Post-rerank hits under this score are trimmed before delivery. */

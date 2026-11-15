@@ -1210,6 +1210,7 @@ impl Store for TepinStore {
             nli_label: hint.map(|(l, _, _)| l.to_string()),
             nli_score: hint.map(|(_, s, _)| s),
             nli_direction: hint.and_then(|(_, _, d)| d.map(str::to_string)),
+            via: None,
         };
         let mut doc = serde_json::to_value(&suspect)?;
         doc["_id"] = json!(id);
@@ -1219,6 +1220,17 @@ impl Store for TepinStore {
 
     fn get_suspect(&self, id: &str) -> Result<Option<Suspect>> {
         self.get_doc(SUSPECTS, id)?.map(doc_suspect).transpose()
+    }
+
+    fn set_suspect_via(&self, id: &str, via: &str) -> Result<()> {
+        let mut suspect = self
+            .get_suspect(id)?
+            .ok_or_else(|| Error::NotFound(id.to_string()))?;
+        suspect.via = Some(via.to_string());
+        let mut doc = serde_json::to_value(&suspect)?;
+        doc["_id"] = json!(id);
+        self.db().update(SUSPECTS, id, doc)?;
+        Ok(())
     }
 
     fn set_suspect_status(&self, id: &str, status: SuspectStatus) -> Result<Suspect> {
@@ -1254,6 +1266,14 @@ impl Store for TepinStore {
                 nli_label: s.nli_label,
                 nli_score: s.nli_score,
                 nli_direction: s.nli_direction,
+                via: match s.via.as_deref() {
+                    Some(v) => self.get_node(v)?.map(|n| SuspectEndpoint {
+                        id: n.id,
+                        node_type: n.node_type,
+                        title: n.title,
+                    }),
+                    None => None,
+                },
                 a: SuspectEndpoint {
                     id: a.id,
                     node_type: a.node_type,
