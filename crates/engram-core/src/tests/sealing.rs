@@ -158,8 +158,6 @@ fn history_sealing_end_to_end() {
         );
     }
 
-    env.remove("ENGRAM_KEYRING");
-    env.remove("ENGRAM_HOME");
     std::fs::remove_dir_all(&tmp).ok();
 }
 
@@ -383,7 +381,5 @@ pub(super) fn history_codec_receipt() {
         seal_ms / 500.0,
         unseal_ms / 500.0
     );
-    env.remove("ENGRAM_KEYRING");
-    env.remove("ENGRAM_HOME");
     std::fs::remove_dir_all(&tmp).ok();
 }

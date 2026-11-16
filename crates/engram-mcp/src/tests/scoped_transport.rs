@@ -270,7 +270,6 @@ async fn scoped_mcp_endpoint_binds_sessions_to_their_project() {
         "no session still claims the launch binding: {sessions:?}"
     );
 
-    env.remove("ENGRAM_HOME");
     let _ = std::fs::remove_dir_all(&tmp);
 }
 

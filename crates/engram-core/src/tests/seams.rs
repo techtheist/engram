@@ -322,8 +322,6 @@ fn graph_sealing_disk_journey_reconcile_and_keyless_reads() {
         assert_eq!(n.body.as_deref(), Some("MARKER-BODY-7391"));
     }
 
-    env.remove("ENGRAM_KEYRING");
-    env.remove("ENGRAM_HOME");
     std::fs::remove_dir_all(&tmp).ok();
 }
 

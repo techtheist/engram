@@ -250,7 +250,6 @@ fn hub_federation_end_to_end() {
         &beta_after
     ));
 
-    env.remove("ENGRAM_HOME");
     let _ = std::fs::remove_dir_all(&tmp);
 }
 

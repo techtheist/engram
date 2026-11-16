@@ -352,7 +352,6 @@ fn harvest_sweep_end_to_end() {
         .unwrap();
     assert_eq!(count, 3, "replay wrote nothing new");
 
-    env.remove("ENGRAM_HOME");
     std::fs::remove_dir_all(&tmp).ok();
 }
 

@@ -219,6 +219,5 @@ fn home_launched_hub_serves_home_from_its_own_engine() {
     assert_eq!(home_hits, 1);
 
     drop(hub);
-    env.remove("ENGRAM_HOME");
     let _ = std::fs::remove_dir_all(&tmp);
 }
