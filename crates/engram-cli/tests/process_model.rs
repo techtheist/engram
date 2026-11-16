@@ -154,7 +154,7 @@ fn system_json(port: u16) -> serde_json::Value {
 fn census_len(port: u16) -> usize {
     system_json(port)["processes"]["clients"]
         .as_array()
-        .map(|c| c.len())
+        .map(std::vec::Vec::len)
         .unwrap_or(0)
 }
 
@@ -290,7 +290,7 @@ fn serve_spawns_core_registers_project_and_exits() {
     // (plugins regex-scrape `port` out of this file).
     let repo_ad = std::fs::read_to_string(proj.join(".engram/daemon.json")).unwrap();
     let ad: serde_json::Value = serde_json::from_str(&repo_ad).unwrap();
-    assert_eq!(ad["port"].as_u64(), Some(port as u64));
+    assert_eq!(ad["port"].as_u64(), Some(u64::from(port)));
 
     // The project is registered with the core.
     let projects = http_get(port, "/projects").unwrap();

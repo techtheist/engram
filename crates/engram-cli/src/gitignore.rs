@@ -23,9 +23,8 @@ pub fn db_dir_entry(db: &Path, cwd: &Path) -> Option<String> {
         db
     };
     let mut parts = rel.components().filter(|c| !matches!(c, Component::CurDir));
-    let top = match parts.next()? {
-        Component::Normal(top) => top,
-        _ => return None,
+    let Component::Normal(top) = parts.next()? else {
+        return None;
     };
     parts.next()?;
     Some(format!("{}/", top.to_string_lossy()))

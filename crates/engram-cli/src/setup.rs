@@ -725,7 +725,11 @@ impl Setup {
                 return Ok(());
             }
             Ok(current) => match serde_json::from_str::<serde_json::Value>(&current) {
-                Ok(v) if v.is_object() && v.get("hooks").is_none_or(|h| h.is_object()) => v,
+                Ok(v)
+                    if v.is_object() && v.get("hooks").is_none_or(serde_json::Value::is_object) =>
+                {
+                    v
+                }
                 _ => {
                     say(
                         "cursor: .cursor/hooks.json isn't a hooks object — add this under hooks.sessionStart:",

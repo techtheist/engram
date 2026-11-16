@@ -162,9 +162,10 @@ impl HistoryAdapter for OpencodeAdapter {
         let ts = v
             .get("time")
             .and_then(|t| t.get("created"))
-            .and_then(|t| t.as_i64())
-            .map(|ms| if ms > 100_000_000_000 { ms / 1000 } else { ms })
-            .unwrap_or_else(crate::store::now);
+            .and_then(serde_json::Value::as_i64)
+            .map_or_else(crate::store::now, |ms| {
+                if ms > 100_000_000_000 { ms / 1000 } else { ms }
+            });
         let event_id = v
             .get("id")
             .and_then(|i| i.as_str().map(str::to_string))

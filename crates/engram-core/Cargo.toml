@@ -41,3 +41,6 @@ ndarray = { version = "0.17.2", optional = true, default-features = false }
 
 [features]
 fastembed = ["dep:fastembed", "dep:ort", "dep:tokenizers", "dep:ndarray"]
+
+[lints]
+workspace = true

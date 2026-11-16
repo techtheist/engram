@@ -694,8 +694,7 @@ impl Engram {
                 .get(project)
                 .ok()
                 .and_then(|e| e.lock().unwrap().get_node(id).ok().flatten())
-                .map(|n| n.title)
-                .unwrap_or_else(|| id.to_string())
+                .map_or_else(|| id.to_string(), |n| n.title)
         };
         let mut lines = vec![format!(
             "MEMORY ALERT: {} contradiction(s) were judged while you worked — check whether they touch your current task before relying on either side.",
@@ -900,7 +899,7 @@ impl Engram {
         // queried only when the calibrated verdict says the curated graph
         // likely doesn't hold the answer — a separate labeled section,
         // never interleaved, never score-blended.
-        if scope == "auto" && matches!(confidence, Some("weak") | Some("none")) {
+        if scope == "auto" && matches!(confidence, Some("weak" | "none")) {
             let guard = engine.lock().unwrap();
             if guard.config().history.search_fallthrough && guard.history_open() {
                 drop(guard);
@@ -1282,8 +1281,7 @@ impl Engram {
                     binding
                         .bound
                         .as_deref()
-                        .map(str::to_string)
-                        .unwrap_or_else(|| self.hub.current().id.clone()),
+                        .map_or_else(|| self.hub.current().id.clone(), str::to_string),
                     binding.bound_by,
                 );
                 binding.engine = engine.clone();
@@ -2509,8 +2507,7 @@ fn bridge_grace() -> std::time::Duration {
         .ok()
         .and_then(|s| s.trim().parse::<f64>().ok())
         .filter(|s| s.is_finite() && *s >= 0.0)
-        .map(std::time::Duration::from_secs_f64)
-        .unwrap_or(BRIDGE_GRACE)
+        .map_or(BRIDGE_GRACE, std::time::Duration::from_secs_f64)
 }
 
 /// One live upstream MCP session. Generations order rebinds: a watcher or
@@ -2653,8 +2650,7 @@ impl BridgeState {
             .lock()
             .unwrap()
             .as_ref()
-            .map(|u| u.generation)
-            .unwrap_or(0)
+            .map_or(0, |u| u.generation)
     }
 
     /// The current upstream peer, waiting out an in-flight (re)binding.
@@ -3154,8 +3150,10 @@ fn roots_timeout() -> std::time::Duration {
     std::env::var("ENGRAM_ROOTS_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .map(std::time::Duration::from_secs)
-        .unwrap_or(std::time::Duration::from_secs(5))
+        .map_or(
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs,
+        )
 }
 
 impl RootsBinding {
@@ -3250,16 +3248,13 @@ impl RootsBinding {
             // A client that skips initialized still gets asked after the
             // grace — the roots timeout bounds the total either way.
             let _ = tokio::time::timeout(std::time::Duration::from_secs(2), initialized).await;
-            match self.query_roots(&peer).await {
-                Some(root) => {
-                    tracing::info!("binding by client roots: {}", root.display());
-                    from_roots = true;
-                    root
-                }
-                None => {
-                    tracing::info!("binding by cwd fallback: {}", self.fallback_root.display());
-                    self.fallback_root.clone()
-                }
+            if let Some(root) = self.query_roots(&peer).await {
+                tracing::info!("binding by client roots: {}", root.display());
+                from_roots = true;
+                root
+            } else {
+                tracing::info!("binding by cwd fallback: {}", self.fallback_root.display());
+                self.fallback_root.clone()
             }
         } else {
             tracing::info!(
@@ -3340,8 +3335,7 @@ fn origin_of(url: &str) -> Option<String> {
     let after_scheme = url.find("://")? + 3;
     let end = url[after_scheme..]
         .find('/')
-        .map(|i| after_scheme + i)
-        .unwrap_or(url.len());
+        .map_or(url.len(), |i| after_scheme + i);
     Some(url[..end].to_string())
 }
 
@@ -3440,8 +3434,8 @@ impl<T: rmcp::transport::Transport<rmcp::RoleServer>> rmcp::transport::Transport
             if self.open {
                 return Some(msg);
             }
-            match &msg {
-                JsonRpcMessage::Request(req) => match &req.request {
+            if let JsonRpcMessage::Request(req) = &msg {
+                match &req.request {
                     ClientRequest::InitializeRequest(_) => {
                         self.open = true;
                         return Some(msg);
@@ -3451,7 +3445,7 @@ impl<T: rmcp::transport::Transport<rmcp::RoleServer>> rmcp::transport::Transport
                         let method = pre_init_method(other);
                         tracing::info!(
                             "answered pre-initialize {method} with method-not-found (the client's \
-                             version probe — the handshake goes on)"
+                         version probe — the handshake goes on)"
                         );
                         let reply = JsonRpcMessage::Error(rmcp::model::JsonRpcError::new(
                             Some(req.id.clone()),
@@ -3465,8 +3459,9 @@ impl<T: rmcp::transport::Transport<rmcp::RoleServer>> rmcp::transport::Transport
                             return None;
                         }
                     }
-                },
-                _ => tracing::debug!("dropped a pre-initialize message"),
+                }
+            } else {
+                tracing::debug!("dropped a pre-initialize message");
             }
         }
     }
@@ -4356,8 +4351,8 @@ fn tidy(v: &mut serde_json::Value) {
             }
             map.retain(|_, val| {
                 !(val.is_null()
-                    || val.as_array().is_some_and(|a| a.is_empty())
-                    || val.as_object().is_some_and(|o| o.is_empty()))
+                    || val.as_array().is_some_and(std::vec::Vec::is_empty)
+                    || val.as_object().is_some_and(serde_json::Map::is_empty))
             });
         }
         Value::Array(items) => {
@@ -4455,7 +4450,7 @@ fn hierarchy(
                 "id": n.id,
                 "type": n.node_type.as_str(),
                 "title": n.title,
-                "status": n.status.map(|s| s.as_str()),
+                "status": n.status.map(engram_core::NodeStatus::as_str),
                 "trust": (n.trust * 100.0).round() / 100.0,
                 "stale": n.stale,
                 "archived": n.valid_until.is_some(),
@@ -4583,7 +4578,7 @@ mod tests {
             let mut generator = schemars::generate::SchemaSettings::draft2020_12().into_generator();
             serde_json::to_value(gen_fn(&mut generator)).unwrap()
         };
-        let notes = schema_for(|g| g.root_schema_for::<AddNotesArgs>());
+        let notes = schema_for(schemars::SchemaGenerator::root_schema_for::<AddNotesArgs>);
         let items = &notes["properties"]["notes"]["items"];
         assert!(
             items.get("$ref").is_none(),
@@ -4603,7 +4598,7 @@ mod tests {
             "the type field must teach its vocabulary in the schema"
         );
 
-        let updates = schema_for(|g| g.root_schema_for::<UpdateNodesArgs>());
+        let updates = schema_for(schemars::SchemaGenerator::root_schema_for::<UpdateNodesArgs>);
         assert!(
             updates["properties"]["updates"]["items"]
                 .get("$ref")
@@ -4611,7 +4606,7 @@ mod tests {
             "update_nodes items must be inlined too"
         );
 
-        let link = schema_for(|g| g.root_schema_for::<LinkArgs>());
+        let link = schema_for(schemars::SchemaGenerator::root_schema_for::<LinkArgs>);
         assert!(
             link["properties"]["type"]["description"]
                 .as_str()
@@ -4627,10 +4622,10 @@ mod tests {
         // types flow through the MCP layer untouched.
         assert!(node_types(&["Decision".into()]).is_ok());
         assert!(node_types(&["Nope".into()]).is_ok());
-        assert!(node_types(&["".into()]).is_err());
+        assert!(node_types(&[String::new()]).is_err());
         assert!(edge_types(&["because".into()]).is_ok());
         assert!(edge_types(&["relates_to".into()]).is_ok());
-        assert!(edge_types(&["".into()]).is_err());
+        assert!(edge_types(&[String::new()]).is_err());
     }
 
     /// 0.9.11: a call that arrives before the first binding waits only the

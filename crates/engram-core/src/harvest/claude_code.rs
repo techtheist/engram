@@ -126,8 +126,8 @@ fn parse_record(
         "assistant" => Role::Assistant,
         _ => return None,
     };
-    if v.get("isSidechain").and_then(|b| b.as_bool()) == Some(true)
-        || v.get("isMeta").and_then(|b| b.as_bool()) == Some(true)
+    if v.get("isSidechain").and_then(serde_json::Value::as_bool) == Some(true)
+        || v.get("isMeta").and_then(serde_json::Value::as_bool) == Some(true)
         || v.get("toolUseResult").is_some()
     {
         return None;

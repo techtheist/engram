@@ -145,10 +145,10 @@ fn score_arm(arm: &dyn Arm, chains: &[Chain], limit: usize) -> ChainArmScore {
         }
     }
     let n = s.questions.max(1) as f64;
-    s.recall_at_1 = hit1 as f64 / n;
-    s.recall_at_5 = hit5 as f64 / n;
-    s.pollution = polluted as f64 / n;
-    s.head_first = head_first as f64 / ranked_any.max(1) as f64;
+    s.recall_at_1 = f64::from(hit1) / n;
+    s.recall_at_5 = f64::from(hit5) / n;
+    s.pollution = f64::from(polluted) / n;
+    s.head_first = f64::from(head_first) / f64::from(ranked_any.max(1));
     s.tokens_mean = tokens as f64 / n;
     s
 }
@@ -311,10 +311,10 @@ pub fn run(cfg: &Config, n_chains: usize, chain_len: usize) -> anyhow::Result<Ch
             superseded,
             flat,
             baselines,
-            history_reachable: chains_reachable as f64 / c.chains.len().max(1) as f64,
-            retired_searchable: searchable as f64 / retired_total.max(1) as f64,
-            retired_fetchable: fetchable as f64 / retired_total.max(1) as f64,
-            neighbors_carry_history: with_history as f64 / answered.max(1) as f64,
+            history_reachable: f64::from(chains_reachable) / c.chains.len().max(1) as f64,
+            retired_searchable: f64::from(searchable) / f64::from(retired_total.max(1)),
+            retired_fetchable: f64::from(fetchable) / f64::from(retired_total.max(1)),
+            neighbors_carry_history: f64::from(with_history) / f64::from(answered.max(1)),
         });
     }
 

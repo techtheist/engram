@@ -481,7 +481,7 @@ fn stop_machine_core(file: &Path, quiet: bool) -> usize {
     // What is about to be cut loose — reported after the stop.
     let clients = doctor::http_get(port, "/system")
         .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
-        .and_then(|v| v["processes"]["clients"].as_array().map(|c| c.len()));
+        .and_then(|v| v["processes"]["clients"].as_array().map(std::vec::Vec::len));
     let pid = meta["pid"].as_u64().map(|p| p as u32);
 
     // Orchestrated first: the core closes sessions, drops every engine (all
@@ -1399,7 +1399,8 @@ fn open_engine(db: &Path, models: &Models) -> engram_core::Result<Engine> {
         .ok()
         .and_then(|p| {
             let dir = p.parent()?;
-            (dir.file_name()? == ".engram").then(|| dir.parent().map(|r| r.to_path_buf()))?
+            (dir.file_name()? == ".engram")
+                .then(|| dir.parent().map(std::path::Path::to_path_buf))?
         })
         .or_else(|| std::env::current_dir().ok());
     if let Some(root) = root {
@@ -1748,7 +1749,9 @@ fn spawn_core_and_wait(http_port: Option<u16>, fake_embeddings: bool) -> anyhow:
 /// client's initialize (impatient clients kill a silent server at ~60s).
 fn ensure_machine_core(fake_embeddings: bool) -> anyhow::Result<u16> {
     static GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _flight = GATE.lock().unwrap_or_else(|e| e.into_inner());
+    let _flight = GATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // Version handshake: an older core is retired here so the spawn below
     // replaces it with this binary — otherwise a client relaunching its
     // bridges right after an update would keep converging on the old core
@@ -1923,7 +1926,7 @@ fn startup_probe(fake_embeddings: bool) -> engram_mcp::StartupProbe {
                         engram_core::nli::nli_model_dir(),
                         engram_core::nli::NLI_MODEL_FILES
                             .iter()
-                            .map(|f| f.to_string())
+                            .map(std::string::ToString::to_string)
                             .collect(),
                     )
                 } else {
@@ -1947,7 +1950,7 @@ fn startup_probe(fake_embeddings: bool) -> engram_mcp::StartupProbe {
                     entries
                         .flatten()
                         .filter_map(|e| e.metadata().ok())
-                        .filter(|m| m.is_file())
+                        .filter(std::fs::Metadata::is_file)
                         .map(|m| m.len())
                         .sum()
                 })
@@ -2931,7 +2934,7 @@ fn remove_repo_daemon_files(port: u16) {
             .ok()
             .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
             .and_then(|v| v["port"].as_u64());
-        if advertised == Some(port as u64) {
+        if advertised == Some(u64::from(port)) {
             let _ = std::fs::remove_file(&file);
         }
     }
@@ -3099,7 +3102,6 @@ async fn bind_or_converge(start: u16) -> anyhow::Result<Bound> {
                          and walking on (if this is a wedged engram core, `engram-alpha stop` it)"
                     );
                 }
-                continue;
             }
             Err(e) => return Err(e).with_context(|| format!("binding {addr}")),
         }

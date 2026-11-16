@@ -374,7 +374,7 @@ impl Arm for VariantArm<'_> {
                 match self.strategy.rerank_mode {
                     RerankMode::Replace => {
                         for (slot, logit) in ranked.iter_mut().zip(scores) {
-                            slot.1 = 1.0 / (1.0 + (-logit as f64).exp());
+                            slot.1 = 1.0 / (1.0 + f64::from(-logit).exp());
                         }
                     }
                     RerankMode::RrfBlend { k } => {

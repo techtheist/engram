@@ -96,9 +96,8 @@ fn attach_conflict_tap(engine: &Arc<Mutex<Engine>>, bus: Arc<AlertBus>, project:
 
 fn conflict_tap(bus: Arc<AlertBus>, project: String, contradiction_verb: String) -> Listener {
     Box::new(move |event| {
-        let edge = match &event {
-            ChangeEvent::EdgeAdded(e) | ChangeEvent::EdgeUpdated(e) => e,
-            _ => return,
+        let (ChangeEvent::EdgeAdded(edge) | ChangeEvent::EdgeUpdated(edge)) = &event else {
+            return;
         };
         let live = matches!(edge.status, None | Some(EdgeStatus::Active));
         if edge.edge_type.as_str() == contradiction_verb && live && edge.valid_until.is_none() {
@@ -221,30 +220,28 @@ impl Hub {
         current: Option<ProjectEntry>,
         factory: Option<EngineFactory>,
     ) -> Self {
-        let current = match current {
-            Some(e) => ProjectHandle {
+        let current = if let Some(e) = current {
+            ProjectHandle {
                 db: Some(e.resolved_db()),
                 id: e.id,
                 name: e.name,
                 root: Some(PathBuf::from(e.root)),
                 engine,
                 identity: None,
-            },
-            None => {
-                let root = engine.lock().unwrap().repo_root().map(Path::to_path_buf);
-                let name = root
-                    .as_deref()
-                    .and_then(Path::file_name)
-                    .map(|n| n.to_string_lossy().to_lowercase())
-                    .unwrap_or_else(|| "current".into());
-                ProjectHandle {
-                    id: "current".into(),
-                    name,
-                    root,
-                    db: None,
-                    engine,
-                    identity: None,
-                }
+            }
+        } else {
+            let root = engine.lock().unwrap().repo_root().map(Path::to_path_buf);
+            let name = root
+                .as_deref()
+                .and_then(Path::file_name)
+                .map_or_else(|| "current".into(), |n| n.to_string_lossy().to_lowercase());
+            ProjectHandle {
+                id: "current".into(),
+                name,
+                root,
+                db: None,
+                engine,
+                identity: None,
             }
         };
         let alerts = AlertBus::new();
@@ -466,8 +463,7 @@ impl Hub {
             .projects
             .into_iter()
             .find(|p| p.id == id)
-            .map(|p| p.name)
-            .unwrap_or_else(|| id.to_string())
+            .map_or_else(|| id.to_string(), |p| p.name)
     }
 
     /// A live MCP session announces (or moves, on a scoped brief) its binding.
@@ -842,8 +838,7 @@ impl Hub {
             .then(|| self.home_brief_section(reserve))
             .flatten();
         let roster = self.projects_brief_section(&id);
-        let reserve = home.as_deref().map(str::len).unwrap_or(0)
-            + roster.as_deref().map(str::len).unwrap_or(0);
+        let reserve = home.as_deref().map_or(0, str::len) + roster.as_deref().map_or(0, str::len);
         let mut out = engine
             .lock()
             .unwrap()
@@ -1005,8 +1000,7 @@ impl Hub {
             }
         }
         candidates.sort_by(|a, b| {
-            let best =
-                |c: &PromotionCandidate| c.matches.first().map(|m| m.similarity).unwrap_or(0.0);
+            let best = |c: &PromotionCandidate| c.matches.first().map_or(0.0, |m| m.similarity);
             best(b).total_cmp(&best(a))
         });
         Ok((candidates, skipped))

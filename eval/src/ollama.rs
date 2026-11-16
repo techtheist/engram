@@ -80,21 +80,20 @@ impl OllamaEmbedder {
             fallback_url: None,
         };
         let probe_input = vec!["dimension probe".to_string()];
-        let probe = match me.call(&probe_input) {
-            Ok(v) => v,
-            Err(_) => {
-                me.api = Api::OpenAi;
-                let probe = me.call(&probe_input)?;
-                // Probe the fallback now too — a missing fallback would
-                // otherwise surface hours in, on the first oversized turn.
-                let fb = std::env::var("ENGRAM_EVAL_OLLAMA_FALLBACK_URL")
-                    .unwrap_or_else(|_| DEFAULT_URL.into());
-                me.call_to(&fb, Api::Ollama, &probe_input)?;
-                me.fallback_url = Some(fb);
-                probe
-            }
+        let probe = if let Ok(v) = me.call(&probe_input) {
+            v
+        } else {
+            me.api = Api::OpenAi;
+            let probe = me.call(&probe_input)?;
+            // Probe the fallback now too — a missing fallback would
+            // otherwise surface hours in, on the first oversized turn.
+            let fb = std::env::var("ENGRAM_EVAL_OLLAMA_FALLBACK_URL")
+                .unwrap_or_else(|_| DEFAULT_URL.into());
+            me.call_to(&fb, Api::Ollama, &probe_input)?;
+            me.fallback_url = Some(fb);
+            probe
         };
-        let got = probe.first().map(Vec::len).unwrap_or(0);
+        let got = probe.first().map_or(0, Vec::len);
         if got != EMBED_DIM {
             return Err(Error::Embedding(format!(
                 "embedding server model {} returns {got}-dim vectors, need {EMBED_DIM}",

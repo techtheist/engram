@@ -19,8 +19,7 @@ pub fn now() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 /// Parse a lenient day stamp into unix seconds: plain unix seconds, a
@@ -34,7 +33,7 @@ pub fn parse_day(s: &str) -> Option<i64> {
         return Some(unix);
     }
     let day = match t.as_bytes().get(10) {
-        Some(b'T') | Some(b' ') => &t[..10],
+        Some(b'T' | b' ') => &t[..10],
         _ => t,
     };
     let mut parts = day.splitn(3, '-');

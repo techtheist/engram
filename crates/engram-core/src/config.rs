@@ -612,7 +612,7 @@ impl Default for PolicyConfig {
             conflict_nli_gate: Some(CONFLICT_NLI_GATE),
             conflict_bridge_gate: Some(crate::policy::CONFLICT_BRIDGE_GATE),
             warn_similarity: WARN_SIMILARITY,
-            nli_sweep_min_confidence: NLI_SWEEP_MIN_CONFIDENCE as f64,
+            nli_sweep_min_confidence: f64::from(NLI_SWEEP_MIN_CONFIDENCE),
             keyword_weight: SEARCH_KEYWORD_WEIGHT,
             semantic_floor: SEARCH_SEMANTIC_FLOOR,
             search_min_score: SEARCH_MIN_SCORE,
@@ -1455,8 +1455,7 @@ impl GraphConfig {
             .verbs
             .iter()
             .find(|v| v.roles.supersession)
-            .map(|v| v.name.as_str())
-            .unwrap_or("replaces")
+            .map_or("replaces", |v| v.name.as_str())
     }
 
     /// The one verb carrying the `contradiction` role (`conflicts-with` in
@@ -1466,8 +1465,7 @@ impl GraphConfig {
             .verbs
             .iter()
             .find(|v| v.roles.contradiction)
-            .map(|v| v.name.as_str())
-            .unwrap_or("conflicts-with")
+            .map_or("conflicts-with", |v| v.name.as_str())
     }
 
     /// Whether `verb` carries inheritance (see [`VerbRoles::inherits`]).

@@ -466,7 +466,7 @@ pub fn contradictions(cfg: &Config) -> anyhow::Result<ContradictionReport> {
                         .contradicts
                         .iter()
                         .filter(|v| keys.get(&v.id).map(String::as_str) == target)
-                        .map(|v| v.contradiction as f64)
+                        .map(|v| f64::from(v.contradiction))
                         .fold(0.0, f64::max);
                     caught_at.push(hit);
                 } else if retrieved {
@@ -486,7 +486,7 @@ pub fn contradictions(cfg: &Config) -> anyhow::Result<ContradictionReport> {
                             .contradicts
                             .iter()
                             .filter(|v| keys.get(&v.id).map(String::as_str) == target)
-                            .map(|v| v.contradiction as f64)
+                            .map(|v| f64::from(v.contradiction))
                             .fold(0.0, f64::max),
                     );
                 } else if retrieved {
@@ -506,7 +506,7 @@ pub fn contradictions(cfg: &Config) -> anyhow::Result<ContradictionReport> {
                         report
                             .contradicts
                             .iter()
-                            .map(|v| v.contradiction as f64)
+                            .map(|v| f64::from(v.contradiction))
                             .fold(0.0, f64::max),
                     );
                 }
@@ -696,7 +696,7 @@ pub fn sweep_replay(path: &str) -> anyhow::Result<SweepReplay> {
     std::fs::copy(path, &tmp)?;
     let result = (|| -> anyhow::Result<SweepReplay> {
         let store = open_store(&tmp)?;
-        let nodes = store.stats().map(|s| s.nodes).unwrap_or(0);
+        let nodes = store.stats().map_or(0, |s| s.nodes);
         let (nli_model, model) = nli();
         // Stored vectors drive the sweep; the embedder is never consulted.
         let mut engine = Engine::with_store(store, Box::new(FakeEmbedder::default()));
@@ -813,7 +813,7 @@ pub fn real_graph(path: &str) -> anyhow::Result<RealGraphReport> {
 
     let store = open_store(path)?;
     let suspects = store.all_suspects()?;
-    let nodes = store.stats().map(|s| s.nodes).unwrap_or(0);
+    let nodes = store.stats().map_or(0, |s| s.nodes);
     let floor = store.config().policy.conflict_suspect_similarity;
     let shipped_gate = store.config().policy.nli_sweep_min_confidence;
 
@@ -833,19 +833,18 @@ pub fn real_graph(path: &str) -> anyhow::Result<RealGraphReport> {
             continue;
         };
         // Confirmed pairs: recover WHICH verdict from the edge it created.
-        let verdict = match s.status {
-            SuspectStatus::Dismissed => "dismiss".to_string(),
-            _ => {
-                let edge = store
-                    .edges_out(&a.id)?
-                    .into_iter()
-                    .chain(store.edges_in(&a.id)?)
-                    .find(|e| e.from_id == b.id || e.to_id == b.id);
-                match edge.as_ref().map(|e| e.edge_type.as_str()) {
-                    Some("conflicts-with") => "conflict".to_string(),
-                    Some("replaces") => "replaces".to_string(),
-                    _ => continue, // confirmed but the edge is gone — unscorable
-                }
+        let verdict = if s.status == SuspectStatus::Dismissed {
+            "dismiss".to_string()
+        } else {
+            let edge = store
+                .edges_out(&a.id)?
+                .into_iter()
+                .chain(store.edges_in(&a.id)?)
+                .find(|e| e.from_id == b.id || e.to_id == b.id);
+            match edge.as_ref().map(|e| e.edge_type.as_str()) {
+                Some("conflicts-with") => "conflict".to_string(),
+                Some("replaces") => "replaces".to_string(),
+                _ => continue, // confirmed but the edge is gone — unscorable
             }
         };
         let (label, score, _) = engine
@@ -2686,7 +2685,7 @@ pub fn qpp(cfg: &Config) -> anyhow::Result<QppReport> {
             /// near-miss cluster that actually inflates control scores.
             z_shoulder: f64,
         }
-        let sigmoid = |l: f32| 1.0 / (1.0 + (-l as f64).exp());
+        let sigmoid = |l: f32| 1.0 / (1.0 + f64::from(-l).exp());
         let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
         let std = |v: &[f64]| {
             let m = mean(v);
@@ -2696,7 +2695,7 @@ pub fn qpp(cfg: &Config) -> anyhow::Result<QppReport> {
             let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
             let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
             let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-            (dot / (na * nb).max(1e-9)) as f64
+            f64::from(dot / (na * nb).max(1e-9))
         };
         let curve = |text: &str| -> QCurve {
             // A 30-deep retrieve: the head (top cfg.limit) feeds the curve

@@ -171,7 +171,7 @@ impl HistoryAdapter for CodexAdapter {
                         .filter(|b| {
                             matches!(
                                 b.get("type").and_then(|t| t.as_str()),
-                                Some("input_text") | Some("output_text") | Some("text")
+                                Some("input_text" | "output_text" | "text")
                             )
                         })
                         .filter_map(|b| b.get("text").and_then(|t| t.as_str()))

@@ -30,6 +30,36 @@ uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Clippy's defaults plus a curated slice of pedantic: lints that catch real
+# bugs or are machine-fixable, not taste. CI and .githooks/pre-commit run
+# clippy with -D warnings, so every one of these is enforced.
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+cast_lossless = "warn"
+cloned_instead_of_copied = "warn"
+explicit_iter_loop = "warn"
+implicit_clone = "warn"
+inefficient_to_string = "warn"
+manual_let_else = "warn"
+manual_string_new = "warn"
+match_wildcard_for_single_variants = "warn"
+redundant_closure_for_method_calls = "warn"
+redundant_else = "warn"
+semicolon_if_nothing_returned = "warn"
+uninlined_format_args = "warn"
+unnested_or_patterns = "warn"
+implicit_saturating_sub = "warn"
+needless_continue = "warn"
+mutex_atomic = "warn"
+rc_buffer = "warn"
+string_lit_chars_any = "warn"
+large_types_passed_by_value = "warn"
+
 [profile.dev]
 # fastembed/ort pull in heavy native code; keep debug builds snappy.
 opt-level = 0

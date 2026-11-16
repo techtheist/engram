@@ -71,10 +71,7 @@ fn fake_core(repo: &Path, home: &Path, understands_project: bool) -> u16 {
         .to_lowercase();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
-            let mut stream = match stream {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
+            let Ok(mut stream) = stream else { continue };
             let mut line = String::new();
             if BufReader::new(&stream).read_line(&mut line).is_err() {
                 continue;

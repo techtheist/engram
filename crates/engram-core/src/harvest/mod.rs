@@ -310,7 +310,7 @@ impl Harvester {
                     continue; // disabled — cursor holds, backlog waits
                 }
                 let cursor = self.cursors.get(&file).copied().unwrap_or(0);
-                if std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0) == cursor {
+                if std::fs::metadata(&file).map_or(0, |m| m.len()) == cursor {
                     continue; // nothing appended
                 }
                 stats.files += 1;
@@ -376,15 +376,14 @@ impl Harvester {
             return Ok(true); // only filtered noise in the delta
         };
         // One transcript = one harness session = one project: route once.
-        let pid = match self.routes.get(file) {
-            Some(cached) => cached.clone(),
-            None => {
-                let resolved = crate::registry::load()
-                    .resolve_root(&first.project_hint)
-                    .map(|p| p.id.clone());
-                self.routes.insert(file.to_path_buf(), resolved.clone());
-                resolved
-            }
+        let pid = if let Some(cached) = self.routes.get(file) {
+            cached.clone()
+        } else {
+            let resolved = crate::registry::load()
+                .resolve_root(&first.project_hint)
+                .map(|p| p.id.clone());
+            self.routes.insert(file.to_path_buf(), resolved.clone());
+            resolved
         };
         let Some(pid) = pid else {
             stats.unrouted += events.len();
@@ -411,14 +410,13 @@ impl Harvester {
 
         let mut wrote = 0usize;
         for ev in events {
-            let cache = match by_session.get_mut(&ev.session_id) {
-                Some(c) => c,
-                None => {
-                    let c = create_session(&engine, &ev, by_session)?;
-                    stats.sessions += 1;
-                    by_session.insert(ev.session_id.clone(), c);
-                    by_session.get_mut(&ev.session_id).unwrap()
-                }
+            let cache = if let Some(c) = by_session.get_mut(&ev.session_id) {
+                c
+            } else {
+                let c = create_session(&engine, &ev, by_session)?;
+                stats.sessions += 1;
+                by_session.insert(ev.session_id.clone(), c);
+                by_session.get_mut(&ev.session_id).unwrap()
             };
             // Replay guard: a session that predates this process loads its
             // stored event ids once, then membership is O(1).
@@ -621,7 +619,7 @@ fn create_session(
     }
     let titled = props
         .get("titled")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
     Ok(SessionCache {
         node_id: node.id,
@@ -731,7 +729,7 @@ pub(crate) fn parse_iso8601(s: &str) -> Option<i64> {
     let rest = &s[19..];
     let tz = rest.trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
     match tz.as_bytes().first() {
-        None | Some(b'Z') | Some(b'z') => {}
+        None | Some(b'Z' | b'z') => {}
         Some(sign @ (b'+' | b'-')) if tz.len() >= 6 => {
             let oh = tz.get(1..3)?.parse::<i64>().ok()?;
             let om = tz.get(4..6)?.parse::<i64>().ok()?;

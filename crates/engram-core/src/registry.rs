@@ -149,24 +149,22 @@ pub fn register(root: &Path, db: &Path) -> Result<ProjectEntry> {
     let mut reg = load();
     let now = crate::store::now();
 
-    let entry = match reg.projects.iter_mut().find(|p| Path::new(&p.root) == root) {
-        Some(existing) => {
-            existing.db = db.display().to_string();
-            existing.last_seen = now;
-            existing.clone()
-        }
-        None => {
-            let name = unique_slug(&reg, &root);
-            let entry = ProjectEntry {
-                id: crate::id::new_id(),
-                name,
-                root: root.display().to_string(),
-                db: db.display().to_string(),
-                last_seen: now,
-            };
-            reg.projects.push(entry.clone());
-            entry
-        }
+    let entry = if let Some(existing) = reg.projects.iter_mut().find(|p| Path::new(&p.root) == root)
+    {
+        existing.db = db.display().to_string();
+        existing.last_seen = now;
+        existing.clone()
+    } else {
+        let name = unique_slug(&reg, &root);
+        let entry = ProjectEntry {
+            id: crate::id::new_id(),
+            name,
+            root: root.display().to_string(),
+            db: db.display().to_string(),
+            last_seen: now,
+        };
+        reg.projects.push(entry.clone());
+        entry
     };
     save(&reg)?;
     Ok(entry)

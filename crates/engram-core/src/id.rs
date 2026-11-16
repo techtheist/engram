@@ -42,7 +42,7 @@ pub fn new_id() -> String {
     }
 
     let mut rnd = tail_seq();
-    for slot in buf[TIMESTAMP_CHARS..].iter_mut() {
+    for slot in &mut buf[TIMESTAMP_CHARS..] {
         *slot = ALPHABET[(rnd % 36) as usize];
         rnd /= 36;
     }

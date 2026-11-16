@@ -934,10 +934,7 @@ pub const DEFAULT_TYPE_MIX: [(Kind, u32); 5] = [
 
 /// Resolve a per-kind question weight, defaulting to the mix above.
 pub fn weight_of(mix: &[(Kind, u32)], kind: Kind) -> u32 {
-    mix.iter()
-        .find(|(k, _)| *k == kind)
-        .map(|(_, w)| *w)
-        .unwrap_or(0)
+    mix.iter().find(|(k, _)| *k == kind).map_or(0, |(_, w)| *w)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -1979,7 +1976,7 @@ const EDGE_RULES: [(&str, Kind, Kind); 6] = [
 const SAME_COMPONENT_SHARE: u64 = 70;
 
 fn component_of(f: &Fact) -> &str {
-    f.subject.split_once(' ').map(|(_, c)| c).unwrap_or("")
+    f.subject.split_once(' ').map_or("", |(_, c)| c)
 }
 
 fn edges(facts: &[Fact], profile: &Profile, rng: &mut Rng) -> Vec<GeneratedEdge> {
@@ -2330,12 +2327,9 @@ fn apply_type_mix(facts: &mut [Fact], mix: &[(Kind, u32)], seed: u64) {
 
     let mut rng = Rng::new(seed ^ 0xA5A5_A5A5);
     for k in KINDS {
-        let n = counts
-            .iter()
-            .find(|(c, _)| *c == k)
-            .map(|(_, n)| *n)
-            .unwrap_or(0);
-        let keep = ((weight_of(mix, k) as f64 / max_weight as f64) * n as f64).round() as usize;
+        let n = counts.iter().find(|(c, _)| *c == k).map_or(0, |(_, n)| *n);
+        let keep =
+            ((f64::from(weight_of(mix, k)) / f64::from(max_weight)) * n as f64).round() as usize;
         let keep = keep.min(n);
         let mut of_kind: Vec<usize> = tested
             .iter()

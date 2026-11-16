@@ -313,7 +313,7 @@ mod fast {
             let encodings = self.tokenizer.encode_batch(inputs, true).map_err(nli_err)?;
             let len = encodings
                 .first()
-                .map(|e| e.len())
+                .map(tokenizers::Encoding::len)
                 .ok_or_else(|| crate::Error::Embedding("tokenizer returned nothing".into()))?;
             let batch = encodings.len();
 
@@ -321,9 +321,9 @@ mod fast {
             let mut mask = Vec::with_capacity(batch * len);
             let mut type_ids = Vec::with_capacity(batch * len);
             for e in &encodings {
-                ids.extend(e.get_ids().iter().map(|x| *x as i64));
-                mask.extend(e.get_attention_mask().iter().map(|x| *x as i64));
-                type_ids.extend(e.get_type_ids().iter().map(|x| *x as i64));
+                ids.extend(e.get_ids().iter().map(|&x| i64::from(x)));
+                mask.extend(e.get_attention_mask().iter().map(|&x| i64::from(x)));
+                type_ids.extend(e.get_type_ids().iter().map(|&x| i64::from(x)));
             }
             let shape = (batch, len);
             let mut session_inputs = ort::inputs![
@@ -371,7 +371,7 @@ mod fast {
                 .map_err(nli_err)?
                 .rows()
             {
-                let max = row.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let max = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
                 let exp: Vec<f32> = row.iter().map(|l| (l - max).exp()).collect();
                 let sum: f32 = exp.iter().sum();
                 out.push(NliJudgment {

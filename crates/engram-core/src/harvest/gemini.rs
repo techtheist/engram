@@ -113,7 +113,7 @@ impl HistoryAdapter for GeminiAdapter {
                 .and_then(|r| r.as_str())
             {
                 Some("user") => Role::User,
-                Some("model") | Some("assistant") | Some("gemini") => Role::Assistant,
+                Some("model" | "assistant" | "gemini") => Role::Assistant,
                 _ => continue, // tool executions, info records
             };
             let text = match m.get("content").or_else(|| m.get("text")) {

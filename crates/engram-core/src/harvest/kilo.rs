@@ -110,8 +110,8 @@ impl HistoryAdapter for KiloAdapter {
                 continue; // asks are tool/permission traffic
             }
             let role = match m.get("say").and_then(|s| s.as_str()) {
-                Some("task") | Some("user_feedback") => Role::User,
-                Some("text") | Some("completion_result") => Role::Assistant,
+                Some("task" | "user_feedback") => Role::User,
+                Some("text" | "completion_result") => Role::Assistant,
                 _ => continue,
             };
             let text = m
@@ -124,7 +124,7 @@ impl HistoryAdapter for KiloAdapter {
             }
             let ts_ms = m
                 .get("ts")
-                .and_then(|t| t.as_i64())
+                .and_then(serde_json::Value::as_i64)
                 .unwrap_or(last_ts * 1000);
             let ts = ts_ms / 1000;
             last_ts = ts;

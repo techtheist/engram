@@ -483,9 +483,7 @@ impl TepinStore {
     /// The `model_id` stamped on stored vectors — the recorded identity, or
     /// the default model for stores that predate model selection.
     fn vector_model_id(&self) -> Result<String> {
-        Ok(Store::embed_model(self)?
-            .map(|m| m.name)
-            .unwrap_or_else(|| DEFAULT_EMBED_MODEL.to_string()))
+        Ok(Store::embed_model(self)?.map_or_else(|| DEFAULT_EMBED_MODEL.to_string(), |m| m.name))
     }
 }
 
@@ -604,13 +602,12 @@ impl Store for TepinStore {
     }
 
     fn set_current_version(&self, version: Option<&str>) -> Result<()> {
-        match version {
-            Some(v) => self.set_meta_str("current_version", v),
-            None => {
-                // Purposed-but-missing docs read as absent; delete is enough.
-                let _ = self.db().delete(META, "current_version");
-                Ok(())
-            }
+        if let Some(v) = version {
+            self.set_meta_str("current_version", v)
+        } else {
+            // Purposed-but-missing docs read as absent; delete is enough.
+            let _ = self.db().delete(META, "current_version");
+            Ok(())
         }
     }
 
@@ -698,8 +695,7 @@ impl Store for TepinStore {
             infos
                 .iter()
                 .find(|c| c.name == name)
-                .map(|c| c.count as i64)
-                .unwrap_or(0)
+                .map_or(0, |c| c.count as i64)
         };
         let mut embedded = 0i64;
         for doc in no_collection_is_empty(db.find(NODES, &json!({})))? {
@@ -733,7 +729,7 @@ impl Store for TepinStore {
         let id = crate::id::new_id();
         // Same clamp as the SQLite backend: provided dates for historical
         // material, never a future stamp.
-        let created = n.created_at.map(|t| t.min(now())).unwrap_or_else(now);
+        let created = n.created_at.map_or_else(now, |t| t.min(now()));
         let node = Node {
             id: id.clone(),
             node_type: n.node_type,
@@ -1141,7 +1137,7 @@ impl Store for TepinStore {
                 node_type: node.node_type.clone(),
                 title: node.title.clone(),
                 snippet: make_snippet(&node, &terms),
-                score: hit.score as f64,
+                score: f64::from(hit.score),
                 durability: node.durability,
                 status: node.status,
                 created_at: node.created_at,
@@ -1164,7 +1160,7 @@ impl Store for TepinStore {
         let hits = self.db().search_by_vector(Some(NODES), query, k)?;
         Ok(hits
             .into_iter()
-            .map(|h| (h.id, (1.0 - h.score as f64).clamp(0.0, 2.0)))
+            .map(|h| (h.id, (1.0 - f64::from(h.score)).clamp(0.0, 2.0)))
             .collect())
     }
 

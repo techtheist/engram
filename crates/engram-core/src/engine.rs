@@ -176,7 +176,7 @@ impl Engine {
             audit_cwd: std::env::current_dir()
                 .ok()
                 .map(|p| p.display().to_string()),
-            audit_pid: std::process::id() as i64,
+            audit_pid: i64::from(std::process::id()),
             audit_op: std::sync::Mutex::new(None),
             audit_version: env!("CARGO_PKG_VERSION").to_string(),
             last_validated: std::sync::atomic::AtomicI64::new(0),
@@ -616,8 +616,7 @@ impl Engine {
                             .ok()
                             .flatten()
                             .and_then(|n| n.body)
-                            .map(|b| self.unseal_str(&b))
-                            .unwrap_or_else(|| h.snippet.clone())
+                            .map_or_else(|| h.snippet.clone(), |b| self.unseal_str(&b))
                     })
                     .unwrap_or_else(|| h.snippet.clone())
                 })
@@ -761,8 +760,7 @@ impl Engine {
                     .iter()
                     .enumerate()
                     .min_by_key(|(_, v)| v.turn.unwrap_or(u64::MAX).abs_diff(turn))
-                    .map(|(i, _)| i)
-                    .unwrap_or(0)
+                    .map_or(0, |(i, _)| i)
             });
         let window = (window as usize).min(views.len());
         let lo = center.saturating_sub(window);
@@ -921,7 +919,7 @@ impl Engine {
                     .props
                     .as_ref()
                     .and_then(|p| p.get("turn"))
-                    .and_then(|v| v.as_u64()),
+                    .and_then(serde_json::Value::as_u64),
                 timestamp: msg.created_at,
                 message_id: msg.id,
             })
@@ -948,7 +946,7 @@ impl Engine {
                         .props
                         .as_ref()
                         .and_then(|p| p.get("turn"))
-                        .and_then(|v| v.as_u64());
+                        .and_then(serde_json::Value::as_u64);
                     for e in s.edges_in(&n.id)? {
                         if e.edge_type.as_str() == crate::history::VERB_BORN_IN {
                             out.push((e.from_id.clone(), turn, n.id.clone(), n.created_at));
@@ -1033,7 +1031,7 @@ impl Engine {
                         eprintln!(
                             "engram: couldn't open history store {}: {e}",
                             path.display()
-                        )
+                        );
                     }
                 }
             }
@@ -1566,7 +1564,7 @@ impl Engine {
 
     /// [`Engine::notify`] for sibling modules (tasks).
     pub(crate) fn emit(&self, event: ChangeEvent) {
-        self.notify(event)
+        self.notify(event);
     }
 
     /// The acting session, as audit rows stamp it.
@@ -2011,8 +2009,7 @@ impl Engine {
                 .get_node(id)
                 .ok()
                 .flatten()
-                .map(|n| n.title)
-                .unwrap_or_else(|| id.to_string())
+                .map_or_else(|| id.to_string(), |n| n.title)
         };
         format!(
             "\"{}\" {} \"{}\"",
@@ -2063,7 +2060,7 @@ impl Engine {
         }
         // Custom fields (0.9.0): an empty map is the same as none; the full
         // map is validated here so every surface gets one teaching error.
-        if n.fields.as_ref().is_some_and(|f| f.is_empty()) {
+        if n.fields.as_ref().is_some_and(serde_json::Map::is_empty) {
             n.fields = None;
         }
         self.check_fields_ext(&n.node_type, n.fields.as_ref(), enforce_required_fields)?;
@@ -2920,8 +2917,7 @@ impl Engine {
         self.store
             .config()
             .type_def(t.as_str())
-            .map(|d| d.durability)
-            .unwrap_or(Durability::Episodic)
+            .map_or(Durability::Episodic, |d| d.durability)
     }
 
     /// Replace the graph's configuration — validated against the hard
@@ -3731,7 +3727,7 @@ impl Engine {
         // rank — captured before anything re-scores or re-sorts.
         let retrieval_rank: Vec<usize> = (1..=hits.len()).collect();
         for (hit, logit) in hits.iter_mut().zip(&scores) {
-            let relevance = 1.0 / (1.0 + (-*logit as f64).exp());
+            let relevance = 1.0 / (1.0 + f64::from(-*logit).exp());
             hit.score = relevance * (1.0 + trust_weight * hit.trust);
         }
 
@@ -5167,7 +5163,7 @@ impl Engine {
             match j.label() {
                 "entailment" => report.supports.push(verdict),
                 "contradiction" if f64::from(verdict.contradiction) >= floor => {
-                    report.contradicts.push(verdict)
+                    report.contradicts.push(verdict);
                 }
                 _ => report.silent.push(verdict),
             }
@@ -5523,7 +5519,7 @@ impl Engine {
                             node_type: candidate.node_type,
                             title: candidate.title,
                         },
-                        entailment: entailment as f64,
+                        entailment: f64::from(entailment),
                         existing_link: existing.into_iter().next(),
                     });
                 }
@@ -5594,7 +5590,7 @@ impl Engine {
                         trust: node.trust,
                         verdict: "contradicted".into(),
                         evidence: Some(evidence),
-                        score: j.contradiction() as f64,
+                        score: f64::from(j.contradiction()),
                     });
                     continue 'stale;
                 }
@@ -5604,7 +5600,7 @@ impl Engine {
                         trust: node.trust,
                         verdict: "reconfirm".into(),
                         evidence: Some(evidence),
-                        score: j.forward.entailment as f64,
+                        score: f64::from(j.forward.entailment),
                     });
                     continue 'stale;
                 }
@@ -6235,16 +6231,13 @@ fn generation<'a>(
         return g;
     }
     memo.insert(id, 0); // cycle guard while this node is being computed
-    let g = adj
-        .get(id)
-        .map(|olders| {
-            olders
-                .iter()
-                .map(|o| generation(o, adj, memo) + 1)
-                .max()
-                .unwrap_or(0)
-        })
-        .unwrap_or(0);
+    let g = adj.get(id).map_or(0, |olders| {
+        olders
+            .iter()
+            .map(|o| generation(o, adj, memo) + 1)
+            .max()
+            .unwrap_or(0)
+    });
     memo.insert(id, g);
     g
 }
@@ -6326,7 +6319,7 @@ fn hint_with_direction(
     } else {
         None
     };
-    (label, score as f64, direction)
+    (label, f64::from(score), direction)
 }
 
 /// Sentence starters that are capitalised for being first, not for being a
@@ -6485,7 +6478,7 @@ pub fn title_clause(t: &str) -> &str {
 fn title_tokens(t: &str) -> Vec<String> {
     t.split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
-        .map(|w| w.to_lowercase())
+        .map(str::to_lowercase)
         .collect()
 }
 
@@ -6753,8 +6746,7 @@ impl EmbedCache {
         let title = patch
             .title
             .as_deref()
-            .map(crate::redact::scrub)
-            .unwrap_or_else(|| before.title.clone());
+            .map_or_else(|| before.title.clone(), crate::redact::scrub);
         let body = match &patch.body {
             Some(b) => Some(crate::redact::scrub(b)),
             None => before.body.clone(),
@@ -6988,7 +6980,7 @@ impl MatchedPlan {
             match nli.and_then(|n| n.judge_pair(&self.excerpt, &claim(&self.node)).ok()) {
                 Some(sym) => {
                     let (l, s) = sym.hint();
-                    (Some(l.to_string()), Some(s as f64))
+                    (Some(l.to_string()), Some(f64::from(s)))
                 }
                 None => (None, None),
             };
@@ -7264,7 +7256,7 @@ fn judge_canon(
                 node_type: node.node_type,
                 title: node.title,
                 verdict: verdict.into(),
-                score: score as f64,
+                score: f64::from(score),
                 similarity,
             });
         }

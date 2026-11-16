@@ -308,7 +308,7 @@ fn cli() -> anyhow::Result<()> {
                 knob_kw = value()?
                     .split(',')
                     .map(|v| v.trim().parse())
-                    .collect::<Result<_, _>>()?
+                    .collect::<Result<_, _>>()?;
             }
             "--knob-cliff" => {
                 knob_cliff = value()?
@@ -317,7 +317,7 @@ fn cli() -> anyhow::Result<()> {
                         "off" => Ok(None),
                         x => x.parse().map(Some),
                     })
-                    .collect::<Result<_, _>>()?
+                    .collect::<Result<_, _>>()?;
             }
             "--cascade" => cascade_mode = true,
             "--rerank-full" => cfg.rerank_full = true,
@@ -393,7 +393,7 @@ fn cli() -> anyhow::Result<()> {
             println!(
                 "  {name:<12} mean {:7.1}  p50 {:7.1}  p95 {:7.1}  p99 {:7.1}  max {:7.1}  ms",
                 s.mean, s.p50, s.p95, s.p99, s.max
-            )
+            );
         };
         line("write", &r.write_ms);
         line("reader wait", &r.reader_wait_ms);

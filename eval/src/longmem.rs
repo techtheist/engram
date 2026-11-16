@@ -404,7 +404,7 @@ pub fn run(
     let path = fetch(dataset)?;
     let all = load(&path)?;
     let total = all.len();
-    let run_n = cap.map(|n| n.min(total)).unwrap_or(total);
+    let run_n = cap.map_or(total, |n| n.min(total));
     if run_n < total {
         eprintln!("  ! --lme-limit kept {run_n} of {total} questions — a smoke run, not a result");
     }
@@ -741,7 +741,7 @@ fn run_question(
                 }
             }
             let weak_line = engine.graph_config().policy.weak_evidence_top;
-            let top = hits.first().map(|h| h.score).unwrap_or(0.0);
+            let top = hits.first().map_or(0.0, |h| h.score);
             AbsGrade {
                 empty: false,
                 unwarned: top >= weak_line,

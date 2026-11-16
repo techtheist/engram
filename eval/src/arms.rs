@@ -301,7 +301,7 @@ pub(crate) fn terms(query: &str) -> Vec<String> {
     let mut out: Vec<String> = query
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| w.len() > 2)
-        .map(|w| w.to_lowercase())
+        .map(str::to_lowercase)
         .filter(|w| !STOPWORDS.contains(&w.as_str()))
         .collect();
     out.sort();
@@ -600,7 +600,7 @@ impl EngramArm {
     /// spending recall is to switch it off and look.
     pub fn flatten_type_priors(&self) -> anyhow::Result<()> {
         let mut cfg = self.engine.graph_config();
-        for t in cfg.ontology.types.iter_mut() {
+        for t in &mut cfg.ontology.types {
             t.roles.rank_prior = 0.0;
         }
         self.engine.set_graph_config(&cfg)?;
@@ -612,8 +612,7 @@ pub(crate) fn new_node(f: &Fact) -> NewNode {
     let now = || {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0)
+            .map_or(0, |d| d.as_secs() as i64)
     };
     // Backdating exists for chain generations; the history shaping stamps a
     // minute per assistant turn so a session reads in order. With neither —

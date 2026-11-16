@@ -165,7 +165,7 @@ fn shannon_bits_per_char(s: &str) -> f64 {
         .iter()
         .filter(|&&c| c > 0)
         .map(|&c| {
-            let p = c as f64 / len;
+            let p = f64::from(c) / len;
             p * p.log2()
         })
         .sum::<f64>()

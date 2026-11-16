@@ -161,7 +161,7 @@ pub fn cascade(cfg: &Config) -> anyhow::Result<CascadeReport> {
         let weak_line = engram.engine().graph_config().policy.weak_evidence_top;
 
         let engine = engram.engine();
-        let weakish = |verdict: Option<&str>| matches!(verdict, Some("weak") | Some("none"));
+        let weakish = |verdict: Option<&str>| matches!(verdict, Some("weak" | "none"));
 
         // (a)+(b): the curated-answerable set.
         let mut curated_questions = 0usize;

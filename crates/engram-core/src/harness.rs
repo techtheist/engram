@@ -169,7 +169,7 @@ pub fn windsurf_xdg_config() -> Option<PathBuf> {
 pub fn is_prerename_bin(cmd: &str) -> bool {
     matches!(
         Path::new(cmd).file_name().and_then(|n| n.to_str()),
-        Some("engram") | Some("engram.exe")
+        Some("engram" | "engram.exe")
     )
 }
 

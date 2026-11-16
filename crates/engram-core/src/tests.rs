@@ -1106,17 +1106,20 @@ fn a_shared_write_embeds_each_text_once_and_stores_what_a_plain_write_stores() {
         )
     };
     let (plain, plain_texts) = counting_engine(0);
-    let plain_node = match plain.add_node_checked(note()).unwrap() {
-        WriteOutcome::Created { node, .. } => node,
-        _ => panic!("expected a create"),
+    let WriteOutcome::Created {
+        node: plain_node, ..
+    } = plain.add_node_checked(note()).unwrap()
+    else {
+        panic!("expected a create")
     };
     let (shared, shared_texts) = counting_engine(0);
     let shared = std::sync::Mutex::new(shared);
-    let shared_node =
-        match Engine::add_node_checked_shared(&shared, AuditOrigin::default(), note()).unwrap() {
-            WriteOutcome::Created { node, .. } => node,
-            _ => panic!("expected a create"),
-        };
+    let WriteOutcome::Created {
+        node: shared_node, ..
+    } = Engine::add_node_checked_shared(&shared, AuditOrigin::default(), note()).unwrap()
+    else {
+        panic!("expected a create")
+    };
     let shared = shared.into_inner().unwrap();
     assert_eq!(
         plain.store().embedding_of(&plain_node.id).unwrap(),
@@ -2749,7 +2752,7 @@ fn tags_normalize_dedupe_and_roundtrip() {
                 "Phase 1".into(),
                 "phase-1".into(),
                 "  UI  ".into(),
-                "".into(),
+                String::new(),
             ],
             ..new_node(NodeType::Decision, "tagged", "body")
         })
@@ -7512,7 +7515,7 @@ fn write_time_canon_check_supports_and_contradicts() {
                 "entailing canon yields a supports verdict: {canon:?}"
             );
         }
-        _ => panic!("must create"),
+        WriteOutcome::Matched { .. } => panic!("must create"),
     }
 
     // Contradiction only inside the suspect band (co-reference gate): two
@@ -7538,7 +7541,7 @@ fn write_time_canon_check_supports_and_contradicts() {
                 "in-band contradiction yields a contradicts verdict: {canon:?}"
             );
         }
-        _ => panic!("cross-type text never dupe-matches"),
+        WriteOutcome::Matched { .. } => panic!("cross-type text never dupe-matches"),
     }
 }
 
@@ -9000,7 +9003,8 @@ fn engine_opens_history_store_beside_the_graph_and_toggles_live() {
 /// ENGRAM_HOME is process-wide: every test that sandboxes it serializes here.
 fn env_home_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[test]
@@ -9305,7 +9309,10 @@ fn harvest_sweep_end_to_end() {
     // Titled by the first user message; props carry the running counters.
     assert_eq!(sessions[0].title, "why does the daemon leak memory?");
     let sp = sessions[0].props.as_ref().unwrap();
-    assert_eq!(sp.get("messages").and_then(|v| v.as_u64()), Some(2));
+    assert_eq!(
+        sp.get("messages").and_then(serde_json::Value::as_u64),
+        Some(2)
+    );
     assert_eq!(
         sp.get("harness").and_then(|v| v.as_str()),
         Some("claude-code")

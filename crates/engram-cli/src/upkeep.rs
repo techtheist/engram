@@ -33,7 +33,7 @@ pub fn record_setup(repo: &Path, agents: &[&str], variant: Option<&str>, found: 
     let mut record = setup_record::load(repo).unwrap_or_else(|| inferred(repo));
     record.setup_version = Some(env!("CARGO_PKG_VERSION").into());
     let mut all: Vec<String> = record.agents.clone();
-    all.extend(agents.iter().map(|a| a.to_string()));
+    all.extend(agents.iter().map(std::string::ToString::to_string));
     all.sort();
     all.dedup();
     record.agents = all;
@@ -180,7 +180,7 @@ impl Inspection {
                 "hooks and rules are v{from}'s — `engram-alpha setup` there rewires them"
             )),
             Wiring::Unknown => {
-                due.push("`engram-alpha setup` there once records it (and rewires)".into())
+                due.push("`engram-alpha setup` there once records it (and rewires)".into());
             }
             Wiring::Current => {}
         }

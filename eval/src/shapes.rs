@@ -531,9 +531,10 @@ fn make(
         }
         "chain_paraphrase" => {
             let g = other_subject?;
-            let restated = synonym(f)
-                .map(|t| t.replacen(s.as_str(), g, 1))
-                .unwrap_or_else(|| agree(f).replacen(s.as_str(), g, 1));
+            let restated = synonym(f).map_or_else(
+                || agree(f).replacen(s.as_str(), g, 1),
+                |t| t.replacen(s.as_str(), g, 1),
+            );
             Some((
                 restated,
                 "Restated from the sibling's runbook.".into(),

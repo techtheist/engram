@@ -74,7 +74,7 @@ pub fn evaluate(
     for p in &pairs[..examined] {
         let (hint, score) = nli.judge_pair(&p.premise, &p.hypothesis)?.hint();
         confusion[index(p.gold)][index(from_hint(hint))] += 1;
-        confidence += score as f64;
+        confidence += f64::from(score);
     }
 
     let correct: usize = (0..3).map(|i| confusion[i][i]).sum();

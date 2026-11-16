@@ -21,3 +21,6 @@ rust-embed = { version = "8", features = ["mime-guess"] }
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+
+[lints]
+workspace = true

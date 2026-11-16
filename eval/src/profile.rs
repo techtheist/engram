@@ -129,7 +129,7 @@ impl Profile {
             }
             point -= w;
         }
-        self.verb_mix.last().map(|(v, _)| *v).unwrap_or("about")
+        self.verb_mix.last().map_or("about", |(v, _)| *v)
     }
 }
 

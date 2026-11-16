@@ -53,7 +53,7 @@ async fn health_ok() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         body["pid"].as_u64(),
-        Some(std::process::id() as u64),
+        Some(u64::from(std::process::id())),
         "health names the answering process: {body}"
     );
 }

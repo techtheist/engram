@@ -174,8 +174,7 @@ impl LayaConfig {
         self.temperature
             .get(qtype as usize)
             .copied()
-            .map(clamp_temperature)
-            .unwrap_or(1.0)
+            .map_or(1.0, clamp_temperature)
     }
 }
 
@@ -253,7 +252,7 @@ pub fn build_sequence(
 /// Softmax of `logits / t`.
 fn softmax_t(logits: &[f32], t: f64) -> Vec<f32> {
     let z: Vec<f64> = logits.iter().map(|l| f64::from(*l) / t).collect();
-    let max = z.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let max = z.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let e: Vec<f64> = z.iter().map(|v| (v - max).exp()).collect();
     let sum: f64 = e.iter().sum();
     e.iter().map(|v| (v / sum) as f32).collect()

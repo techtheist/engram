@@ -1,0 +1,23 @@
+#!/bin/sh
+# Lint gate: the same checks CI runs, scoped to what is staged.
+# Enable once per clone:  git config core.hooksPath .githooks
+# Skip in an emergency:   git commit --no-verify
+set -e
+cd "$(git rev-parse --show-toplevel)"
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+
+if printf '%s\n' "$staged" | grep -qE '\.rs$|(^|/)Cargo\.(toml|lock)$'; then
+    echo "pre-commit: cargo fmt --check"
+    cargo fmt --all --check || {
+        echo "pre-commit: run \`cargo fmt --all\` and re-stage" >&2
+        exit 1
+    }
+    echo "pre-commit: cargo clippy -D warnings"
+    cargo clippy --workspace --all-targets --quiet -- -D warnings
+fi
+
+if printf '%s\n' "$staged" | grep -qE '^frontend/.*\.(ts|vue|js|css)$'; then
+    echo "pre-commit: frontend lint"
+    (cd frontend && bun run --silent lint && bun run --silent lint:style)
+fi

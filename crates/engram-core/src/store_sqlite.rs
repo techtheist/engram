@@ -321,13 +321,12 @@ impl Store for SqliteStore {
     }
 
     fn set_current_version(&self, version: Option<&str>) -> Result<()> {
-        match version {
-            Some(v) => meta_set(&self.conn, "current_version", v),
-            None => {
-                self.conn
-                    .execute("DELETE FROM meta WHERE key='current_version'", [])?;
-                Ok(())
-            }
+        if let Some(v) = version {
+            meta_set(&self.conn, "current_version", v)
+        } else {
+            self.conn
+                .execute("DELETE FROM meta WHERE key='current_version'", [])?;
+            Ok(())
         }
     }
 
@@ -385,7 +384,7 @@ impl Store for SqliteStore {
         let id = crate::id::new_id();
         // Historical material carries its own date (digestion); the future
         // is clamped away so nothing can buy itself a recency boost.
-        let created = n.created_at.map(|t| t.min(now())).unwrap_or_else(now);
+        let created = n.created_at.map_or_else(now, |t| t.min(now()));
         let title = crate::redact::scrub(&n.title);
         let body = n.body.as_deref().map(crate::redact::scrub);
         let code_refs = serde_json::to_string(&n.code_refs)?;
@@ -493,7 +492,7 @@ impl Store for SqliteStore {
 
         let sql = format!("UPDATE nodes SET {} WHERE id=?", sets.join(", "));
         vals.push(Box::new(id.to_string()));
-        let bound: Vec<&dyn ToSql> = vals.iter().map(|b| b.as_ref()).collect();
+        let bound: Vec<&dyn ToSql> = vals.iter().map(std::convert::AsRef::as_ref).collect();
         self.conn.execute(&sql, bound.as_slice())?;
         self.get_node(id)?
             .ok_or_else(|| Error::NotFound(id.to_string()))
@@ -561,7 +560,10 @@ impl Store for SqliteStore {
         let policy = self.policy();
         let cfg = Store::config(self);
         let strs: Vec<String> = if types.is_empty() {
-            cfg.worklist_types().iter().map(|s| s.to_string()).collect()
+            cfg.worklist_types()
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect()
         } else {
             types.iter().map(|t| t.as_str().to_string()).collect()
         };
@@ -754,7 +756,7 @@ impl Store for SqliteStore {
         if !sets.is_empty() {
             let sql = format!("UPDATE edges SET {} WHERE id=?", sets.join(", "));
             vals.push(Box::new(id.to_string()));
-            let bound: Vec<&dyn ToSql> = vals.iter().map(|b| b.as_ref()).collect();
+            let bound: Vec<&dyn ToSql> = vals.iter().map(std::convert::AsRef::as_ref).collect();
             self.conn.execute(&sql, bound.as_slice())?;
         }
         self.get_edge(id)?

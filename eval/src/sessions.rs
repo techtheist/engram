@@ -246,11 +246,11 @@ pub fn run(cfg: &Config) -> anyhow::Result<SessionsReport> {
     }
 
     Ok(SessionsReport {
-        embedder: embedder_name.to_string(),
+        embedder: embedder_name.clone(),
         reranker: if cfg.no_rerank {
             "none".into()
         } else {
-            reranker_name.to_string()
+            reranker_name.clone()
         },
         embeddings_are_fake: embedder(model).0.is_fake(),
         seed: cfg.seed,

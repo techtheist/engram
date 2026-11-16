@@ -487,8 +487,10 @@ impl AppState {
                 }
                 dir.parent()
             })
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()))
+            .map_or_else(
+                || std::env::current_dir().unwrap_or_else(|_| ".".into()),
+                std::path::Path::to_path_buf,
+            )
     }
 
     fn scoped_root(&self, engine: &Arc<Mutex<Engine>>) -> std::path::PathBuf {
@@ -496,8 +498,7 @@ impl AppState {
             .lock()
             .unwrap()
             .repo_root()
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_else(|| self.repo_root())
+            .map_or_else(|| self.repo_root(), std::path::Path::to_path_buf)
     }
 }
 
@@ -944,10 +945,10 @@ async fn system(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
         "store": {
             "db": state.db_path,
             "size_bytes": db_size,
-            "backend": stats.as_ref().map(|s| s.backend).unwrap_or("unknown"),
-            "nodes": stats.as_ref().map(|s| s.nodes).unwrap_or(-1),
-            "edges": stats.as_ref().map(|s| s.edges).unwrap_or(-1),
-            "embedded": stats.as_ref().map(|s| s.embedded).unwrap_or(-1),
+            "backend": stats.as_ref().map_or("unknown", |s| s.backend),
+            "nodes": stats.as_ref().map_or(-1, |s| s.nodes),
+            "edges": stats.as_ref().map_or(-1, |s| s.edges),
+            "embedded": stats.as_ref().map_or(-1, |s| s.embedded),
             "journal_mode": health.as_ref().and_then(|h| h.journal_mode.clone()).unwrap_or_default(),
             "integrity_ok": health.as_ref().is_some_and(|h| h.integrity_ok),
             "embed_composition": embed_version,
@@ -1170,17 +1171,17 @@ async fn get_encryption(
     } else {
         let engine = state.engine_arc(&scope)?;
         let (g, h) = engine.lock().unwrap().encryption_states();
-        (Some(g), h.map(Some).unwrap_or(None))
+        (Some(g), h)
     };
     Ok(Json(json!({
         "graph": {
             "desired": settings.encrypt_graph,
-            "state": graph_state.map(|s| s.as_str()),
+            "state": graph_state.map(engram_core::seal::EncryptionState::as_str),
             "job": enc_job_view(graph_job),
         },
         "history": {
             "desired": settings.encrypt_history,
-            "state": history_state.map(|s| s.as_str()),
+            "state": history_state.map(engram_core::seal::EncryptionState::as_str),
             "job": enc_job_view(history_job),
         },
     })))
@@ -1296,7 +1297,7 @@ async fn post_settings(
 ) -> Result<Json<serde_json::Value>, AppError> {
     core_runtime(&state)?;
     let stored = match body.default_agent_project.as_deref() {
-        None | Some("") | Some(registry::HOME_PROJECT) => None,
+        None | Some("" | registry::HOME_PROJECT) => None,
         Some(sel) => {
             let entry = registry::load().resolve(sel).cloned().ok_or_else(|| {
                 AppError::Core(Error::Project(format!(

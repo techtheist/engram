@@ -109,7 +109,7 @@ impl HistoryAdapter for BobAdapter {
             // own moment lives in _meta when present.
             let ts_ms = data
                 .pointer("/_meta/timestamp")
-                .and_then(|t| t.as_i64())
+                .and_then(serde_json::Value::as_i64)
                 .unwrap_or(row_ms);
             events.push(HistoryEvent {
                 harness: Harness::Bob,

@@ -290,7 +290,7 @@ fn version_parts(s: &str) -> Option<Vec<u64>> {
     }
     s.split('.')
         .map(|p| {
-            let digits: String = p.chars().take_while(|c| c.is_ascii_digit()).collect();
+            let digits: String = p.chars().take_while(char::is_ascii_digit).collect();
             digits.parse().ok()
         })
         .collect()
@@ -793,7 +793,7 @@ impl Engine {
         let current = self.current_version()?;
         let mut changed: Vec<(Task, Task)> = Vec::new();
 
-        for t in all.iter_mut() {
+        for t in &mut all {
             if !t.status.is_open() {
                 continue;
             }
@@ -821,7 +821,7 @@ impl Engine {
         // Groups follow their children: every child closed closes the group
         // (done if any was done); an open child reopens a closed group.
         let snapshot = all.clone();
-        for g in all.iter_mut() {
+        for g in &mut all {
             let kids: Vec<&Task> = snapshot
                 .iter()
                 .filter(|c| c.parent.as_deref() == Some(g.id.as_str()))
