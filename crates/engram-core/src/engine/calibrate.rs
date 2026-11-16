@@ -5,7 +5,7 @@ use super::*;
 impl Engine {
     /// Dial one: fit the conflict-suspect floor from judged history (max balanced
     /// accuracy over midpoints, higher on ties for a quieter queue). Damped and
-    /// clamped into [`policy::AUTO_TUNE_FLOOR_MIN`, `duplicate_similarity`). Mutates
+    /// clamped into [`crate::policy::AUTO_TUNE_FLOOR_MIN`, `duplicate_similarity`). Mutates
     /// `cfg`, returns the journal fragment.
     pub(super) fn fit_conflict_floor(
         &self,
@@ -82,7 +82,7 @@ impl Engine {
     /// Dial two: fit the weak line as `weak_line_quantile` of the top scores
     /// phantom probes reach here ("how high can a score climb when the answer
     /// doesn't exist"). Probes never stamp `last_seen`. Damped and clamped up to
-    /// [`policy::WEAK_LINE_MAX`]. Mutates `cfg`, returns the journal fragment.
+    /// [`crate::policy::WEAK_LINE_MAX`]. Mutates `cfg`, returns the journal fragment.
     pub(super) fn fit_weak_line(
         &self,
         cfg: &mut crate::config::GraphConfig,

@@ -117,13 +117,13 @@ impl GraphConfig {
             .any(|v| v.name == verb && v.inherits())
     }
 
-    /// The supersession verb as an [`EdgeType`], for creating edges.
+    /// The supersession verb as an [`crate::EdgeType`], for creating edges.
     pub fn supersession_edge(&self) -> crate::types::EdgeType {
         crate::types::EdgeType::parse(self.supersession_verb())
             .unwrap_or(crate::types::EdgeType::Replaces)
     }
 
-    /// The contradiction verb as an [`EdgeType`], for creating edges.
+    /// The contradiction verb as an [`crate::EdgeType`], for creating edges.
     pub fn contradiction_edge(&self) -> crate::types::EdgeType {
         crate::types::EdgeType::parse(self.contradiction_verb())
             .unwrap_or(crate::types::EdgeType::ConflictsWith)

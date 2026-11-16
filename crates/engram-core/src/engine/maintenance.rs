@@ -149,12 +149,12 @@ impl Engine {
 
     /// Per-graph calibration behind one switch (`policy.auto_tune`). Each dial
     /// fits one value from this graph's own evidence, moves only by at least
-    /// [`policy::AUTO_TUNE_MIN_DELTA`], and lands in one `auto_tuned` row.
+    /// [`crate::policy::AUTO_TUNE_MIN_DELTA`], and lands in one `auto_tuned` row.
     /// - Conflict floor: fitted from human suspect verdicts only, past
-    ///   [`policy::AUTO_TUNE_MIN_NOTES`] notes and [`policy::AUTO_TUNE_MIN_JUDGED`]
-    ///   judgments ([`policy::AUTO_TUNE_MIN_EACH`] per side).
+    ///   [`crate::policy::AUTO_TUNE_MIN_NOTES`] notes and [`crate::policy::AUTO_TUNE_MIN_JUDGED`]
+    ///   judgments ([`crate::policy::AUTO_TUNE_MIN_EACH`] per side).
     /// - Weak line: a quantile of phantom-probe top scores, past
-    ///   [`policy::WEAK_LINE_MIN_NOTES`] notes; needs a reranker's calibrated scale.
+    ///   [`crate::policy::WEAK_LINE_MIN_NOTES`] notes; needs a reranker's calibrated scale.
     pub fn auto_tune(&self) -> Result<Option<String>> {
         use crate::policy::{AUTO_TUNE_MIN_NOTES, WEAK_LINE_MIN_NOTES};
         let mut cfg = self.graph_config();

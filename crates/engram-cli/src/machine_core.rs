@@ -170,7 +170,7 @@ pub(crate) fn retire_older_core() -> bool {
     stop_machine_core(&home.join("daemon.json"), true) > 0
 }
 
-/// The machine core's advertised pid, from the same file [`machine_core`]
+/// The machine core's advertised pid, from the same file [`machine_core()`]
 /// health-verifies.
 pub(crate) fn machine_core_pid() -> Option<u32> {
     let raw = std::fs::read_to_string(registry::engram_home()?.join("daemon.json")).ok()?;

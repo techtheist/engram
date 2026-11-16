@@ -1,23 +1,12 @@
-//! Bridge notes: a note that ties one subject to another — "the
-//! export worker uses the same datastore as the import worker", "the replay
-//! buffer is the old name of the ingest job". Two facts about two different
-//! subjects can disagree only through such a note, and no pairwise judge can
-//! see it: the subject guard rightly refuses to compare two subjects, and
-//! when it does compare them an MNLI-class model calls every value clash a
-//! contradiction whether or not anything ties the subjects together.
-//!
-//! The rule here decides which notes are bridges and which notes a bridge
-//! names; the engine pairs the facts about its subjects and asks the judge
-//! one question per pair — "bridge. y ⟹ x". The cue lists are plain English
-//! relation words, chosen before any benchmark world was read; a bridge must
-//! also name at least two subjects, so a fact that merely says "same" about
-//! one thing never pairs anything. Measured on KnowledgeDrift v3 and this
-//! repo's own graph (eval Finding 00ge9s5nwc1z): 0 false alarms on the real
-//! graph at ~0.2 judge calls per write.
-//!
-//! Universal rules ("every service runs on one database") are deliberately
-//! not bridges here: paired against a note's neighbourhood they caught
-//! nothing and produced all the noise in the measurement.
+//! Bridge notes tie one subject to another ("the export worker uses the same
+//! datastore as the import worker"). Two facts about two subjects can only
+//! disagree through such a note, which no pairwise judge sees. This module
+//! decides which notes are bridges and which subjects they name; the engine
+//! asks the judge "bridge. y ⟹ x" per pair. Cue lists are plain English,
+//! fixed before any benchmark was read; a bridge must name two subjects.
+//! 0 false alarms on this repo's graph at ~0.2 judge calls per write (eval
+//! Finding 00ge9s5nwc1z). Universal rules ("every service runs on one
+//! database") are not bridges: they caught nothing and made all the noise.
 
 use std::collections::HashSet;
 
@@ -150,16 +139,10 @@ fn strip_asides(t: &str) -> String {
     out
 }
 
-/// Does this title tie subjects together? The relation must be the claim:
-/// it sits in the title's main clause ([`crate::engine::title_clause`]) and
-/// outside any aside. "… — serving the same model" or "(no word shared
-/// with the note)" mention sameness in passing; they tie nothing (the
-/// dogfood replay, 2026-11-15: such titles were the whole of the noise).
-///
-/// Words are read whole, hyphenated compounds included: "shared-vocabulary
-/// subjects" describes the subjects, it does not tie one to another. A
-/// universal rule ("every …" + "same / one / shared …") is not a pair
-/// bridge.
+/// Does this title tie subjects together? The relation must be the claim: in
+/// the main clause ([`crate::engine::title_clause`]) and outside any aside.
+/// Words are read whole, hyphenated compounds included ("shared-vocabulary"
+/// ties nothing), and universal rules are not pair bridges.
 pub(crate) fn is_bridge(title: &str) -> bool {
     let main = strip_asides(crate::engine::title_clause(title));
     let lower = main.to_lowercase();
@@ -175,14 +158,9 @@ pub(crate) fn is_bridge(title: &str) -> bool {
     has(&RELATION_WORDS) || RELATION_PHRASES.iter().any(|p| lower.contains(p))
 }
 
-/// The tie's frame, for display (found bridges, which no judge reads): the
-/// stretches of the title where its two subjects may stand. English ties
-/// come in two shapes — "**X** uses the same datastore as **Y**" (one
-/// before the cue, one after the word that closes it) and "**X** and **Y**
-/// share one language" (both before the cue, joined by "and"). A real tie
-/// names one subject in each of two stretches. `None` when the title has
-/// fewer than two: "one shared component, points at …", "a build-time alias
-/// turns it into …", "scores the same" with nothing linked after it.
+/// The tie's frame for display (no judge reads found bridges): the stretches
+/// where its two subjects stand, as in "**X** uses the same … as **Y**" or
+/// "**X** and **Y** share …". `None` unless two stretches each name a subject.
 pub(crate) fn frame(bridge: &str) -> Option<Vec<HashSet<String>>> {
     let main = strip_asides(crate::engine::title_clause(bridge));
     let words: Vec<String> = lower_words(&main).collect();
@@ -229,13 +207,10 @@ pub(crate) fn frame(bridge: &str) -> Option<Vec<HashSet<String>>> {
     (sides.len() >= 2).then_some(sides)
 }
 
-/// The words through which `bridge` names the subject of `note` — empty
-/// when it doesn't. The two share a subject
-/// ([`crate::engine::shared_subject`]), the note names it within its first
-/// [`SUBJECT_WINDOW`] content words, and the word is one the bridge itself
-/// uses (the named path returns the union of both titles' names, so sharing
-/// alone would let a name only the note carries through). Two notes a
-/// bridge reaches through the SAME word are one subject to it, not two.
+/// The words through which `bridge` names `note`'s subject (empty if it
+/// doesn't): a shared subject ([`crate::engine::shared_subject`]) the note
+/// names within its first [`SUBJECT_WINDOW`] content words, using a word the
+/// bridge itself uses. Two notes reached through the same word are one subject.
 pub(crate) fn anchors(bridge: &str, note: &str) -> HashSet<String> {
     let Some(subject) = crate::engine::shared_subject(bridge, note) else {
         return HashSet::new();

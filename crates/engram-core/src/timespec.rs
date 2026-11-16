@@ -1,23 +1,9 @@
-//! One temporal grammar for both memory layers.
-//!
-//! Curated notes and recorded messages are different registers with different
-//! scoring scales — the 0.8.1 register lesson says never blend their numbers.
-//! Their *clocks* are the same clock, though, so the way a caller says "since
-//! last week" must not depend on which layer it is asking. This module owns
-//! that grammar and nothing else: it turns a human time expression into a
-//! [`TimeWindow`], and names the orderings a caller may ask for.
-//!
-//! The daemon resolves relative expressions rather than making the assistant
-//! do date arithmetic — "last week" is a handle the model pulls, not a
-//! calculation it performs, and a model that miscounts a month silently
-//! returns the wrong decade of a project. That is mechanism, not intelligence:
-//! resolution is deterministic, clock-anchored, and identical for every
-//! caller.
-//!
-//! Every relative expression resolves to a single INSTANT — the start of the
-//! span it names. So `after: "last week"` reads "since one week ago", which is
-//! what a person asking for last week's work means; a caller wanting the
-//! bounded calendar week passes both `after` and `before`.
+//! One temporal grammar for both memory layers: their scores never blend, but
+//! their clocks are the same, so "since last week" means one thing everywhere.
+//! The daemon resolves relative expressions deterministically so the model
+//! never does date arithmetic. Each expression resolves to the start of its
+//! span (`after: "last week"` = since a week ago); a bounded calendar week
+//! takes both `after` and `before`.
 
 use serde::{Deserialize, Serialize};
 
@@ -26,12 +12,8 @@ const HOUR: i64 = 60 * MINUTE;
 const DAY: i64 = 24 * HOUR;
 const WEEK: i64 = 7 * DAY;
 
-/// A half-open time window: `after` is INCLUSIVE, `before` is EXCLUSIVE.
-///
-/// Half-open is what makes adjacent windows tile without overlap — two
-/// version windows fitted back to back (see `Engine::version_window`) must not
-/// both claim the switch instant, or a note written at the boundary shows up
-/// in both releases.
+/// A half-open time window: `after` inclusive, `before` exclusive, so adjacent
+/// version windows tile without both claiming the switch instant.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeWindow {
     pub after: Option<i64>,
@@ -142,18 +124,9 @@ pub enum SearchOrder {
     /// about relevance, and answering it by reading a score-ordered list is
     /// how a reader invents a sequence that was never there.
     Chronological,
-    /// Newest first — the update-question handle: "what is the CURRENT value
-    /// of X" wants the latest statement, not the best-matching one.
-    ///
-    /// Note the asymmetry this sits on, which predates it: CURATED hybrid
-    /// search already carries an implicit recency tilt (a multiplicative
-    /// bonus, +15% ceiling, 30-day half-life — `policy::SEARCH_RECENCY_BOOST`,
-    /// there to break near-ties toward current knowledge), while HISTORY
-    /// search carries none, scoring purely on distance and the cross-encoder.
-    /// So recency is expressed twice in one layer and once in the other, at
-    /// different strengths. This ordering is the explicit handle in both;
-    /// unifying the implicit tilt would change default curated ranking, which
-    /// needs a measured run before it may ship.
+    /// Newest first: "what is the current value of X". Curated search already
+    /// carries an implicit recency tilt (`policy::SEARCH_RECENCY_BOOST`) and
+    /// history search none; unifying them would need a measured run.
     Recent,
 }
 
@@ -183,18 +156,10 @@ impl SearchOrder {
     }
 }
 
-/// Parse one time expression into unix seconds, anchored at `now_ts`.
-///
-/// Accepted, in the order tried:
-/// - a full ISO-8601 instant (`2026-08-14T09:15:32Z`, offsets and fractional
-///   seconds included) — exact to the second;
-/// - a bare day (`2026-08-14`) or raw unix seconds — midnight UTC for a day;
-/// - a relative expression (`now`, `today`, `yesterday`, `last week`,
-///   `last 3 days`, `2 hours ago`, `a month ago`, `this year`).
-///
-/// Returns `None` for anything it does not recognise — callers surface that as
-/// an error naming the accepted shapes rather than silently ignoring a bound,
-/// because a dropped bound turns a scoped question into an unscoped answer.
+/// Parse a time expression into unix seconds, anchored at `now_ts`: an ISO
+/// instant, a bare day or unix seconds, or a relative expression (`today`,
+/// `last 3 days`, `2 hours ago`, `this year`, …). `None` when unrecognised, so
+/// callers can refuse rather than drop the bound.
 pub fn parse_instant(spec: &str, now_ts: i64) -> Option<i64> {
     let t = spec.trim();
     if t.is_empty() {

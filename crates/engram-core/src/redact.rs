@@ -1,11 +1,6 @@
-//! Defense-in-depth secret scrubbing applied to every node `title`/`body`
-//! before it is written. The skill is the first line of defense;
-//! this is the backstop so a leaked credential never lands in the graph.
-//!
-//! Two layers: (1) named patterns for well-known secret shapes, and (2) a
-//! high-entropy fallback that catches opaque tokens with no recognizable
-//! prefix. False positives are biased toward over-redaction — losing a commit
-//! SHA is cheaper than persisting a key.
+//! Backstop secret scrubbing for every node title and body (the skill is the
+//! first line): named patterns for known secret shapes, then a high-entropy
+//! fallback. Errs toward over-redaction.
 
 use std::sync::LazyLock;
 
@@ -49,12 +44,8 @@ static KV: LazyLock<Regex> = LazyLock::new(|| {
 static CANDIDATE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[A-Za-z0-9+/=_-]{24,}").expect("static candidate pattern"));
 
-/// Scrub a single field. Idempotent: running it twice yields the same output.
-///
-/// Sealed history blobs pass untouched: they're base64 ciphertext, which the
-/// entropy fallback would otherwise eat as a "secret" — and their plaintext
-/// was scrubbed BEFORE sealing (Engine::add_history_node), so there is
-/// nothing left here to find.
+/// Scrub one field; idempotent. Sealed history blobs pass untouched (their
+/// plaintext was scrubbed before sealing).
 pub fn scrub(text: &str) -> String {
     if text.starts_with(crate::history::SEAL_PREFIX) {
         return text.to_string();
@@ -103,24 +94,10 @@ pub fn scrub_fields(
 /// that compound identifiers are made of.
 const MIN_SEGMENT: usize = 12;
 
-/// Is this token credential material?
-///
-/// STRUCTURE IS THE TELL (0.8.7, fixing 00apzse1dkm5). Entropy used to be
-/// measured over the WHOLE token, which meant hyphen-joined dictionary words
-/// looked random at the character level: `nli-deberta-v3-small` with an org
-/// prefix, `x86_64-unknown-linux-gnu`, a reranker slug, any reddit permalink —
-/// all masked, permanently, in the one system that exists to remember them.
-/// Fifteen nodes lost facts that way before anyone noticed.
-///
-/// So entropy is now judged PER SEPARATOR-DELIMITED SEGMENT. Real credential
-/// material has no dictionary-shaped parts: either it carries no separators at
-/// all (one segment, and the old whole-token judgment applies unchanged), or
-/// its segments are themselves random. A compound identifier fails that test
-/// on every segment, which is the point.
-///
-/// This relaxes only the unnamed-token backstop. Every NAMED pattern above —
-/// PEM, AWS, JWT, GitHub, Slack, OpenAI-style, `key = value` — is untouched,
-/// and those are what actually catch secrets in practice.
+/// Is this unnamed token credential material? Entropy is judged per
+/// separator-delimited segment (fixing 00apzse1dkm5): compound identifiers like
+/// `x86_64-unknown-linux-gnu` have dictionary-shaped parts, real secrets don't.
+/// The named patterns are unaffected.
 fn looks_secret(tok: &str) -> bool {
     if tok == MASK.trim_matches(['[', ']']) {
         return false;

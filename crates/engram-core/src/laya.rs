@@ -10,7 +10,7 @@
 //! line-for-line port of `laya.common.build_sequence`; the parity test
 //! against the Python reference is what keeps it honest.
 //!
-//! As an [`Nli`], [`LayaNli`] asks the question Laya's own XNLI benchmark
+//! As an [`crate::Nli`], [`LayaNli`] asks the question Laya's own XNLI benchmark
 //! asks — the state `{"premise": …, "hypothesis": …}` and a three-way
 //! `choice` keyed entailment / neutral / contradiction — so the rest of the
 //! engine (and the model hot-swap) sees an ordinary three-way judge. The

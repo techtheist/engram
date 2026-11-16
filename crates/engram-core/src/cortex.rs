@@ -1,18 +1,9 @@
-//! Cortex model selection (PLAN §7A / Intent "user-selectable cortex
-//! models"): which local models power each layer — embeddings (recall),
-//! reranker (precision), NLI (logic) — chosen per machine in
-//! `~/.engram/models.json`. This module owns the config shape, the known-good
-//! presets, and path resolution; downloading stays in the CLI (core is
-//! HTTP-free), loading stays in rag/nli.
-//!
-//! The compatibility contract splits by layer: reranker/NLI are stateless
-//! swaps; embeddings are the hard case — a different model means a different
-//! vector space (and possibly width), so the engine's `ensure_embed_model`
-//! guard rebuilds vector storage and re-embeds the whole graph when the
-//! active identity diverges from what a store carries. The calibrated cosine
-//! thresholds were tuned on
-//! bge-small — a swapped embedding model shifts that distribution, so treat
-//! suspect-queue quality as unvalidated until re-tuned (surfaced in the UI).
+//! Cortex model selection: which local models power embeddings, reranking and
+//! NLI, chosen per machine in `~/.engram/models.json`. This module owns the
+//! config shape, presets and path resolution; the CLI downloads, rag/nli load.
+//! Reranker and NLI swap freely; a new embedder means a new vector space, so
+//! `ensure_embed_model` re-embeds the graph. Thresholds were tuned on
+//! bge-small: with another embedder, suspect-queue quality is unvalidated.
 
 use std::path::PathBuf;
 
@@ -164,21 +155,9 @@ pub fn presets(role: Role) -> Vec<ModelSpec> {
     let hf = |repo: &str| format!("https://huggingface.co/{repo}/resolve/main");
     match role {
         Role::Embedding => vec![
-            // fp32, pinned explicitly like the default reranker below — NOT
-            // the quantized export the other entries take.
-            //
-            // Every number in `eval/results/` was produced by the fp32
-            // weights: the quantized default was added later, and
-            // `provision()` skips a model dir that already has a
-            // `model.onnx`, so no machine that had already run Engram ever
-            // picked the int8 file up. That left the shipped default and the
-            // measured default disagreeing, which is the one thing a bench
-            // this project gates releases on cannot afford. Pinning fp32
-            // makes what a fresh install runs the same thing the receipts
-            // describe. Switching to int8 is a live option — it would take
-            // roughly 100 MB off the daemon — but it is a retrieval change
-            // and belongs behind a `--ladder` run, not behind a default
-            // nobody measured.
+            // fp32, pinned: every receipt in `eval/results/` used fp32, and machines that
+            // already had a model dir never picked up int8. int8 would save ~100 MB but is
+            // a retrieval change, so it needs a `--ladder` run first.
             ModelSpec {
                 name: crate::rag::DEFAULT_EMBED_MODEL.to_string(),
                 base_url: hf("Xenova/bge-small-en-v1.5"),
@@ -227,17 +206,11 @@ pub fn presets(role: Role) -> Vec<ModelSpec> {
                 layout: None,
             },
         ],
-        // First entry is the default (see `effective`). The tasksource
-        // DeBERTa replaced MobileBERT in 0.8.1 on the contradiction
-        // benchmark and stays the default after 0.9.9's Laya bench: Laya
-        // (a typed-decision model asked Laya's own XNLI question) separates
-        // generated contradictions a little better and reads compound
-        // sentences far better, but on this repo's real graph it flags more
-        // dismissed pairs (28% vs 19% at the 0.80 gate) at 15× the cost per
-        // pair (eval/results/2026-09-24-shapes-*, -realgraph-*). MobileBERT
-        // and nli-deberta-v3-small left the list in 0.9.9; an old explicit
-        // selection of either still resolves through `effective` as a
-        // custom spec.
+        // First entry is the default. tasksource stays it after the Laya bench: Laya
+        // reads compound sentences better but flags more dismissed pairs on this
+        // repo's graph (28% vs 19% at 0.80) at 15× the cost
+        // (eval/results/2026-09-24-shapes-*, -realgraph-*). Old selections of removed
+        // models still resolve as custom specs.
         Role::Nli => vec![
             ModelSpec {
                 name: "deberta-v3-small-tasksource-nli".into(),

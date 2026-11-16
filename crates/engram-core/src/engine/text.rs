@@ -146,7 +146,7 @@ fn is_function_word(w: &str) -> bool {
 
 /// May the NLI path read this pair of titles? Same subject
 /// ([`shared_subject`]) and at least [`crate::policy::CONFLICT_NLI_OVERLAP`]
-/// content words shared beyond it ([`content_overlap`]). Public so the
+/// content words shared beyond it (`content_overlap`). Public so the
 /// bench's gate probe measures the shipped rule rather than a copy of it.
 pub fn title_pair_admissible(a: &str, b: &str) -> bool {
     title_pair_admission(a, b).is_some()

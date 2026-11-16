@@ -171,7 +171,7 @@ pub(crate) fn claim_texts(title: &str, body: Option<&str>) -> Vec<String> {
 }
 
 /// The embedding composition stored vectors use (`PRAGMA user_version`); bump
-/// it when [`embed_text`] changes. 0 = title+body, 2 = all fields,
+/// it when `embed_text` changes. 0 = title+body, 2 = all fields,
 /// 3 = node vector plus one per body sentence.
 pub const EMBED_COMPOSITION: i64 = 3;
 

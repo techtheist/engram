@@ -230,7 +230,7 @@ impl Engine {
     }
 
     /// [`Engine::nli_hint`] on the bare titles, without the body sentence
-    /// [`claim`] appends: titles separate contradiction from restatement far
+    /// `claim` appends: titles separate contradiction from restatement far
     /// more sharply (negation 0.99 vs 0.61).
     pub fn nli_title_hint(&self, a: &Node, b: &Node) -> Option<Hint> {
         title_hint(self.nli.as_deref()?, a, b)

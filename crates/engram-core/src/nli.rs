@@ -1,37 +1,18 @@
-//! NLI — the logic layer of the local cortex. Given a premise and
-//! a hypothesis, a small local cross-encoder answers: entailment, neutral, or
-//! contradiction. This is what similarity can't do — telling "we use Postgres"
-//! vs "we use MySQL" (contradiction) apart from "we use Postgres for analytics
-//! only" (refinement) — and it runs offline, token-free.
+//! NLI, the cortex's logic layer: a local cross-encoder labels a premise and
+//! hypothesis entailment, neutral or contradiction ("we use Postgres" vs "we
+//! use MySQL"), offline. Models don't validate: NLI nominates and orders,
+//! never moves trust.
 //!
-//! Governing principle: **models don't validate.** NLI output
-//! nominates — orders the suspects queue, suggests verdicts, annotates claims
-//! — and never moves a trust field. Judgment stays with the user or the
-//! assistant.
+//! Default: `sileod/deberta-v3-small-tasksource-nli` (own quantized ONNX
+//! export, 172 MB, 512-token pairs), chosen on `eval/CONTRADICTIONS.md`.
+//! MNLI-only models presuppose co-reference and call unrelated notes
+//! contradictions; tasksource halves false alarms at the shipped gate. Laya
+//! models ([`crate::laya`], via [`load_dir`]) are the alternatives in
+//! `cortex::presets`.
 //!
-//! Runtime model (since 0.8.1): `sileod/deberta-v3-small-tasksource-nli`
-//! (multi-task, 600+ tasks), our own quantized ONNX export, **172 MB** on
-//! disk, 512-token pairs.
-//!
-//! It replaced `mobilebert-uncased-mnli` on measurement, not taste — the same
-//! way MobileBERT replaced `nli-deberta-v3-small` in 0.7.2. The benchmark in
-//! `eval/CONTRADICTIONS.md` scores the layer end to end — what it catches
-//! against what it costs — and MNLI-only models presuppose co-reference: they
-//! call unrelated same-register notes confident contradictions ("Engram uses
-//! Rust" vs "TepinDB is on crates.io" scored c=0.99). The tasksource model
-//! judges those neutral, halves false alarms at the shipped gate on generated
-//! prose, and zeroes the unbiased queue noise on this repo's real graph while
-//! catching every generated contradiction. Since 0.9.9 the alternatives in
-//! `cortex::presets` are Laya typed-decision models ([`crate::laya`], loaded
-//! through [`load_dir`]); MobileBERT and nli-deberta-v3-small left the list.
-//!
-//! Swap the model with `ENGRAM_NLI_DIR` pointing at a directory holding
-//! `model.onnx`, `tokenizer.json` and a `config.json` whose `id2label` covers
-//! entailment / neutral / contradiction. That is the whole contract, and it is
-//! how `eval/CONTRADICTIONS.md` compares candidates — note that the widely
-//! recommended small "zero-shot" models are BINARY (entailment vs
-//! not_entailment) and cannot express contradiction at all, so they do not
-//! load here and would be useless if they did.
+//! `ENGRAM_NLI_DIR` swaps the model: `model.onnx`, `tokenizer.json` and a
+//! `config.json` whose `id2label` covers all three labels. Binary "zero-shot"
+//! models can't express contradiction and won't load.
 
 #[cfg(feature = "fastembed")]
 use crate::sync::MutexExt;
@@ -284,12 +265,8 @@ mod fast {
     }
 
     impl Nli for FastNli {
-        /// Judge every pair, in batches of at most [`crate::onnx::batch`].
-        ///
-        /// Each pair is scored independently of the others, so chunking is
-        /// numerically exact — it only bounds how wide a tensor the session
-        /// ever allocates. (Padding is per-batch `BatchLongest`, but the
-        /// attention mask makes padding width irrelevant to the logits.)
+        /// Judge every pair in batches of at most [`crate::onnx::batch`]. Pairs are
+        /// scored independently and padding is masked, so chunking is exact.
         fn judge(&self, pairs: &[(String, String)]) -> Result<Vec<NliJudgment>> {
             let mut out = Vec::with_capacity(pairs.len());
             for chunk in pairs.chunks(crate::onnx::batch()) {
@@ -341,12 +318,8 @@ mod fast {
                 ));
             }
 
-            // With the arena on (`ENGRAM_ONNX_ARENA=1`) ask ORT to hand the
-            // run's allocations back afterwards, so the comparison mode stays
-            // bounded too. This is *not* inert when the arena is off — ORT
-            // errors out if nothing is registered to shrink — so it is gated,
-            // not always-on. Weights are initializers and sit outside the
-            // shrinkable region either way.
+            // With the arena on, ask ORT to shrink it after the run. Gated, because a
+            // shrink with no arena registered is an error.
             let run_opts = if crate::onnx::arena_enabled() {
                 let mut o = ort::session::RunOptions::new().map_err(nli_err)?;
                 o.add_config_entry("memory.enable_memory_arena_shrinkage", "cpu:0")

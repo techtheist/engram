@@ -110,7 +110,7 @@ pub struct ReviewPair {
     pub linked: Option<String>,
 }
 
-/// A member past the [`SHOWN`] ones: enough to name it.
+/// A member past the `SHOWN` ones: enough to name it.
 #[derive(Debug, Clone, Serialize)]
 pub struct ReviewLine {
     pub id: String,
