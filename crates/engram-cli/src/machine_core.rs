@@ -7,7 +7,9 @@ use crate::*;
 /// matches. When one exists, IT holds the file; everything else talks HTTP.
 pub(crate) fn daemon_for(db: &Path) -> Option<u16> {
     let raw = std::fs::read_to_string(db.parent()?.join("daemon.json")).ok()?;
-    let port = serde_json::from_str::<serde_json::Value>(&raw).ok()?["port"].as_u64()? as u16;
+    let port = serde_json::from_str::<serde_json::Value>(&raw).ok()?["port"]
+        .as_u64()
+        .and_then(|p| u16::try_from(p).ok())?;
     let health = doctor::http_get(port, "/health")?;
     let canon = std::fs::canonicalize(db).unwrap_or_else(|_| db.to_path_buf());
     health
@@ -109,7 +111,9 @@ pub(crate) fn machine_core() -> Option<u16> {
 pub(crate) fn machine_core_info() -> Option<(u16, Option<String>)> {
     let path = registry::engram_home()?.join("daemon.json");
     let raw = std::fs::read_to_string(path).ok()?;
-    let port = serde_json::from_str::<serde_json::Value>(&raw).ok()?["port"].as_u64()? as u16;
+    let port = serde_json::from_str::<serde_json::Value>(&raw).ok()?["port"]
+        .as_u64()
+        .and_then(|p| u16::try_from(p).ok())?;
     let health = doctor::http_get(port, "/health")?;
     let version = serde_json::from_str::<serde_json::Value>(&health)
         .ok()
@@ -170,7 +174,9 @@ pub(crate) fn retire_older_core() -> bool {
 /// health-verifies.
 pub(crate) fn machine_core_pid() -> Option<u32> {
     let raw = std::fs::read_to_string(registry::engram_home()?.join("daemon.json")).ok()?;
-    Some(serde_json::from_str::<serde_json::Value>(&raw).ok()?["pid"].as_u64()? as u32)
+    serde_json::from_str::<serde_json::Value>(&raw).ok()?["pid"]
+        .as_u64()
+        .and_then(|p| u32::try_from(p).ok())
 }
 
 #[cfg(test)]

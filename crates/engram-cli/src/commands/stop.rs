@@ -27,20 +27,23 @@ pub(crate) fn run_stop() -> anyhow::Result<()> {
             let _ = std::fs::remove_file(&file);
             continue;
         };
-        let (Some(port), Some(pid)) = (meta["port"].as_u64(), meta["pid"].as_u64()) else {
+        let (Some(port), Some(pid)) = (
+            meta["port"].as_u64().and_then(|p| u16::try_from(p).ok()),
+            meta["pid"].as_u64().and_then(|p| u32::try_from(p).ok()),
+        ) else {
             continue;
         };
-        if doctor::http_get(port as u16, "/health").is_none() {
+        if doctor::http_get(port, "/health").is_none() {
             // Nothing lives there — the file is stale; clean it up.
             let _ = std::fs::remove_file(&file);
             continue;
         }
-        let ok = terminate_pid(pid as u32);
+        let ok = terminate_pid(pid);
         if ok {
             // Give it a moment, then confirm the port went quiet.
             for _ in 0..20 {
                 std::thread::sleep(std::time::Duration::from_millis(250));
-                if doctor::http_get(port as u16, "/health").is_none() {
+                if doctor::http_get(port, "/health").is_none() {
                     break;
                 }
             }
@@ -72,7 +75,7 @@ pub(crate) fn stop_machine_core(file: &Path, quiet: bool) -> usize {
         let _ = std::fs::remove_file(file);
         return 0;
     };
-    let Some(port) = meta["port"].as_u64().map(|p| p as u16) else {
+    let Some(port) = meta["port"].as_u64().and_then(|p| u16::try_from(p).ok()) else {
         let _ = std::fs::remove_file(file);
         return 0;
     };
@@ -84,7 +87,7 @@ pub(crate) fn stop_machine_core(file: &Path, quiet: bool) -> usize {
     let clients = doctor::http_get(port, "/system")
         .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
         .and_then(|v| v["processes"]["clients"].as_array().map(std::vec::Vec::len));
-    let pid = meta["pid"].as_u64().map(|p| p as u32);
+    let pid = meta["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
 
     // Judge "gone" on the process, not /health: a health-silent core can still
     // hold its locks (issue #8).
@@ -154,7 +157,17 @@ pub(crate) fn wait_core_exit(pid: Option<u32>, port: u16, ticks: u32) -> bool {
 /// Is the process alive? Safe against pid recycling here: the pid comes from
 /// a daemon file whose port answered /health moments ago — the core itself
 /// wrote it and was alive to prove it.
+/// Whether `pid` may be signalled at all. `kill 0` hits our own process group
+/// and a pid past `i32::MAX` reads as `-1` (every process we own), so a
+/// corrupt daemon file must never reach `kill`; neither may init or ourselves.
+pub(crate) fn signalable(pid: u32) -> bool {
+    pid > 1 && i32::try_from(pid).is_ok() && pid != std::process::id()
+}
+
 pub(crate) fn pid_alive(pid: u32) -> bool {
+    if !signalable(pid) {
+        return false;
+    }
     #[cfg(unix)]
     {
         std::process::Command::new("kill")
@@ -179,6 +192,9 @@ pub(crate) fn port_is_free(port: u16) -> bool {
 }
 
 pub(crate) fn force_kill_pid(pid: u32) -> bool {
+    if !signalable(pid) {
+        return false;
+    }
     #[cfg(unix)]
     {
         std::process::Command::new("kill")
@@ -195,6 +211,9 @@ pub(crate) fn force_kill_pid(pid: u32) -> bool {
 }
 
 pub(crate) fn terminate_pid(pid: u32) -> bool {
+    if !signalable(pid) {
+        return false;
+    }
     #[cfg(unix)]
     {
         std::process::Command::new("kill")
@@ -210,5 +229,20 @@ pub(crate) fn terminate_pid(pid: u32) -> bool {
             .status()
             .map(|s| s.success())
             .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::signalable;
+
+    #[test]
+    fn a_corrupt_pid_never_reaches_kill() {
+        assert!(!signalable(0), "kill 0 is our own process group");
+        assert!(!signalable(1), "init");
+        assert!(!signalable(u32::MAX), "reads as kill -1");
+        assert!(!signalable(1 << 31), "past pid_t");
+        assert!(!signalable(std::process::id()), "ourselves");
+        assert!(signalable(4242));
     }
 }
