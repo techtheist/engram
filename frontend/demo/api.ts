@@ -61,7 +61,7 @@ export function setApiProject(id: string | null): void {
 }
 
 /** A gesture that only exists next to a real filesystem. */
-/** What undoing a journal row means, in the core's words (engine.rs undo_effect). */
+/** What undoing a journal row means, in the core's words (engine/audit_log.rs undo_effect). */
 function undoEffect(r: AuditEntry): string {
     const noun = r.entity === 'edge' ? 'link' : 'note'
     if (r.before == null) return `removes the ${noun}`
