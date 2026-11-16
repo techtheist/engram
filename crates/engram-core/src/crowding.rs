@@ -1,4 +1,4 @@
-//! Crowding (0.11.0): how many notes sit unusually close to each note in
+//! Crowding: how many notes sit unusually close to each note in
 //! embedding space — the measure that "sleep" (consolidation after the fact)
 //! starts from. Computed from the node-level vectors the store already keeps;
 //! no model runs here, and nothing here ranks retrieval.

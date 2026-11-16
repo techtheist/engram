@@ -226,7 +226,7 @@ pub struct Node {
     pub stale: bool,
     #[serde(default)]
     pub code_refs: Vec<String>,
-    /// Free-form slice labels (PLAN §10 tags): how the user cuts the graph
+    /// Free-form slice labels: how the user cuts the graph
     /// (phases, concerns) — orthogonal to Anchors, which say what code a note
     /// is about. Normalized to kebab-case on write.
     #[serde(default)]
@@ -238,12 +238,12 @@ pub struct Node {
     /// version-less.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// Layer-specific extension bag (0.8.4 history layer): harness, role,
+    /// Layer-specific extension bag: harness, role,
     /// turn order and raw_ref on history Messages/Sessions. The curated
     /// ontology never writes it, and no default surface reads it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub props: Option<serde_json::Map<String, serde_json::Value>>,
-    /// User-defined custom field values (0.9.0), keyed by the graph config's
+    /// User-defined custom field values, keyed by the graph config's
     /// [`crate::config::FieldDef`] names — first-class like `tags`, validated
     /// at the engine write boundary against the declared kinds. Absent =
     /// the graph declares no fields, or this node predates them.
@@ -307,7 +307,7 @@ pub struct NodePatch {
     /// Set (or correct) the node's captured-at version.
     #[serde(default)]
     pub version: Option<String>,
-    /// Reclassification (PLAN §10 Phase 1): the type was Claude's guess,
+    /// Reclassification: the type was Claude's guess,
     /// correcting it must not require delete-and-recreate.
     #[serde(default, rename = "type")]
     pub node_type: Option<NodeType>,
@@ -367,19 +367,19 @@ pub struct NewEdge {
     pub status: Option<EdgeStatus>,
 }
 
-/// Portable, diffable snapshot of the whole graph (PLAN §6B JSON export).
+/// Portable, diffable snapshot of the whole graph.
 /// Node/edge order is sorted by the exporter for stable git diffs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportGraph {
     pub version: u32,
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
-    /// The graph's configuration (PLAN §7D) — present only when customized,
+    /// The graph's configuration — present only when customized,
     /// so pre-0.7 dumps and default graphs stay byte-identical in meaning.
     /// Additive and optional: old binaries ignore it on import.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<crate::config::GraphConfig>,
-    /// The working list beside the graph (0.10.0) — additive like `config`.
+    /// The working list beside the graph — additive like `config`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<crate::tasks::Task>,
 }
@@ -404,7 +404,7 @@ pub struct SearchHit {
     pub status: Option<NodeStatus>,
     /// When the node was captured. Carried on the hit so a time-ordered
     /// result can be sorted without a second read, and so a caller that asked
-    /// a scoped question can see the dates it scoped to (0.8.7).
+    /// a scoped question can see the dates it scoped to.
     pub created_at: i64,
     /// Computed trust at query time (policy::trust).
     pub trust: f64,
@@ -412,26 +412,26 @@ pub struct SearchHit {
     /// consider reconfirming or superseding.
     pub stale: bool,
     /// The session that captured the node, carried so the delivered set can
-    /// be diversified across sessions without a per-hit re-read (0.8.10).
+    /// be diversified across sessions without a per-hit re-read.
     /// `None` for nodes with no recorded session (pane-created, imports).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     /// The hit plays the graph's tombstone role: a record that knowledge was
-    /// deliberately removed, not live canon (0.9.4). Stamped by the engine
+    /// deliberately removed, not live canon. Stamped by the engine
     /// from the ontology so a reader on any surface — REST included — can be
     /// role-aware without knowing which type name plays the role; serialized
     /// only when true.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tombstone: bool,
     /// 1-hop subgraph around the match, `conflicts-with`/`replaces` first
-    /// (PLAN §6A retrieval), capped.
+    ///, capped.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub neighbors: Vec<NeighborRef>,
     /// Which project the hit came from — set only on cross-project reads
-    /// (PLAN §7C provenance); absent means the queried project itself.
+    ///; absent means the queried project itself.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
-    /// Grounded answers (0.9.10): the graph's own account of this hit —
+    /// Grounded answers: the graph's own account of this hit —
     /// whether it is endorsed, unverified, stale, contested, superseded or a
     /// tombstone — so the assistant inherits the graph's epistemology instead
     /// of re-deriving it from trust numbers and neighbour lists.
@@ -472,7 +472,7 @@ pub struct NeighborRef {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct EdgePatch {
-    /// Retype the edge (PLAN §10 pane CRUD): picking the wrong verb must not
+    /// Retype the edge: picking the wrong verb must not
     /// require delete-and-recreate.
     #[serde(default, rename = "type")]
     pub edge_type: Option<EdgeType>,
@@ -486,7 +486,7 @@ pub struct EdgePatch {
     pub strength: Option<f64>,
 }
 
-/// One generation of a node's `replaces` chain (PLAN §10 timeline), oldest
+/// One generation of a node's `replaces` chain, oldest
 /// first: how a piece of knowledge evolved into its current form.
 #[derive(Debug, Clone, Serialize)]
 pub struct TimelineEntry {
@@ -505,7 +505,7 @@ pub struct TimelineEntry {
 }
 
 /// A node whose path-shaped `code_refs` no longer resolve against the project
-/// root (PLAN §10 verified code refs): the code moved or was deleted and the
+/// root: the code moved or was deleted and the
 /// memory didn't follow — a contradiction between the graph and reality,
 /// surfaced for review like a conflict.
 #[derive(Debug, Clone, Serialize)]
@@ -532,7 +532,7 @@ pub struct Suspect {
     pub created_at: i64,
     pub status: SuspectStatus,
     /// Local-cortex triage hint: contradiction | entailment | neutral.
-    /// A nomination for the judge, never a verdict (PLAN §7A).
+    /// A nomination for the judge, never a verdict.
     pub nli_label: Option<String>,
     pub nli_score: Option<f64>,
     /// For contradiction hints: which side the model reads as carrying the
@@ -540,7 +540,7 @@ pub struct Suspect {
     /// the asymmetry is below the confidence margin. A hint, never a verdict.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nli_direction: Option<String>,
-    /// For a `bridged` hint (0.11.2): the note that ties the two subjects
+    /// For a `bridged` hint: the note that ties the two subjects
     /// together — the pair disagrees only through it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via: Option<String>,
@@ -562,7 +562,7 @@ pub struct SuspectView {
     pub nli_direction: Option<String>,
     pub a: SuspectEndpoint,
     pub b: SuspectEndpoint,
-    /// The bridge note a `bridged` pair disagrees through (0.11.2).
+    /// The bridge note a `bridged` pair disagrees through.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub via: Option<SuspectEndpoint>,
 }
@@ -575,7 +575,7 @@ pub struct SuspectEndpoint {
     pub title: String,
 }
 
-/// A found bridge (0.11.2): a note tied to the asked one by a bridge note
+/// A found bridge: a note tied to the asked one by a bridge note
 /// ("X uses the same datastore as Y") while no edge joins the two. A
 /// structural reading of titles — no model judged it, nothing was written.
 /// `via` is the bridge; absent when the asked note is itself the bridge and
@@ -612,7 +612,7 @@ pub struct NliAgreement {
     pub agreement: Option<f64>,
 }
 
-/// One node's NLI verdict against a checked claim (PLAN §7A check_claim).
+/// One node's NLI verdict against a checked claim.
 #[derive(Debug, Clone, Serialize)]
 pub struct ClaimVerdict {
     pub id: String,
@@ -624,7 +624,7 @@ pub struct ClaimVerdict {
     pub entailment: f32,
     pub neutral: f32,
     pub contradiction: f32,
-    /// Cross-project provenance (PLAN §7C) — absent for the queried project.
+    /// Cross-project provenance — absent for the queried project.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
 }
@@ -638,7 +638,7 @@ pub struct ClaimReport {
     pub claim: String,
     pub supports: Vec<ClaimVerdict>,
     pub contradicts: Vec<ClaimVerdict>,
-    /// Tombstone-role hits (0.9.2): the claim lands on knowledge a person
+    /// Tombstone-role hits: the claim lands on knowledge a person
     /// deliberately removed. Not an NLI verdict — a tombstone's text
     /// ("Removed: X") is not a shape the model reads reliably, so these are
     /// sorted out by role before judging and carry the retrieval score as
@@ -650,7 +650,7 @@ pub struct ClaimReport {
 }
 
 /// What an audit sweep did: pairs it examined with NLI, suspects it queued,
-/// and whether the pair budget cut it short (PLAN §7A: no silent caps).
+/// and whether the pair budget cut it short.
 ///
 /// Since 0.9.11 it also says what it passed over: the close pairs (above
 /// the sweep's floor) it did not judge, each counted once whichever side
@@ -669,11 +669,11 @@ pub struct AuditSweep {
     /// Close pairs with an archived note, a tombstone or an anchor on one
     /// side.
     pub inactive: usize,
-    /// Pairs an earlier run already judged and passed (0.9.11) — unchanged
+    /// Pairs an earlier run already judged and passed — unchanged
     /// notes, same judge: read again they would spend budget on the same
     /// answer.
     pub already_judged: usize,
-    /// Pairs queued through a bridge note (0.11.2) — counted in `queued`
+    /// Pairs queued through a bridge note — counted in `queued`
     /// too.
     pub bridged: usize,
 }
@@ -710,7 +710,7 @@ pub struct StaleTriage {
 }
 
 /// What a checked node update did — the same-turn verdict set every write
-/// returns (PLAN §6A/§7A): near-canon warnings, freshly queued look-alike
+/// returns: near-canon warnings, freshly queued look-alike
 /// suspects, and code_refs that don't resolve in the repo.
 #[derive(Debug, Clone)]
 pub struct CheckedUpdate {
@@ -769,7 +769,7 @@ pub struct CanonVerdict {
     pub similarity: f64,
 }
 
-/// One row of the hub's project listing (PLAN §7C): the registry entries plus
+/// One row of the hub's project listing: the registry entries plus
 /// the current project and the home graph, with liveness flags.
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectInfo {
@@ -788,7 +788,7 @@ pub struct ProjectInfo {
     pub last_seen: Option<i64>,
 }
 
-/// A promotion nomination (PLAN §7C): a Principle/Caution that recurs across
+/// A promotion nomination: a Principle/Caution that recurs across
 /// project graphs and may belong in the home graph. Nomination only — the
 /// user approves; nothing self-applies.
 #[derive(Debug, Clone, Serialize)]
@@ -826,14 +826,14 @@ pub struct WriteWarning {
     /// "in-active-conflict" | "superseded" | "tombstoned"
     pub reason: String,
     pub similarity: f64,
-    /// For `tombstoned` (0.9.2): the tombstone's own account of what was
+    /// For `tombstoned`: the tombstone's own account of what was
     /// removed and why, so the writer reads the reason without a second
     /// call. Absent on the other reasons.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
 
-/// One row of the append-only audit journal (PLAN §10): a node/edge mutation
+/// One row of the append-only audit journal: a node/edge mutation
 /// with full before/after snapshots plus the binary-side context of the
 /// writing process. `seq` is the keyset-pagination cursor (newest = highest).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -856,7 +856,7 @@ pub struct AuditEntry {
     pub cwd: Option<String>,
     pub pid: Option<i64>,
     pub version: Option<String>,
-    /// Groups the rows one operation wrote (0.9.10): a merge, a hard delete
+    /// Groups the rows one operation wrote: a merge, a hard delete
     /// with the edges it cascaded, an undo. Undoing any row of a group undoes
     /// the whole group. Absent on older rows, which undo one by one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -867,7 +867,7 @@ pub struct AuditEntry {
     pub undone_by: Option<i64>,
 }
 
-/// A journal lookup for undo (0.9.10): every set filter must match.
+/// A journal lookup for undo: every set filter must match.
 #[derive(Debug, Clone, Default)]
 pub struct AuditQuery {
     pub seq: Option<i64>,
@@ -879,7 +879,7 @@ pub struct AuditQuery {
     pub after: Option<i64>,
 }
 
-/// What an undo did — or, on a dry run, would do (0.9.10).
+/// What an undo did — or, on a dry run, would do.
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct UndoReport {
     pub dry_run: bool,
@@ -925,7 +925,7 @@ pub enum WriteOutcome {
         /// Path-shaped code_refs that don't resolve right now — the
         /// write-time half of the drift check, caught in the same turn.
         missing_refs: Vec<String>,
-        /// The write-time canon check (PLAN §7A): NLI verdicts from the
+        /// The write-time canon check: NLI verdicts from the
         /// nearest existing knowledge — `supports` (canon backs the new
         /// text; consider linking it) or `contradicts` (canon disputes it;
         /// read before proceeding). Empty without the logic layer.
@@ -967,7 +967,7 @@ pub struct StoreHealth {
 
 /// The embedding model identity a store's vectors were computed with — the
 /// guard that triggers a full re-embed when the active model changes
-/// (PLAN §7A model selection; TepinDB pins the same pair per file).
+///.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EmbedModelId {
     pub name: String,

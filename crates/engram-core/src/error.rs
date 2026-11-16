@@ -18,7 +18,7 @@ pub enum Error {
     Embedding(String),
     #[error("io: {0}")]
     Io(String),
-    /// A graph-configuration document breaking a hard invariant (PLAN §7D).
+    /// A graph-configuration document breaking a hard invariant.
     /// Client error (400), with the violated rule in the message.
     #[error("config: {0}")]
     Config(String),

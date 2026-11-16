@@ -125,7 +125,7 @@ fn unix_now() -> u64 {
 /// "Text file busy" — the same number on Linux and macOS.
 const ETXTBSY: i32 = 26;
 
-/// The shakedown before a swap (0.10.4, from the issue #17 report): run the
+/// The shakedown before a swap (issue #17 report): run the
 /// new binary with `--version` and refuse it unless it starts and names
 /// itself. A binary built against a newer glibc fails right here with the
 /// loader's own words ("GLIBC_2.43 not found") instead of after it replaced

@@ -1,4 +1,4 @@
-//! Project upkeep (0.11.1, issue #19): the core keeps every project's
+//! Project upkeep (issue #19): the core keeps every project's
 //! installed skills and instruction blocks on its own binary's text, the
 //! first time a bridge binds that project — not only the repo `serve` was
 //! started in. An automatic pass rewrites only copies git doesn't track; a

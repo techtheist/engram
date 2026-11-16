@@ -1,4 +1,4 @@
-//! Trust tuning (PLAN §6A / §11). These are the concrete numbers the plan left
+//! Trust tuning. These are the concrete numbers the plan left
 //! open; kept in one place so they're easy to revisit as we dogfood.
 //!
 //! Trust is **computed at read time** — nothing depends on a background
@@ -62,10 +62,10 @@ pub const APPROVED_TRUST_WINDOW_SECS: i64 = 365 * 24 * 60 * 60;
 pub const STALE_TRUST: f64 = 0.3;
 
 /// Same-type cosine similarity at/above which `add_note` treats the new note
-/// as a duplicate and returns the existing match instead of creating (PLAN §6A).
+/// as a duplicate and returns the existing match instead of creating.
 pub const DUPLICATE_SIMILARITY: f64 = 0.90;
 /// Cosine similarity at/above which two *unlinked* nodes become a suspected
-/// conflict (PLAN §7 conflict scan): close enough to be about the same thing,
+/// conflict: close enough to be about the same thing,
 /// below the duplicate bar. Judgment stays with Claude or the user. Retuned on
 /// the dogfood graph twice: 0.75 flagged every topical cluster (136 pairs / ~50
 /// nodes), so it moved to 0.85; but same-genre notes share so much domain
@@ -76,7 +76,7 @@ pub const DUPLICATE_SIMILARITY: f64 = 0.90;
 /// every observed false positive, keeps the real one. Positive class is thin
 /// (n=1), so widen only after the judged-suspects corpus grows.
 pub const CONFLICT_SUSPECT_SIMILARITY: f64 = 0.88;
-/// The second way into the suspect queue (0.9.4): a pair BELOW the
+/// The second way into the suspect queue: a pair BELOW the
 /// similarity floor is still nominated when the logic layer reads the two
 /// TITLES as contradicting each other at or above this confidence and the
 /// titles plausibly name the same subject. Measured on the KnowledgeDrift
@@ -96,7 +96,7 @@ pub const CONFLICT_SUSPECT_SIMILARITY: f64 = 0.88;
 /// 1 of the 56 real false alarms through. `None` in config turns the path
 /// off.
 pub const CONFLICT_NLI_GATE: f64 = 0.80;
-/// Bridged contradictions (0.11.2): two facts about two different subjects
+/// Bridged contradictions: two facts about two different subjects
 /// queue when a bridge note ties the subjects together and the logic layer
 /// reads "bridge. y ⟹ x" as a contradiction at or above this confidence.
 /// KnowledgeDrift v3 + the dogfood graph (eval Finding 00ge9s5nwc1z): at
@@ -181,12 +181,12 @@ pub const WEAK_EVIDENCE_TOP: f64 = 0.85;
 /// and unlike the fixed floor, the cliff sharpens with crowd size, so the
 /// gain holds where the floor went quiet.
 pub const KNEE_MIN_CLIFF: f64 = 0.25;
-/// Session-diverse delivery (0.8.10): when the floor-surviving candidate pool
+/// Session-diverse delivery: when the floor-surviving candidate pool
 /// is deeper than the delivery limit, each additional hit from a session
 /// already represented in the delivered set is demoted this many RANK
 /// positions before the final cut, so complementary evidence from other
 /// sessions fills the slots a single session's restatements would otherwise
-/// crowd. Rank-based on purpose — the register lesson (0.8.1) is that
+/// crowd. Rank-based on purpose — the register lesson is that
 /// absolute score thresholds don't transfer between graphs while relative
 /// mechanisms do, and a rank demotion is scale-free. `0` disables. Selection
 /// and order only: reported scores stay the cross-encoder's, exactly like the
@@ -232,7 +232,7 @@ pub const WEAK_LINE_ABOVE_FLOOR: f64 = 0.03;
 /// everything.
 pub const WEAK_LINE_MAX: f64 = 0.95;
 /// How long a node must sit below [`STALE_TRUST`] before the decay pass
-/// archives it (PLAN §6B: stale provisional episodic nodes decay out).
+/// archives it.
 pub const DECAY_TTL_DAYS: i64 = 14;
 /// Similarity at/above which a write warns about nearby conflicted or
 /// superseded nodes (the pull-based form of PLAN §7 conflict surfacing).
@@ -273,7 +273,7 @@ pub const SEARCH_RELATIVE_CUT: f64 = 0.25;
 pub const SEARCH_RECENCY_BOOST: f64 = 0.15;
 /// Age at which the newness bonus has halved.
 pub const SEARCH_RECENCY_HALF_LIFE_SECS: i64 = 30 * 24 * 60 * 60; // 30 days
-/// Candidate-pool multiplier when a search carries a time window (0.8.7).
+/// Candidate-pool multiplier when a search carries a time window.
 /// Neither retrieval channel is date-ordered, so an in-window match can sit
 /// arbitrarily deep in a date-blind ranking; the only lever is to look at more
 /// candidates before filtering.
@@ -283,7 +283,7 @@ pub const SEARCH_RECENCY_HALF_LIFE_SECS: i64 = 30 * 24 * 60 * 60; // 30 days
 ///
 /// The firm result is that DEPTH PAST 2 IS DEAD WEIGHT: on a 2100-note graph
 /// the mean recall@5 at 2, 4, 8 and 16 is identical to three decimals at both
-/// window widths (0.943 at 30 days, 0.848 at 180), while wall-clock grows with
+/// window widths, while wall-clock grows with
 /// the pool. Rank-1 recall drifts slightly DOWN as the pool deepens (0.805 →
 /// 0.799), which is the cross-encoder mis-promoting out of a larger candidate
 /// set — the same effect recorded in the oblique-recall work.
@@ -304,13 +304,13 @@ pub const SEARCH_WINDOW_OVERFETCH: usize = 2;
 /// inside the hybrid blend): relevance dominates, trust breaks near-ties.
 pub const RERANK_TRUST_WEIGHT: f64 = 0.15;
 /// Cosine at or above which two delivered hits count as twins for the
-/// endorsement order (0.9.10): between near-identical notes the pinned or
+/// endorsement order: between near-identical notes the pinned or
 /// more-trusted one goes first. Measured 2026-09-27: on `eval --authority`
 /// at 500 the endorsed twin ranked first 0.575 → 1.00 (a fresher capture
 /// stamp beat confirm/approve/pin 94–100% of the time before; pin vs approve
 /// was a coin flip), the no-endorsement control unchanged at 0.44; the
 /// post-tune ladder at 100/500/1500 is identical in every recall and FP
-/// column. 0.95 misses twins (0.906). Receipts:
+/// column. 0.95 misses twins. Receipts:
 /// eval/results/2026-09-27-authority-500.json and
 /// 2026-09-27-0.9.10-posttune-{shipped,twins090}-100-1500.json.
 pub const TWIN_TRUST_ORDER: Option<f64> = Some(0.90);
@@ -375,16 +375,16 @@ pub const CLAIM_CONTRADICTION_MIN_CONFIDENCE: f64 = 0.80;
 /// the judge is worse than one that misses; calibrate on the judged-suspects
 /// corpus (scripts/nli-eval.py) before loosening either guard.
 pub const NLI_SWEEP_MIN_CONFIDENCE: f32 = 0.8;
-/// Locality prior on cross-project reads (PLAN §7C): hits from other
+/// Locality prior on cross-project reads: hits from other
 /// projects' graphs are multiplied by this so the local canon wins ties —
 /// provenance-aware ranking, not exclusion.
 pub const CROSS_PROJECT_PRIOR: f64 = 0.85;
 /// Same-type cosine similarity at/above which a Principle/Caution recurring
 /// in another project's graph becomes a promotion nomination for the home
-/// graph (PLAN §7C). Borrowed from the suspect band — recalibrate with it.
+/// graph. Borrowed from the suspect band — recalibrate with it.
 pub const PROMOTION_SIMILARITY: f64 = 0.85;
 /// Character budget carved out of the brief for the home-graph section
-/// (PLAN §7C): user-level canon rides along with every project brief but
+///: user-level canon rides along with every project brief but
 /// must never starve the project's own sections.
 pub const HOME_BRIEF_RESERVE: usize = 1500;
 

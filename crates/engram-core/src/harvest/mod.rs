@@ -1,4 +1,4 @@
-//! The harvester (0.8.4): tails coding-assistant transcripts on this machine
+//! The harvester: tails coding-assistant transcripts on this machine
 //! into each project's history layer. Sweep-driven — the serve loop calls
 //! [`Harvester::sweep`] on an interval; fs notifications can be layered on
 //! later, the sweep is the guarantee (decision 00bgfte5usll).
@@ -259,7 +259,7 @@ impl Harvester {
     }
 
     /// Directories worth watching for change, deduped — the parents of every
-    /// transcript the adapters can currently see (0.8.7).
+    /// transcript the adapters can currently see.
     ///
     /// Directories, not files: a new session is a NEW file, and a watch on a
     /// file that does not exist yet watches nothing. Watching the parent

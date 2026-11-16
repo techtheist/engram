@@ -12,7 +12,7 @@ use crate::sync::MutexExt;
 pub const EMBED_DIM: usize = 384;
 
 /// The default embedding model's identity — what every store that predates
-/// model selection is assumed to carry (PLAN §7A model selection).
+/// model selection is assumed to carry.
 pub const DEFAULT_EMBED_MODEL: &str = "bge-small-en-v1.5";
 
 pub trait Embedder: Send + Sync {
@@ -21,7 +21,7 @@ pub trait Embedder: Send + Sync {
 
     /// The model identity behind these vectors — what stores record so a
     /// later open can tell whether their vectors match the active model
-    /// (PLAN §7A model selection).
+    ///.
     fn name(&self) -> &str {
         DEFAULT_EMBED_MODEL
     }
@@ -109,7 +109,7 @@ fn normalize(v: &mut [f32]) {
     }
 }
 
-/// The precision layer of the local cortex (PLAN §7A): a cross-encoder that
+/// The precision layer of the local cortex: a cross-encoder that
 /// re-scores retrieval candidates against the query. Bi-encoder recall
 /// (bge-small) casts the net; this sharpens the top of it. Optional — the
 /// engine falls back to plain hybrid order when absent (tests, offline
@@ -218,7 +218,7 @@ mod fast {
         }
 
         /// A user-selected embedding model from its provisioned directory
-        /// (PLAN §7A model selection): identity + width + pooling come from
+        ///: identity + width + pooling come from
         /// the spec, never guessed.
         pub fn from_spec(name: &str, dir: &Path, dim: usize, mean_pooling: bool) -> Result<Self> {
             let pooling = if mean_pooling {

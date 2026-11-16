@@ -1,4 +1,4 @@
-//! Shared harness for the e2e suites (0.8.13): the process_model.rs sandbox
+//! Shared harness for the e2e suites: the process_model.rs sandbox
 //! pattern — scratch ENGRAM_HOME + HOME, fake embeddings, high ports, drop
 //! guard — plus the pieces the lifecycle/wiring journeys need (per-command
 //! env, pid liveness, /health version reads, config-driven bridges).

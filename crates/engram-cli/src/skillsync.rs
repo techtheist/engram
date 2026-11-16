@@ -1,4 +1,4 @@
-//! Installed skills and instruction blocks follow the binary (0.9.12).
+//! Installed skills and instruction blocks follow the binary.
 //!
 //! Everything `setup` writes for an assistant — the engram and digest skills,
 //! the section between the `<!-- engram:begin … -->` markers in AGENTS.md /
@@ -151,7 +151,7 @@ pub enum State {
     Added { variant: String },
     /// Ours, untouched and outdated (or missing), but git tracks it: an
     /// automatic pass leaves it alone, since rewriting it would dirty the
-    /// working tree (0.11.1). `setup --refresh` updates it on purpose.
+    /// working tree. `setup --refresh` updates it on purpose.
     Held { from: String },
 }
 

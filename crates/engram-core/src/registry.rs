@@ -1,4 +1,4 @@
-//! The machine-level project registry (PLAN §7C): `~/.engram/registry.json`,
+//! The machine-level project registry: `~/.engram/registry.json`,
 //! one entry per known project. Every `serve`/`mcp`/`setup` run registers its
 //! repo here — this file is how any project becomes aware the others exist.
 //! First-class and obvious by design: plain JSON, inspectable with `cat`,
@@ -101,7 +101,7 @@ pub fn registry_path() -> Option<PathBuf> {
     engram_home().map(|d| d.join("registry.json"))
 }
 
-/// Where the user-level home graph lives (PLAN §7C). Returns the RESOLVED
+/// Where the user-level home graph lives. Returns the RESOLVED
 /// store — `home.tepin` once the silent auto-migration has run (`home.db`
 /// stays behind as the backup), the same resolution every open applies.
 /// Displaying the unresolved name here was field-reported as "why is the

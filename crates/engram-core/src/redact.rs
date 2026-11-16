@@ -1,5 +1,5 @@
 //! Defense-in-depth secret scrubbing applied to every node `title`/`body`
-//! before it is written (PLAN §6B). The skill is the first line of defense;
+//! before it is written. The skill is the first line of defense;
 //! this is the backstop so a leaked credential never lands in the graph.
 //!
 //! Two layers: (1) named patterns for well-known secret shapes, and (2) a
@@ -77,7 +77,7 @@ pub fn scrub(text: &str) -> String {
     out
 }
 
-/// Scrub a custom-fields map (0.9.0): every string value gets the same
+/// Scrub a custom-fields map: every string value gets the same
 /// title/body treatment; numbers, bools and nulls pass through (nothing to
 /// scrub, and rewriting them would corrupt their declared kind). Values are
 /// scalars by write-boundary validation, so no recursion is needed.

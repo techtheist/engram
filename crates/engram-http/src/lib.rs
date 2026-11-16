@@ -1,8 +1,8 @@
 //! Thin axum API over `engram_core::Hub`: CRUD + hybrid search + the
 //! whole-graph read the pane renders, plus a Server-Sent-Events stream that
-//! pushes every mutation so the pane updates live (PLAN §6B).
+//! pushes every mutation so the pane updates live.
 //!
-//! Project scoping (PLAN §7C): every graph route also exists under
+//! Project scoping: every graph route also exists under
 //! `/projects/{id-or-name}/…` — a rewrite layer strips the prefix and stashes
 //! the selector, so one handler set serves both forms. The bare routes are
 //! the launch project (back-compat for existing panes and plugins). `home`
@@ -42,7 +42,7 @@ type EventMap = Arc<Mutex<HashMap<String, broadcast::Sender<String>>>>;
 /// Shared server state: the hub (each engine serialized behind its own
 /// `Mutex`, since a SQLite connection is `!Sync`) and one live-update
 /// broadcast channel per project.
-/// The daemon-side hands that `/models` needs (PLAN §7A model selection):
+/// The daemon-side hands that `/models` needs:
 /// describing the current selection and applying a new one — downloading
 /// files, loading the model, swapping it into every open engine, re-embedding
 /// where the embedding identity changed. Implemented by the CLI (downloads
@@ -54,7 +54,7 @@ pub trait ModelAdmin: Send + Sync {
     fn apply(&self, request: serde_json::Value) -> engram_core::Result<serde_json::Value>;
 }
 
-/// Skill installation hands (PLAN §7D teaching surface): generate the
+/// Skill installation hands: generate the
 /// capture skill from a graph's ontology and write it into the project.
 /// Implemented CLI-side, where the canonical skill texts are embedded.
 pub trait SkillAdmin: Send + Sync {
@@ -71,7 +71,7 @@ pub trait SkillAdmin: Send + Sync {
     ) -> engram_core::Result<serde_json::Value>;
 
     /// Bring a project's installed skills and instruction blocks up to this
-    /// binary (0.11.1): the core calls it, off the async runtime, the first
+    /// binary: the core calls it, off the async runtime, the first
     /// time a bridge binds `repo_root` in this core's life.
     fn upkeep(&self, _repo_root: &std::path::Path) {}
 }
@@ -95,7 +95,7 @@ pub struct AppState {
     /// Per-session already-injected node ids for /refs/match — the ambient
     /// hook's dedupe memory (bounded; evicted wholesale when it grows).
     refs_seen: Mutex<HashMap<String, std::collections::HashSet<String>>>,
-    /// Running encrypt/decrypt migrations (0.9.0), keyed `{project}:{target}`
+    /// Running encrypt/decrypt migrations, keyed `{project}:{target}`
     /// — the poll target behind the pane's progress loader.
     enc_jobs: Arc<Mutex<HashMap<String, EncJob>>>,
     /// Bridge and project roots upkeep has settled (`None`: done — it runs
@@ -594,12 +594,12 @@ pub fn router_shared_with_db(engine: Arc<Mutex<Engine>>, db_path: String) -> Rou
     router(Arc::new(AppState::shared_with_db(engine, Some(db_path))))
 }
 
-/// The multi-project daemon (PLAN §7C): one router over a hub.
+/// The multi-project daemon: one router over a hub.
 pub fn router_hub(hub: Arc<Hub>, db_path: Option<String>) -> Router {
     router(Arc::new(AppState::from_hub(hub, db_path)))
 }
 
-/// [`router_hub`] plus the daemon's model-selection hands (PLAN §7A).
+/// [`router_hub`] plus the daemon's model-selection hands.
 pub fn router_hub_with_models(
     hub: Arc<Hub>,
     db_path: Option<String>,
@@ -610,7 +610,7 @@ pub fn router_hub_with_models(
     router(Arc::new(state))
 }
 
-/// [`router_hub_with_models`] plus skill-installation hands (PLAN §7D).
+/// [`router_hub_with_models`] plus skill-installation hands.
 pub fn router_hub_with_admins(
     hub: Arc<Hub>,
     db_path: Option<String>,
@@ -824,7 +824,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
         "status": "ok",
         "version": engram_core::advertised_version(),
         "db": state.db_path,
-        // Which process answered (0.10.4): a reconnecting bridge compares it
+        // Which process answered: a reconnecting bridge compares it
         // to tell a restarted core from one that was only busy.
         "pid": std::process::id(),
     }))
@@ -955,7 +955,7 @@ async fn system(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
         "model_cached": model_cached,
         "reranker": engine.has_reranker(),
         "nli": engine.has_nli(),
-        // The local cortex (PLAN §7A), one row per model with its on-disk home.
+        // The local cortex, one row per model with its on-disk home.
         "models": [
             {
                 "name": embed_name,
@@ -1020,7 +1020,7 @@ async fn clients_register(
 }
 
 /// A bridge bound `root`: the first time this core sees a registered project
-/// there, bring its installed skills up to this binary (0.11.1). The bridge
+/// there, bring its installed skills up to this binary. The bridge
 /// only reports where it is; the core, always the newest binary on the
 /// machine, does the work — once, off the async runtime, and never in a
 /// folder the registry doesn't know.
@@ -1149,7 +1149,7 @@ fn enc_job_view(job: Option<&EncJob>) -> serde_json::Value {
     }
 }
 
-/// At-rest encryption status (0.9.0): the machine-level desired switches,
+/// At-rest encryption status: the machine-level desired switches,
 /// each store's OWN recorded state, and any running migration's progress.
 /// While a migration runs the engine mutex is busy, so this reads the job's
 /// atomics instead of blocking behind it — cheap enough to poll.
@@ -1185,7 +1185,7 @@ async fn get_encryption(
     })))
 }
 
-/// Flip one of the two machine-global encryption switches (0.9.0) and start
+/// Flip one of the two machine-global encryption switches and start
 /// migrating the CURRENT project's store in the background — poll
 /// `GET /encryption` for progress. Other projects converge at their next
 /// daemon open (they read the same settings). Refused while a migration for
@@ -1313,7 +1313,7 @@ async fn post_settings(
     Ok(Json(settings_view(&settings)))
 }
 
-// ---- project registry (PLAN §7C) ----------------------------------------
+// ---- project registry ----------------------------------------
 
 /// Every project the hub can reach: current, home, registry — the pane's
 /// switcher and the Settings registry view both read this.
@@ -1373,7 +1373,7 @@ struct FsDirsParams {
     path: Option<String>,
 }
 
-/// Directory listing for the pane's folder picker (PLAN §7C add-by-path):
+/// Directory listing for the pane's folder picker:
 /// a browser can never reveal an absolute filesystem path, so the daemon —
 /// which owns the filesystem anyway — serves the navigation. Directories
 /// only, dot-dirs hidden, unreadable entries skipped; each row says whether
@@ -1469,7 +1469,7 @@ async fn patch_node(
 
 #[derive(Deserialize, Default)]
 struct DeleteNodeParams {
-    /// Leave a tombstone-role note recording the removal (0.9.0). Ignored —
+    /// Leave a tombstone-role note recording the removal. Ignored —
     /// a plain delete — when the graph's ontology declares no tombstone type.
     #[serde(default)]
     tombstone: bool,
@@ -1477,7 +1477,7 @@ struct DeleteNodeParams {
     #[serde(default)]
     reason: Option<String>,
     /// Carry the victim's body, tags, and code_refs into the tombstone so a
-    /// paraphrase of the removed content still lands near it (0.9.2).
+    /// paraphrase of the removed content still lands near it.
     /// Default true; `keep_text=false` is the purge shape — identity and
     /// reason only.
     #[serde(default = "default_true")]
@@ -1632,7 +1632,7 @@ async fn search(
 }
 
 /// Tags in use on current nodes, freshest first — feeds the pane's tag
-/// dropdown and filter chips (PLAN §10 tags).
+/// dropdown and filter chips.
 async fn tags(
     State(state): State<Arc<AppState>>,
     scope: Scope,
@@ -1644,7 +1644,7 @@ async fn tags(
     Ok(Json(tags))
 }
 
-// ---- conflict scan + decay (PLAN §7 / §6B) --------------------------------
+// ---- conflict scan + decay --------------------------------
 
 async fn list_suspects(
     State(state): State<Arc<AppState>>,
@@ -1666,7 +1666,7 @@ async fn nli_agreement(
     Ok(Json(report))
 }
 
-/// Verified code refs (PLAN §10): nodes whose path-shaped refs no longer
+/// Verified code refs: nodes whose path-shaped refs no longer
 /// exist under the scoped project's root.
 async fn drift(
     State(state): State<Arc<AppState>>,
@@ -1678,7 +1678,7 @@ async fn drift(
     Ok(Json(drifted))
 }
 
-/// Crowding (0.11.0): per-note close-neighbour counts and heat for the
+/// Crowding: per-note close-neighbour counts and heat for the
 /// graph view, plus the unreviewed subjects and islands for Checkup.
 async fn crowding(
     State(state): State<Arc<AppState>>,
@@ -1762,7 +1762,7 @@ async fn review_marks(
     Ok(Json(json!({ "marked": done, "reviewed": p.reviewed })))
 }
 
-/// Digestion tier 1 (PLAN §7B): the gitignore-aware FIXME/TODO scan of the
+/// Digestion tier 1: the gitignore-aware FIXME/TODO scan of the
 /// working tree. Candidates only — the digest skill judges them and writes
 /// through the normal node path. Runs outside the engine lock: it never
 /// touches the store. Deliberately HTTP-only, no MCP tool.
@@ -1780,7 +1780,7 @@ async fn digest_scan(
     ))
 }
 
-/// Timeline (PLAN §10): the node's `replaces` chain, oldest first.
+/// Timeline: the node's `replaces` chain, oldest first.
 async fn timeline(
     State(state): State<Arc<AppState>>,
     scope: Scope,
@@ -1798,7 +1798,7 @@ struct CheckClaimBody {
     limit: Option<usize>,
 }
 
-/// Verify a claim against the canon (PLAN §7A): supports / contradicts /
+/// Verify a claim against the canon: supports / contradicts /
 /// silent, each with the judging node. Requires the local NLI model.
 /// Scope `all` judges across every reachable graph with provenance.
 async fn check_claim(
@@ -1848,7 +1848,7 @@ async fn audit_answered(
     Ok(Json(hints))
 }
 
-/// Promotion nominations (PLAN §7C): current-project Principles/Cautions
+/// Promotion nominations: current-project Principles/Cautions
 /// recurring in other projects, not yet represented in the home graph.
 /// Read-only — the pane promotes via `POST /projects/home/nodes`.
 async fn audit_promotions(
@@ -1866,7 +1866,7 @@ async fn scan_conflicts(
     scope: Scope,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let engine = state.engine_arc(&scope)?;
-    // Off the async workers, one node per lock (0.9.9): a full scan with a
+    // Off the async workers, one node per lock: a full scan with a
     // slow logic model takes a minute, and holding the engine for all of it
     // inside an async handler starved the whole core.
     drop(pane(&engine)); // attribute the scan's writes to the pane
@@ -1900,7 +1900,7 @@ struct DecayParams {
     dry_run: Option<bool>,
 }
 
-/// The decay pass (PLAN §6B). `dry_run=true` previews what would archive.
+/// The decay pass. `dry_run=true` previews what would archive.
 /// History-layer status for the pane's settings section: whether the layer
 /// is open, and what it holds. Cheap enough to poll.
 async fn history_stats(
@@ -1948,7 +1948,7 @@ async fn node_born_in(
     Ok(Json(json!({ "born_in": born })))
 }
 
-/// The grounded-answer verdict for one node (0.9.10) — the same `standing`
+/// The grounded-answer verdict for one node — the same `standing`
 /// search hits carry, for the pane's inspector.
 async fn node_standing(
     State(state): State<Arc<AppState>>,
@@ -1960,7 +1960,7 @@ async fn node_standing(
     standing.map(Json).ok_or(AppError::NotFound)
 }
 
-/// Found bridges (0.11.2) for the pane's detail view: notes a bridge note
+/// Found bridges for the pane's detail view: notes a bridge note
 /// ties to this one while no edge does. Read on open, never stored.
 async fn node_bridges(
     State(state): State<Arc<AppState>>,
@@ -2031,7 +2031,7 @@ async fn decay(
     Ok(Json(json!({ "archived": ids.len(), "ids": ids })))
 }
 
-/// The session-start digest, as `text/markdown` (PLAN §6A retrieval trigger).
+/// The session-start digest, as `text/markdown`.
 /// Three shapes, and the difference is which project the reader IS:
 /// `/projects/{sel}/brief` is the pane's view of that graph alone;
 /// `/brief?project={name|id|dir}` is the brief a session bound there
@@ -2066,7 +2066,7 @@ async fn brief(
         .into_response())
 }
 
-/// One page of the audit journal, newest first (PLAN §10). Keyset pagination:
+/// One page of the audit journal, newest first. Keyset pagination:
 /// pass the last entry's `seq` as `before` for the next page; `entity_id`
 /// narrows to one node/edge's history.
 async fn audit(
@@ -2080,7 +2080,7 @@ async fn audit(
     Ok(Json(page))
 }
 
-/// Undo one journal row — or its whole operation — from the pane (0.9.10).
+/// Undo one journal row — or its whole operation — from the pane.
 /// User-only like hard delete: HTTP serves it, MCP has no such tool.
 /// `?dry_run=true` reports what would happen without changing anything.
 async fn audit_undo(
@@ -2097,7 +2097,7 @@ async fn audit_undo(
     Ok(Json(report))
 }
 
-/// Undo everything one session wrote (0.9.10) — see [`audit_undo`].
+/// Undo everything one session wrote — see [`audit_undo`].
 async fn audit_undo_session(
     State(state): State<Arc<AppState>>,
     scope: Scope,
@@ -2120,7 +2120,7 @@ async fn list_open(
     Ok(Json(nodes))
 }
 
-// ---- tasks (0.10.0): the working list beside the graph -------------------
+// ---- tasks: the working list beside the graph -------------------
 
 #[derive(Deserialize)]
 struct TaskListParams {
@@ -2394,7 +2394,7 @@ async fn put_version(
     Ok(Json(json!({ "previous": previous, "current": p.version })))
 }
 
-/// The operator's guide (0.9.8): the manual an assistant reads before it
+/// The operator's guide: the manual an assistant reads before it
 /// changes how a graph behaves on the user's ask — every settings surface
 /// the pane has (ontology, custom fields, brief, history recording, policy
 /// knobs, models, encryption, the registry) as HTTP recipes, with the
@@ -2413,7 +2413,7 @@ async fn guide() -> Response {
         .into_response()
 }
 
-/// Apply a shipped preset to THIS graph (0.9.12): its ontology replaces the
+/// Apply a shipped preset to THIS graph: its ontology replaces the
 /// graph's, and the graph's policy (auto-tuned values included), brief,
 /// versioning, history and field definitions are kept. Answers the
 /// resulting document, like `PUT /config`.
@@ -2427,7 +2427,7 @@ async fn apply_preset(
     Ok(Json(cfg))
 }
 
-/// The curated ontology templates (PLAN §7D stage 4) — machine-level data,
+/// The curated ontology templates — machine-level data,
 /// same shelf for every project; `POST /config/presets/{id}` applies one.
 async fn config_presets() -> Json<Vec<engram_core::config::Preset>> {
     Json(engram_core::config::presets())
@@ -2451,7 +2451,7 @@ struct RefsMatchParams {
     limit: Option<usize>,
 }
 
-/// The file-read match hook's lookup (PLAN §10 ambient hooks): nodes whose
+/// The file-read match hook's lookup: nodes whose
 /// code_refs cover the path, as ready-to-inject markdown. Noise control is
 /// server-side — non-stale only, trust-ordered, capped, and per-session
 /// deduplicated. An empty body means "nothing new to say".
@@ -2521,7 +2521,7 @@ struct SkillInstallParams {
 
 /// (Re)install the assistant capture skill into the scoped project's repo —
 /// generated from the graph's ontology when it is customized, the canonical
-/// variant text when it runs the shipped set (PLAN §7D teaching surface).
+/// variant text when it runs the shipped set.
 async fn skills_install(
     State(state): State<Arc<AppState>>,
     scope: Scope,
@@ -2559,7 +2559,7 @@ async fn rename_type(
     Ok(Json(json!({ "renamed": renamed })))
 }
 
-/// Rename a custom field, moving every stored value with it (0.9.0) — the
+/// Rename a custom field, moving every stored value with it — the
 /// field analog of rename-type.
 async fn rename_field(
     State(state): State<Arc<AppState>>,
@@ -2610,20 +2610,20 @@ struct SearchParams {
     /// "history" = search the recorded-session layer instead of curated
     /// memory (the pane's history view routes its search box here).
     scope: Option<String>,
-    /// The temporal grammar (0.8.7), same shapes the MCP surface takes: a day,
+    /// The temporal grammar, same shapes the MCP surface takes: a day,
     /// an ISO instant, or a relative expression the daemon resolves.
     after: Option<String>,
     before: Option<String>,
     during_version: Option<String>,
     /// "relevance" (default) | "chronological" | "recent".
     order: Option<String>,
-    /// Bitemporal search (0.9.0): a date-kind custom field ("event_date")
+    /// Bitemporal search: a date-kind custom field ("event_date")
     /// or a "from..to" pair with interval-overlap semantics — aims the
     /// after/before window at the graph's event clock instead of created_at.
     date_field: Option<String>,
 }
 
-/// A bare time window for the browsing endpoints (0.8.7) — same grammar as
+/// A bare time window for the browsing endpoints — same grammar as
 /// search's `after`/`before`.
 #[derive(Deserialize)]
 struct WindowParams {

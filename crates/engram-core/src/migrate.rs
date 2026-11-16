@@ -1,4 +1,4 @@
-//! The sqlite→tepin cutover as a library operation (PLAN §7D): shared by
+//! The sqlite→tepin cutover as a library operation: shared by
 //! `engram-alpha migrate` and the 0.7.* auto-migration at open. JSON
 //! export/import is the vehicle for nodes + edges (embeddings regenerated on
 //! the way in), suspects and the audit journal ride over verbatim, counts are

@@ -1,4 +1,4 @@
-//! Digestion tier 1 (PLAN §7B): the offline code scan. Walks the working
+//! Digestion tier 1: the offline code scan. Walks the working
 //! tree gitignore-aware and collects `FIXME` / `TODO` markers as *candidate*
 //! nodes — a FIXME nominates a Problem, a TODO nominates an Intent. Pure
 //! nomination: nothing here writes to the graph; the digest skill judges the
@@ -75,7 +75,7 @@ pub fn scan(root: &Path) -> DigestScan {
         .require_git(false)
         .filter_entry(|entry| {
             // Log/build droppings are trash for digestion even when a repo
-            // forgot to gitignore them (PLAN §7B).
+            // forgot to gitignore them.
             !(entry.file_type().is_some_and(|t| t.is_dir())
                 && is_trash_dir(&entry.file_name().to_string_lossy()))
         })
@@ -148,7 +148,7 @@ fn scan_file(path: &Path, root: &Path, candidates: &mut Vec<DigestCandidate>) ->
 }
 
 /// Strip trailing comment closers, clip, and scrub secrets — the redaction
-/// pass runs on every ingested item (PLAN §7B guardrails).
+/// pass runs on every ingested item.
 fn clean_text(raw: &str) -> String {
     let mut t = raw.trim();
     for closer in ["*/", "-->", "--}}", "#}"] {

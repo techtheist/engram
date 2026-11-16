@@ -42,7 +42,7 @@ fn node_type_roundtrip() {
     ] {
         assert_eq!(NodeType::parse(t.as_str()).unwrap(), t);
     }
-    // Ontology-as-data (PLAN §7D): parse checks only shape — a name the
+    // Ontology-as-data: parse checks only shape — a name the
     // shipped set doesn't know is still parseable; whether it EXISTS is the
     // engine's config-driven write-time check.
     assert_eq!(NodeType::parse("Concept").unwrap().as_str(), "Concept");
@@ -846,7 +846,7 @@ fn retrieval_frequency_is_not_evidence() {
     );
 }
 
-// ---- local cortex, logic layer (PLAN §7A) ---------------------------------
+// ---- local cortex, logic layer ---------------------------------
 
 fn engine_with_nli() -> Engine {
     let mut e = engine();
@@ -990,7 +990,7 @@ fn a_shared_checked_write_judges_with_the_engine_released() {
 }
 
 /// FakeEmbedder that counts the texts it embeds, optionally sleeping per
-/// call like a real model on CPU — the write-path embedding probe (0.9.11).
+/// call like a real model on CPU — the write-path embedding probe.
 struct CountingEmbedder {
     inner: FakeEmbedder,
     texts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -2503,7 +2503,7 @@ fn legacy_uuid_ids_shrink_with_edges_and_embeddings_intact() {
     assert_eq!(s.all_nodes().unwrap().len(), 2);
 }
 
-// ---- conflict scan (PLAN §7) ------------------------------------------------
+// ---- conflict scan ------------------------------------------------
 
 fn backdate(e: &Engine, id: &str, days: i64) {
     let ts = now() - days * 24 * 60 * 60;
@@ -2666,7 +2666,7 @@ fn anchors_and_linked_pairs_are_not_suspects() {
     let _ = (a1, a2);
 }
 
-// ---- decay (PLAN §6B) --------------------------------------------------------
+// ---- decay --------------------------------------------------------
 
 fn episodic(t: NodeType, title: &str) -> NewNode {
     NewNode {
@@ -2741,7 +2741,7 @@ fn reclassification_via_node_patch() {
     assert_eq!(updated.node_type, NodeType::Decision);
 }
 
-// ---- tags (PLAN §10) -------------------------------------------------------
+// ---- tags -------------------------------------------------------
 
 #[test]
 fn tags_normalize_dedupe_and_roundtrip() {
@@ -3109,7 +3109,7 @@ fn validation_retires_nodes_replaced_before_the_rule_existed() {
     assert!(e.validate_graph().unwrap().contains("0 superseded"));
 }
 
-// ---- timeline (PLAN §10) -------------------------------------------------------
+// ---- timeline -------------------------------------------------------
 
 #[test]
 fn timeline_walks_the_replaces_chain_oldest_first() {
@@ -3154,7 +3154,7 @@ fn timeline_walks_the_replaces_chain_oldest_first() {
     assert!(e.timeline("missing").is_err());
 }
 
-// ---- verified code refs (PLAN §10) --------------------------------------------
+// ---- verified code refs --------------------------------------------
 
 #[test]
 fn scan_code_refs_flags_missing_paths_only() {
@@ -3200,7 +3200,7 @@ fn scan_code_refs_flags_missing_paths_only() {
     assert_eq!(report[0].missing, vec!["src/gone.rs".to_string()]);
 }
 
-// ---- audit journal (PLAN §10) ------------------------------------------------
+// ---- audit journal ------------------------------------------------
 
 #[test]
 fn audit_journals_node_lifecycle_with_context() {
@@ -3479,7 +3479,7 @@ fn embed_composition_upgrade_reembeds_only_with_real_vectors() {
     let _ = std::fs::remove_file(&db);
 }
 
-// ---- digestion tier 1: offline marker scan (PLAN §7B) --------------------
+// ---- digestion tier 1: offline marker scan --------------------
 
 /// A fresh scan root per test — a shared fixed dir would leak files between
 /// runs and break the count assertions.
@@ -3574,7 +3574,7 @@ fn digest_scan_redacts_marker_text() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-// ---- multi-project hub (PLAN §7C) -----------------------------------------
+// ---- multi-project hub -----------------------------------------
 
 /// One test on purpose: it sandboxes ENGRAM_HOME (process-wide env), so the
 /// whole federation story runs sequentially inside it — registry, lazy opens,
@@ -3828,7 +3828,7 @@ fn hub_federation_end_to_end() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
-// ---- Store-trait conformance: both backends, one battery (PLAN §7C) --------
+// ---- Store-trait conformance: both backends, one battery --------
 //
 // The trait's contract is what the migration relies on: whatever passed on
 // SQLite must pass unchanged on TepinDB. Backend-specific behavior (WAL,
@@ -4046,7 +4046,7 @@ fn store_battery(s: &dyn Store, backend: &str) {
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].nli_label.as_deref(), Some("contradiction"));
     assert!(pending[0].via.is_none());
-    // A bridged pair names its bridge (0.11.2), stored and joined.
+    // A bridged pair names its bridge, stored and joined.
     s.set_suspect_via(&sus.id, &a.id).unwrap();
     assert_eq!(
         s.get_suspect(&sus.id).unwrap().unwrap().via.as_deref(),
@@ -4094,7 +4094,7 @@ fn store_battery(s: &dyn Store, backend: &str) {
     assert_eq!(next.entries.len(), 1);
     let filtered = s.audit_page(None, Some("other"), 10).unwrap();
     assert_eq!(filtered.total, 1);
-    // Undo's lookups (0.9.10): by session, by operation, by seq, and later
+    // Undo's lookups: by session, by operation, by seq, and later
     // rows on one entity — oldest first, the op id round-tripped.
     let q = |q: AuditQuery| s.audit_rows(&q).unwrap();
     let by_session = q(AuditQuery {
@@ -4497,7 +4497,7 @@ fn resolve_db_prefers_a_migrated_tepin_sibling() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---- embedding-model guard (PLAN §7A model selection) ----------------------
+// ---- embedding-model guard ----------------------
 
 /// A real-shaped (non-fake) embedder with a chosen identity and width.
 struct NamedEmbedder {
@@ -5095,7 +5095,7 @@ fn parse_day_handles_days_unix_and_rfc3339_prefixes() {
     assert_eq!(parse_day("yesterday"), None);
 }
 
-// ---- the temporal grammar (0.8.7): one clock language for both layers ------
+// ---- the temporal grammar: one clock language for both layers ------
 
 /// Every constant below is derived from `parse_day`, which has its own test —
 /// hand-written epoch seconds in a test are a second implementation nobody
@@ -5677,7 +5677,7 @@ fn buried_claims_are_reachable_on_both_backends() {
 }
 
 // ---------------------------------------------------------------------------
-// engine on live config (PLAN §7D workstream 3): policy numbers, brief
+// engine on live config: policy numbers, brief
 // composition, and the ontology itself all read the graph's stored document.
 // ---------------------------------------------------------------------------
 
@@ -6857,7 +6857,7 @@ fn delete_with_tombstone_records_the_victim_and_reason() {
     assert!(e.get_node(&t.id).unwrap().is_some(), "tombstone persists");
 }
 
-/// Search hits carry the tombstone ROLE as a flag (0.9.4), so a reader on
+/// Search hits carry the tombstone ROLE as a flag, so a reader on
 /// any surface — REST has no `tombstone_note` — can tell "Removed: X" from
 /// a memory of X without knowing which type name plays the role. Found by
 /// the ForgetEval adapter (2026-09-12): a role-blind reader took the
@@ -7563,7 +7563,7 @@ fn validate_graph_runs_all_passes_and_journals() {
 }
 
 // ---------------------------------------------------------------------------
-// Version tracking + handoff notes (0.7.0).
+// Version tracking + handoff notes.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -7879,7 +7879,7 @@ fn brief_bodies_and_canon_order_are_graph_settings() {
 
 #[test]
 fn a_contradiction_reaches_what_inherits_from_its_target() {
-    // The transitive shape (0.9.9): X builds on G's setting, a new note flips
+    // The transitive shape: X builds on G's setting, a new note flips
     // G's setting. The judge reads (G-old, G-new) — same subject — and the
     // builds-on edge carries the contradiction to X.
     let e = engine_with_nli();
@@ -8843,7 +8843,7 @@ fn merge_rehomes_a_live_conflict_and_the_survivor_inherits_reconciliation() {
 }
 
 // ---------------------------------------------------------------------------
-// history layer (0.8.4): sibling store, chat ontology, props bag
+// history layer: sibling store, chat ontology, props bag
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -8887,7 +8887,7 @@ fn history_config_defaults_off_and_old_documents_parse() {
     assert!(bad.validate().is_err());
 }
 
-/// Recording is opt-in (0.8.4): tests that exercise the history layer flip
+/// Recording is opt-in: tests that exercise the history layer flip
 /// the switch the way the pane does.
 fn enable_history(e: &Engine) {
     let mut cfg = e.graph_config();
@@ -8997,7 +8997,7 @@ fn engine_opens_history_store_beside_the_graph_and_toggles_live() {
 }
 
 // ---------------------------------------------------------------------------
-// harvester (0.8.4): adapter parsing, cursors, end-to-end sweep
+// harvester: adapter parsing, cursors, end-to-end sweep
 // ---------------------------------------------------------------------------
 
 /// ENGRAM_HOME is process-wide: every test that sandboxes it serializes here.
@@ -10065,7 +10065,7 @@ fn bob_adapter_reads_the_shared_sqlite_and_cursors_by_timestamp() {
 }
 
 // ---------------------------------------------------------------------------
-// history sealing (0.8.4 task 8): zstd → XChaCha20, scrub-then-seal order
+// history sealing: zstd → XChaCha20, scrub-then-seal order
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -10454,7 +10454,7 @@ fn history_codec_receipt() {
     std::fs::remove_dir_all(&tmp).ok();
 }
 
-// ---- session-diverse delivery (0.8.10) -----------------------------------
+// ---- session-diverse delivery -----------------------------------
 
 #[test]
 fn session_diverse_select_with_zero_demote_is_truncate() {
@@ -11047,7 +11047,7 @@ fn pre_0_9_export_and_config_shapes_still_parse() {
     assert!(ts.is_none(), "no tombstone role → plain delete, no error");
 }
 
-// ---- the title-contradiction nomination path (0.9.4) -----------------------
+// ---- the title-contradiction nomination path -----------------------
 
 fn cosine(a: &[f32], b: &[f32]) -> f64 {
     let (mut d, mut na, mut nb) = (0.0f64, 0.0f64, 0.0f64);
@@ -11308,7 +11308,7 @@ fn a_gate_outside_the_unit_interval_is_refused() {
     assert!(e.set_graph_config(&cfg).is_ok());
 }
 
-// ---- audit undo (0.9.10) ---------------------------------------------------
+// ---- audit undo ---------------------------------------------------
 
 /// The journal row that recorded `action` on `entity_id`, newest first.
 fn journal_row(e: &Engine, entity_id: &str, action: &str) -> AuditEntry {
@@ -11593,7 +11593,7 @@ fn undoing_a_merge_reverts_the_whole_merge() {
 
 #[test]
 fn search_hits_carry_the_graphs_standing_verdict() {
-    // Grounded answers (0.9.10): each hit says how far it can be relied on.
+    // Grounded answers: each hit says how far it can be relied on.
     let e = engine();
     let standing_of = |title: &str| {
         e.search(title, &[], 10)
@@ -12509,7 +12509,7 @@ fn a_link_settles_the_pending_suspect_between_its_notes() {
     assert!(e.store().suspects_pending().unwrap().is_empty());
 }
 
-// ---- bridged contradictions (0.11.2) ------------------------------------
+// ---- bridged contradictions ------------------------------------
 
 /// A judge that reads a datastore bridge: "… same datastore … . <fact>" ⟹
 /// <other fact> is a contradiction; everything else is FakeNli's call.

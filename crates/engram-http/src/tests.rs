@@ -498,7 +498,7 @@ async fn brief_returns_markdown_digest() {
     assert!(text.len() <= 2000);
 }
 
-/// `GET /guide` is the operator's manual (0.9.8): markdown, and every route
+/// `GET /guide` is the operator's manual: markdown, and every route
 /// it names as `` `METHOD /path` `` must exist on the router — a recipe that
 /// points at a route that isn't there teaches the assistant a 404.
 #[tokio::test]
@@ -1008,7 +1008,7 @@ async fn digest_scan_walks_the_repo_root_derived_from_the_db_path() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-// ---- project scoping (PLAN §7C) -------------------------------------------
+// ---- project scoping -------------------------------------------
 
 mod projects {
     use super::*;
@@ -1258,7 +1258,7 @@ async fn tepin_backend_serves_the_full_api_surface() {
     );
 }
 
-// ---- model selection endpoints (PLAN §7A) --------------------------------
+// ---- model selection endpoints --------------------------------
 
 /// A canned admin so the endpoint tests need no real downloads or models.
 struct FakeAdmin;
@@ -1346,7 +1346,7 @@ async fn cors_allows_local_ui_origins_and_refuses_the_open_web() {
     assert_eq!(probe("http://127.0.0.1.evil.example").await, None);
 }
 
-/// The pane's task board API (0.10.0): create, group, patch with clears,
+/// The pane's task board API: create, group, patch with clears,
 /// order, list by status, delete (a group takes its tasks along).
 #[tokio::test]
 async fn task_board_round_trip() {
@@ -1441,7 +1441,7 @@ async fn task_board_round_trip() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-/// Crowding and the review queue over HTTP (0.11.0) — the pane's heat view
+/// Crowding and the review queue over HTTP — the pane's heat view
 /// and Checkup section. Plumbing only: clustering quality is engram-core's.
 #[tokio::test]
 async fn crowding_review_and_marks_round_trip() {

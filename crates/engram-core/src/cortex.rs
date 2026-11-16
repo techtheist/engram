@@ -10,7 +10,7 @@
 //! vector space (and possibly width), so the engine's `ensure_embed_model`
 //! guard rebuilds vector storage and re-embeds the whole graph when the
 //! active identity diverges from what a store carries. The calibrated cosine
-//! thresholds (0.90 dupe / 0.88 suspect / 0.85 promotion) were tuned on
+//! thresholds were tuned on
 //! bge-small — a swapped embedding model shifts that distribution, so treat
 //! suspect-queue quality as unvalidated until re-tuned (surfaced in the UI).
 

@@ -1,4 +1,4 @@
-//! Per-graph configuration (PLAN §7D): the ontology (node types + edge
+//! Per-graph configuration: the ontology (node types + edge
 //! verbs), the policy numbers (trust/decay/thresholds), and the brief
 //! composition as ONE document stored in the graph itself — it travels with
 //! `migrate` and rides along in exports. Edited in the pane's Settings menu
@@ -36,18 +36,18 @@ pub struct GraphConfig {
     pub versioning: VersioningConfig,
     #[serde(default)]
     pub history: HistoryConfig,
-    /// User-defined custom fields on notes (0.9.0): first-class values beside
+    /// User-defined custom fields on notes: first-class values beside
     /// `created_at`/`tags`, per-graph, enforced at the engine write boundary.
     /// Empty (the default) = the feature is invisible.
     #[serde(default)]
     pub fields: Vec<FieldDef>,
-    /// The working list beside the graph (0.10.0) — on by default; a graph
+    /// The working list beside the graph — on by default; a graph
     /// that doesn't want it turns it off here.
     #[serde(default)]
     pub tasks: TasksConfig,
 }
 
-/// Tasks (0.10.0). Off = no brief section, no rule settling, and the task
+/// Tasks. Off = no brief section, no rule settling, and the task
 /// tools refuse with a message that tells the assistant what to do instead;
 /// stored tasks are kept, so turning it back on restores the list.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -62,7 +62,7 @@ impl Default for TasksConfig {
     }
 }
 
-/// One user-defined field on notes (0.9.0). Definitions live in the graph's
+/// One user-defined field on notes. Definitions live in the graph's
 /// config (edited in the pane / `PUT /config` — like the ontology, never over
 /// MCP); *values* live on each node's `fields` map and are validated at the
 /// engine write boundary, so every surface gets the same contract.
@@ -157,7 +157,7 @@ pub const RESERVED_FIELD_NAMES: &[&str] = &[
     "neighbors",
 ];
 
-/// The history layer (0.8.4): the daemon harvests coding-assistant chat
+/// The history layer: the daemon harvests coding-assistant chat
 /// transcripts into a sibling `history.tepin` store. Every knob here is a
 /// pane gesture (Settings → History). Recording is OPT-IN: sealing keys live
 /// in the OS keystore (a keychain prompt on macOS), so the layer starts only
@@ -182,7 +182,7 @@ pub struct HistoryConfig {
     #[serde(default = "default_true")]
     pub search_fallthrough: bool,
     /// Cosine similarity at which `order: "recent"` folds an older history hit
-    /// under a newer one as a prior generation (0.8.7). Only the recency
+    /// under a newer one as a prior generation. Only the recency
     /// ordering collapses; relevance and chronological reads are untouched.
     ///
     /// Nothing is ever dropped by the fold — the older statements come back
@@ -249,7 +249,7 @@ impl Default for HarnessToggles {
     }
 }
 
-/// Version tracking (0.7.0): when enabled, the graph carries a CURRENT
+/// Version tracking: when enabled, the graph carries a CURRENT
 /// WORKING VERSION (store meta, set via the `set_version` MCP tool or the
 /// pane) and every new node of a version-bound type is stamped with it —
 /// "this was captured at v0.5.1". The stamp is display + provenance only;
@@ -275,7 +275,7 @@ pub struct TypeDef {
     /// stored nodes are bulk-retyped by the ontology editor, never here.
     pub name: String,
     /// The one color input (0..360) — light/dark schemes, neutrals and text
-    /// colors are all derived from it, per project (PLAN §7D stage 4).
+    /// colors are all derived from it, per project.
     pub hue: u16,
     /// The thought this type captures — the teaching line `describe_ontology`
     /// and the brief's ontology section render.
@@ -317,7 +317,7 @@ pub struct TypeRoles {
     /// it isn't re-learned (Tombstone in the shipped set). Tombstones stay
     /// findable but sit out the conflict scan and answer candidacy; a write
     /// that lands near one carries a `tombstoned` warning and `check_claim`
-    /// files it under `retracted` (0.9.2). Two ways one comes to exist: an
+    /// files it under `retracted`. Two ways one comes to exist: an
     /// authored tombstone `replaces` a still-live victim (the ordinary
     /// supersession machinery archives it — the assistant's traceable
     /// "bury"), or the pane's hard delete mints one over a victim that is
@@ -359,7 +359,7 @@ pub struct VerbRoles {
     /// A live dependency that keeps worklist edges active (`needs`).
     #[serde(default)]
     pub dependency: bool,
-    /// The source holds what the target holds (0.9.9): when a note
+    /// The source holds what the target holds: when a note
     /// contradicts or supersedes the target, the source inherits the
     /// contradiction and is queued for review against it. Unset = derived:
     /// on for the `dependency` and `reason` verbs and for `builds-on` — so
@@ -414,7 +414,7 @@ pub struct PolicyConfig {
     /// off. See [`crate::policy::CONFLICT_NLI_GATE`].
     #[serde(default = "default_conflict_nli_gate")]
     pub conflict_nli_gate: Option<f64>,
-    /// Third path (0.11.2): two facts about two different subjects queue
+    /// Third path: two facts about two different subjects queue
     /// when a bridge note ties the subjects together ("X uses the same
     /// datastore as Y") and the logic layer reads "bridge. y ⟹ x" as a
     /// contradiction at or above this confidence. `null` turns it off. See
@@ -446,7 +446,7 @@ pub struct PolicyConfig {
     /// Fraction of the top hit's score below which a hit is dropped.
     #[serde(default = "default_search_relative_cut")]
     pub search_relative_cut: f64,
-    /// Candidate-pool multiplier when a search carries a time window (0.8.7).
+    /// Candidate-pool multiplier when a search carries a time window.
     /// Neither retrieval channel is date-ordered, so an in-window match can
     /// sit arbitrarily deep in a date-blind ranking; the only lever is to look
     /// at more candidates before filtering. 1 disables the deepening.
@@ -520,7 +520,7 @@ pub struct PolicyConfig {
     /// [`crate::policy::SESSION_DIVERSITY_DEMOTE`].
     #[serde(default = "default_session_diversity_demote")]
     pub session_diversity_demote: f64,
-    /// Twin order (0.9.10): among delivered hits whose vectors sit at or
+    /// Twin order: among delivered hits whose vectors sit at or
     /// above this cosine — near-identical notes — the endorsed one goes
     /// first (pinned, then higher trust), whatever the vote said. Only twins
     /// trade places; `None` disables. See [`crate::policy::TWIN_TRUST_ORDER`].
@@ -669,33 +669,33 @@ pub struct BriefConfig {
     /// session — guaranteed first placement, generous excerpts.
     #[serde(default = "default_handoff")]
     pub handoff: BriefSection,
-    /// The current-cycle section (0.9.9): the open worklist notes stamped
+    /// The current-cycle section: the open worklist notes stamped
     /// with the graph's current working version — what this cycle set out to
     /// do and still owes — placed right under the version line. Needs
     /// version tracking; without a working version it renders nothing and
     /// those notes stay in the ordinary open section.
     #[serde(default = "default_cycle")]
     pub cycle: BriefSection,
-    /// Whether entries carry a body excerpt after the title (0.9.9). On by
+    /// Whether entries carry a body excerpt after the title. On by
     /// default — on graphs of short notes the body often holds the one fact
     /// that matters. Off = every entry is its title alone (each section's
     /// `excerpt` is then ignored): graphs whose titles are already whole
     /// claims buy more entries with the same budget.
     #[serde(default = "default_true")]
     pub bodies: bool,
-    /// How each type's canon section picks and orders its entries (0.9.9):
+    /// How each type's canon section picks and orders its entries:
     /// `endorsed` (default) = pinned, then approved, then newest endorsement
     /// or capture; `connected` = pinned first, then trust weighted by how
     /// connected the note is (live edges), so the load-bearing canon leads.
     #[serde(default = "default_canon_order")]
     pub canon_order: String,
-    /// The `## Tasks` section (0.10.0): the active working list, titles only,
+    /// The `## Tasks` section: the active working list, titles only,
     /// right after the current cycle.
     #[serde(default)]
     pub tasks: BriefTasks,
 }
 
-/// The brief's task section (0.10.0).
+/// The brief's task section.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BriefTasks {
@@ -836,7 +836,7 @@ fn shown_brief(cap: usize, excerpt: usize) -> BriefSection {
     }
 }
 
-/// One shipped ontology template (PLAN §7D stage 4): a complete, valid
+/// One shipped ontology template: a complete, valid
 /// config a user can start from. Applying one is just `PUT /config` with
 /// its document — the pane's "start from preset" gesture.
 #[derive(Debug, Clone, Serialize)]
@@ -1358,7 +1358,7 @@ impl Default for OntologyConfig {
 }
 
 // ---------------------------------------------------------------------------
-// validation — the hard invariants (PLAN §7D)
+// validation — the hard invariants
 // ---------------------------------------------------------------------------
 
 impl GraphConfig {
@@ -1668,7 +1668,7 @@ impl GraphConfig {
             ));
         }
 
-        // Custom fields (0.9.0): names must be usable as JSON keys everywhere
+        // Custom fields: names must be usable as JSON keys everywhere
         // a node travels, must never shadow a built-in field, and enum kinds
         // must actually enumerate something.
         let mut seen = std::collections::HashSet::new();

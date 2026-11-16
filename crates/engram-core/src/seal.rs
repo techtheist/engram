@@ -1,4 +1,4 @@
-//! At-rest sealing (0.8.4 for history, 0.9.0 for both stores): the codec,
+//! At-rest sealing: the codec,
 //! the machine key, and the blind keyword tokens that keep BM25 identical
 //! across sealed and plaintext states.
 //!

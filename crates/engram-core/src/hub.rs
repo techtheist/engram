@@ -1,4 +1,4 @@
-//! The hub (PLAN §7C): one process serving N project stores plus the
+//! The hub: one process serving N project stores plus the
 //! user-level home graph. Per-repo storage is unchanged — the hub *opens*
 //! files, it doesn't own data. Engines are opened lazily through a factory
 //! the caller supplies (so model loading stays with the CLI and one model
@@ -177,7 +177,7 @@ pub struct Hub {
     open: Mutex<HashMap<String, ProjectHandle>>,
     /// The mid-session conflict push's transport (v0.6.3).
     alerts: Arc<AlertBus>,
-    /// History-layer reset epoch (0.8.4): bumped by the pane's wholesale
+    /// History-layer reset epoch: bumped by the pane's wholesale
     /// delete so the running harvester drops its cursors and caches. A
     /// counter, not an event — the harvester compares at each sweep.
     history_epoch: std::sync::atomic::AtomicU64,
@@ -197,7 +197,7 @@ pub struct SessionBinding {
     pub since: i64,
     pub last_seen: i64,
     /// The end client's name as its bridge relayed it ("Windsurf",
-    /// "claude-code"), once the session's initialize said (0.9.8).
+    /// "claude-code"), once the session's initialize said.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client: Option<String>,
     /// Which rung of the binding ladder bound the session ("roots", "cwd",
@@ -322,7 +322,7 @@ impl Hub {
 
     /// Every engine this hub currently holds open — the launch project plus
     /// whatever the lazy factory opened (home included). A live model swap
-    /// (PLAN §7A model selection) walks these; projects not open right now
+    /// walks these; projects not open right now
     /// pick the new models up on their next open.
     pub fn engines(&self) -> Vec<Arc<Mutex<Engine>>> {
         let mut engines = vec![self.current.engine.clone()];
@@ -491,7 +491,7 @@ impl Hub {
         entry.last_seen = now;
     }
 
-    /// What a session learned about itself after binding (0.9.8): the end
+    /// What a session learned about itself after binding: the end
     /// client's name and the ladder rung — census legibility for `/system`
     /// and the pane, so "which Windsurf session is still on the fallback"
     /// is a glance, not a log dig.
@@ -570,7 +570,7 @@ impl Hub {
         // The machine core's launch graph IS the home graph (`new_home`): hand
         // out that engine. A second open would wait out the store's lock retry
         // (3 s on TepinDB) and fail — every project brief silently lost its
-        // home section that way, 3 s late (0.10.3).
+        // home section that way, 3 s late.
         if self.current.id == HOME_PROJECT {
             return Ok(self.current.engine.clone());
         }
@@ -698,7 +698,7 @@ impl Hub {
     }
 
     /// Sibling projects (registry minus current), opened lazily; unopenable
-    /// ones are reported, never silently dropped (PLAN §7A: no silent caps).
+    /// ones are reported, never silently dropped.
     fn others(&self, include_home: bool) -> (NamedEngines, Vec<String>) {
         let mut engines = Vec::new();
         let mut skipped = Vec::new();
@@ -838,7 +838,7 @@ impl Hub {
             }
         };
         // Installed instructions the core's upkeep held back because git
-        // tracks them (0.11.1): the agent is the one who can tell the user.
+        // tracks them: the agent is the one who can tell the user.
         let header = match self
             .project_root(&id)
             .and_then(|root| crate::setup_record::brief_notice(std::path::Path::new(&root)))
@@ -858,7 +858,7 @@ impl Hub {
         Ok(out)
     }
 
-    /// The brief's project roster (PLAN §7C awareness): which other graphs
+    /// The brief's project roster: which other graphs
     /// this session can reach and how. Emitted only when cross-project access
     /// actually works here (a factory is present) and something is reachable —
     /// advertising graphs a single-project instance can't open would mislead.
@@ -924,7 +924,7 @@ impl Hub {
         Some(format!("{HOME_HEADING}{out}"))
     }
 
-    /// Promotion nominations (PLAN §7C): current-project Principles/Cautions
+    /// Promotion nominations: current-project Principles/Cautions
     /// that recur (same type, high similarity) in other projects' graphs and
     /// aren't already represented in the home graph. Read-only — the user
     /// promotes from the pane; nothing self-applies.

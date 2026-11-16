@@ -23,13 +23,13 @@ pub struct Settings {
     /// agent session gets. `None` = the home graph (today's behavior).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_agent_project: Option<String>,
-    /// At-rest encryption for CURATED graph stores (0.9.0). Off by default:
+    /// At-rest encryption for CURATED graph stores. Off by default:
     /// a sealed graph costs `npx tepindb` inspectability, so sealing it is
     /// an explicit choice. Machine-global — each store converges at its
     /// next open; the pane's toggle migrates the current project at once.
     #[serde(default)]
     pub encrypt_graph: bool,
-    /// At-rest encryption for HISTORY stores (0.9.0). On by default — the
+    /// At-rest encryption for HISTORY stores. On by default — the
     /// history layer has been sealed-by-default since 0.8.4; this switch
     /// just makes the (previously daemon-internal) opt-in visible.
     #[serde(default = "default_true")]

@@ -1,4 +1,4 @@
-//! Subject names (0.11.0): what a pile of close notes is about, in two or
+//! Subject names: what a pile of close notes is about, in two or
 //! three terms, without a model. Class-based TF-IDF over titles and tags —
 //! a term scores by the share of the subject's notes carrying it times how
 //! rare it is in the whole graph — so "retrieval · oblique recall" wins over

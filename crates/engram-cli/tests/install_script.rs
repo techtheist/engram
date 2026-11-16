@@ -1,4 +1,4 @@
-//! install.sh's shakedown (0.10.4, from the issue #17 report): the installer
+//! install.sh's shakedown (issue #17 report): the installer
 //! starts the downloaded binary once with `--version` before it replaces
 //! anything, so a release that can't run here never overwrites one that can.
 //! Each test serves a fake release from a file:// directory

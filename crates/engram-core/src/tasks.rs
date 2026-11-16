@@ -1,4 +1,4 @@
-//! Tasks (0.10.0): the assistant's working field — what it is doing, what it
+//! Tasks: the assistant's working field — what it is doing, what it
 //! parked, what it plans — kept BESIDE the graph, never in it. A task is not
 //! knowledge: it never enters search, the suspect scan, trust, decay or the
 //! eval corpora (Decision: tasks live next to the graph). It points at memory

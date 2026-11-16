@@ -83,7 +83,7 @@ pub fn run(db: &Path) -> anyhow::Result<()> {
 /// explicit diagnostic gesture, so the network round-trip is expected here
 /// (`serve` throttles the same query to once a day). An unreachable GitHub
 /// is a note, not a warning: offline is a supported condition.
-/// Installed skills / instruction blocks against this binary's text (0.9.12):
+/// Installed skills / instruction blocks against this binary's text:
 /// a dry run of the refresh `serve` and `setup` apply.
 fn check_skills(r: &mut Report, repo: &Path) {
     use crate::skillsync::State;
@@ -145,7 +145,7 @@ fn check_version(r: &mut Report) {
 }
 
 fn check_store(r: &mut Report, db: &Path) {
-    // Thin client (PLAN §7C): when a healthy daemon owns this store — on
+    // Thin client: when a healthy daemon owns this store — on
     // TepinDB it is the ONLY process allowed to — read the same facts from
     // its /system instead of opening the file underneath it.
     if daemon_store_report(r, db) {
@@ -292,7 +292,7 @@ fn check_model(r: &mut Report) {
     }
 }
 
-/// The daemon is the MACHINE CORE (0.8.8 process model): find it via
+/// The daemon is the MACHINE CORE: find it via
 /// `~/.engram/daemon.json` + /health, regardless of the cwd this doctor runs
 /// from and regardless of how the core was started (issue #6 — the old check
 /// read only the repo-local file and mis-called an auto-spawned core "a
@@ -426,7 +426,7 @@ fn check_wiring(r: &mut Report, repo: &Path, db_abs: &Path) {
     }
 
     // The setup record names the assistants this repo was set up for
-    // (0.11.1, issue #18): check those, not whatever PATH happens to show.
+    // (issue #18): check those, not whatever PATH happens to show.
     let record = engram_core::setup_record::load(repo);
     check_record(r, record.as_ref());
     let detected: Vec<&str> = match record.as_ref().filter(|rec| !rec.agents.is_empty()) {

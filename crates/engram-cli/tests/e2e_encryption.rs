@@ -1,4 +1,4 @@
-//! E2e lane 3 (0.9.0): the at-rest encryption journey over the real binary —
+//! E2e lane 3: the at-rest encryption journey over the real binary —
 //! encrypt, prove the bytes went dark, search and read prose throughout,
 //! survive a restart, decrypt, prove the bytes are back. The sealing key
 //! lives in the sandbox's file fallback (`ENGRAM_KEYRING=off` in the shared

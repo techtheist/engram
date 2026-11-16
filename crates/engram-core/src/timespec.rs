@@ -1,4 +1,4 @@
-//! One temporal grammar for both memory layers (0.8.7).
+//! One temporal grammar for both memory layers.
 //!
 //! Curated notes and recorded messages are different registers with different
 //! scoring scales — the 0.8.1 register lesson says never blend their numbers.
@@ -75,7 +75,7 @@ impl TimeWindow {
     }
 }
 
-/// Which clock a search window reads (0.9.0 bitemporal search). The default
+/// Which clock a search window reads. The default
 /// is the CAPTURE clock (`created_at` — when the knowledge entered the
 /// graph); a date-kind custom field re-aims the same `after`/`before`
 /// grammar at the EVENT clock the graph's owner declared ("when was this

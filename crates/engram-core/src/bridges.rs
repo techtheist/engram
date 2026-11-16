@@ -1,4 +1,4 @@
-//! Bridge notes (0.11.2): a note that ties one subject to another — "the
+//! Bridge notes: a note that ties one subject to another — "the
 //! export worker uses the same datastore as the import worker", "the replay
 //! buffer is the old name of the ingest job". Two facts about two different
 //! subjects can disagree only through such a note, and no pairwise judge can

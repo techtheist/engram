@@ -1,4 +1,4 @@
-//! Lane-1 e2e (0.8.13): user journeys over the real binary — the field
+//! Lane-1 e2e: user journeys over the real binary — the field
 //! scenarios that unit tests can't see because they live between processes,
 //! binaries, and restarts. Every test is a story a user actually lived.
 //!
@@ -363,7 +363,7 @@ fn corrupt_or_stale_daemon_file_never_blocks_serve() {
     );
 }
 
-/// Issue #8 with a session left open (0.9.10): the store is wiped and
+/// Issue #8 with a session left open: the store is wiped and
 /// recreated while an MCP bridge stays connected. The session must follow the
 /// fresh store on its next call, the way REST does — not keep reading and
 /// writing the deleted file's orphaned inode for the rest of the session.
@@ -427,7 +427,7 @@ fn open_mcp_session_follows_a_wiped_store() {
     bridge.kill();
 }
 
-/// Insight 00dxh3ev2j1f (0.9.11): an external evaluator with a 20 s timeout
+/// Insight 00dxh3ev2j1f: an external evaluator with a 20 s timeout
 /// read a first run as a hang — the bridge answered initialize, then held
 /// every call while the core downloaded ~450 MB of models. Now a call waits
 /// only the grace and is answered: the tool list from the bridge itself, a

@@ -1,5 +1,5 @@
 //! Frozen SHA-256 fingerprints of every skill and instruction-block text
-//! engram shipped before installed copies carried a stamp (0.9.12). A
+//! engram shipped before installed copies carried a stamp. A
 //! pre-stamp copy is refreshed on update ONLY when its bytes match one of
 //! these exactly — an edited copy matches none and is left alone. Generated
 //! once from git history (skills/engram/**, claude-plugin/skills/**); never

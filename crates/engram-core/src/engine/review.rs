@@ -1,4 +1,4 @@
-//! Sleep's reading side (0.11.0): the crowding index over this graph, the
+//! Sleep's reading side: the crowding index over this graph, the
 //! review queue of subjects it cuts (see [`crate::crowding`]), ranked by
 //! how much they are worth consolidating, one note's neighbourhood, the
 //! conflicts to settle (standing `conflicts-with` edges beside pending
@@ -38,7 +38,7 @@ const SETTLED_DAYS: i64 = 14;
 const ISLAND_NEAR: usize = 3;
 /// Characters of a linked note's title a member's edge carries.
 const EDGE_TITLE: usize = 80;
-/// Found bridges an island lists, and a subject lists leaving it (0.11.2):
+/// Found bridges an island lists, and a subject lists leaving it:
 /// notes a bridge note ties in while no edge does — where a link may go.
 const ISLAND_BRIDGES: usize = 2;
 const SUBJECT_BRIDGES: usize = 3;
@@ -156,7 +156,7 @@ pub struct ReviewLine {
 /// state-of note; a pile of this cycle's notes is live work.
 #[derive(Debug, Clone, Serialize)]
 pub struct Worth {
-    /// size × (1 + ln versions) × (0.3 + 0.7 × settled), one decimal.
+    /// size × (1 + ln versions) ×, one decimal.
     pub score: f64,
     /// Distinct versions the members were captured in (stamped, or read
     /// off the `set_version` journal by creation time).
@@ -196,7 +196,7 @@ pub struct ReviewSubject {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub suspects: Vec<String>,
     /// Notes outside the subject that a bridge note ties to a member while
-    /// no edge does (0.11.2): `from` is the member.
+    /// no edge does: `from` is the member.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub bridges: Vec<SubjectBridge>,
 }
@@ -288,7 +288,7 @@ pub struct Island {
     pub version: Option<String>,
     /// Its nearest notes by embedding: where a link would go.
     pub nearest: Vec<Neighbor>,
-    /// Notes a bridge note ties it to (0.11.2) — a tie the text states.
+    /// Notes a bridge note ties it to — a tie the text states.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub bridges: Vec<FoundBridge>,
 }

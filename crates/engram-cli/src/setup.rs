@@ -1,6 +1,6 @@
 //! `engram-alpha setup` — wire the current repository for AI assistants: MCP
 //! registration + capture instructions, all from assets embedded in the
-//! binary (PLAN §8/§10 Phase 3). The shell installers only fetch the binary;
+//! binary. The shell installers only fetch the binary;
 //! this module is the single source of setup truth.
 
 use std::collections::BTreeSet;
@@ -19,10 +19,10 @@ pub use engram_core::harness::{
 const CLAUDE_RELAXED: &str = include_str!("../../../skills/engram/relaxed/SKILL.md");
 const CLAUDE_NORMAL: &str = include_str!("../../../skills/engram/normal/SKILL.md");
 const CLAUDE_AGGRESSIVE: &str = include_str!("../../../skills/engram/aggressive/SKILL.md");
-// The digest skill (PLAN §7B) has no variants: one explicit-invocation
+// The digest skill has no variants: one explicit-invocation
 // ingestion doc, installed alongside whichever capture variant was chosen.
 pub const CLAUDE_DIGEST: &str = include_str!("../../../skills/engram/digest/SKILL.md");
-// The sleep skill (0.11.0): on-demand consolidation of a crowded graph, no
+// The sleep skill: on-demand consolidation of a crowded graph, no
 // variants either.
 pub const CLAUDE_SLEEP: &str = include_str!("../../../skills/engram/sleep/SKILL.md");
 // Harness-neutral variants for AGENTS.md / GEMINI.md / rules files.
@@ -141,7 +141,7 @@ impl Setup {
         Ok(())
     }
 
-    /// A wired repo holds `.engram/` from the moment it is wired (0.9.9):
+    /// A wired repo holds `.engram/` from the moment it is wired:
     /// that directory is what a `--wired-only` bridge — the Claude Code
     /// plugin's global server — reads as "this folder is an Engram project".
     /// The store inside is the core's to create on first open. Never in `/`
@@ -677,7 +677,7 @@ impl Setup {
         self.write_instructions("AGENTS.md")
     }
 
-    /// Cursor (0.9.12). Three moves, the Devin shape: (1) the project MCP
+    /// Cursor. Three moves, the Devin shape: (1) the project MCP
     /// config `.cursor/mcp.json` with an explicit --db — Cursor's docs don't
     /// promise MCP roots, and a pinned store binds whatever the client
     /// sends; personal absolute paths, so it is git-ignored when setup
@@ -1284,7 +1284,7 @@ mod tests {
         }
     }
 
-    // The plugin's global MCP server (0.9.9) must launch the wired-only
+    // The plugin's global MCP server must launch the wired-only
     // bridge through a script that exists and is executable — a plugin that
     // runs a plain `mcp` would turn every folder Claude Code opens into a
     // project.

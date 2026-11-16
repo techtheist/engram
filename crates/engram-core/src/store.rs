@@ -1,4 +1,4 @@
-//! The storage boundary (PLAN §7C step 5). [`Store`] is the trait every
+//! The storage boundary. [`Store`] is the trait every
 //! backend implements; `SqliteStore` (store_sqlite) is the reference
 //! implementation and `TepinStore` (store_tepin) the TepinDB driver. Engine
 //! and Hub talk only to this trait — which backend a graph file uses is an
@@ -62,7 +62,7 @@ pub const SNIPPET_CLOSE: char = '\u{e001}';
 
 /// Open the store backing `path`, picking the backend by file identity:
 /// a `.tepin` file (or path) gets the TepinDB driver, everything else the
-/// SQLite reference implementation. The cutover (PLAN §7C step 5) is exactly
+/// SQLite reference implementation. The cutover is exactly
 /// this dispatch — application code above never branches on backend.
 pub fn open_store(path: impl AsRef<Path>) -> Result<Box<dyn Store>> {
     let path = resolve_db_path(path.as_ref());
@@ -107,7 +107,7 @@ pub trait Store: Send {
     fn embed_model(&self) -> Result<Option<EmbedModelId>>;
     fn set_embed_model(&self, model: &EmbedModelId) -> Result<()>;
 
-    /// The per-graph configuration document (PLAN §7D) as raw JSON; `None`
+    /// The per-graph configuration document as raw JSON; `None`
     /// on a graph that never customized — defaults apply. Stored beside the
     /// other store-level facts so it travels with `migrate`.
     fn graph_config(&self) -> Result<Option<String>>;
@@ -126,7 +126,7 @@ pub trait Store: Send {
     fn kv_get(&self, key: &str) -> Result<Option<String>>;
     fn kv_set(&self, key: &str, value: &str) -> Result<()>;
 
-    /// This store's recorded at-rest encryption state (0.9.0), read from its
+    /// This store's recorded at-rest encryption state, read from its
     /// OWN meta at open and cached — the file self-describes, so the daemon
     /// can never desync from the `.tepin` on disk. The legacy SQLite driver
     /// is always plaintext.
@@ -190,7 +190,7 @@ pub trait Store: Send {
     fn demote(&self, id: &str, ts: i64) -> Result<bool>;
     /// Withdraw a demotion (the evidence that caused it is gone).
     fn clear_demotion(&self, id: &str) -> Result<Node>;
-    /// User-only hard delete; cascades the node's edges and suspects (PLAN §6B).
+    /// User-only hard delete; cascades the node's edges and suspects.
     fn delete_node(&self, id: &str) -> Result<bool>;
     /// Insert or replace a node by id, preserving its timestamps (import).
     fn upsert_node(&self, n: &Node) -> Result<()>;
@@ -336,7 +336,7 @@ pub trait Store: Send {
     /// entity).
     fn audit_rows(&self, q: &AuditQuery) -> Result<Vec<AuditEntry>>;
 
-    // ---- tasks (0.10.0) --------------------------------------------------
+    // ---- tasks --------------------------------------------------
 
     /// Every task, any status — the working list beside the graph. Tasks
     /// are few (hundreds at most); composites filter in Rust.
@@ -599,7 +599,7 @@ pub trait Store: Send {
             // By default the window reads created_at — when the knowledge
             // was CAPTURED. Not confirmed_at: "what did we decide in July"
             // asks when the decision was made, and a node reconfirmed last
-            // week is still July's decision. A `date_field` clock (0.9.0)
+            // week is still July's decision. A `date_field` clock
             // re-aims the same window at a user-declared EVENT clock.
             if !clock_contains(&node, &window, clock) {
                 continue;
@@ -806,7 +806,7 @@ fn trust_boost(node: &Node, cfg: &crate::config::GraphConfig) -> f64 {
     // Small type prior: the reasoning canon (why / decided / what-bit-us)
     // outranks scratch on near-ties. A ranking preference only — type never
     // touches trust itself, durability is the decay knob. The prior is the
-    // type's `rank_prior` role flag (PLAN §7D: roles, never names).
+    // type's `rank_prior` role flag.
     if let Some(t) = cfg.type_def(node.node_type.as_str()) {
         b += t.roles.rank_prior;
     }

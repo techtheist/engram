@@ -1,4 +1,4 @@
-//! Lane-2 e2e (0.8.13): what `setup` wires is what a session actually gets —
+//! Lane-2 e2e: what `setup` wires is what a session actually gets —
 //! the generated skills carry the current teaching, the installed hooks
 //! deliver a brief on a FRESH repo (issue #8's first report), and the MCP
 //! config launches a bridge that really serves the current tool surface
@@ -225,7 +225,7 @@ fn devin_mcp_config_launches_a_bridge_serving_current_tools() {
     bridge.kill();
 }
 
-/// The Claude Code plugin's server (0.9.9) is `mcp --wired-only`, started in
+/// The Claude Code plugin's server is `mcp --wired-only`, started in
 /// every folder Claude Code opens: a folder that isn't an Engram project is
 /// never turned into one (reads the home graph, project writes refused with
 /// the wiring instruction), and a folder anywhere inside a wired project

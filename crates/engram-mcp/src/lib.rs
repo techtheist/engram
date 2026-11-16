@@ -1,6 +1,6 @@
 //! stdio MCP server (`rmcp`) exposing the Engram graph to Claude. Thin wrapper
 //! over `engram_core::Engine` implementing the Appendix A tool contracts. Note:
-//! `delete_node` is deliberately absent — hard delete is user-only (PLAN §6B),
+//! `delete_node` is deliberately absent — hard delete is user-only,
 //! so Claude has no tool for it.
 
 use engram_core::sync::{MutexExt, RwLockExt};
@@ -152,7 +152,7 @@ impl SessionTrace {
         std::thread::spawn(move || {
             // Decide and attribute under one short lock, then let the pass
             // take and release it per step: holding it for the whole scan
-            // starved every request on this graph (0.9.9).
+            // starved every request on this graph.
             {
                 let mut engine = engine.locked();
                 if engine.embeddings_are_fake()
@@ -301,12 +301,12 @@ pub struct Engram {
     /// The live binding — see [`Binding`]. Clones share it: rmcp hands out
     /// clones per request, and a brief-rebind on one must move them all.
     binding: Arc<std::sync::RwLock<Binding>>,
-    /// The multi-project hub (PLAN §7C). Single-project constructions get a
+    /// The multi-project hub. Single-project constructions get a
     /// factory-less hub, so cross-project selectors fail with a clear message.
     hub: Arc<Hub>,
     /// Fallback session id when the client omits one: minted once per server
     /// process, which over stdio is one Claude session. Superseded by the
-    /// transport session id after the streamable-HTTP migration (PLAN §0).
+    /// transport session id after the streamable-HTTP migration.
     session_id: Arc<str>,
     /// The mid-session conflict push (v0.6.3): judged contradictions from any
     /// session or project land here and ride out on this session's next tool
@@ -801,10 +801,10 @@ impl Engram {
                 None,
             ));
         }
-        // One grammar for both layers (0.8.7): the filter is resolved once,
+        // One grammar for both layers: the filter is resolved once,
         // against the graph's own version journal, and then applies to
         // whichever layer the scope selects.
-        // The event-clock selector (0.9.0) reads curated custom fields —
+        // The event-clock selector reads curated custom fields —
         // history messages carry none, so it can't aim at that layer.
         if scope == "history"
             && a.date_field
@@ -845,17 +845,17 @@ impl Engram {
                 .search_filtered(&a.query, &types, limit, &filter)
                 .map_err(map_err)?;
             let confidence = guard.search_confidence(&hits);
-            // Tombstone-role hits are counted here (0.9.2) so the reply can
+            // Tombstone-role hits are counted here so the reply can
             // say out loud that a hit is a removal record, not live canon —
             // a compact scan shows only type/title, and "Removed: X" reads
             // like a memory of X to a caller skimming for X. The engine
-            // stamps the role on every hit (0.9.4); this only counts it.
+            // stamps the role on every hit; this only counts it.
             let tombstoned = hits.iter().filter(|h| h.tombstone).count();
             (hits, confidence, tombstoned)
         };
         hits.iter_mut().for_each(debracket);
         let hit_ids: Vec<String> = hits.iter().map(|h| h.id.clone()).collect();
-        // Found bridges (0.11.2): the top few hits name one note a bridge
+        // Found bridges: the top few hits name one note a bridge
         // note ties them to while no edge does — kept small, and left off
         // the compact scan.
         let bridge_ids: Vec<String> = hits
@@ -881,7 +881,7 @@ impl Engram {
                 }
             }
         }
-        // Provenance line (0.8.4): a curated hit born in a recorded exchange
+        // Provenance line: a curated hit born in a recorded exchange
         // says so — the birth dialogue is one expand_history away.
         if let Some(arr) = hits.as_array_mut() {
             let guard = engine.locked();
@@ -1047,12 +1047,12 @@ impl Engram {
         let out = engine.edges_out(&a.id).map_err(map_err)?;
         let incoming = engine.edges_in(&a.id).map_err(map_err)?;
         let mut payload = json!({ "node": node, "edges_out": out, "edges_in": incoming });
-        // Provenance (0.8.4): same line search hits carry — where this note
+        // Provenance: same line search hits carry — where this note
         // was born, when the history layer recorded the exchange.
         if let Some(born) = engine.born_in_of(&a.id) {
             payload["born_in"] = json!(born);
         }
-        // Found bridges (0.11.2): notes a bridge note ties to this one while
+        // Found bridges: notes a bridge note ties to this one while
         // no edge does — a connection the text states, not a judgement.
         let bridges = engine.found_bridges(&a.id, NODE_BRIDGES).map_err(map_err)?;
         if !bridges.is_empty() {
@@ -1110,7 +1110,7 @@ impl Engram {
 
     /// The add_note core, shared with the batch form. Each note resolves its
     /// own `project` — a write addressed to `all` is refused by the hub with
-    /// the home-graph pointer (PLAN §7C: fan-out writes are replication).
+    /// the home-graph pointer.
     fn create_note(&self, a: AddNoteArgs) -> Result<serde_json::Value, ErrorData> {
         let node_type = NodeType::parse(&a.node_type).map_err(map_err)?;
         let engine = self.write_engine_for(&a.project)?;
@@ -1131,7 +1131,7 @@ impl Engram {
                 )
             })?),
         };
-        // Judged with the lock released (0.9.10): a heavy logic layer must
+        // Judged with the lock released: a heavy logic layer must
         // not park every other request on the graph behind this write.
         let outcome = Engine::add_node_checked_shared(
             &engine,
@@ -1161,7 +1161,7 @@ impl Engram {
                 missing_refs,
                 canon,
             } => {
-                // born-in provenance (0.8.4): a live MCP write was born in
+                // born-in provenance: a live MCP write was born in
                 // whatever exchange is happening right now — park it; the
                 // harvester links it once the transcript catches up.
                 engine.locked().park_provenance(&node.id, node.created_at);
@@ -1255,7 +1255,7 @@ impl Engram {
         &self,
         Parameters(a): Parameters<BriefArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        // A scoped call is a rebind (0.8.11, folding in 0.8.9's set_project):
+        // A scoped call is a rebind:
         // the agent is the roots provider its client failed to be (issue #4).
         // Resolve BEFORE touching the binding — a refused selector must leave
         // the session exactly where it was; `get` accepts registered projects
@@ -2068,7 +2068,7 @@ impl Engram {
             None => self.hub.current().id.clone(),
         };
         let bound_by = self.bound_by();
-        // The bridge said so (0.9.8), or — for a bridge that doesn't
+        // The bridge said so, or — for a bridge that doesn't
         // announce its rung — the graph itself gives it away.
         let default = engram_core::settings::load().default_agent_project;
         let on_fallback = matches!(
@@ -2123,7 +2123,7 @@ fn engram_server_info() -> ServerInfo {
         ServerCapabilities::builder()
             .enable_tools()
             // A bridge that reconnects to a restarted (maybe newer) core
-            // says so with notifications/tools/list_changed (0.10.4).
+            // says so with notifications/tools/list_changed.
             .enable_tool_list_changed()
             .enable_resources()
             .build(),
@@ -2272,7 +2272,7 @@ async fn serve(server: Engram) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ---- daemon-hosted MCP (PLAN §0 transport migration / §7C thin clients) ----
+// ---- daemon-hosted MCP ----
 
 /// The daemon-hosted MCP service type, nameable so the CLI can cache one per
 /// project (v0.6.2: `/projects/{id}/mcp`).
@@ -2313,7 +2313,7 @@ pub fn streamable_http_service_for(hub: Arc<Hub>, selector: String) -> McpHttpSe
 /// endpoint. Exists because redb allows one process per store — the core
 /// holds the file; everything else, including this bridge, talks HTTP.
 ///
-/// Since the roots Decision (0.8.8) the bridge has exactly ONE bounded brain:
+/// Since the roots Decision the bridge has exactly ONE bounded brain:
 /// deciding WHICH project a session binds to. With an explicit `--db` the
 /// upstream is fixed and the proxy stays verbatim (the pre-roots doctrine);
 /// without one, `roots` is set and the binding resolves from the client's MCP
@@ -3109,7 +3109,7 @@ fn env_secs(key: &str, default: u64) -> std::time::Duration {
     )
 }
 
-/// The roots half of the bridge's one bounded brain (0.8.8): which project
+/// The roots half of the bridge's one bounded brain: which project
 /// root the session is bound to, and how to move it.
 struct RootsBinding {
     fallback_root: std::path::PathBuf,
@@ -3387,7 +3387,7 @@ async fn delete_lease(client: &reqwest::Client, base_url: &str, id: &str) {
         .await;
 }
 
-/// The stdio transport with a gate before `initialize` (0.10.4). Claude Code
+/// The stdio transport with a gate before `initialize`. Claude Code
 /// opens with a `server/discover` version probe; rmcp's handshake takes only
 /// initialize (or ping) first and hard-exits on anything else, so every
 /// connect cost a failed spawn, an ERROR line and a legacy respawn. The gate
@@ -3604,7 +3604,7 @@ pub async fn serve_stdio_bridge_with(
 
 // ---- argument schemas ---------------------------------------------------
 //
-// Every scoped tool takes the same optional `project` selector (PLAN §7C):
+// Every scoped tool takes the same optional `project` selector:
 // omitted = the current project; a registered name, id, or project DIRECTORY
 // (any path inside the repo — what a hook or a bridge holds) = that project
 // (reads AND writes — capturing into a sibling repo's graph is deliberate,
@@ -3612,7 +3612,7 @@ pub async fn serve_stdio_bridge_with(
 // the user-level home graph; "all" = every project, reads only (search /
 // check_claim). `list_projects` names what exists.
 
-/// Numbers the way models send them (0.9.9). Some agents quote every
+/// Numbers the way models send them. Some agents quote every
 /// argument — `"limit": "15"` — and a strict `usize` refused the whole call,
 /// so a search failed on its limit. Every numeric tool argument goes through
 /// here: a JSON number or a numeric string (whitespace trimmed; a whole-valued
@@ -3715,7 +3715,7 @@ struct SearchArgs {
     types: Vec<String>,
     #[serde(default, deserialize_with = "lenient::opt")]
     limit: Option<usize>,
-    /// Bitemporal search (0.9.0): aim `after`/`before` at a date-kind CUSTOM
+    /// Bitemporal search: aim `after`/`before` at a date-kind CUSTOM
     /// field instead of created_at — the event clock for historic imports.
     /// A single field name ("event_date") matches values inside the window;
     /// a "from..to" pair ("effective_from..effective_to") matches nodes
@@ -4297,7 +4297,7 @@ const TIMESTAMP_KEYS: [&str; 16] = [
     "started_at",
     "ended_at",
     "touched_at",
-    // Tasks (0.10.0).
+    // Tasks.
     "updated_at",
     "closed_at",
 ];
@@ -4391,7 +4391,7 @@ mod tidy_tests {
 }
 
 const HIERARCHY_MAX_DEPTH: usize = 3;
-/// Found bridges (0.11.2) a `get_node` carries, and the search hits that
+/// Found bridges a `get_node` carries, and the search hits that
 /// carry one each (snippet/full only): the economical shape — a bridge is a
 /// pointer worth following, not context to read.
 const NODE_BRIDGES: usize = 3;
@@ -4601,7 +4601,7 @@ mod tests {
 
     #[test]
     fn type_parsing_is_shape_only() {
-        // Ontology-as-data (PLAN §7D): names parse by shape; whether one
+        // Ontology-as-data: names parse by shape; whether one
         // exists is the engine's config-driven check, so a custom ontology's
         // types flow through the MCP layer untouched.
         assert!(node_types(&["Decision".into()]).is_ok());
@@ -4640,7 +4640,7 @@ mod tests {
         assert!(err.message.contains("no core"), "{err:?}");
     }
 
-    /// A heartbeat gap reads as sleep only well past the beat (0.10.4): a
+    /// A heartbeat gap reads as sleep only well past the beat: a
     /// busy runtime delays a beat by seconds, a closed lid by minutes.
     #[test]
     fn only_a_long_heartbeat_gap_reads_as_sleep() {
@@ -5137,7 +5137,7 @@ pub(crate) mod tool_tests {
         assert!(text.contains("Backend in Rust"));
     }
 
-    /// Tasks over the wire (0.10.0): the JSON shapes the tool schemas
+    /// Tasks over the wire: the JSON shapes the tool schemas
     /// promise, the batch `$N` parent, the release auto-close reported by
     /// set_version, the done nudge, and the brief section.
     #[tokio::test]
@@ -5588,7 +5588,7 @@ pub(crate) mod tool_tests {
             Box::new(FakeEmbedder::default()),
         );
         engine.set_history_path(engram_core::history::history_store_path(&db));
-        // Recording is opt-in (0.8.4): flip the switch the way the pane does.
+        // Recording is opt-in: flip the switch the way the pane does.
         let mut cfg = engine.graph_config();
         cfg.history.enabled = true;
         engine.set_graph_config(&cfg).unwrap();
@@ -6558,7 +6558,7 @@ mod scoped_transport_tests {
             .await
             .unwrap();
         let text = format!("{:?}", bound.content);
-        // Leaving a real project for a sibling WARNS (0.9.12): the next
+        // Leaving a real project for a sibling WARNS: the next
         // write goes to beta, and the line names the way back.
         assert!(
             text.contains("this session's writes now go to 'beta'"),
@@ -7164,7 +7164,7 @@ mod push_and_params_tests {
     }
 }
 
-/// Sleep's reading side over MCP (0.11.0): `list_nodes` options and the
+/// Sleep's reading side over MCP: `list_nodes` options and the
 /// `reviewed` mark on update_node.
 #[cfg(test)]
 mod sleep_tests {

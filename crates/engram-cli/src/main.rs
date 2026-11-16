@@ -1,4 +1,4 @@
-//! The engram-alpha CLI. Process model (0.8.8): ONE machine core per user —
+//! The engram-alpha CLI. Process model: ONE machine core per user —
 //! `engram-alpha core`, spawned detached and holding every store lock, the
 //! models, the pane, and the MCP endpoints — plus N truly-light access
 //! points: `serve` ensures the core and registers the project, `mcp` bridges
@@ -956,7 +956,7 @@ fn run_setup(args: SetupArgs) -> anyhow::Result<()> {
     anyhow::ensure!(!agents.is_empty(), "nothing to wire");
     setup::Setup::new(&skill, args.mcp_only)?.run(&agents)?;
     // Wiring a repo makes it a project — put it on the machine registry so
-    // every other project's hub can see it (PLAN §7C). Best-effort.
+    // every other project's hub can see it. Best-effort.
     if let Ok(cwd) = std::env::current_dir()
         && let Err(e) = registry::register(&cwd, &cwd.join(".engram/graph.db"))
     {
@@ -1131,7 +1131,7 @@ fn run_brief(args: BriefArgs) -> anyhow::Result<()> {
         println!("{}", text.trim_end());
         return Ok(());
     }
-    // The hub form appends the home-graph section (PLAN §7C); a brief is a
+    // The hub form appends the home-graph section; a brief is a
     // read, so it deliberately does not touch the registry.
     let (hub, _) = build_hub(&db, args.fake_embeddings, false)?;
     let max_chars = hub.current_engine().locked().brief_chars(args.max_chars);
@@ -1140,7 +1140,7 @@ fn run_brief(args: BriefArgs) -> anyhow::Result<()> {
 }
 
 fn run_export(args: ExportArgs) -> anyhow::Result<()> {
-    // Thin client first (PLAN §7D): a daemon owning this store serves
+    // Thin client first: a daemon owning this store serves
     // GET /export — a direct open would trip the tepin single-owner lock.
     let db = engram_core::resolve_db_path(&args.db);
     let snapshot: ExportGraph = if let Some((port, path)) = daemon_route(&db, "/export")
@@ -1198,7 +1198,7 @@ fn run_import(args: ImportArgs) -> anyhow::Result<()> {
 }
 
 /// One loaded model set — what every engine the process opens is wired to
-/// (PLAN §7C: the hub loads the cortex once, not once per project).
+///.
 #[derive(Clone)]
 struct ModelSet {
     embedder: Arc<dyn Embedder>,
@@ -1207,7 +1207,7 @@ struct ModelSet {
 }
 
 /// The live model runtime. The `RwLock` is model selection's hot-swap point
-/// (PLAN §7A): `/models` replaces a slot, already-open engines get the new
+///: `/models` replaces a slot, already-open engines get the new
 /// handle pushed in, engines opened later read the current set here.
 #[derive(Clone)]
 struct Models {
@@ -1312,7 +1312,7 @@ fn load_nli(spec: &engram_core::cortex::ModelSpec) -> anyhow::Result<Arc<dyn Nli
         return Ok(Arc::new(engram_core::FastNli::new()?));
     }
     // A selected judge is either a three-label NLI export or a Laya
-    // typed-decision model (0.9.9); the directory says which.
+    // typed-decision model; the directory says which.
     let dir = provision(Role::Nli, spec)?;
     Ok(Arc::from(engram_core::nli::load_dir(&dir)?))
 }
@@ -1403,14 +1403,14 @@ fn open_engine(db: &Path, models: &Models) -> engram_core::Result<Engine> {
     if let Some(root) = root {
         engine.set_repo_root(root);
     }
-    // At-rest encryption (0.9.0): the daemon's desired state comes from the
+    // At-rest encryption: the daemon's desired state comes from the
     // machine settings' two switches (graph off / history on by default);
     // each store's OWN meta records its actual state and the reconcile
     // below (plus the history-store open path) converges the two. Library
     // engines and tests set no desire and never migrate.
     let machine = engram_core::settings::load();
     engine.set_desired_encryption(Some(machine.encrypt_graph), Some(machine.encrypt_history));
-    // History layer (0.8.4): the sibling store beside the curated one, opened
+    // History layer: the sibling store beside the curated one, opened
     // by the engine when the graph's history config is enabled (opt-in).
     engine.set_history_path(engram_core::history::history_store_path(&resolved));
     if let Some(r) = &set.reranker {
@@ -1454,7 +1454,7 @@ fn build_engine(db: &Path, fake_embeddings: bool, cortex: bool) -> anyhow::Resul
     open_engine(db, &models).with_context(|| format!("opening {}", db.display()))
 }
 
-/// A short-lived multi-project hub over one store (PLAN §7C) — the brief's
+/// A short-lived multi-project hub over one store — the brief's
 /// direct-open fallback when no daemon owns the store. Long-lived hubs are
 /// the machine core's job ([`build_core_hub`]); nothing here registers or
 /// keeps locks past the command.
@@ -1483,7 +1483,7 @@ fn build_core_hub(fake_embeddings: bool) -> anyhow::Result<(Arc<Hub>, Models)> {
     ))
 }
 
-/// The daemon's model-selection hands (PLAN §7A): resolve a `/models` request
+/// The daemon's model-selection hands: resolve a `/models` request
 /// to a spec, provision + load it, swap it into the live model set AND every
 /// open engine, persist the choice, and — for embeddings — run the guarded
 /// re-embed on each open store. Projects not open right now re-embed lazily
@@ -1654,7 +1654,7 @@ fn ensure_nli_model() {
     }
 }
 
-/// The thin-client resolution (PLAN §7C): a healthy daemon that owns this db
+/// The thin-client resolution: a healthy daemon that owns this db
 /// — daemon.json next to the store, /health answers, and the advertised db
 /// matches. When one exists, IT holds the file; everything else talks HTTP.
 fn daemon_for(db: &Path) -> Option<u16> {
@@ -1876,9 +1876,9 @@ async fn run_mcp_fixed(raw_db: &Path, fake_embeddings: bool) -> anyhow::Result<(
                 return Ok(target(url));
             }
             if std::time::Instant::now() >= deadline {
-                // Better no tools than a stolen lock (0.8.5) — and better a
+                // Better no tools than a stolen lock — and better a
                 // clear error in mcp.log than a silently heavy in-process
-                // hub (0.8.8).
+                // hub.
                 return Err(no_core_error(&db));
             }
             std::thread::sleep(std::time::Duration::from_millis(500));
@@ -1982,7 +1982,7 @@ async fn run_mcp_roots(fake_embeddings: bool, wired_only: bool) -> anyhow::Resul
     let fallback_root =
         std::env::current_dir().unwrap_or_else(|_| PathBuf::from(std::path::MAIN_SEPARATOR_STR));
     let resolve: engram_mcp::RootResolver = Arc::new(move |root: PathBuf| {
-        // --wired-only (0.9.9): a folder that isn't an Engram project is
+        // --wired-only: a folder that isn't an Engram project is
         // never turned into one. A folder inside a registered project binds
         // that project's root; anything else reads the home graph with
         // project writes refused — the folder is real and known, so the
@@ -2308,7 +2308,7 @@ fn machine_core_pid() -> Option<u32> {
     Some(serde_json::from_str::<serde_json::Value>(&raw).ok()?["pid"].as_u64()? as u32)
 }
 
-/// The light launcher (0.8.8 process model): make sure the machine core is
+/// The light launcher: make sure the machine core is
 /// running, hand it this repo's project, refresh the repo-local
 /// advertisement, print the pane URL, and exit — the core keeps serving.
 async fn serve(args: ServeArgs) -> anyhow::Result<()> {
@@ -2387,15 +2387,15 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 None => tracing::warn!("couldn't resolve this repo's root — not registered"),
             }
             // Installed skills and instruction blocks follow the binary
-            // (0.9.12): untouched copies update in place, edited ones stay,
-            // and copies git tracks are held for `setup --refresh` (0.11.1).
+            //: untouched copies update in place, edited ones stay,
+            // and copies git tracks are held for `setup --refresh`.
             if let Some(root) = repo_root_of(&db_abs) {
                 let found = upkeep::run(&root);
                 for line in skillsync::report(&root, &found) {
                     println!("{line}");
                 }
             }
-            // First-run nudge (PLAN §8): confirm what IS wired, then say once
+            // First-run nudge: confirm what IS wired, then say once
             // when installed assistants aren't wired to this repo yet. The
             // wired list scans the full roster, not just detect_agents —
             // detection is a PATH/config probe and misses CLIs installed
@@ -2469,7 +2469,7 @@ async fn block_while_core_healthy(port: u16) {
     }
 }
 
-/// The machine core (0.8.8): the ONE process on this machine holding every
+/// The machine core: the ONE process on this machine holding every
 /// store lock, the loaded models, the pane, and the MCP endpoints. The HTTP
 /// server is the foreground; SIGTERM, ctrl-c, and `POST /shutdown` all run
 /// the same orchestrated exit. The pre-0.8.8 stdio-MCP-as-foreground shape
@@ -2555,7 +2555,7 @@ async fn run_core(args: CoreArgs) -> anyhow::Result<()> {
         std::sync::Arc::new(skillgen::SkillInstaller),
         runtime.clone(),
     )
-    // The daemon-hosted MCP endpoints (PLAN §0 transport migration):
+    // The daemon-hosted MCP endpoints:
     // `engram-alpha mcp` bridges stdio sessions here, so exactly one
     // process — this core — holds every store (redb requires it).
     .route_service("/mcp", engram_mcp::streamable_http_service(hub.clone()))
@@ -2592,12 +2592,12 @@ async fn run_core(args: CoreArgs) -> anyhow::Result<()> {
     write_machine_daemon_file(port, &db_display);
     tracing::info!("machine core: HTTP + SSE + MCP on http://127.0.0.1:{port}");
 
-    // Periodic librarian pass (PLAN §10 Phase 1): archive TTL-expired stale
+    // Periodic librarian pass: archive TTL-expired stale
     // provisional nodes and refresh the suspected-conflict queue. Purely local
-    // math — judgment stays with Claude/the user (PLAN §7). First tick fires
+    // math — judgment stays with Claude/the user. First tick fires
     // at startup, then every 6 hours.
     // Logs a runtime stall the moment it passes 5 s — the trace a bridge's
-    // missed pings never left here before (0.10.4).
+    // missed pings never left here before.
     let watchdog = watchdog::spawn();
 
     let sweeper = hub.clone();
@@ -2626,7 +2626,7 @@ async fn run_core(args: CoreArgs) -> anyhow::Result<()> {
             }
             // Every engine the core currently holds open — the machine core
             // sweeps all its projects, not just the launch one. On the
-            // blocking pool (0.10.4): embedder + NLI over a whole graph is
+            // blocking pool: embedder + NLI over a whole graph is
             // seconds to minutes of CPU, and on an async worker it held up
             // whatever was queued there — bridge pings that went unanswered
             // past 10 s, and every bridge on the machine exited (Problem
@@ -2645,7 +2645,7 @@ async fn run_core(args: CoreArgs) -> anyhow::Result<()> {
                             engine.set_audit_origin(engram_core::AuditOrigin::daemon());
                             engine.decay(engine.graph_config().policy.decay_ttl_days, false)
                         };
-                        // The scan releases the lock per node (0.9.9) — a
+                        // The scan releases the lock per node — a
                         // six-hourly sweep must not freeze the graph it sweeps.
                         decayed.and_then(|archived| {
                             engram_core::Engine::scan_conflicts_shared(&engine)
@@ -2675,7 +2675,7 @@ async fn run_core(args: CoreArgs) -> anyhow::Result<()> {
         }
     });
 
-    // History harvester (0.8.4): tail coding-assistant transcripts into each
+    // History harvester: tail coding-assistant transcripts into each
     // project's history layer. Same detached-task shape as the librarian
     // sweep; the sweep interval is short because the born-in provenance
     // parking lot resolves "on next harvest tick". First tick fires at
@@ -2691,7 +2691,7 @@ async fn run_core(args: CoreArgs) -> anyhow::Result<()> {
         let mut harvester = engram_core::harvest::Harvester::first_wave();
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(interval));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        // Filesystem wake-ups (0.8.7): a transcript write pulls the next sweep
+        // Filesystem wake-ups: a transcript write pulls the next sweep
         // forward instead of waiting out the interval, so a note captured
         // seconds ago can already find the exchange it was born in. The TIMED
         // SWEEP REMAINS THE GUARANTEE — the watcher is an accelerator that is
@@ -2963,7 +2963,7 @@ fn default_http_port() -> u16 {
 const WATCH_DEBOUNCE_MS: u64 = 400;
 
 /// Watch the directories the adapters are reading transcripts from, and poke
-/// `wake` when anything in them changes (0.8.7).
+/// `wake` when anything in them changes.
 ///
 /// Every failure here is soft, and deliberately so: no watcher, an
 /// unwatchable directory, a platform without a backend, an event storm that

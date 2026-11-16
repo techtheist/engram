@@ -1,4 +1,4 @@
-//! The history layer (0.8.4): coding-assistant chat transcripts as an
+//! The history layer: coding-assistant chat transcripts as an
 //! episodic record BENEATH the curated graph — Session/Message nodes in a
 //! sibling `history.tepin` store per project, cross-linked to curated memory
 //! by `born-in` provenance, and reachable only through the sectioned search
@@ -55,7 +55,7 @@ pub struct HistoryHit {
     pub snippet: String,
     pub score: f64,
     /// Earlier statements of the same thing, newest-first, folded under this
-    /// hit by `order: "recent"` (0.8.7) — the episodic echo of the curated
+    /// hit by `order: "recent"` — the episodic echo of the curated
     /// graph's `replaces` chain, except the chain is inferred at query time
     /// rather than judged, because nobody curates a transcript.
     ///

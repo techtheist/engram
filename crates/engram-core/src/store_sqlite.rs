@@ -1,6 +1,6 @@
 //! The reference [`Store`] implementation: one SQLite connection bound to one
 //! repo's `.engram/graph.db`. Writes are serialized by `&mut`-free design +
-//! the daemon's single writer; WAL gives concurrent reads (PLAN §6B).
+//! the daemon's single writer; WAL gives concurrent reads.
 //! Composite reads (hybrid fusion, traversal, …) come from the trait's
 //! provided methods; this file overrides only what SQL answers faster.
 
@@ -140,20 +140,20 @@ impl SqliteStore {
         if !column_exists(conn, "nodes", "trust_override")? {
             conn.execute_batch("ALTER TABLE nodes ADD COLUMN trust_override REAL;")?;
         }
-        // Version tracking (0.7.0): the project version a node was captured
+        // Version tracking: the project version a node was captured
         // at, stamped from the graph's current working version.
         if !column_exists(conn, "nodes", "version")? {
             conn.execute_batch("ALTER TABLE nodes ADD COLUMN version TEXT;")?;
         }
-        // History layer (0.8.4): the layer-specific extension bag.
+        // History layer: the layer-specific extension bag.
         if !column_exists(conn, "nodes", "props")? {
             conn.execute_batch("ALTER TABLE nodes ADD COLUMN props TEXT;")?;
         }
-        // Custom fields (0.9.0): user-defined first-class values.
+        // Custom fields: user-defined first-class values.
         if !column_exists(conn, "nodes", "fields")? {
             conn.execute_batch("ALTER TABLE nodes ADD COLUMN fields TEXT;")?;
         }
-        // Audit undo (0.9.10): rows of one operation share an id.
+        // Audit undo: rows of one operation share an id.
         if !column_exists(conn, "audit", "op_id")? {
             conn.execute_batch("ALTER TABLE audit ADD COLUMN op_id TEXT;")?;
         }
@@ -164,7 +164,7 @@ impl SqliteStore {
                  ALTER TABLE suspects ADD COLUMN nli_score REAL;",
             )?;
         }
-        // Directional conflict hints (0.7.0): which side carries the negation.
+        // Directional conflict hints: which side carries the negation.
         if !column_exists(conn, "suspects", "via")? {
             conn.execute_batch("ALTER TABLE suspects ADD COLUMN via TEXT;")?;
         }

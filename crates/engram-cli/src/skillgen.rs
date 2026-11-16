@@ -1,4 +1,4 @@
-//! Skill generation from a graph's ontology (PLAN §7D teaching surface):
+//! Skill generation from a graph's ontology:
 //! when a graph runs the shipped ontology the canonical variant text is the
 //! best skill there is — install it verbatim. When the ontology is
 //! customized, generate a skill that teaches THIS graph's types, verbs and

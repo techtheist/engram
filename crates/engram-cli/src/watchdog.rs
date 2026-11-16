@@ -1,4 +1,4 @@
-//! Runtime stall watchdog (0.10.4). A task on the core's async runtime stamps
+//! Runtime stall watchdog. A task on the core's async runtime stamps
 //! a tick every 250 ms; a plain OS thread, which no runtime stall can hold,
 //! reads the stamp and logs when it falls behind — "the core's runtime was
 //! unresponsive for N s", then how long the stall lasted once it ends. A

@@ -209,7 +209,7 @@ fn windsurf_full_setup_writes_rule_and_skills() {
     );
 }
 
-/// Codex CLI wiring (0.8.12): beyond the global config.toml MCP entry, setup
+/// Codex CLI wiring: beyond the global config.toml MCP entry, setup
 /// installs project-scope skills, the envelope brief hook (Codex shares
 /// Devin's hookSpecificOutput-only contract), and its `.codex/hooks.json`
 /// registration — trust-gated on Codex's side via `/hooks`.

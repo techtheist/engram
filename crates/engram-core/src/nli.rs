@@ -1,10 +1,10 @@
-//! NLI — the logic layer of the local cortex (PLAN §7A). Given a premise and
+//! NLI — the logic layer of the local cortex. Given a premise and
 //! a hypothesis, a small local cross-encoder answers: entailment, neutral, or
 //! contradiction. This is what similarity can't do — telling "we use Postgres"
 //! vs "we use MySQL" (contradiction) apart from "we use Postgres for analytics
 //! only" (refinement) — and it runs offline, token-free.
 //!
-//! Governing principle (PLAN §7A): **models don't validate.** NLI output
+//! Governing principle: **models don't validate.** NLI output
 //! nominates — orders the suspects queue, suggests verdicts, annotates claims
 //! — and never moves a trust field. Judgment stays with the user or the
 //! assistant.
@@ -79,14 +79,14 @@ pub trait Nli: Send + Sync {
 
     /// Which model this is — the model directory's name for an ONNX model.
     /// A verdict remembered by a sweep is only reusable under the model that
-    /// made it (0.9.11); an empty id means "unknown", so remembered verdicts
+    /// made it; an empty id means "unknown", so remembered verdicts
     /// still hold until the model reports a different one.
     fn model_id(&self) -> String {
         String::new()
     }
 }
 
-/// Shared NLI runtime across stores (PLAN §7C hub) — same `Arc` sharing as
+/// Shared NLI runtime across stores — same `Arc` sharing as
 /// the embedder and reranker.
 impl<T: Nli + ?Sized> Nli for std::sync::Arc<T> {
     fn judge(&self, pairs: &[(String, String)]) -> Result<Vec<NliJudgment>> {

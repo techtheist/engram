@@ -1,4 +1,4 @@
-//! The TepinDB [`Store`] driver (PLAN §7C step 5) — Engram's graph on the
+//! The TepinDB [`Store`] driver — Engram's graph on the
 //! sibling project's primitives tier: one `.tepin` file holds the documents
 //! (`nodes` / `edges` / `suspects` / `audit` / `meta` collections), the BM25
 //! keyword index over the same fields the SQLite FTS mirror covered, and
@@ -33,7 +33,7 @@ const AUDIT: &str = "audit";
 const META: &str = "meta";
 const TASKS: &str = "tasks";
 
-/// The single synthetic keyword field (0.9.0): the node's searchable token
+/// The single synthetic keyword field: the node's searchable token
 /// stream — identity tokens on a plaintext store, keyed HMAC digests on a
 /// sealed one. See `TepinStore::kw_field`.
 const KW_FIELD: &str = "_kw";
@@ -52,7 +52,7 @@ pub struct TepinStore {
     /// The parsed per-graph configuration, cached at open and refreshed by
     /// `set_graph_config` — trust hydration reads it on every document.
     cfg: RwLock<Arc<GraphConfig>>,
-    /// This store's recorded at-rest state (0.9.0), read from its own meta
+    /// This store's recorded at-rest state, read from its own meta
     /// at open — every write consults it, so the file can never desync.
     enc: RwLock<EncryptionState>,
     /// The machine sealing key, loaded lazily when the state needs it. None
@@ -159,7 +159,7 @@ impl TepinStore {
             .collect()
     }
 
-    /// The BM25/keyword source is ONE synthetic field, `_kw` (0.9.0): the
+    /// The BM25/keyword source is ONE synthetic field, `_kw`: the
     /// node's searchable token stream, identity tokens on a plaintext store
     /// and keyed HMAC digests on a sealed one. One field in BOTH states =
     /// one code path, and BM25 statistics (term frequencies, doc lengths)
@@ -178,7 +178,7 @@ impl TepinStore {
         Ok(())
     }
 
-    // ---- at-rest sealing (0.9.0) ----------------------------------------
+    // ---- at-rest sealing ----------------------------------------
 
     /// Read this store's recorded state from its own meta and load the key
     /// when the state needs one. Called at open; never at `open_in_memory`
@@ -505,7 +505,7 @@ fn configure(db: &Db) -> Result<()> {
             db.create_index(EDGES, field)?;
         }
     }
-    // Nodes by type and by session (0.10.0): the brief reads canon one type
+    // Nodes by type and by session: the brief reads canon one type
     // at a time, and the history store lists Session nodes and reads one
     // conversation's messages — without these every such read deserialized
     // (and unsealed) the whole store. Created once; the first open of an
@@ -1116,7 +1116,7 @@ impl Store for TepinStore {
         }
         // The stored `_kw` stream went through the state's term transform;
         // the query takes the identical transform, so BM25 scores match the
-        // plaintext ranking exactly (0.9.0 blind index).
+        // plaintext ranking exactly.
         let kw_query = self.kw_transform_tokens(terms.clone());
         // Over-fetch: archived/off-type hits fall out below.
         let raw = self
@@ -1384,7 +1384,7 @@ impl Store for TepinStore {
         Ok(entries)
     }
 
-    // ---- tasks (0.10.0) --------------------------------------------------
+    // ---- tasks --------------------------------------------------
 
     fn all_tasks(&self) -> Result<Vec<crate::tasks::Task>> {
         self.find_docs(TASKS, &json!({}))?

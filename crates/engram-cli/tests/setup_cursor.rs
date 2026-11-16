@@ -1,4 +1,4 @@
-//! `engram-alpha setup --cli cursor` (0.9.12) wires the repository for
+//! `engram-alpha setup --cli cursor` wires the repository for
 //! Cursor: the project MCP config `.cursor/mcp.json` (explicit --db,
 //! git-ignored when setup creates it), skills under `.cursor/skills` unless
 //! `.claude/skills/engram` already serves Cursor, and a `sessionStart` hook
