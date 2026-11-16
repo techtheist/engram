@@ -8,6 +8,7 @@
 //! one write is the reviewed mark, which lives in the store's kv beside the
 //! graph (older binaries never read the key, so it costs them nothing).
 
+use crate::sync::MutexExt;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -390,8 +391,7 @@ impl Engine {
         let fingerprint = fnv(&parts);
         if let Some(hit) = self
             .crowd_cache
-            .lock()
-            .unwrap()
+            .locked()
             .as_ref()
             .filter(|c| c.fingerprint == fingerprint)
         {
@@ -404,7 +404,7 @@ impl Engine {
             }
         }
         let index = Arc::new(CrowdIndex::build(&items, fingerprint));
-        *self.crowd_cache.lock().unwrap() = Some(index.clone());
+        *self.crowd_cache.locked() = Some(index.clone());
         Ok(index)
     }
 

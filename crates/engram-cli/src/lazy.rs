@@ -23,6 +23,7 @@
 //! unload/reload machinery through them): their loader just rebuilds a
 //! `FakeEmbedder`, so the "reload" is trivial and dependency-free.
 
+use engram_core::sync::{MutexExt, RwLockExt};
 use std::sync::{Arc, RwLock};
 
 use engram_core::{Embedder, FakeEmbedder, Nli, Reranker};
@@ -59,10 +60,10 @@ impl<T: ?Sized> Slot<T> {
     /// and finds the loaded model.
     fn get(&self) -> engram_core::Result<Arc<T>> {
         self.idle.touch_model_use();
-        if let Some(model) = self.inner.read().expect("model slot lock").clone() {
+        if let Some(model) = self.inner.reading().clone() {
             return Ok(model);
         }
-        let mut slot = self.inner.write().expect("model slot lock");
+        let mut slot = self.inner.writing();
         if let Some(model) = slot.clone() {
             // Another caller reloaded while we waited on the lock.
             return Ok(model);
@@ -87,11 +88,7 @@ impl<T: ?Sized> Slot<T> {
 
     /// Drop the session. Returns whether one was actually resident.
     fn unload(&self) -> bool {
-        self.inner
-            .write()
-            .expect("model slot lock")
-            .take()
-            .is_some()
+        self.inner.writing().take().is_some()
     }
 }
 
@@ -252,13 +249,13 @@ impl LazyModels {
             .map(|r| LazyReranker::wrap(r, idle.clone()));
         let nli = current.nli.map(|n| LazyNli::wrap(n, idle.clone()));
         {
-            let mut set = models.set.write().expect("model set lock");
+            let mut set = models.set.writing();
             set.embedder = embedder.clone();
             set.reranker = reranker.clone().map(|r| r as Arc<dyn Reranker>);
             set.nli = nli.clone().map(|n| n as Arc<dyn Nli>);
         }
         for engine in hub.engines() {
-            let mut engine = engine.lock().expect("engine lock");
+            let mut engine = engine.locked();
             engine.set_embedder(Box::new(embedder.clone()));
             if let Some(r) = &reranker {
                 engine.set_reranker(Box::new(r.clone()));
@@ -282,25 +279,25 @@ impl LazyModels {
     /// live set and every open engine.
     pub fn swap_embedder(&self, model: Arc<dyn Embedder>) -> Arc<LazyEmbedder> {
         let wrapper = LazyEmbedder::wrap(model, self.idle.clone());
-        self.inner.write().expect("lazy models lock").embedder = wrapper.clone();
+        self.inner.writing().embedder = wrapper.clone();
         wrapper
     }
 
     pub fn swap_reranker(&self, model: Arc<dyn Reranker>) -> Arc<LazyReranker> {
         let wrapper = LazyReranker::wrap(model, self.idle.clone());
-        self.inner.write().expect("lazy models lock").reranker = Some(wrapper.clone());
+        self.inner.writing().reranker = Some(wrapper.clone());
         wrapper
     }
 
     pub fn swap_nli(&self, model: Arc<dyn Nli>) -> Arc<LazyNli> {
         let wrapper = LazyNli::wrap(model, self.idle.clone());
-        self.inner.write().expect("lazy models lock").nli = Some(wrapper.clone());
+        self.inner.writing().nli = Some(wrapper.clone());
         wrapper
     }
 
     /// Drop every resident session. Returns whether anything was resident.
     pub fn unload_all(&self) -> bool {
-        let wrappers = self.inner.read().expect("lazy models lock");
+        let wrappers = self.inner.reading();
         let mut any = wrappers.embedder.unload();
         if let Some(r) = &wrappers.reranker {
             any |= r.unload();

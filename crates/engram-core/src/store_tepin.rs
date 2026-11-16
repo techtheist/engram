@@ -10,6 +10,7 @@
 //! come from the trait's provided methods, so ranking behavior is identical
 //! across backends by construction.
 
+use crate::sync::RwLockExt;
 use std::path::Path;
 
 use serde_json::{Value, json};
@@ -99,14 +100,14 @@ impl TepinStore {
     /// Re-parse the stored config document into the cache.
     fn reload_config(&self) -> Result<()> {
         let raw = Store::graph_config(self)?;
-        *self.cfg.write().unwrap() = Arc::new(GraphConfig::from_stored(raw.as_deref()));
+        *self.cfg.writing() = Arc::new(GraphConfig::from_stored(raw.as_deref()));
         Ok(())
     }
 
     /// The live policy numbers, cloned out of the cached config for document
     /// hydration.
     fn policy(&self) -> PolicyConfig {
-        self.cfg.read().unwrap().policy.clone()
+        self.cfg.reading().policy.clone()
     }
 
     fn db(&self) -> &Db {
@@ -187,24 +188,24 @@ impl TepinStore {
             .as_deref()
             .and_then(EncryptionState::parse)
             .unwrap_or(EncryptionState::Plaintext);
-        *self.enc.write().unwrap() = state;
+        *self.enc.writing() = state;
         if state != EncryptionState::Plaintext && self.seal_key().is_none() {
-            *self.key.write().unwrap() = SealKey::load_or_create().map(Arc::new);
+            *self.key.writing() = SealKey::load_or_create().map(Arc::new);
         }
         Ok(())
     }
 
     fn enc_state(&self) -> EncryptionState {
-        *self.enc.read().unwrap()
+        *self.enc.reading()
     }
 
     fn seal_key(&self) -> Option<Arc<SealKey>> {
-        self.key.read().unwrap().clone()
+        self.key.reading().clone()
     }
 
     /// Inject a key without touching the keyring — tests only.
     pub fn set_seal_key_for_tests(&self, key: SealKey) {
-        *self.key.write().unwrap() = Some(Arc::new(key));
+        *self.key.writing() = Some(Arc::new(key));
     }
 
     /// Seal one string for storage under the current state (no-op on a
@@ -585,7 +586,7 @@ impl Store for TepinStore {
 
     fn set_graph_config(&self, json: &str) -> Result<()> {
         self.set_meta_str("graph_config", json)?;
-        *self.cfg.write().unwrap() = Arc::new(GraphConfig::from_stored(Some(json)));
+        *self.cfg.writing() = Arc::new(GraphConfig::from_stored(Some(json)));
         // A changed indexed-field set re-registers the keyword fields (tepin
         // rebuilds the BM25 index); existing docs re-hoist on their next
         // write — the engine re-embeds them in the same gesture.
@@ -594,7 +595,7 @@ impl Store for TepinStore {
     }
 
     fn config(&self) -> Arc<GraphConfig> {
-        self.cfg.read().unwrap().clone()
+        self.cfg.reading().clone()
     }
 
     fn current_version(&self) -> Result<Option<String>> {
@@ -625,7 +626,7 @@ impl Store for TepinStore {
 
     fn set_encryption_state(&self, state: EncryptionState) -> Result<()> {
         if state != EncryptionState::Plaintext && self.seal_key().is_none() {
-            *self.key.write().unwrap() = SealKey::load_or_create().map(Arc::new);
+            *self.key.writing() = SealKey::load_or_create().map(Arc::new);
             if state.writes_sealed() && self.seal_key().is_none() {
                 return Err(Error::Config(
                     "no encryption key available — both the OS keyring and the \
@@ -637,7 +638,7 @@ impl Store for TepinStore {
         // Persist FIRST: a crash right after leaves the recorded state ahead
         // of the rows, which the mid-flight states are built to tolerate.
         self.set_meta_str("encryption_state", state.as_str())?;
-        *self.enc.write().unwrap() = state;
+        *self.enc.writing() = state;
         Ok(())
     }
 

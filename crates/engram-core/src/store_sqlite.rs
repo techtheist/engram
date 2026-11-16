@@ -4,6 +4,7 @@
 //! Composite reads (hybrid fusion, traversal, …) come from the trait's
 //! provided methods; this file overrides only what SQL answers faster.
 
+use crate::sync::RwLockExt;
 use std::path::Path;
 use std::sync::{Arc, Once, RwLock};
 
@@ -84,7 +85,7 @@ impl SqliteStore {
     /// The live policy numbers, cloned out of the cached config for row
     /// hydration closures.
     fn policy(&self) -> PolicyConfig {
-        self.cfg.read().unwrap().policy.clone()
+        self.cfg.reading().policy.clone()
     }
 
     /// Forward-only migrations for databases created before a column existed.
@@ -308,12 +309,12 @@ impl Store for SqliteStore {
 
     fn set_graph_config(&self, json: &str) -> Result<()> {
         meta_set(&self.conn, "graph_config", json)?;
-        *self.cfg.write().unwrap() = Arc::new(GraphConfig::from_stored(Some(json)));
+        *self.cfg.writing() = Arc::new(GraphConfig::from_stored(Some(json)));
         Ok(())
     }
 
     fn config(&self) -> Arc<GraphConfig> {
-        self.cfg.read().unwrap().clone()
+        self.cfg.reading().clone()
     }
 
     fn current_version(&self) -> Result<Option<String>> {

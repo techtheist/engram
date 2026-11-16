@@ -1049,7 +1049,8 @@ mod projects {
     async fn scoped_routes_reach_other_projects_and_all_stays_read_only() {
         let tmp = std::env::temp_dir().join(format!("engram-http-hub-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
-        unsafe { std::env::set_var("ENGRAM_HOME", tmp.join("enghome")) };
+        let mut env = engram_core::sync::EnvGuard::lock();
+        env.set("ENGRAM_HOME", tmp.join("enghome"));
         let beta_root = tmp.join("beta");
         std::fs::create_dir_all(&beta_root).unwrap();
         registry::register(&beta_root, &beta_root.join(".engram/graph.db")).unwrap();
@@ -1161,7 +1162,7 @@ mod projects {
             "the data itself is untouched"
         );
 
-        unsafe { std::env::remove_var("ENGRAM_HOME") };
+        env.remove("ENGRAM_HOME");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

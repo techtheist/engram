@@ -33,6 +33,8 @@
 //! not_entailment) and cannot express contradiction at all, so they do not
 //! load here and would be useless if they did.
 
+#[cfg(feature = "fastembed")]
+use crate::sync::MutexExt;
 use serde::{Deserialize, Serialize};
 
 use crate::Result;
@@ -353,7 +355,7 @@ mod fast {
             } else {
                 None
             };
-            let mut session = self.session.lock().expect("nli session mutex");
+            let mut session = self.session.locked();
             let outputs = match &run_opts {
                 Some(o) => session.run_with_options(session_inputs, o),
                 None => session.run(session_inputs),

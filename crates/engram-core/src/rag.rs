@@ -4,6 +4,8 @@
 //! while tests use a deterministic fake — no ONNX, no network (PLAN approach #2).
 
 use crate::Result;
+#[cfg(feature = "fastembed")]
+use crate::sync::MutexExt;
 
 /// Embedding dimensionality. Matches `bge-small-en-v1.5` and the `vec_nodes`
 /// table width. Changing this requires rebuilding the vector table.
@@ -279,8 +281,7 @@ mod fast {
             // the session builds — which is both the memory the process ends
             // up holding and, through padding waste, most of its compute.
             self.model
-                .lock()
-                .expect("embedder mutex")
+                .locked()
                 .embed(texts, Some(crate::onnx::batch()))
                 .map_err(emb_err)
         }
@@ -368,8 +369,7 @@ mod fast {
             let docs: Vec<&str> = documents.iter().map(String::as_str).collect();
             let mut results = self
                 .model
-                .lock()
-                .expect("reranker mutex")
+                .locked()
                 .rerank(query, docs, false, Some(crate::onnx::batch()))
                 .map_err(emb_err)?;
             // fastembed returns best-first; restore input order for the caller.

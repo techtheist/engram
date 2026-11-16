@@ -4,6 +4,7 @@
 //! points: `serve` ensures the core and registers the project, `mcp` bridges
 //! a stdio client to it, `status`/`stop` observe and end it.
 
+use engram_core::sync::{MutexExt, RwLockExt};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -1133,11 +1134,7 @@ fn run_brief(args: BriefArgs) -> anyhow::Result<()> {
     // The hub form appends the home-graph section (PLAN §7C); a brief is a
     // read, so it deliberately does not touch the registry.
     let (hub, _) = build_hub(&db, args.fake_embeddings, false)?;
-    let max_chars = hub
-        .current_engine()
-        .lock()
-        .unwrap()
-        .brief_chars(args.max_chars);
+    let max_chars = hub.current_engine().locked().brief_chars(args.max_chars);
     println!("{}", hub.brief(max_chars)?);
     Ok(())
 }
@@ -1219,7 +1216,7 @@ struct Models {
 
 impl Models {
     fn current(&self) -> ModelSet {
-        self.set.read().expect("model set lock").clone()
+        self.set.reading().clone()
     }
 }
 
@@ -1572,9 +1569,9 @@ impl engram_http::ModelAdmin for CortexAdmin {
                 let embedder = self
                     .lazy
                     .swap_embedder(load_embedder(&spec).map_err(load_err)?);
-                self.models.set.write().expect("model set lock").embedder = embedder.clone();
+                self.models.set.writing().embedder = embedder.clone();
                 for engine in self.hub.engines() {
-                    let mut engine = engine.lock().expect("engine lock");
+                    let mut engine = engine.locked();
                     engine.set_embedder(Box::new(embedder.clone()));
                     reembedded += engine.ensure_embed_model()?;
                 }
@@ -1583,24 +1580,16 @@ impl engram_http::ModelAdmin for CortexAdmin {
                 let reranker = self
                     .lazy
                     .swap_reranker(load_reranker(&spec).map_err(load_err)?);
-                self.models.set.write().expect("model set lock").reranker =
-                    Some(reranker.clone() as Arc<dyn Reranker>);
+                self.models.set.writing().reranker = Some(reranker.clone() as Arc<dyn Reranker>);
                 for engine in self.hub.engines() {
-                    engine
-                        .lock()
-                        .expect("engine lock")
-                        .set_reranker(Box::new(reranker.clone()));
+                    engine.locked().set_reranker(Box::new(reranker.clone()));
                 }
             }
             Role::Nli => {
                 let nli = self.lazy.swap_nli(load_nli(&spec).map_err(load_err)?);
-                self.models.set.write().expect("model set lock").nli =
-                    Some(nli.clone() as Arc<dyn Nli>);
+                self.models.set.writing().nli = Some(nli.clone() as Arc<dyn Nli>);
                 for engine in self.hub.engines() {
-                    engine
-                        .lock()
-                        .expect("engine lock")
-                        .set_nli(Box::new(nli.clone()));
+                    engine.locked().set_nli(Box::new(nli.clone()));
                 }
             }
         }
@@ -1749,9 +1738,7 @@ fn spawn_core_and_wait(http_port: Option<u16>, fake_embeddings: bool) -> anyhow:
 /// client's initialize (impatient clients kill a silent server at ~60s).
 fn ensure_machine_core(fake_embeddings: bool) -> anyhow::Result<u16> {
     static GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _flight = GATE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _flight = GATE.locked();
     // Version handshake: an older core is retired here so the spawn below
     // replaces it with this binary — otherwise a client relaunching its
     // bridges right after an update would keep converging on the old core
@@ -2548,8 +2535,7 @@ async fn run_core(args: CoreArgs) -> anyhow::Result<()> {
                     }
                 };
                 let mut service = services
-                    .lock()
-                    .unwrap()
+                    .locked()
                     .entry(canonical.clone())
                     .or_insert_with(|| {
                         engram_mcp::streamable_http_service_for(hub.clone(), canonical)
@@ -2652,7 +2638,7 @@ async fn run_core(args: CoreArgs) -> anyhow::Result<()> {
                 for engine in hub.engines() {
                     let result = {
                         let decayed = {
-                            let mut engine = engine.lock().unwrap();
+                            let mut engine = engine.locked();
                             // Sweep writes (decay archives, scan suspects) are
                             // the daemon's own — attribute them as such in the
                             // journal.

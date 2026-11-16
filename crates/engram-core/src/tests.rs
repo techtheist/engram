@@ -3581,10 +3581,10 @@ fn digest_scan_redacts_marker_text() {
 /// provenance, all-write refusal, the home brief section, and promotions.
 #[test]
 fn hub_federation_end_to_end() {
-    let _guard = env_home_lock();
+    let mut env = crate::sync::EnvGuard::lock();
     let tmp = std::env::temp_dir().join(format!("engram-hub-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
-    unsafe { std::env::set_var("ENGRAM_HOME", tmp.join("enghome")) };
+    env.set("ENGRAM_HOME", tmp.join("enghome"));
 
     let factory: EngineFactory = Box::new(|db: &std::path::Path| {
         if let Some(dir) = db.parent() {
@@ -3824,7 +3824,7 @@ fn hub_federation_end_to_end() {
         &beta_after
     ));
 
-    unsafe { std::env::remove_var("ENGRAM_HOME") };
+    env.remove("ENGRAM_HOME");
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
@@ -9001,11 +9001,6 @@ fn engine_opens_history_store_beside_the_graph_and_toggles_live() {
 // ---------------------------------------------------------------------------
 
 /// ENGRAM_HOME is process-wide: every test that sandboxes it serializes here.
-fn env_home_lock() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
 
 #[test]
 fn iso8601_parses_the_shapes_harnesses_write() {
@@ -9217,10 +9212,10 @@ fn watch_roots_are_the_deduped_parents_of_discovered_transcripts() {
 #[test]
 fn harvest_sweep_end_to_end() {
     use crate::harvest::{Harvester, claude_code::ClaudeCodeAdapter};
-    let _guard = env_home_lock();
+    let mut env = crate::sync::EnvGuard::lock();
     let tmp = std::env::temp_dir().join(format!("engram-harvest-{}", id::new_id()));
     let _ = std::fs::remove_dir_all(&tmp);
-    unsafe { std::env::set_var("ENGRAM_HOME", tmp.join("enghome")) };
+    env.set("ENGRAM_HOME", tmp.join("enghome"));
 
     // A registered project the transcripts' cwd points into.
     let root = tmp.join("proj");
@@ -9357,7 +9352,7 @@ fn harvest_sweep_end_to_end() {
         .unwrap();
     assert_eq!(count, 3, "replay wrote nothing new");
 
-    unsafe { std::env::remove_var("ENGRAM_HOME") };
+    env.remove("ENGRAM_HOME");
     std::fs::remove_dir_all(&tmp).ok();
 }
 
@@ -10076,13 +10071,11 @@ fn bob_adapter_reads_the_shared_sqlite_and_cursors_by_timestamp() {
 #[test]
 fn history_sealing_end_to_end() {
     use crate::history::{HistoryKey, is_sealed};
-    let _guard = env_home_lock();
+    let mut env = crate::sync::EnvGuard::lock();
     let tmp = std::env::temp_dir().join(format!("engram-seal-{}", id::new_id()));
     let _ = std::fs::remove_dir_all(&tmp);
-    unsafe {
-        std::env::set_var("ENGRAM_HOME", tmp.join("enghome"));
-        std::env::set_var("ENGRAM_KEYRING", "off");
-    }
+    env.set("ENGRAM_HOME", tmp.join("enghome"));
+    env.set("ENGRAM_KEYRING", "off");
 
     // Codec: roundtrip, tamper detection, wrong-key refusal.
     let key = HistoryKey::load_or_create().expect("file-fallback key");
@@ -10188,9 +10181,7 @@ fn history_sealing_end_to_end() {
     // placeholder, never plaintext, never garbage.
     let history_db = crate::history::history_store_path(&db);
     drop(e);
-    unsafe {
-        std::env::set_var("ENGRAM_HOME", tmp.join("keyless"));
-    }
+    env.set("ENGRAM_HOME", tmp.join("keyless"));
     {
         let s = crate::store::open_store(&history_db).unwrap();
         let node = s.get_node(&plain_era.id).unwrap().unwrap();
@@ -10203,9 +10194,7 @@ fn history_sealing_end_to_end() {
 
     // Key restored: prose again — then decrypt the whole store and verify
     // the file is readable with no key at all.
-    unsafe {
-        std::env::set_var("ENGRAM_HOME", tmp.join("enghome"));
-    }
+    env.set("ENGRAM_HOME", tmp.join("enghome"));
     {
         let mut e = Engine::with_store(
             crate::store::open_store(&db).unwrap(),
@@ -10224,9 +10213,7 @@ fn history_sealing_end_to_end() {
             crate::seal::EncryptionState::Plaintext
         );
     }
-    unsafe {
-        std::env::set_var("ENGRAM_HOME", tmp.join("keyless2"));
-    }
+    env.set("ENGRAM_HOME", tmp.join("keyless2"));
     {
         let s = crate::store::open_store(&history_db).unwrap();
         let node = s.get_node(&sealed_era.id).unwrap().unwrap();
@@ -10237,10 +10224,8 @@ fn history_sealing_end_to_end() {
         );
     }
 
-    unsafe {
-        std::env::remove_var("ENGRAM_KEYRING");
-        std::env::remove_var("ENGRAM_HOME");
-    }
+    env.remove("ENGRAM_KEYRING");
+    env.remove("ENGRAM_HOME");
     std::fs::remove_dir_all(&tmp).ok();
 }
 
@@ -10431,12 +10416,10 @@ fn sealed_graph_search_hybrid_still_delivers() {
 #[test]
 #[ignore]
 fn history_codec_receipt() {
-    let _guard = env_home_lock();
+    let mut env = crate::sync::EnvGuard::lock();
     let tmp = std::env::temp_dir().join(format!("engram-perf-{}", id::new_id()));
-    unsafe {
-        std::env::set_var("ENGRAM_HOME", &tmp);
-        std::env::set_var("ENGRAM_KEYRING", "off");
-    }
+    env.set("ENGRAM_HOME", &tmp);
+    env.set("ENGRAM_KEYRING", "off");
     let key = crate::history::HistoryKey::load_or_create().unwrap();
     // Prose-register payloads around the sizes real turns have.
     let mk = |i: usize, len: usize| {
@@ -10466,10 +10449,8 @@ fn history_codec_receipt() {
         seal_ms / 500.0,
         unseal_ms / 500.0
     );
-    unsafe {
-        std::env::remove_var("ENGRAM_KEYRING");
-        std::env::remove_var("ENGRAM_HOME");
-    }
+    env.remove("ENGRAM_KEYRING");
+    env.remove("ENGRAM_HOME");
     std::fs::remove_dir_all(&tmp).ok();
 }
 
@@ -10773,13 +10754,11 @@ fn sqlite_store_refuses_encryption_with_a_teaching_error() {
 
 #[test]
 fn graph_sealing_disk_journey_reconcile_and_keyless_reads() {
-    let _guard = env_home_lock();
+    let mut env = crate::sync::EnvGuard::lock();
     let tmp = std::env::temp_dir().join(format!("engram-graphseal-{}", id::new_id()));
     let _ = std::fs::remove_dir_all(&tmp);
-    unsafe {
-        std::env::set_var("ENGRAM_HOME", tmp.join("enghome"));
-        std::env::set_var("ENGRAM_KEYRING", "off");
-    }
+    env.set("ENGRAM_HOME", tmp.join("enghome"));
+    env.set("ENGRAM_KEYRING", "off");
     let dir = tmp.join("proj/.engram");
     std::fs::create_dir_all(&dir).unwrap();
     let db = dir.join("graph.tepin");
@@ -10827,9 +10806,7 @@ fn graph_sealing_disk_journey_reconcile_and_keyless_reads() {
     }
 
     // Keyless reopen: placeholders, never plaintext, never an error.
-    unsafe {
-        std::env::set_var("ENGRAM_HOME", tmp.join("keyless"));
-    }
+    env.set("ENGRAM_HOME", tmp.join("keyless"));
     {
         let s = crate::store::open_store(&db).unwrap();
         let n = s.get_node(&node_id).unwrap().unwrap();
@@ -10849,9 +10826,7 @@ fn graph_sealing_disk_journey_reconcile_and_keyless_reads() {
     }
 
     // Era three: key back, desired OFF unseals the whole store.
-    unsafe {
-        std::env::set_var("ENGRAM_HOME", tmp.join("enghome"));
-    }
+    env.set("ENGRAM_HOME", tmp.join("enghome"));
     {
         let mut e = Engine::with_store(
             crate::store::open_store(&db).unwrap(),
@@ -10867,10 +10842,8 @@ fn graph_sealing_disk_journey_reconcile_and_keyless_reads() {
         assert_eq!(n.body.as_deref(), Some("MARKER-BODY-7391"));
     }
 
-    unsafe {
-        std::env::remove_var("ENGRAM_KEYRING");
-        std::env::remove_var("ENGRAM_HOME");
-    }
+    env.remove("ENGRAM_KEYRING");
+    env.remove("ENGRAM_HOME");
     std::fs::remove_dir_all(&tmp).ok();
 }
 
@@ -12395,10 +12368,10 @@ fn history_read_cost() {
 /// lost its home section, 3 s late, and `project: "all"` skipped home.
 #[test]
 fn home_launched_hub_serves_home_from_its_own_engine() {
-    let _guard = env_home_lock();
+    let mut env = crate::sync::EnvGuard::lock();
     let tmp = std::env::temp_dir().join(format!("engram-hubhome-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
-    unsafe { std::env::set_var("ENGRAM_HOME", tmp.join("enghome")) };
+    env.set("ENGRAM_HOME", tmp.join("enghome"));
 
     let factory: EngineFactory = Box::new(|db: &std::path::Path| {
         if let Some(dir) = db.parent() {
@@ -12471,7 +12444,7 @@ fn home_launched_hub_serves_home_from_its_own_engine() {
     assert_eq!(home_hits, 1);
 
     drop(hub);
-    unsafe { std::env::remove_var("ENGRAM_HOME") };
+    env.remove("ENGRAM_HOME");
     let _ = std::fs::remove_dir_all(&tmp);
 }
 

@@ -3,6 +3,7 @@
 //! `delete_node` is deliberately absent — hard delete is user-only (PLAN §6B),
 //! so Claude has no tool for it.
 
+use engram_core::sync::{MutexExt, RwLockExt};
 use std::sync::{Arc, Mutex};
 
 use engram_core::{
@@ -132,10 +133,9 @@ impl SessionTrace {
     }
 
     fn emit(&self, action: &str, note: Option<String>) {
-        if let Ok(mut engine) = self.engine.lock() {
-            engine.set_audit_origin(engram_core::AuditOrigin::mcp(self.session_id.to_string()));
-            let _ = engine.audit_activity(action, note);
-        }
+        let mut engine = self.engine.locked();
+        engine.set_audit_origin(engram_core::AuditOrigin::mcp(self.session_id.to_string()));
+        let _ = engine.audit_activity(action, note);
     }
 
     /// Run the full graph validation (decay + supersession + conflict scan +
@@ -154,9 +154,7 @@ impl SessionTrace {
             // take and release it per step: holding it for the whole scan
             // starved every request on this graph (0.9.9).
             {
-                let Ok(mut engine) = engine.lock() else {
-                    return;
-                };
+                let mut engine = engine.locked();
                 if engine.embeddings_are_fake()
                     || !engine.validation_due(VALIDATION_MIN_INTERVAL_SECS)
                 {
@@ -391,7 +389,7 @@ impl Engram {
     /// inode forever.
     fn session_engine(&self) -> Arc<Mutex<Engine>> {
         let (engine, bound) = {
-            let b = self.binding.read().unwrap();
+            let b = self.binding.reading();
             (b.engine.clone(), b.bound.clone())
         };
         let Some(sel) = bound else {
@@ -410,7 +408,7 @@ impl Engram {
                 "project {sel} reopened after its store was replaced"
             )),
         );
-        let mut b = self.binding.write().unwrap();
+        let mut b = self.binding.writing();
         // A concurrent call may have swapped (or a brief rebound) already.
         if Arc::ptr_eq(&b.engine, &engine) {
             b.engine = fresh.clone();
@@ -460,7 +458,7 @@ impl Engram {
     }
 
     fn session_bound(&self) -> Option<Arc<str>> {
-        self.binding.read().unwrap().bound.clone()
+        self.binding.reading().bound.clone()
     }
 
     /// Resolve a tool's optional `project` selector: omitted = the current
@@ -492,7 +490,7 @@ impl Engram {
     }
 
     fn bound_by(&self) -> BoundBy {
-        self.binding.read().unwrap().bound_by
+        self.binding.reading().bound_by
     }
 
     /// What the initialize's `clientInfo` says about this session: the end
@@ -503,7 +501,7 @@ impl Engram {
         let client = (!name.is_empty()).then_some(name);
         let bound_by = BoundBy::from_description(info.description.as_deref());
         {
-            let mut b = self.binding.write().unwrap();
+            let mut b = self.binding.writing();
             if client.is_some() {
                 b.client = client.clone();
             }
@@ -521,7 +519,7 @@ impl Engram {
     }
 
     fn session_client(&self) -> Option<String> {
-        self.binding.read().unwrap().client.clone()
+        self.binding.reading().client.clone()
     }
 
     /// The teaching error behind a refused write: who the client is, why the
@@ -595,7 +593,7 @@ impl Engram {
         }
         out["project"] = json!(self.project_label(project));
         let (bound_by, first) = {
-            let mut b = self.binding.write().unwrap();
+            let mut b = self.binding.writing();
             let first = b.writes == 0;
             b.writes = b.writes.saturating_add(1);
             (b.bound_by, first)
@@ -667,7 +665,7 @@ impl Engram {
                             (None, None) => Some(self.session_engine()),
                         };
                         if let Some(e) = resolved
-                            && let Ok(Some(node)) = e.lock().unwrap().get_node(&h.id)
+                            && let Ok(Some(node)) = e.locked().get_node(&h.id)
                         {
                             o["body"] = json!(node.body);
                             o["tags"] = json!(node.tags);
@@ -685,7 +683,7 @@ impl Engram {
     /// as one out-of-band text block. Titles are resolved here — at delivery
     /// time, with short engine locks — never inside the emitting listener.
     fn drain_conflict_alerts(&self) -> Option<String> {
-        let alerts = self.conflicts.lock().unwrap().drain();
+        let alerts = self.conflicts.locked().drain();
         if alerts.is_empty() {
             return None;
         }
@@ -693,7 +691,7 @@ impl Engram {
             self.hub
                 .get(project)
                 .ok()
-                .and_then(|e| e.lock().unwrap().get_node(id).ok().flatten())
+                .and_then(|e| e.locked().get_node(id).ok().flatten())
                 .map_or_else(|| id.to_string(), |n| n.title)
         };
         let mut lines = vec![format!(
@@ -757,7 +755,7 @@ impl Engram {
     /// alive (lazy-expired like leases).
     fn mcp<'a>(&self, engine: &'a Arc<Mutex<Engine>>) -> std::sync::MutexGuard<'a, Engine> {
         self.hub.session_touch(&self.session_id);
-        let mut guard = engine.lock().unwrap();
+        let mut guard = engine.locked();
         guard.set_audit_origin(engram_core::AuditOrigin::mcp(self.session_id.to_string()));
         guard
     }
@@ -819,7 +817,7 @@ impl Engram {
             ));
         }
         let filter = {
-            let guard = engine.lock().unwrap();
+            let guard = engine.locked();
             guard
                 .time_filter_clocked(
                     a.after.as_deref(),
@@ -871,8 +869,7 @@ impl Engram {
             && let Some(arr) = hits.as_array_mut()
         {
             let found = engine
-                .lock()
-                .unwrap()
+                .locked()
                 .found_bridges_many(&bridge_ids, 1)
                 .unwrap_or_default();
             for (id, f) in bridge_ids.iter().zip(found) {
@@ -887,7 +884,7 @@ impl Engram {
         // Provenance line (0.8.4): a curated hit born in a recorded exchange
         // says so — the birth dialogue is one expand_history away.
         if let Some(arr) = hits.as_array_mut() {
-            let guard = engine.lock().unwrap();
+            let guard = engine.locked();
             for (shaped, id) in arr.iter_mut().zip(&hit_ids) {
                 if let Some(born) = guard.born_in_of(id) {
                     shaped["born_in"] = json!(born);
@@ -900,7 +897,7 @@ impl Engram {
         // likely doesn't hold the answer — a separate labeled section,
         // never interleaved, never score-blended.
         if scope == "auto" && matches!(confidence, Some("weak" | "none")) {
-            let guard = engine.lock().unwrap();
+            let guard = engine.locked();
             if guard.config().history.search_fallthrough && guard.history_open() {
                 drop(guard);
                 let history = {
@@ -1123,7 +1120,7 @@ impl Engram {
         // owns it, so every surface gets it).
         let durability = match a.durability {
             Some(d) => Durability::parse(&d).map_err(map_err)?,
-            None => engine.lock().unwrap().default_durability(&node_type),
+            None => engine.locked().default_durability(&node_type),
         };
         let created_at = match a.created_at.as_deref() {
             None => None,
@@ -1167,10 +1164,7 @@ impl Engram {
                 // born-in provenance (0.8.4): a live MCP write was born in
                 // whatever exchange is happening right now — park it; the
                 // harvester links it once the transcript catches up.
-                engine
-                    .lock()
-                    .unwrap()
-                    .park_provenance(&node.id, node.created_at);
+                engine.locked().park_provenance(&node.id, node.created_at);
                 let mut out = json!({ "id": node.id, "created": true });
                 if !warnings.is_empty() {
                     out["warnings"] = json!(warnings);
@@ -1276,7 +1270,7 @@ impl Engram {
                 Some(format!("project {id} via brief")),
             );
             let leaving = {
-                let mut binding = self.binding.write().unwrap();
+                let mut binding = self.binding.writing();
                 let leaving = (
                     binding
                         .bound
@@ -1300,7 +1294,7 @@ impl Engram {
                 self.session_client(),
                 BoundBy::Brief.as_str(),
             );
-            let max_chars = engine.lock().unwrap().brief_chars(a.max_chars);
+            let max_chars = engine.locked().brief_chars(a.max_chars);
             let brief = self.hub.brief_for(Some(&id), max_chars).map_err(map_err)?;
             let text = format!(
                 "{}\n\n{brief}",
@@ -1311,11 +1305,7 @@ impl Engram {
         // Unscoped = THIS SESSION's project plus the home-graph section. The
         // session's binding is the whole point: the hub's own current project
         // is the core's launch graph (home), which is nobody's answer.
-        let max_chars = self
-            .session_engine()
-            .lock()
-            .unwrap()
-            .brief_chars(a.max_chars);
+        let max_chars = self.session_engine().locked().brief_chars(a.max_chars);
         let mut text = self
             .hub
             .brief_for(self.session_bound().as_deref(), max_chars)
@@ -1335,7 +1325,7 @@ impl Engram {
         Parameters(a): Parameters<DescribeOntologyArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let engine = self.engine_for(&a.project)?;
-        let text = engine.lock().unwrap().config().describe_ontology();
+        let text = engine.locked().config().describe_ontology();
         Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
     }
 
@@ -1453,7 +1443,7 @@ impl Engram {
             })
             .map_err(map_err)?;
         let contradiction =
-            engine.lock().unwrap().config().contradiction_verb() == edge.edge_type.as_str();
+            engine.locked().config().contradiction_verb() == edge.edge_type.as_str();
         if contradiction {
             // This session just recorded the contradiction deliberately — it
             // already knows; don't echo its own alert back on the next call.
@@ -2362,7 +2352,7 @@ impl rmcp::Service<rmcp::RoleServer> for Passthrough {
             // leases registered before it pick it up on the next renewal.
             let name = init.params.client_info.name.trim().to_string();
             if !name.is_empty() {
-                *self.state.client_name.lock().unwrap() = Some(name);
+                *self.state.client_name.locked() = Some(name);
             }
             return Ok(rmcp::model::ServerResult::InitializeResult(
                 self.info.clone(),
@@ -2617,7 +2607,7 @@ impl BridgeState {
         if let Some((peer, _)) = self.current_peer() {
             return Ok(Some(peer));
         }
-        if let Some(why) = self.failed.lock().unwrap().clone() {
+        if let Some(why) = self.failed.locked().clone() {
             return Err(ErrorData::internal_error(why, None));
         }
         Ok(None)
@@ -2639,18 +2629,13 @@ impl BridgeState {
 
     fn current_peer(&self) -> Option<(rmcp::service::Peer<rmcp::RoleClient>, u64)> {
         self.slot
-            .lock()
-            .unwrap()
+            .locked()
             .as_ref()
             .map(|u| (u.peer.clone(), u.generation))
     }
 
     fn current_generation(&self) -> u64 {
-        self.slot
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map_or(0, |u| u.generation)
+        self.slot.locked().as_ref().map_or(0, |u| u.generation)
     }
 
     /// The current upstream peer, waiting out an in-flight (re)binding.
@@ -2666,7 +2651,7 @@ impl BridgeState {
         }
         self.wait_bound(std::time::Duration::from_secs(210)).await;
         self.current_peer().map(|(peer, _)| peer).ok_or_else(|| {
-            let why = self.failed.lock().unwrap().clone().unwrap_or_else(|| {
+            let why = self.failed.locked().clone().unwrap_or_else(|| {
                 "the engram bridge has no project binding yet — the core may be unreachable \
                  (see .engram/mcp.log, or ~/.engram/mcp.log when the launch cwd is unwritable)"
                     .into()
@@ -2681,7 +2666,7 @@ impl BridgeState {
         let mut rx = self.bound.subscribe();
         let bound = async {
             loop {
-                if self.current_peer().is_some() || self.failed.lock().unwrap().is_some() {
+                if self.current_peer().is_some() || self.failed.locked().is_some() {
                     return;
                 }
                 if rx.changed().await.is_err() {
@@ -2696,7 +2681,7 @@ impl BridgeState {
     /// [`peer_when_bound`] — held requests answer with a JSON-RPC error
     /// carrying `why` instead of dying unanswered when the bridge exits.
     fn fail(&self, why: String) {
-        *self.failed.lock().unwrap() = Some(why);
+        *self.failed.locked() = Some(why);
         // u64::MAX satisfies the "bound moved" wake without ever being a
         // real generation; the woken waiter finds no peer and reads
         // `failed` for the message.
@@ -2725,7 +2710,7 @@ impl BridgeState {
         // stdio handshake already said it, `description` carries the
         // ladder rung — the core records both per session, gates writes on
         // the rung, and shows them in the census.
-        let end_client = self.client_name.lock().unwrap().clone();
+        let end_client = self.client_name.locked().clone();
         let mut client_info = rmcp::model::ClientInfo::default();
         client_info.client_info = Implementation::new(
             end_client.unwrap_or_else(|| "engram-bridge".into()),
@@ -2742,7 +2727,7 @@ impl BridgeState {
         let peer = client.peer().clone();
         let cancel = client.cancellation_token();
         let (old, generation) = {
-            let mut slot = self.slot.lock().unwrap();
+            let mut slot = self.slot.locked();
             let generation = self
                 .next_generation
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -2766,8 +2751,8 @@ impl BridgeState {
                 let _ = state.lost.send(generation);
             }
         });
-        *self.origin.lock().unwrap() = origin_of(url);
-        *self.core_pid.lock().unwrap() = self.core_health().await;
+        *self.origin.locked() = origin_of(url);
+        *self.core_pid.locked() = self.core_health().await;
         if let Some(mut old) = old
             && let Some(token) = old.cancel.take()
         {
@@ -2787,8 +2772,8 @@ impl BridgeState {
     /// row just moves; a lease on a different core (repo-local daemon vs
     /// machine core) is withdrawn and re-registered there.
     async fn update_lease(&self, base_url: String, root: String) {
-        let prev = self.lease.lock().unwrap().clone();
-        let name = self.client_name.lock().unwrap().clone();
+        let prev = self.lease.locked().clone();
+        let name = self.client_name.locked().clone();
         let name = name.as_deref();
         let lease_id = match prev {
             Some(prev) if prev.base_url == base_url => match prev.lease_id {
@@ -2805,7 +2790,7 @@ impl BridgeState {
             }
             None => register_lease(&self.http, &base_url, &root, name).await,
         };
-        *self.lease.lock().unwrap() = Some(LeaseState {
+        *self.lease.locked() = Some(LeaseState {
             base_url,
             root,
             lease_id,
@@ -2944,7 +2929,7 @@ impl BridgeState {
                     // The HTTP transport re-initializes a session a new core
                     // answers 404 for, so a kept session can sit on a new
                     // core — maybe a new version. Only the pid tells.
-                    let was = self.core_pid.lock().unwrap().replace(pid);
+                    let was = self.core_pid.locked().replace(pid);
                     if was.is_some_and(|was| was != pid) {
                         tracing::info!(
                             "reconnected to a new core (pid {pid}) after {:.1}s — the session \
@@ -2991,8 +2976,7 @@ impl BridgeState {
     async fn reopen(self: &Arc<Self>) -> anyhow::Result<rmcp::model::ServerInfo> {
         let resolve = self
             .rebind
-            .lock()
-            .unwrap()
+            .locked()
             .clone()
             .ok_or_else(|| anyhow::anyhow!("no binding to reconnect"))?;
         let target = tokio::task::spawn_blocking(move || resolve()).await??;
@@ -3003,7 +2987,7 @@ impl BridgeState {
     /// Forget a session the core closed, so new client requests wait for the
     /// reconnect in [`Self::peer_when_bound`] instead of failing on it.
     fn drop_upstream(&self, generation: u64) {
-        let mut slot = self.slot.lock().unwrap();
+        let mut slot = self.slot.locked();
         if slot.as_ref().is_some_and(|u| u.generation == generation) {
             *slot = None;
         }
@@ -3013,7 +2997,7 @@ impl BridgeState {
     /// shares nothing with the MCP session. The answering core's pid when it
     /// answers (0 from a core older than 0.10.4, which doesn't say).
     async fn core_health(&self) -> Option<u64> {
-        let origin = self.origin.lock().unwrap().clone()?;
+        let origin = self.origin.locked().clone()?;
         let reply = self
             .http
             .get(format!("{origin}/health"))
@@ -3027,7 +3011,7 @@ impl BridgeState {
     }
 
     async fn announce_tools_changed(&self) {
-        let client = self.client.lock().unwrap().clone();
+        let client = self.client.locked().clone();
         if let Some(client) = client {
             let _ = client.notify_tool_list_changed().await;
         }
@@ -3037,9 +3021,9 @@ impl BridgeState {
     /// (or the core restarted its table) — re-register instead of silently
     /// vanishing from the census.
     async fn renew_lease(&self) {
-        let lease = self.lease.lock().unwrap().clone();
+        let lease = self.lease.locked().clone();
         let Some(l) = lease else { return };
-        let name = self.client_name.lock().unwrap().clone();
+        let name = self.client_name.locked().clone();
         let renewed = match &l.lease_id {
             Some(id) => {
                 ping_lease(&self.http, &l.base_url, id, Some(&l.root), name.as_deref()).await
@@ -3050,7 +3034,7 @@ impl BridgeState {
             return;
         }
         let id = register_lease(&self.http, &l.base_url, &l.root, name.as_deref()).await;
-        let mut slot = self.lease.lock().unwrap();
+        let mut slot = self.lease.locked();
         match slot.as_mut() {
             // Only fill the row we renewed for — a rebind that raced this
             // re-register owns the slot now.
@@ -3190,7 +3174,7 @@ impl RootsBinding {
     async fn bind_to(&self, root: std::path::PathBuf, from_roots: bool) -> anyhow::Result<()> {
         let root = std::fs::canonicalize(&root).unwrap_or(root);
         let _gate = self.bind_gate.lock().await;
-        if self.current_root.lock().unwrap().as_deref() == Some(&root) {
+        if self.current_root.locked().as_deref() == Some(&root) {
             return Ok(());
         }
         let resolve = self.resolve.clone();
@@ -3207,7 +3191,7 @@ impl RootsBinding {
             .await?;
         // A reconnect re-resolves this same root the same way.
         let (resolve, bound_root) = (self.resolve.clone(), root.clone());
-        *self.state.rebind.lock().unwrap() = Some(Arc::new(move || {
+        *self.state.rebind.locked() = Some(Arc::new(move || {
             let mut target = resolve(bound_root.clone())?;
             if from_roots && target.bound_by == BoundBy::Cwd {
                 target.bound_by = BoundBy::Roots;
@@ -3220,7 +3204,7 @@ impl RootsBinding {
             target.url,
             bound_by.as_str()
         );
-        *self.current_root.lock().unwrap() = Some(root);
+        *self.current_root.locked() = Some(root);
         Ok(())
     }
 
@@ -3549,9 +3533,9 @@ pub async fn serve_stdio_bridge_with(
             open: false,
         })
         .await?;
-    *state.client.lock().unwrap() = Some(service.peer().clone());
+    *state.client.locked() = Some(service.peer().clone());
     if let Some(resolve) = fixed {
-        *state.rebind.lock().unwrap() = Some(resolve.clone());
+        *state.rebind.locked() = Some(resolve.clone());
         // The Fixed connect runs AFTER the transport is serving, so the
         // handshake answers while the core comes up (a first-run provision
         // can take minutes); early tool calls hold in `peer_when_bound`.
@@ -3609,7 +3593,7 @@ pub async fn serve_stdio_bridge_with(
         err = state.clone().supervise(lost_rx) => Err(err),
     };
     // Clean exit withdraws the lease instead of letting it lapse.
-    let parting = state.lease.lock().unwrap().take();
+    let parting = state.lease.locked().take();
     if let Some(l) = parting
         && let Some(id) = l.lease_id
     {
@@ -5007,13 +4991,7 @@ pub(crate) mod tool_tests {
                 .await
                 .unwrap(),
         );
-        let node = s
-            .session_engine()
-            .lock()
-            .unwrap()
-            .get_node(&id)
-            .unwrap()
-            .unwrap();
+        let node = s.session_engine().locked().get_node(&id).unwrap().unwrap();
         assert_eq!(node.session_id.as_deref(), Some(&*s.session_id));
         assert!(s.session_id.starts_with("mcp-"));
     }
@@ -5031,13 +5009,7 @@ pub(crate) mod tool_tests {
             .await
             .unwrap(),
         );
-        let node = s
-            .session_engine()
-            .lock()
-            .unwrap()
-            .get_node(&id)
-            .unwrap()
-            .unwrap();
+        let node = s.session_engine().locked().get_node(&id).unwrap().unwrap();
         assert_eq!(node.tags, vec!["phase-1", "ui"]);
     }
 
@@ -5284,7 +5256,7 @@ pub(crate) mod tool_tests {
         let s = server();
         {
             let engine = s.engine_for(&None).unwrap();
-            let engine = engine.lock().unwrap();
+            let engine = engine.locked();
             let mut cfg = engine.graph_config();
             cfg.tasks.enabled = false;
             engine.set_graph_config(&cfg).unwrap();
@@ -5625,7 +5597,7 @@ pub(crate) mod tool_tests {
 
     fn seed_history(s: &Engram, sid: &str, texts: &[(&str, &str)]) {
         let engine = s.session_engine();
-        let engine = engine.lock().unwrap();
+        let engine = engine.locked();
         let base = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -5726,7 +5698,7 @@ pub(crate) mod tool_tests {
         let (s, dir) = history_server();
         {
             let engine = s.session_engine();
-            let engine = engine.lock().unwrap();
+            let engine = engine.locked();
             for (sid, day) in [("sess-june", "2026-06-10"), ("sess-august", "2026-08-10")] {
                 let mut props = serde_json::Map::new();
                 props.insert("harness".into(), "claude-code".into());
@@ -5850,7 +5822,7 @@ pub(crate) mod tool_tests {
 
         {
             let engine = s.session_engine();
-            let engine = engine.lock().unwrap();
+            let engine = engine.locked();
             for (sid, harness, ts) in [
                 ("sess-old", "claude-code", 1_786_300_000i64),
                 ("sess-new", "bob", 1_786_400_000),
@@ -5920,7 +5892,7 @@ pub(crate) mod tool_tests {
         // turn's moment, so provenance resolves in the same pass.
         {
             let engine = s.session_engine();
-            let engine = engine.lock().unwrap();
+            let engine = engine.locked();
             for (i, (role, text, ts)) in [
                 ("user", "how should we cap the batch", 1_786_400_000i64),
                 (
@@ -5973,7 +5945,7 @@ pub(crate) mod tool_tests {
         let note_id = created["id"].as_str().unwrap().to_string();
         {
             let engine = s.session_engine();
-            let engine = engine.lock().unwrap();
+            let engine = engine.locked();
             engine.park_provenance(&note_id, 1_786_400_010);
             assert_eq!(engine.resolve_provenance().unwrap(), 1);
         }
@@ -6052,7 +6024,7 @@ pub(crate) mod tool_tests {
         // The knob: search_fallthrough=false silences the section.
         {
             let engine = s.session_engine();
-            let engine = engine.lock().unwrap();
+            let engine = engine.locked();
             let mut cfg = engine.graph_config();
             cfg.history.search_fallthrough = false;
             engine.set_graph_config(&cfg).unwrap();
@@ -6222,14 +6194,7 @@ mod suspect_tests {
             "got: {brief_text}"
         );
 
-        let sid = s
-            .session_engine()
-            .lock()
-            .unwrap()
-            .suspects()
-            .unwrap()
-            .remove(0)
-            .id;
+        let sid = s.session_engine().locked().suspects().unwrap().remove(0).id;
         let resolved = s
             .resolve_suspect(Parameters(ResolveSuspectArgs {
                 id: sid,
@@ -6397,7 +6362,8 @@ mod scoped_transport_tests {
         let tmp = std::env::temp_dir().join(format!("engram-mcp-scope-{}", std::process::id()));
         let beta_root = tmp.join("beta");
         std::fs::create_dir_all(beta_root.join(".engram")).unwrap();
-        unsafe { std::env::set_var("ENGRAM_HOME", tmp.join("home")) };
+        let mut env = engram_core::sync::EnvGuard::lock();
+        env.set("ENGRAM_HOME", tmp.join("home"));
         let beta_db = beta_root.join(".engram/graph.db");
         registry::register(&beta_root, &beta_db).unwrap();
         {
@@ -6657,7 +6623,7 @@ mod scoped_transport_tests {
             "no session still claims the launch binding: {sessions:?}"
         );
 
-        unsafe { std::env::remove_var("ENGRAM_HOME") };
+        env.remove("ENGRAM_HOME");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

@@ -5,6 +5,7 @@
 
 use crate::nli::Nli;
 use crate::rag::{Embedder, Reranker};
+use crate::sync::MutexExt;
 use crate::types::*;
 use crate::{Result, Store};
 
@@ -261,15 +262,12 @@ impl Engine {
     /// disabled, pathless, or failed to open. The closure shape (rather than
     /// a borrow) is what lets config writes swap the handle under `&self`.
     pub fn with_history<R>(&self, f: impl FnOnce(&dyn Store) -> R) -> Option<R> {
-        match self.history.lock() {
-            Ok(guard) => guard.as_deref().map(f),
-            Err(_) => None,
-        }
+        self.history.locked().as_deref().map(f)
     }
 
     /// Whether the history layer is live on this engine right now.
     pub fn history_open(&self) -> bool {
-        self.history.lock().is_ok_and(|g| g.is_some())
+        self.history.locked().is_some()
     }
 
     /// Install the daemon's desired at-rest encryption (0.9.0, from machine
@@ -340,9 +338,7 @@ impl Engine {
         if !self.history_open() {
             return;
         }
-        let Ok(mut lot) = self.provenance_lot.lock() else {
-            return;
-        };
+        let mut lot = self.provenance_lot.locked();
         // Bounded: a graph nobody harvests must not grow a queue forever.
         if lot.len() >= 256 {
             lot.remove(0);
@@ -364,10 +360,12 @@ impl Engine {
             return Ok(0);
         }
         let now = crate::store::now();
-        let already: std::collections::HashSet<String> = match self.provenance_lot.lock() {
-            Ok(lot) => lot.iter().map(|p| p.note_id.clone()).collect(),
-            Err(_) => return Ok(0),
-        };
+        let already: std::collections::HashSet<String> = self
+            .provenance_lot
+            .locked()
+            .iter()
+            .map(|p| p.note_id.clone())
+            .collect();
         let mut reparked = 0;
         for node in self.store.all_nodes()? {
             if node.source != crate::types::Source::Agent
@@ -393,9 +391,7 @@ impl Engine {
     pub fn resolve_provenance(&self) -> Result<usize> {
         const GRACE_SECS: i64 = 900;
         {
-            let Ok(lot) = self.provenance_lot.lock() else {
-                return Ok(0);
-            };
+            let lot = self.provenance_lot.locked();
             if lot.is_empty() {
                 return Ok(0);
             }
@@ -419,9 +415,7 @@ impl Engine {
             .collect();
         let ingested_up_to = msgs.iter().map(|m| m.1).max().unwrap_or(i64::MIN);
         let now = crate::store::now();
-        let Ok(mut lot) = self.provenance_lot.lock() else {
-            return Ok(0);
-        };
+        let mut lot = self.provenance_lot.locked();
         let mut edges = Vec::new();
         lot.retain(|p| {
             if ingested_up_to < p.ts && now - p.parked_at <= GRACE_SECS {
@@ -881,9 +875,7 @@ impl Engine {
             return Ok(());
         };
         {
-            let Ok(mut slot) = self.history.lock() else {
-                return Err(crate::Error::Io("history handle poisoned".into()));
-            };
+            let mut slot = self.history.locked();
             *slot = None; // close before deleting — redb is single-handle
             if path.exists() {
                 std::fs::remove_file(&path)
@@ -1012,9 +1004,7 @@ impl Engine {
     /// also reconciled with the daemon's desired encryption (0.9.0), which
     /// seals pre-0.9 plaintext/mixed history stores on first open.
     fn sync_history_store(&self) {
-        let Ok(mut slot) = self.history.lock() else {
-            return;
-        };
+        let mut slot = self.history.locked();
         let enabled = self.store.config().history.enabled;
         if enabled && slot.is_none() {
             if let Some(path) = &self.history_path {
@@ -1201,9 +1191,9 @@ impl Engine {
     /// core's async workers until even `/health` went silent and every
     /// bridge exited with "the engram core went away" (found 2026-09-24).
     pub fn validate_graph_shared(engine: &std::sync::Mutex<Engine>) -> Result<String> {
-        let prelude = lock_engine(engine)?.validate_prelude()?;
+        let prelude = engine.locked().validate_prelude()?;
         let suspects = Engine::scan_conflicts_shared(engine)?;
-        lock_engine(engine)?.validate_finish(prelude, suspects)
+        engine.locked().validate_finish(prelude, suspects)
     }
 
     /// [`Engine::scan_conflicts`] one node per lock — see
@@ -1211,10 +1201,10 @@ impl Engine {
     /// two steps is skipped; a node written meanwhile was already scanned by
     /// its own write.
     pub fn scan_conflicts_shared(engine: &std::sync::Mutex<Engine>) -> Result<usize> {
-        let ids = lock_engine(engine)?.scan_ids()?;
+        let ids = engine.locked().scan_ids()?;
         let mut added = 0;
         for id in ids {
-            added += lock_engine(engine)?.scan_one(&id)?;
+            added += engine.locked().scan_one(&id)?;
             // Releasing is not enough: std's Mutex is not fair, and a loop
             // that unlocks and relocks at once wins every race — a waiting
             // caller measured 12 s behind a 12.5 s sweep. A millisecond
@@ -1222,7 +1212,7 @@ impl Engine {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         if added > 0 {
-            lock_engine(engine)?.notify(ChangeEvent::SuspectsChanged);
+            engine.locked().notify(ChangeEvent::SuspectsChanged);
         }
         Ok(added)
     }
@@ -1717,7 +1707,7 @@ impl Engine {
 
     fn undo_rows(&self, rows: Vec<AuditEntry>, dry_run: bool) -> Result<UndoReport> {
         let _op = self.op_scope();
-        let this_op = self.audit_op.lock().ok().and_then(|op| op.clone());
+        let this_op = self.audit_op.locked().clone();
         let (undone, undo_ops) = self.undo_state()?;
         let mut rows: Vec<AuditEntry> = rows.into_iter().filter(undoable).collect();
         rows.sort_by_key(|r| std::cmp::Reverse(r.seq));
@@ -1922,9 +1912,7 @@ impl Engine {
     /// Mark the journal rows written from here until the scope drops as one
     /// operation. Nested scopes join the outer one.
     fn op_scope(&self) -> OpScope<'_> {
-        let Ok(mut op) = self.audit_op.lock() else {
-            return OpScope { slot: None };
-        };
+        let mut op = self.audit_op.locked();
         if op.is_some() {
             return OpScope { slot: None };
         }
@@ -1959,7 +1947,7 @@ impl Engine {
             cwd: self.audit_cwd.clone(),
             pid: Some(self.audit_pid),
             version: Some(self.audit_version.clone()),
-            op_id: self.audit_op.lock().ok().and_then(|op| op.clone()),
+            op_id: self.audit_op.locked().clone(),
             undone_by: None,
         })
     }
@@ -3786,13 +3774,13 @@ impl Engine {
         // model and the graph's config, the vectors computed outside it.
         let cache = {
             let (embedder, model, cfg) = {
-                let e = lock_engine(engine)?;
+                let e = engine.locked();
                 (e.embedder.clone(), e.embed_model_id(), e.config())
             };
             EmbedCache::for_add(embedder.as_ref(), model, &cfg, &n)
         };
         let (nli, cfg, plan) = {
-            let mut e = lock_engine(engine)?;
+            let mut e = engine.locked();
             e.set_audit_origin(origin.clone());
             (e.nli.clone(), e.config(), e.plan_add(n, cache.as_ref())?)
         };
@@ -3800,7 +3788,7 @@ impl Engine {
             WritePlan::Matched(m) => Ok(m.judge(nli.as_deref())),
             WritePlan::Created(p) => {
                 let judged = p.judge(nli.as_deref(), &cfg);
-                let mut e = lock_engine(engine)?;
+                let mut e = engine.locked();
                 e.set_audit_origin(origin);
                 e.finish_created(judged)
             }
@@ -4217,7 +4205,7 @@ impl Engine {
         // in between, the misses are embedded under the lock.
         let cache = {
             let (embedder, model, cfg, before) = {
-                let e = lock_engine(engine)?;
+                let e = engine.locked();
                 (
                     e.embedder.clone(),
                     e.embed_model_id(),
@@ -4228,7 +4216,7 @@ impl Engine {
             before.and_then(|b| EmbedCache::for_update(embedder.as_ref(), model, &cfg, &b, &patch))
         };
         let (nli, cfg, plan) = {
-            let mut e = lock_engine(engine)?;
+            let mut e = engine.locked();
             e.set_audit_origin(origin.clone());
             (
                 e.nli.clone(),
@@ -4237,7 +4225,7 @@ impl Engine {
             )
         };
         let judged = plan.judge(nli.as_deref(), &cfg);
-        let mut e = lock_engine(engine)?;
+        let mut e = engine.locked();
         e.set_audit_origin(origin);
         e.finish_update(judged)
     }
@@ -7340,20 +7328,10 @@ struct OpScope<'a> {
 
 impl Drop for OpScope<'_> {
     fn drop(&mut self) {
-        if let Some(slot) = self.slot
-            && let Ok(mut op) = slot.lock()
-        {
-            *op = None;
+        if let Some(slot) = self.slot {
+            *slot.locked() = None;
         }
     }
-}
-
-/// Lock a shared engine; a poisoned lock (a panic mid-write elsewhere) is an
-/// error for the caller, not a second panic.
-fn lock_engine(engine: &std::sync::Mutex<Engine>) -> Result<std::sync::MutexGuard<'_, Engine>> {
-    engine
-        .lock()
-        .map_err(|_| crate::Error::Io("engine lock poisoned".into()))
 }
 
 /// `canon_order: connected` (0.9.9): pinned first, then trust × (1 +

@@ -24,6 +24,7 @@ pub mod gemini;
 pub mod kilo;
 pub mod opencode;
 
+use crate::sync::MutexExt;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -341,7 +342,7 @@ impl Harvester {
         // parked curated notes can link to their birth exchange.
         for pid in self.sessions.keys() {
             let Ok(engine) = hub.get(pid) else { continue };
-            let Ok(engine) = engine.lock() else { continue };
+            let engine = engine.locked();
             if let Err(e) = engine.resolve_provenance() {
                 eprintln!("engram: harvest: provenance for {pid}: {e}");
             }
@@ -355,7 +356,7 @@ impl Harvester {
     /// project can't open.
     fn project_gates(&self, hub: &Hub, pid: &str, file: &Path) -> Option<bool> {
         let engine = hub.get(pid).ok()?;
-        let engine = engine.lock().ok()?;
+        let engine = engine.locked();
         let h = &engine.config().history;
         let excluded = h
             .exclude_paths
@@ -391,9 +392,7 @@ impl Harvester {
         };
 
         let engine = hub.get(&pid)?;
-        let mut engine = engine
-            .lock()
-            .map_err(|_| crate::Error::Io("engine lock poisoned".into()))?;
+        let mut engine = engine.locked();
         let cfg = engine.config();
         let h = &cfg.history;
         let excluded = h

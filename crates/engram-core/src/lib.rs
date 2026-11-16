@@ -27,6 +27,7 @@ pub mod setup_record;
 mod store;
 mod store_sqlite;
 mod store_tepin;
+pub mod sync;
 pub mod tasks;
 pub mod timespec;
 mod types;

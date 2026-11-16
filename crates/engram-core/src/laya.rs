@@ -28,6 +28,8 @@
 // uses are pure and unit-tested without it.
 #![cfg_attr(not(feature = "fastembed"), allow(dead_code))]
 
+#[cfg(feature = "fastembed")]
+use crate::sync::MutexExt;
 use std::path::Path;
 
 use serde::Deserialize;
@@ -420,7 +422,7 @@ mod fast {
                 "marker_mask" => Value::from_array(Array::from_shape_vec((n, kmax), mmask).map_err(laya_err)?).map_err(laya_err)?,
                 "qtype" => Value::from_array(Array::from_shape_vec(n, qtype).map_err(laya_err)?).map_err(laya_err)?,
             ];
-            let mut session = self.session.lock().expect("laya session mutex");
+            let mut session = self.session.locked();
             let outputs = session.run(inputs).map_err(laya_err)?;
             let logits = outputs
                 .get("logits")

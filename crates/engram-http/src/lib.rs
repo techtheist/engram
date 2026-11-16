@@ -9,6 +9,7 @@
 //! addresses the user-level home graph; registry meta ops live at
 //! `/projects`.
 
+use engram_core::sync::MutexExt;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -349,14 +350,13 @@ impl CoreRuntime {
             last_seen: now,
         };
         self.clients
-            .lock()
-            .unwrap()
+            .locked()
             .insert(lease.lease_id.clone(), lease.clone());
         lease
     }
 
     fn renew(&self, lease_id: &str, root: Option<String>, client: Option<String>) -> bool {
-        match self.clients.lock().unwrap().get_mut(lease_id) {
+        match self.clients.locked().get_mut(lease_id) {
             Some(lease) => {
                 lease.last_seen = engram_core::now();
                 // A roots rebind moves the row instead of minting a second
@@ -383,7 +383,7 @@ impl CoreRuntime {
     }
 
     fn remove(&self, lease_id: &str) -> bool {
-        self.clients.lock().unwrap().remove(lease_id).is_some()
+        self.clients.locked().remove(lease_id).is_some()
     }
 
     /// Live leases, expired ones pruned on the way out (lazy expiry — no
@@ -391,7 +391,7 @@ impl CoreRuntime {
     pub fn clients(&self) -> Vec<ClientLease> {
         let now = engram_core::now();
         let ttl = lease_ttl_secs();
-        let mut clients = self.clients.lock().unwrap();
+        let mut clients = self.clients.locked();
         clients.retain(|_, l| now - l.last_seen <= ttl);
         let mut out: Vec<ClientLease> = clients.values().cloned().collect();
         out.sort_by_key(|l| l.connected_at);
@@ -458,7 +458,7 @@ impl AppState {
 
     /// The launch project's engine, pane-stamped (see [`pane`]).
     fn engine(&self) -> MutexGuard<'_, Engine> {
-        let mut guard = self.hub.current().engine.lock().unwrap();
+        let mut guard = self.hub.current().engine.locked();
         guard.set_audit_origin(AuditOrigin::pane());
         guard
     }
@@ -495,8 +495,7 @@ impl AppState {
 
     fn scoped_root(&self, engine: &Arc<Mutex<Engine>>) -> std::path::PathBuf {
         engine
-            .lock()
-            .unwrap()
+            .locked()
             .repo_root()
             .map_or_else(|| self.repo_root(), std::path::Path::to_path_buf)
     }
@@ -505,15 +504,14 @@ impl AppState {
 /// Lock a scoped engine and stamp the pane as the writer. Front-ends sharing
 /// an engine re-stamp under the lock on every operation (MCP does the same).
 fn pane(engine: &Arc<Mutex<Engine>>) -> MutexGuard<'_, Engine> {
-    let mut guard = engine.lock().unwrap();
+    let mut guard = engine.locked();
     guard.set_audit_origin(AuditOrigin::pane());
     guard
 }
 
 fn channel(events: &EventMap, project_id: &str) -> broadcast::Sender<String> {
     events
-        .lock()
-        .unwrap()
+        .locked()
         .entry(project_id.to_string())
         .or_insert_with(|| broadcast::channel(256).0)
         .clone()
@@ -1035,7 +1033,7 @@ fn upkeep_project(state: &Arc<AppState>, root: &str) {
         // Every ping carries its root: a root settled before costs nothing,
         // and one that named no project is looked up again once a minute
         // (it may be registered by then).
-        let mut seen = state.upkept.lock().unwrap();
+        let mut seen = state.upkept.locked();
         match seen.get(root) {
             Some(None) => return,
             Some(Some(miss)) if now - miss < UPKEEP_RETRY_SECS => return,
@@ -1049,7 +1047,7 @@ fn upkeep_project(state: &Arc<AppState>, root: &str) {
     else {
         return;
     };
-    let mut seen = state.upkept.lock().unwrap();
+    let mut seen = state.upkept.locked();
     seen.insert(root.to_string(), None);
     // A root inside a project already kept up (a subfolder) adds nothing.
     if entry.root != root && seen.insert(entry.root.clone(), None) == Some(None) {
@@ -1145,7 +1143,7 @@ fn enc_job_view(job: Option<&EncJob>) -> serde_json::Value {
             "running": j.running.load(Ordering::Relaxed),
             "done": j.done.load(Ordering::Relaxed),
             "total": j.total.load(Ordering::Relaxed),
-            "error": j.error.lock().unwrap().clone(),
+            "error": j.error.locked().clone(),
         }),
         None => json!({ "running": false }),
     }
@@ -1160,7 +1158,7 @@ async fn get_encryption(
     scope: Scope,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let settings = engram_core::settings::load();
-    let jobs = state.enc_jobs.lock().unwrap().clone();
+    let jobs = state.enc_jobs.locked().clone();
     let graph_job = jobs.get(&enc_job_key(&scope, "graph"));
     let history_job = jobs.get(&enc_job_key(&scope, "history"));
     let busy = |j: Option<&EncJob>| {
@@ -1170,7 +1168,7 @@ async fn get_encryption(
         (None, None) // the job view carries the story; don't block on the engine
     } else {
         let engine = state.engine_arc(&scope)?;
-        let (g, h) = engine.lock().unwrap().encryption_states();
+        let (g, h) = engine.locked().encryption_states();
         (Some(g), h)
     };
     Ok(Json(json!({
@@ -1206,7 +1204,7 @@ async fn post_encryption(
     }
     let key = enc_job_key(&scope, &body.target);
     {
-        let jobs = state.enc_jobs.lock().unwrap();
+        let jobs = state.enc_jobs.locked();
         if jobs
             .get(&key)
             .is_some_and(|j| j.running.load(Ordering::Relaxed))
@@ -1230,11 +1228,11 @@ async fn post_encryption(
         running: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         ..EncJob::default()
     };
-    state.enc_jobs.lock().unwrap().insert(key, job.clone());
+    state.enc_jobs.locked().insert(key, job.clone());
     let (target, enabled) = (body.target.clone(), body.enabled);
     tokio::task::spawn_blocking(move || {
         let result = {
-            let mut guard = engine.lock().unwrap();
+            let mut guard = engine.locked();
             guard.set_desired_encryption(
                 Some(settings.encrypt_graph),
                 Some(settings.encrypt_history),
@@ -1247,7 +1245,7 @@ async fn post_encryption(
             })
         };
         if let Err(e) = result {
-            *job.error.lock().unwrap() = Some(e.to_string());
+            *job.error.locked() = Some(e.to_string());
         }
         job.running.store(false, Ordering::Relaxed);
     });
@@ -1543,7 +1541,7 @@ async fn traverse(
     let edge_types = parse_edge_types(p.edge_types.as_deref())?;
     let depth = p.depth.unwrap_or(2);
     let engine = state.engine_arc(&scope)?;
-    let (nodes, edges) = engine.lock().unwrap().traverse(&id, &edge_types, depth)?;
+    let (nodes, edges) = engine.locked().traverse(&id, &edge_types, depth)?;
     Ok(Json(GraphResponse { nodes, edges }))
 }
 
@@ -1616,7 +1614,7 @@ async fn search(
             "date_field applies to curated memory — history has no custom fields".into(),
         )));
     }
-    let filter = engine.lock().unwrap().time_filter_clocked(
+    let filter = engine.locked().time_filter_clocked(
         p.after.as_deref(),
         p.before.as_deref(),
         p.during_version.as_deref(),
@@ -1625,8 +1623,7 @@ async fn search(
     )?;
     if p.scope.as_deref() == Some("history") {
         let hits = engine
-            .lock()
-            .unwrap()
+            .locked()
             .search_history_filtered(&p.q, limit, &filter)?;
         return Ok(Json(json!(hits)));
     }
@@ -1911,7 +1908,7 @@ async fn history_stats(
     scope: Scope,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let engine = state.engine_arc(&scope)?;
-    let engine = engine.lock().unwrap();
+    let engine = engine.locked();
     let cfg = engine.config();
     let stats = engine.history_stats();
     Ok(Json(json!({
@@ -1931,7 +1928,7 @@ async fn history_reset(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let engine = state.engine_arc(&scope)?;
     {
-        let mut engine = engine.lock().unwrap();
+        let mut engine = engine.locked();
         engine.set_audit_origin(engram_core::AuditOrigin::pane());
         engine.reset_history()?;
     }
@@ -1947,7 +1944,7 @@ async fn node_born_in(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let engine = state.engine_arc(&scope)?;
-    let born = engine.lock().unwrap().born_in_of(&id);
+    let born = engine.locked().born_in_of(&id);
     Ok(Json(json!({ "born_in": born })))
 }
 
@@ -1987,7 +1984,7 @@ async fn history_sessions(
     let engine = state.engine_arc(&scope)?;
     let window =
         engram_core::timespec::window(p.after.as_deref(), p.before.as_deref(), engram_core::now())?;
-    let sessions = engine.lock().unwrap().list_history_sessions_in(window)?;
+    let sessions = engine.locked().list_history_sessions_in(window)?;
     Ok(Json(json!({ "sessions": sessions })))
 }
 
@@ -1997,7 +1994,7 @@ async fn history_session_messages(
     Path(sid): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let engine = state.engine_arc(&scope)?;
-    let messages = engine.lock().unwrap().history_messages(&sid)?;
+    let messages = engine.locked().history_messages(&sid)?;
     Ok(Json(json!({ "session": sid, "messages": messages })))
 }
 
@@ -2009,7 +2006,7 @@ async fn history_session_delete(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let engine = state.engine_arc(&scope)?;
     let removed = {
-        let mut engine = engine.lock().unwrap();
+        let mut engine = engine.locked();
         engine.set_audit_origin(AuditOrigin::pane());
         // No epoch bump: the deletion excludes the transcript path itself,
         // and a cursor wipe would only re-scan what's now excluded anyway.
@@ -2025,7 +2022,7 @@ async fn decay(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let engine = state.engine_arc(&scope)?;
     let ids = {
-        let engine = engine.lock().unwrap();
+        let engine = engine.locked();
         let ttl = p
             .ttl_days
             .unwrap_or_else(|| engine.config().policy.decay_ttl_days);
@@ -2054,7 +2051,7 @@ async fn brief(
         Some(sel) => state.hub.get(sel)?,
         None => state.engine_arc(&scope)?,
     };
-    let max_chars = engine.lock().unwrap().brief_chars(p.max_chars);
+    let max_chars = engine.locked().brief_chars(p.max_chars);
     let text = match &scope.0 {
         None => state.hub.brief_for(bound, max_chars)?,
         Some(_) => pane(&engine).brief(max_chars)?,
@@ -2471,7 +2468,7 @@ async fn refs_match(
     let fresh: Vec<_> = match &p.session {
         None => hits.into_iter().take(limit).collect(),
         Some(session) => {
-            let mut seen = state.refs_seen.lock().unwrap();
+            let mut seen = state.refs_seen.locked();
             // Bounded memory: sessions come and go; keep the map small.
             if seen.len() > 64 {
                 seen.clear();
@@ -2537,7 +2534,7 @@ async fn skills_install(
     };
     let engine = state.engine_arc(&scope)?;
     let (root, cfg) = {
-        let engine = engine.lock().unwrap();
+        let engine = engine.locked();
         let root = engine.repo_root().map(std::path::Path::to_path_buf);
         (root, engine.graph_config())
     };

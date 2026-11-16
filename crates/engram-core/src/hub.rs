@@ -6,6 +6,7 @@
 //! provenance-tagged hits with a locality prior, never replication. The one
 //! shared write target is the home graph.
 
+use crate::sync::MutexExt;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -53,7 +54,7 @@ impl AlertBus {
     }
 
     fn push(&self, alert: ConflictAlert) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.locked();
         inner.0 += 1;
         let seq = inner.0;
         inner.1.push_back((seq, alert));
@@ -72,7 +73,7 @@ pub struct ConflictFeed {
 
 impl ConflictFeed {
     pub fn drain(&mut self) -> Vec<ConflictAlert> {
-        let inner = self.bus.inner.lock().unwrap();
+        let inner = self.bus.inner.locked();
         let fresh: Vec<ConflictAlert> = inner
             .1
             .iter()
@@ -89,7 +90,7 @@ impl ConflictFeed {
 /// ontology at attach time (config edits that move the contradiction role
 /// land at the next open).
 fn attach_conflict_tap(engine: &Arc<Mutex<Engine>>, bus: Arc<AlertBus>, project: String) {
-    let mut engine = engine.lock().unwrap();
+    let mut engine = engine.locked();
     let verb = engine.config().contradiction_verb().to_string();
     engine.add_listener(conflict_tap(bus, project, verb));
 }
@@ -230,7 +231,7 @@ impl Hub {
                 identity: None,
             }
         } else {
-            let root = engine.lock().unwrap().repo_root().map(Path::to_path_buf);
+            let root = engine.locked().repo_root().map(Path::to_path_buf);
             let name = root
                 .as_deref()
                 .and_then(Path::file_name)
@@ -315,7 +316,7 @@ impl Hub {
     pub fn subscribe_conflicts(&self) -> ConflictFeed {
         ConflictFeed {
             bus: self.alerts.clone(),
-            cursor: self.alerts.inner.lock().unwrap().0,
+            cursor: self.alerts.inner.locked().0,
         }
     }
 
@@ -325,13 +326,7 @@ impl Hub {
     /// pick the new models up on their next open.
     pub fn engines(&self) -> Vec<Arc<Mutex<Engine>>> {
         let mut engines = vec![self.current.engine.clone()];
-        engines.extend(
-            self.open
-                .lock()
-                .expect("hub open map")
-                .values()
-                .map(|h| h.engine.clone()),
-        );
+        engines.extend(self.open.locked().values().map(|h| h.engine.clone()));
         engines
     }
 
@@ -345,13 +340,12 @@ impl Hub {
         let f = Arc::new(f);
         self.current
             .engine
-            .lock()
-            .unwrap()
+            .locked()
             .add_listener(f(&self.current.id));
-        for handle in self.open.lock().unwrap().values() {
-            handle.engine.lock().unwrap().add_listener(f(&handle.id));
+        for handle in self.open.locked().values() {
+            handle.engine.locked().add_listener(f(&handle.id));
         }
-        *self.listener_factory.lock().unwrap() = Some(f);
+        *self.listener_factory.locked() = Some(f);
     }
 
     fn is_current(&self, selector: &str) -> bool {
@@ -480,7 +474,7 @@ impl Hub {
         };
         let name = self.project_name(&id);
         let now = crate::store::now();
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.locked();
         let entry = sessions
             .entry(session_id.to_string())
             .or_insert_with(|| SessionBinding {
@@ -502,7 +496,7 @@ impl Hub {
     /// and the pane, so "which Windsurf session is still on the fallback"
     /// is a glance, not a log dig.
     pub fn session_meta(&self, session_id: &str, client: Option<String>, bound_by: &str) {
-        if let Some(s) = self.sessions.lock().unwrap().get_mut(session_id) {
+        if let Some(s) = self.sessions.locked().get_mut(session_id) {
             if client.is_some() {
                 s.client = client;
             }
@@ -513,21 +507,21 @@ impl Hub {
 
     /// A tool call on the session — keeps its census row alive.
     pub fn session_touch(&self, session_id: &str) {
-        if let Some(s) = self.sessions.lock().unwrap().get_mut(session_id) {
+        if let Some(s) = self.sessions.locked().get_mut(session_id) {
             s.last_seen = crate::store::now();
         }
     }
 
     /// The session's transport closed — drop its census row.
     pub fn session_end(&self, session_id: &str) {
-        self.sessions.lock().unwrap().remove(session_id);
+        self.sessions.locked().remove(session_id);
     }
 
     /// Live session bindings, stale ones pruned on the way out (lazy expiry,
     /// like client leases).
     pub fn sessions(&self) -> Vec<SessionBinding> {
         let now = crate::store::now();
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.locked();
         sessions.retain(|_, s| now - s.last_seen <= SESSION_BINDING_TTL_SECS);
         let mut out: Vec<SessionBinding> = sessions.values().cloned().collect();
         out.sort_by(|a, b| a.since.cmp(&b.since).then(a.session_id.cmp(&b.session_id)));
@@ -546,7 +540,7 @@ impl Hub {
         // so a bare cache hit here would keep serving a deleted store's
         // orphaned inode forever (issue #8) — verify the backing file first.
         {
-            let mut open = self.open.lock().unwrap();
+            let mut open = self.open.locked();
             if let Some(h) = open.get(&entry.id) {
                 if backing_intact(h) {
                     return Ok(h.engine.clone());
@@ -581,7 +575,7 @@ impl Hub {
             return Ok(self.current.engine.clone());
         }
         {
-            let mut open = self.open.lock().unwrap();
+            let mut open = self.open.locked();
             if let Some(h) = open.get(HOME_PROJECT) {
                 if backing_intact(h) {
                     return Ok(h.engine.clone());
@@ -611,13 +605,12 @@ impl Hub {
 
     fn insert_open(&self, handle: ProjectHandle) -> Arc<Mutex<Engine>> {
         attach_conflict_tap(&handle.engine, self.alerts.clone(), handle.id.clone());
-        if let Some(f) = self.listener_factory.lock().unwrap().as_ref() {
-            handle.engine.lock().unwrap().add_listener(f(&handle.id));
+        if let Some(f) = self.listener_factory.locked().as_ref() {
+            handle.engine.locked().add_listener(f(&handle.id));
         }
         // A racing open of the same project keeps the first handle.
         self.open
-            .lock()
-            .unwrap()
+            .locked()
             .entry(handle.id.clone())
             .or_insert(handle)
             .engine
@@ -646,7 +639,7 @@ impl Hub {
     }
 
     fn projects_inner(&self) -> Vec<ProjectInfo> {
-        let open = self.open.lock().unwrap();
+        let open = self.open.locked();
         // A core launched outside any project has home AS its current
         // project (v0.6.2 serve-anywhere) — one row, both hats.
         let home_is_current = self.current.id == HOME_PROJECT;
@@ -745,15 +738,10 @@ impl Hub {
         types: &[NodeType],
         limit: usize,
     ) -> Result<(Vec<SearchHit>, Vec<String>)> {
-        let mut hits = self
-            .current
-            .engine
-            .lock()
-            .unwrap()
-            .search(query, types, limit)?;
+        let mut hits = self.current.engine.locked().search(query, types, limit)?;
         let (others, mut skipped) = self.others(true);
         for (name, engine) in others {
-            match engine.lock().unwrap().search(query, types, limit) {
+            match engine.locked().search(query, types, limit) {
                 Ok(mut foreign) => {
                     for hit in &mut foreign {
                         hit.score *= crate::policy::CROSS_PROJECT_PRIOR;
@@ -773,15 +761,10 @@ impl Hub {
     /// provenance. The current project judges first; a sibling without the
     /// NLI layer is reported in `skipped`.
     pub fn check_claim_all(&self, text: &str, limit: usize) -> Result<(ClaimReport, Vec<String>)> {
-        let mut report = self
-            .current
-            .engine
-            .lock()
-            .unwrap()
-            .check_claim(text, limit)?;
+        let mut report = self.current.engine.locked().check_claim(text, limit)?;
         let (others, mut skipped) = self.others(true);
         for (name, engine) in others {
-            match engine.lock().unwrap().check_claim(text, limit) {
+            match engine.locked().check_claim(text, limit) {
                 Ok(foreign) => {
                     let tag = |mut vs: Vec<ClaimVerdict>| {
                         for v in &mut vs {
@@ -831,7 +814,7 @@ impl Hub {
             Some(sel) => self.resolve_id(sel)?,
             None => self.current.id.clone(),
         };
-        let reserve = engine.lock().unwrap().config().brief.home_reserve;
+        let reserve = engine.locked().config().brief.home_reserve;
         // Briefing the home graph itself: the ride-along section would be the
         // same canon twice.
         let home = (id != HOME_PROJECT)
@@ -839,10 +822,7 @@ impl Hub {
             .flatten();
         let roster = self.projects_brief_section(&id);
         let reserve = home.as_deref().map_or(0, str::len) + roster.as_deref().map_or(0, str::len);
-        let mut out = engine
-            .lock()
-            .unwrap()
-            .brief(max_chars.saturating_sub(reserve))?;
+        let mut out = engine.locked().brief(max_chars.saturating_sub(reserve))?;
         // The first line names the graph (issue #11): an agent verifying
         // its binding after a resume reads one line, not the roster.
         let header = if id == HOME_PROJECT {
@@ -917,7 +897,7 @@ impl Hub {
             return None;
         }
         let engine = self.open_home().ok()?;
-        let engine = engine.lock().unwrap();
+        let engine = engine.locked();
         let mut out = String::new();
         // The home graph's own canon sections, scaled to a ride-along sample:
         // strongest rank priors first (Principles/Cautions before Decisions
@@ -956,7 +936,7 @@ impl Hub {
             // Promotion stays keyed on the shipped canon names for now:
             // cross-ontology role mapping is a tracked §7D risk — a custom
             // ontology without these types simply yields no candidates.
-            let engine = self.current.engine.lock().unwrap();
+            let engine = self.current.engine.locked();
             for node_type in [NodeType::Principle, NodeType::Caution] {
                 let total = engine.store().count_by_type_active(&node_type)? as usize;
                 for node in engine.store().nodes_by_type_active(&node_type, total)? {
@@ -976,15 +956,14 @@ impl Hub {
             // Already promoted? A same-type near-duplicate in the home graph
             // means this knowledge is user-level already.
             if let Some(home) = &home
-                && !similar_same_type(&home.lock().unwrap(), &vec, node.node_type.clone())?
-                    .is_empty()
+                && !similar_same_type(&home.locked(), &vec, node.node_type.clone())?.is_empty()
             {
                 continue;
             }
             let mut matches = Vec::new();
             for (name, engine) in &others {
                 for (id, title, similarity) in
-                    similar_same_type(&engine.lock().unwrap(), &vec, node.node_type.clone())?
+                    similar_same_type(&engine.locked(), &vec, node.node_type.clone())?
                 {
                     matches.push(PromotionMatch {
                         project: name.clone(),

@@ -5,6 +5,7 @@
 //! `storage/session/**/ses_*.json`, whose documents carry the project
 //! `directory`.
 
+use crate::sync::MutexExt;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -36,7 +37,7 @@ impl OpencodeAdapter {
 
     /// The project directory a session belongs to, from the session index.
     fn dir_of(&self, session: &str) -> Option<PathBuf> {
-        if let Some(hit) = self.dirs.lock().ok()?.get(session) {
+        if let Some(hit) = self.dirs.locked().get(session) {
             return hit.clone();
         }
         // One index sweep fills the cache for every session at once.
@@ -70,7 +71,7 @@ impl OpencodeAdapter {
                 }
             }
         }
-        let mut cache = self.dirs.lock().ok()?;
+        let mut cache = self.dirs.locked();
         cache.extend(found);
         cache.entry(session.to_string()).or_insert(None).clone()
     }
