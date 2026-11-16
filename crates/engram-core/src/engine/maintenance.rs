@@ -63,27 +63,17 @@ impl Engine {
         Ok(previous)
     }
 
-    /// One full graph-health pass — the session-boundary validation: the
-    /// decay pass archives what has expired, the conflict scan queues fresh
-    /// look-alike pairs, and the drift scan counts unresolved code_refs, so
-    /// a session starts (and leaves) with the graph prepared rather than
-    /// waiting for the six-hourly sweep. Journaled as a `graph_validated`
-    /// activity row; returns the summary note.
+    /// One graph-health pass for a session boundary: decay, conflict scan, drift
+    /// count. Journaled as `graph_validated`; returns the summary.
     pub fn validate_graph(&self) -> Result<String> {
         let prelude = self.validate_prelude()?;
         let suspects = self.scan_conflicts()?;
         self.validate_finish(prelude, suspects)
     }
 
-    /// [`Engine::validate_graph`] for an engine shared behind a mutex — the
-    /// shape every long-running caller has (the session-boundary pass, the
-    /// core's six-hourly sweep). The cheap parts run under one lock; the
-    /// conflict scan — the part whose cost grows with the graph and the
-    /// logic model (~60 s at 580 notes with Laya) — releases the lock after
-    /// every node, so tool calls and pane requests interleave instead of
-    /// queueing behind the sweep. Holding it for the whole scan starved the
-    /// core's async workers until even `/health` went silent and every
-    /// bridge exited with "the engram core went away" (found 2026-09-24).
+    /// [`Engine::validate_graph`] on a shared engine. The conflict scan releases
+    /// the lock after every node: holding it for the whole scan (~60 s at 580
+    /// notes with Laya) starved the core until bridges gave up on it.
     pub fn validate_graph_shared(engine: &std::sync::Mutex<Engine>) -> Result<String> {
         let prelude = engine.locked().validate_prelude()?;
         let suspects = Engine::scan_conflicts_shared(engine)?;
@@ -157,32 +147,14 @@ impl Engine {
         crate::store::now() - last >= min_interval_secs
     }
 
-    /// Per-graph calibration — one button, several dials (user decision
-    /// 2026-08-03: `policy.auto_tune` stays the single switch as calibration
-    /// grows parameters). Each dial fits one policy value from evidence this
-    /// graph itself produced, applies only a move of at least
-    /// [`policy::AUTO_TUNE_MIN_DELTA`], and every move lands in one
-    /// `auto_tuned` activity row. `policy.auto_tune = false` opts a graph
-    /// out entirely.
-    ///
-    /// Dial one, the conflict floor — the automated form of the manual
-    /// 0.85→0.88 retune (2026-07-13). Every resolved suspect is a labeled
-    /// (similarity, verdict) pair: a dismissal is a false positive the floor
-    /// exists to prevent, a confirmation is what it must never lose. Models
-    /// nominate, people judge — and what people judged is calibration data,
-    /// so this fits FROM human verdicts only. Engages over
-    /// [`policy::AUTO_TUNE_MIN_NOTES`] current notes with at least
-    /// [`policy::AUTO_TUNE_MIN_JUDGED`] judgments,
-    /// [`policy::AUTO_TUNE_MIN_EACH`] per side.
-    ///
-    /// Dial two, the weak line — fits `weak_evidence_top` as a quantile of
-    /// the top scores phantom probes (questions about invented subjects
-    /// guaranteed absent from any graph) still reach here. The fixed 0.85
-    /// default is only right near 2000 notes; the measured calibrated line
-    /// runs 0.56→0.81 from 100 to 2000 (tricks bench, 2026-08-03). Engages
-    /// over [`policy::WEAK_LINE_MIN_NOTES`] notes, reranker-gated: the line
-    /// is read against the cross-encoder's calibrated scale, so there is
-    /// nothing to fit without one.
+    /// Per-graph calibration behind one switch (`policy.auto_tune`). Each dial
+    /// fits one value from this graph's own evidence, moves only by at least
+    /// [`policy::AUTO_TUNE_MIN_DELTA`], and lands in one `auto_tuned` row.
+    /// - Conflict floor: fitted from human suspect verdicts only, past
+    ///   [`policy::AUTO_TUNE_MIN_NOTES`] notes and [`policy::AUTO_TUNE_MIN_JUDGED`]
+    ///   judgments ([`policy::AUTO_TUNE_MIN_EACH`] per side).
+    /// - Weak line: a quantile of phantom-probe top scores, past
+    ///   [`policy::WEAK_LINE_MIN_NOTES`] notes; needs a reranker's calibrated scale.
     pub fn auto_tune(&self) -> Result<Option<String>> {
         use crate::policy::{AUTO_TUNE_MIN_NOTES, WEAK_LINE_MIN_NOTES};
         let mut cfg = self.graph_config();
@@ -210,11 +182,8 @@ impl Engine {
         Ok(Some(note))
     }
 
-    /// Nodes whose `code_refs` cover a repo-relative file path — the
-    /// file-read match hook's lookup. A ref matches
-    /// when it names the file exactly or a directory above it. Only current,
-    /// non-stale knowledge surfaces (ambient value must not be ambient
-    /// noise), strongest trust first.
+    /// Current, non-stale nodes whose `code_refs` name `path` or a directory
+    /// above it (the file-read hook's lookup), strongest trust first.
     pub fn match_code_refs(&self, path: &str, limit: usize) -> Result<Vec<Node>> {
         let path = path.trim().trim_start_matches("./").trim_end_matches('/');
         if path.is_empty() {
@@ -241,16 +210,9 @@ impl Engine {
         Ok(hits)
     }
 
-    /// Verified code refs: current nodes whose path-shaped
-    /// code_refs no longer exist under `root` have drifted — the code moved
-    /// or was deleted and the memory didn't follow. A contradiction between
-    /// the graph and reality, surfaced for review like a conflict. Reporting
-    /// only — drift deliberately does NOT demote: the scan runs on every pane
-    /// load against an environment-dependent root (a wrong cwd or a feature
-    /// branch with files temporarily gone would mass-stamp sticky demotions
-    /// across the graph). Judged conflicts are the demotion trigger; drift is
-    /// a review queue. Free-text responsibility labels (anything with
-    /// whitespace) are not checkable and never drift.
+    /// Current nodes whose path-shaped `code_refs` no longer exist under `root`.
+    /// Reported for review, never demoted: the root depends on the checkout, so a
+    /// bad scan would mass-demote. Refs with whitespace are labels and never drift.
     pub fn scan_code_refs(&self, root: &std::path::Path) -> Result<Vec<Drift>> {
         let mut out = Vec::new();
         for node in self.store.all_nodes()? {

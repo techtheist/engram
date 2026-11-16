@@ -75,11 +75,9 @@ impl Engine {
         Ok(())
     }
 
-    /// The custom-fields write boundary: validates the FULL resolved
-    /// map a node will carry — unknown names fail loudly, kinds must match,
-    /// required fields must be present. The error is a teaching error: it
-    /// names the graph's whole field roster and the exact call shape, so an
-    /// agent that has never seen this graph can self-correct in one step.
+    /// Validate the full resolved field map (unknown names, kinds, required
+    /// fields). The error teaches: it names the graph's whole field roster and the
+    /// call shape, so an agent can self-correct in one step.
     fn check_fields(
         &self,
         node_type: &NodeType,
@@ -269,11 +267,9 @@ impl Engine {
             || patch.code_refs.is_some()
             || patch.fields.is_some();
         let before = self.store.get_node(id)?;
-        // Custom fields: the patch is MERGE intent (null deletes a
-        // key). Resolve it against the stored node, validate the result —
-        // against the patched-to type on a retype — and hand the store the
-        // full replacement map. A retype alone re-validates too: the new
-        // type's required fields must already be satisfied.
+        // Fields patch is merge intent (null deletes): resolve against the stored
+        // node and validate the result, against the new type on a retype. A retype
+        // alone re-validates too.
         if patch.fields.is_some() || patch.node_type.is_some() {
             let stored = before.as_ref().and_then(|b| b.fields.as_ref());
             let resolved = match &patch.fields {
@@ -383,28 +379,14 @@ impl Engine {
         Ok(removed)
     }
 
-    /// Hard delete that leaves a trace: mints a tombstone-role note recording
-    /// what was removed and why, then cascades the victim (0.9.0 — before
-    /// this, deletion was the one memory operation that left nothing behind,
-    /// so an agent could re-learn a deliberately killed fact). User-only,
-    /// like delete itself. When the ontology declares no tombstone type this
-    /// degrades to a plain delete — the config decides, never the caller.
+    /// User-only hard delete that leaves a tombstone-role note recording what was
+    /// removed and why, so an agent can't re-learn it unnoticed. Without a
+    /// tombstone type in the ontology it is a plain delete.
     ///
-    /// `keep_text` carries the victim's body,
-    /// tags, and code_refs into the tombstone. A 0.9.0 mint embedded only
-    /// the victim's title plus the reason, so a paraphrase of the buried
-    /// CONTENT landed nowhere near it and the `tombstoned` write warning had
-    /// nothing to fire on — the marker guarded the headline, not the
-    /// knowledge. Off is the purge shape: identity and reason only, for a
-    /// delete whose point is that the text goes away (the audit journal
-    /// keeps the pre-image either way, as for any delete).
-    ///
-    /// The tombstone takes over the victim's live edges to anchor-role
-    /// nodes (`about` a code subject): the removal stays attached to the
-    /// place it happened, so a traversal from the anchor meets the tombstone
-    /// where it used to meet the victim. Every other edge cascades with the
-    /// victim — "Removed: X because P" is not a sentence, and edges never
-    /// dangle. The victim's identity lives in the tombstone's body.
+    /// `keep_text` carries the victim's body, tags and code_refs into the marker,
+    /// so the `tombstoned` warning also fires on paraphrased content; off is the
+    /// purge shape (identity and reason only). The marker takes over the victim's
+    /// edges to anchor-role nodes; every other edge cascades with the victim.
     pub fn delete_node_with_tombstone(
         &self,
         id: &str,

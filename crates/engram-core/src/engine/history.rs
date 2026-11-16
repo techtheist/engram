@@ -28,15 +28,10 @@ impl Engine {
         self.history.locked().is_some()
     }
 
-    /// Write one node into the history layer and embed it there — the
-    /// harvester's write path. Deliberately NOT [`Engine::add_node`]: no
-    /// audit row, no change event, no dupe verdicts, no version stamp —
-    /// history is records, not knowledge.
-    ///
-    /// Sealing is the STORE DRIVER's job since 0.9.0 (its recorded state
-    /// decides); this path scrubs plaintext and embeds the scrubbed
-    /// plaintext — vectors stay deliberately open, the documented inversion
-    /// risk. `Ok(None)` when the layer is disabled or closed.
+    /// The harvester's write path into the history layer: no audit row, event,
+    /// duplicate verdict or version stamp, because history is records, not
+    /// knowledge. Scrubs and embeds plaintext (vectors stay open by design); the
+    /// store driver seals. `Ok(None)` when the layer is off.
     pub fn add_history_node(&self, mut n: NewNode) -> Result<Option<Node>> {
         n.title = crate::redact::scrub(&n.title);
         n.body = n.body.as_deref().map(crate::redact::scrub);
@@ -63,14 +58,10 @@ impl Engine {
         self.with_history(|s| s.add_edge(e)).transpose()
     }
 
-    /// Search the history layer: hybrid since 0.9.0 — vector candidates
-    /// fused with the blind-index BM25 channel (identical sealed or
-    /// plaintext; before 0.9.0 no keyword index existed over history at
-    /// all, caution 00bgftfbusll), then the cross-encoder re-scores the
-    /// candidate texts at query time. Scores live on the reranker's scale
-    /// but are NEVER blended with curated scores (the 0.8.1 register
-    /// lesson) — the caller renders these as their own labeled section.
-    /// Empty when the layer is off or `search_fallthrough` gates it.
+    /// Hybrid search over the history layer (vectors + the blind-index BM25,
+    /// same sealed or plain), cross-encoder rescored. Scores are never blended
+    /// with curated ones; callers render them as their own section. Empty when the
+    /// layer is off or `search_fallthrough` gates it.
     pub fn search_history(
         &self,
         query: &str,
@@ -79,12 +70,8 @@ impl Engine {
         self.search_history_filtered(query, limit, &SearchFilter::default())
     }
 
-    /// [`Engine::search_history`] scoped to a time window and ordering
-    /// — the same grammar the curated layer reads, against message
-    /// timestamps. Recorded dialogue is the layer where "when" is most often
-    /// the whole question ("what did we try on Tuesday"), so the window
-    /// filters candidates before the cross-encoder re-scores them and before
-    /// the section gate decides whether the section exists at all.
+    /// [`Engine::search_history`] with a time window and ordering, filtered before
+    /// the rerank and the section gate ("what did we try on Tuesday").
     pub fn search_history_filtered(
         &self,
         query: &str,
@@ -137,11 +124,8 @@ impl Engine {
                         prior: Vec::new(),
                     }
                 };
-                // The keyword channel: history finally has BM25 —
-                // the same blind index the curated store runs, identical
-                // sealed or plaintext. Fused with search_hybrid's weights so
-                // both layers rank by one rulebook; scores still NEVER
-                // blend across layers.
+                // BM25 over the same blind index as the curated store, fused with
+                // search_hybrid's weights; scores still never blend across layers.
                 let pol = self.store.config().policy.clone();
                 let kw_hits = s.search_fts(query, &[], k)?;
                 let kw_max = kw_hits.iter().map(|h| h.score).fold(0.0f64, f64::max);
@@ -233,13 +217,8 @@ impl Engine {
             self.store.config().policy.session_diversity_demote,
             |h| Some(h.session.as_str()).filter(|s| !s.is_empty()),
         );
-        // Section gate, not per-hit trim (measured 2026-08-11): the per-hit
-        // delivery floor halved false-fall-through noise but cost 0.03
-        // end-to-end and 0.09 oblique dialogue recall — the 0.8.1 register
-        // lesson (0.22 was calibrated on curated notes, not chat). Gating on
-        // the TOP hit instead makes an all-noise section vanish while a
-        // section with any real match keeps its full candidate list — low-
-        // ranked gold survives.
+        // Gate the section on its top hit, not each hit: the per-hit floor (fitted on
+        // curated notes) cost 0.09 oblique dialogue recall. Low-ranked gold survives.
         if self.reranker.is_some()
             && hits
                 .first()
@@ -256,22 +235,10 @@ impl Engine {
         Ok(hits)
     }
 
-    /// Fold restatements under their newest form, for `order:
-    /// "recent"` only.
-    ///
-    /// A transcript has no `replaces` edges — nobody curates dialogue — so the
-    /// supersession chain the curated graph gets from judgment has to be
-    /// inferred here from the text itself. Hits arrive newest-first, so the
-    /// first statement of a thing IS its latest statement; every later
-    /// near-duplicate becomes one of its `prior` generations.
-    ///
-    /// Three things keep this honest. It runs ONLY under the recency ordering,
-    /// so the default path is untouched and owes no receipt. It never removes
-    /// a hit — folding is nesting, so recall is unchanged BY CONSTRUCTION and
-    /// a mistuned threshold costs shape, not answers. And the threshold is a
-    /// per-graph knob (`history.recency_collapse`), because this project has
-    /// already learned once that absolute score thresholds don't transfer
-    /// between registers.
+    /// Fold restatements under their newest form (`order: "recent"` only).
+    /// Dialogue has no `replaces` edges, so supersession is inferred from text:
+    /// later near-duplicates become `prior` generations. Nesting only, so recall
+    /// is unchanged; the threshold is per-graph (`history.recency_collapse`).
     fn collapse_restatements(
         &self,
         hits: Vec<crate::history::HistoryHit>,
@@ -364,15 +331,8 @@ impl Engine {
         Ok(views[lo..hi].to_vec())
     }
 
-    /// Every recorded session, newest lane first — the history browser's
-    /// spine.
-    /// Sessions overlapping a time window, newest lane first — the
-    /// "what was I doing last Tuesday" entry point, and the surface that makes
-    /// a temporal question answerable WITHOUT a search hit to start from.
-    ///
-    /// A session counts as inside the window when any part of it is: a session
-    /// that began before the window and ran into it is exactly the one a
-    /// person asking about that window means.
+    /// Sessions overlapping a time window, newest first. A session counts when any
+    /// part of it falls inside.
     pub fn list_history_sessions_in(
         &self,
         window: crate::timespec::TimeWindow,
@@ -388,6 +348,7 @@ impl Engine {
         Ok(out)
     }
 
+    /// Every recorded session, newest first: the history browser's spine.
     pub fn list_history_sessions(&self) -> Result<Vec<crate::history::HistorySessionView>> {
         let mut out: Vec<crate::history::HistorySessionView> = self
             // Indexed by type: the Session nodes alone, not every
@@ -419,11 +380,8 @@ impl Engine {
         Ok(out)
     }
 
-    /// Per-session hard delete (pane-only, like every hard delete): the
-    /// Session node, its messages, and their edges leave the history store —
-    /// and the session's transcript path joins `history.exclude_paths`, or
-    /// the harvester would quietly resurrect it from the file that still
-    /// sits on disk. The exclusion is visible (and reversible) in settings.
+    /// Pane-only hard delete of one session (node, messages, edges). Its transcript
+    /// joins `history.exclude_paths`, or the harvester would re-ingest it.
     pub fn delete_history_session(&self, session: &str) -> Result<usize> {
         let (removed, transcript) = self
             .with_history(|s| -> Result<(usize, Option<String>)> {
@@ -467,11 +425,8 @@ impl Engine {
         self.with_history(|s| s.stats().ok()).flatten()
     }
 
-    /// Wholesale history delete — the user-only escape hatch the sibling
-    /// store exists for. Drops the handle, removes the file, and (when the
-    /// layer is enabled) reopens fresh with a re-seeded ontology. The caller
-    /// (HTTP layer) also bumps the hub's history epoch so the running
-    /// harvester forgets its cursors and caches.
+    /// User-only wholesale delete: drop the handle, remove the file, reopen fresh
+    /// when enabled. The HTTP caller also bumps the hub's history epoch.
     pub fn reset_history(&self) -> Result<()> {
         let Some(path) = self.history_path.clone() else {
             return Ok(());
@@ -497,11 +452,9 @@ impl Engine {
         Ok(())
     }
 
-    /// Replace a history node in place (the harvester's cursor bumps and
-    /// title upgrades live in `Session.props`). A legacy-sealed field
-    /// arriving from an old read path is opened first; storage-level
-    /// sealing is the driver's job. Re-embeds only when asked, always from
-    /// plaintext. Returns whether the layer was open to take the write.
+    /// Replace a history node in place (harvester cursors, title upgrades).
+    /// Re-embeds from plaintext only when asked. Returns whether the layer was
+    /// open.
     pub fn upsert_history_node(&self, node: &Node, re_embed: bool) -> Result<bool> {
         let mut stored = node.clone();
         stored.title = self.unseal_str(&stored.title);
@@ -527,12 +480,9 @@ impl Engine {
         Ok(wrote.is_some())
     }
 
-    /// Reconcile the open handle with `config().history.enabled` — runs on
-    /// path install and after every config write, so the pane's toggle takes
-    /// effect without a daemon restart. Disabling drops the handle; the file
-    /// stays on disk (delete is a user gesture). A freshly-opened store is
-    /// also reconciled with the daemon's desired encryption, which
-    /// seals pre-0.9 plaintext/mixed history stores on first open.
+    /// Reconcile the handle with `history.enabled` on path install and every
+    /// config write, so the pane toggle needs no restart (disable keeps the file).
+    /// A fresh open also applies the desired encryption.
     pub(super) fn sync_history_store(&self) {
         let mut slot = self.history.locked();
         let enabled = self.store.config().history.enabled;

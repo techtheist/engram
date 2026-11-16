@@ -14,12 +14,9 @@ impl Engine {
         self.standing_of(id, tombstone, node.stale).map(Some)
     }
 
-    /// Grounded answers: how far a hit can be relied on, composed
-    /// from what the graph already records — the tombstone role, a live
-    /// `replaces` onto it, an open judged conflict, staleness, and the trust
-    /// ladder. The first that applies wins, worst first. Reads the full edge
-    /// lists, not the capped neighbour sample, so no conflict hides behind
-    /// the cap.
+    /// How far a hit can be relied on, worst first: tombstone, superseded, open
+    /// conflict, stale, then the trust ladder. Reads full edge lists, not the
+    /// capped neighbour sample.
     pub(super) fn standing_of(&self, id: &str, tombstone: bool, stale: bool) -> Result<Standing> {
         let standing = |verdict: &str, reason: String, other: Option<String>| Standing {
             verdict: verdict.to_string(),
@@ -115,16 +112,9 @@ impl Engine {
         })
     }
 
-    /// Twin order: delivered hits whose vectors sit at or above
-    /// `band` of each other are near-identical notes, and among them the one
-    /// people endorsed goes first: pinned, then higher trust, then — between
-    /// twins on the same rung that trust cannot tell apart — the one endorsed
-    /// most recently (the endorsement clock). Each group of
-    /// twins is re-sorted within the positions it already holds, so nothing
-    /// that isn't a twin moves, and nothing enters or leaves the delivered
-    /// set. The vote otherwise decides between two near-identical notes on
-    /// capture stamps and type priors, which are the same size as the trust
-    /// bonus (KnowledgeDrift authority family, 2026-09-14).
+    /// Among delivered twins (cosine ≥ `band`), the endorsed one goes first:
+    /// pinned, then trust, then the most recent endorsement. Each twin group is
+    /// re-sorted within the slots it holds, so nothing else moves.
     pub(super) fn order_twins(&self, hits: &mut [SearchHit], band: f64) -> Result<()> {
         let n = hits.len();
         if n < 2 {
@@ -193,12 +183,9 @@ impl Engine {
         Ok(())
     }
 
-    /// When `node` last received the endorsement its rung names, as
-    /// (stamp, journal seq): the seq breaks same-second ties. Pins keep no
-    /// stamp on the node, so theirs is the newest `pinned` journal row —
-    /// which also dates pins made before this existed. Approvals and
-    /// confirmations read their node stamp, seq from the matching row
-    /// (`approved`; `updated`, which is what stamps `confirmed_at`).
+    /// When `node` last got the endorsement its rung names, as (stamp, journal
+    /// seq). Pins read the newest `pinned` row; approvals and confirmations read
+    /// the node stamp plus the matching row's seq.
     fn endorsement_clock(&self, node: &Node, rung: Rung) -> Result<(i64, i64)> {
         let (stamp, action) = match rung {
             Rung::None => return Ok((0, 0)),

@@ -3,14 +3,10 @@
 use super::*;
 
 impl Engine {
-    /// The session-start brief: a token-budgeted markdown digest of the graph's
-    /// canon — unresolved conflicts, suspects to judge, what changed recently,
-    /// the open worklist, then the per-type canon sections. Composition —
-    /// which sections, their caps and excerpt lengths, the total budget —
-    /// comes from the graph's config; the shipped defaults render
-    /// the classic principles/decisions/cautions shape. Every record uses
-    /// one line shape and carries its node id. Every included node's decay
-    /// clock is refreshed: being briefed counts as reuse.
+    /// The session-start brief: a budgeted markdown digest of conflicts, suspects,
+    /// recent changes, open work, then per-type canon. Composition comes from the
+    /// graph's config. Every included node counts as reused (its decay clock
+    /// refreshes).
     pub fn brief(&self, max_chars: usize) -> Result<String> {
         let cfg = self.store.config();
         let bc = &cfg.brief;
@@ -61,11 +57,8 @@ impl Engine {
                 }
             }
 
-            // Handoff notes ([`crate::config::HANDOFF_TAG`]): what the LAST
-            // session left for THIS one — guaranteed top placement, never
-            // sampled away. Resolve one once it is acted on; volatile decay
-            // burns forgotten leftovers. The open worklist is fetched once
-            // here and partitioned; the open-work section below reuses it.
+            // Handoff notes ([`crate::config::HANDOFF_TAG`]): what the last session left
+            // for this one, always on top. The worklist is fetched once and partitioned.
             let (handoff, worklist): (Vec<Node>, Vec<Node>) = self
                 .store
                 .list_open(&[])?
@@ -353,11 +346,8 @@ impl Engine {
                 let heading = format!("\n## {}s", t.name);
                 let node_type = NodeType::parse(&t.name)?;
                 let (cap, excerpt) = (t.brief.cap, t.brief.excerpt);
-                // Fetch the full active set: nodes already claimed by an
-                // earlier section (conflicts, recent) must not starve this
-                // one, and `elsewhere` must count every such node — a capped
-                // window misses seen nodes ranked below it and the overflow
-                // line then double-counts them as "more".
+                // Count the full active set, not a capped window, so nodes claimed by earlier
+                // sections don't starve this one or get double-counted as "more".
                 let total = self.store.count_by_type_active(&node_type)? as usize;
                 let mut fetched = self.store.nodes_by_type_active(&node_type, total)?;
                 if bc.canon_order == "connected" {
@@ -469,11 +459,8 @@ pub(super) fn generation<'a>(
     g
 }
 
-/// Longest excerpt a brief line carries. Word-boundary cut, so lines read as
-/// prose, not as a mid-token truncation. Tuned down from 240 on the dogfood
-/// graph: at 240 the budget died mid-Cautions; ~140 still carries the leading
-/// sentence and lets every section (and its overflow counts) surface —
-/// breadth over depth, since the full node is one `search` away.
+/// Longest excerpt per brief line, cut at a word boundary. 240 ran the budget
+/// out mid-Cautions; 140 keeps the leading sentence and every section.
 pub const EXCERPT_CHARS: usize = 140;
 
 /// One brief line per node, one uniform shape everywhere:

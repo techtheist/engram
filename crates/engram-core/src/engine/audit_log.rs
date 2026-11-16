@@ -9,11 +9,9 @@ impl Engine {
         self.audit_origin = origin;
     }
 
-    /// Journal a session-level activity event (mcp_session_started /
-    /// mcp_session_ended / brief_served, …): AI activity around the graph,
-    /// not just mutations of it — so a session's whole arc is retrievable
-    /// later. `entity_id` is the acting session, making
-    /// `audit(entity_id = session)` page one session's lifecycle directly.
+    /// Journal a session activity event (`mcp_session_started`, `brief_served`,
+    /// …). `entity_id` is the session, so `audit(entity_id = session)` pages one
+    /// session's arc.
     pub fn audit_activity(&self, action: &str, note: Option<String>) -> Result<()> {
         let session = self.audit_origin.session_id.clone().unwrap_or_default();
         self.audit(action, "session", &session, note, None, None, None)

@@ -70,13 +70,9 @@ impl Engine {
             .expect("one vector for one text"))
     }
 
-    /// Bring stored vectors in line with the ACTIVE embedding model (PLAN §7A
-    /// model selection), returning how many nodes were re-embedded. A store
-    /// records the identity its vectors were computed with; when the active
-    /// model differs — different name or width — vector storage is rebuilt
-    /// for the new width and the whole graph re-embeds. Skipped entirely
-    /// under a fake embedder (fake vectors must never replace real ones), so
-    /// a `--fake-embeddings` open can never mass-destroy a graph's vectors.
+    /// Re-embed everything when the active model (name or width) differs from the
+    /// one the store recorded; returns the count. Skipped under a fake embedder so
+    /// a `--fake-embeddings` open can't destroy real vectors.
     pub fn ensure_embed_model(&self) -> Result<usize> {
         if self.embedder.is_fake() {
             return Ok(0);
@@ -105,11 +101,8 @@ impl Engine {
             return Ok(healed);
         }
         self.store.reset_vectors(active.dim)?;
-        // Record the new identity BEFORE the loop: the TepinDB backend stamps
-        // each written vector with the store's recorded model, and the file
-        // pins itself to whatever the first write says — stamping after the
-        // loop would pin the file under the OLD name and poison every later
-        // write with embedder_mismatch (bit us live on the first real swap).
+        // Record the identity before the loop: TepinDB pins itself to the model the
+        // first write names, so stamping after would fail every later write.
         self.store.set_embed_model(&active)?;
         let nodes = self.store.all_nodes()?;
         for n in &nodes {
@@ -120,11 +113,8 @@ impl Engine {
         Ok(nodes.len())
     }
 
-    /// Bring stored vectors up to the current [`EMBED_COMPOSITION`], returning
-    /// how many nodes were re-embedded (0 = already current or skipped).
-    /// Skipped with a fake embedder over a non-empty graph — fake vectors must
-    /// never replace real ones, and the brief hook routinely opens real DBs
-    /// with `--fake-embeddings`. Idempotent; stamps the version when done.
+    /// Re-embed up to the current [`EMBED_COMPOSITION`]; returns the count.
+    /// Skipped with a fake embedder over a non-empty graph. Idempotent.
     pub fn ensure_embed_composition(&self) -> Result<usize> {
         if self.store.embed_version()? >= EMBED_COMPOSITION {
             return Ok(0);
@@ -144,12 +134,9 @@ impl Engine {
     }
 }
 
-/// Sentence-sized claim texts for retrieval (v0.6.3 claim-level search):
-/// the tokenizer splits the body on sentence boundaries and keeps units
-/// substantial enough to mean something alone — each becomes its own vector
-/// next to the node-level one, mirroring how the NLI layer already judges
-/// claims instead of whole bodies. Title rides along with each claim so a
-/// sentence keeps its subject.
+/// Sentence-sized claim texts for retrieval: substantial body sentences, each
+/// prefixed with the title so it keeps its subject, embedded beside the
+/// node-level vector.
 pub(crate) fn claim_texts(title: &str, body: Option<&str>) -> Vec<String> {
     const MIN_CHARS: usize = 30;
     const MAX_CLAIMS: usize = 12;
@@ -183,12 +170,9 @@ pub(crate) fn claim_texts(title: &str, body: Option<&str>) -> Vec<String> {
     }
 }
 
-/// Which embedding composition stored vectors were computed with (kept in
-/// `PRAGMA user_version`). Bump when [`embed_text`] changes what it includes;
-/// [`Engine::ensure_embed_composition`] re-embeds databases that are behind.
-/// 0 = legacy title+body; 2 = full fields (title, body, tags, code_refs);
-/// 3 = claim-chunked (the node-level vector plus one vector per body
-/// sentence, so a query matching one claim in a rich body finds the node).
+/// The embedding composition stored vectors use (`PRAGMA user_version`); bump
+/// it when [`embed_text`] changes. 0 = title+body, 2 = all fields,
+/// 3 = node vector plus one per body sentence.
 pub const EMBED_COMPOSITION: i64 = 3;
 
 /// Every text a node is embedded as, in storage order: the node-level
@@ -213,15 +197,10 @@ fn node_texts(
     texts
 }
 
-/// Vectors a checked write computed BEFORE taking the engine lock (0.9.11,
-/// Insight 00dxfvuv1j1f: ~144 of the ~175 ms a write held the lock at 1500
-/// notes was embedding). The write predicts every text the store and its
-/// checks will embed — the same scrub and tag normalization the store
-/// applies — and embeds them with the lock released; under the lock
-/// [`Engine::embed_texts`] takes a vector only for a byte-identical text
-/// under the same model, and embeds anything else on the spot. A wrong
-/// prediction, a model swapped mid-write or a field index changed meanwhile
-/// cost a little time, never a different vector.
+/// Vectors a checked write computed before taking the engine lock (embedding
+/// was ~144 of the ~175 ms the lock was held). Under the lock
+/// [`Engine::embed_texts`] reuses a vector only for a byte-identical text under
+/// the same model, so a wrong guess costs time, never a different vector.
 pub(crate) struct EmbedCache {
     pub(super) model: EmbedModelId,
     pub(super) vecs: std::collections::HashMap<String, Vec<f32>>,
@@ -347,11 +326,9 @@ pub(super) fn embed_text(
     text
 }
 
-/// The `name: value` lines a node's INDEXED custom fields contribute to its
-/// embedding. Per-graph, so it rides beside [`embed_text`] rather
-/// than inside it: the global [`EMBED_COMPOSITION`] stays honest for graphs
-/// without indexed fields, and the per-graph fingerprint guard
-/// ([`Engine::ensure_field_index`]) re-embeds when a graph's set changes.
+/// `name: value` lines from a node's indexed custom fields. Per-graph, so it
+/// sits beside [`embed_text`]; [`Engine::ensure_embed_composition`]'s sibling
+/// [`Engine::ensure_field_index`] re-embeds when the indexed set changes.
 fn fields_embed_text(
     cfg: &crate::config::GraphConfig,
     fields: Option<&serde_json::Map<String, serde_json::Value>>,

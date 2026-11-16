@@ -16,11 +16,8 @@ impl Engine {
         Ok(edge)
     }
 
-    /// A live link says how two notes relate, so a pending suspect between
-    /// them is settled by it: `replaces` / `conflicts-with` confirm
-    /// it, any other verb dismisses it. A sleep's state-of note raises
-    /// suspects against the notes it summarises the moment it is written;
-    /// its `builds-on` links clear them.
+    /// A live link settles a pending suspect between its two notes: `replaces` /
+    /// `conflicts-with` confirm it, any other verb dismisses it.
     fn settle_linked_suspects(&self, edge: &Edge) -> Result<()> {
         if matches!(
             edge.status,
@@ -65,12 +62,9 @@ impl Engine {
         out
     }
 
-    /// A judged contradiction or supersession reaches whatever depended on
-    /// its target: the edge's source now disagrees with, or replaces,
-    /// the target, so every note that `inherits` from the target (builds on
-    /// it, needs it, holds because of it) is queued against the source. A
-    /// tombstone's `replaces` doesn't propagate — burying knowledge is the
-    /// user's gesture, not a new claim to hold dependents against.
+    /// A judged contradiction or supersession reaches the target's dependents:
+    /// every note that `inherits` from the target is queued against the source.
+    /// A tombstone's `replaces` doesn't propagate.
     fn propagate_from_edge(&self, edge: &Edge) -> Result<()> {
         let cfg = self.store.config();
         let verb = edge.edge_type.as_str();
@@ -95,12 +89,9 @@ impl Engine {
         Ok(())
     }
 
-    /// Queue `(newer, dependent)` for every live note that `inherits` from
-    /// `upstream` (an incoming edge whose verb carries the role) — the
-    /// transitive contradiction a pairwise judge cannot see, because the two
-    /// notes name different subjects and only the edge says one holds what
-    /// the other holds. The hint label is `inherited`; its score is the
-    /// strength of the upstream contradiction. Returns how many were queued.
+    /// Queue `(newer, dependent)` for every live note inheriting from `upstream`,
+    /// the transitive contradiction a pairwise judge can't see. Hint `inherited`,
+    /// scored by the upstream contradiction. Returns how many were queued.
     pub(super) fn propagate_inherited(
         &self,
         newer: &Node,
@@ -144,17 +135,9 @@ impl Engine {
         Ok(added)
     }
 
-    /// Supersession is retirement: wherever a live `replaces` edge lands — a
-    /// suspect verdict, an assistant `link`, a retype in the pane — the node
-    /// it replaces leaves the canon. It is archived, so retrieval, the brief
-    /// and the pane stop offering it, and it survives in the `replaces` chain
-    /// (`timeline`) where superseded knowledge belongs.
-    ///
-    /// Two deliberate asymmetries: pinned nodes are exempt (a pin is the
-    /// user's "never fade" — the pane's replaces verdict overrides it
-    /// explicitly, see [`Engine::resolve_suspect`]), and withdrawing the edge
-    /// never un-archives. `valid_until` is also set by decay and by the user,
-    /// so restoring it here would resurrect nodes nothing asked to see again.
+    /// A live `replaces` archives its target (it stays reachable via `timeline`).
+    /// Pinned targets are exempt, and withdrawing the edge never un-archives,
+    /// since `valid_until` is also set by decay and by the user.
     pub(super) fn retire_superseded(&self, edge: &Edge) -> Result<()> {
         if edge.edge_type.as_str() != self.store.config().supersession_verb()
             || matches!(
@@ -210,13 +193,9 @@ impl Engine {
         Ok(retired)
     }
 
-    /// Keep endpoint demotions in lockstep with the edge's conflict state:
-    /// a live `conflicts-with` is the evidence event that starts decay on the
-    /// older claim — stable knowledge loses trust to evidence, never to time
-    /// — and evidence that is withdrawn (edge resolved, dismissed, retyped,
-    /// deleted) must take its demotion with it, or an innocent node keeps
-    /// decaying after the contradiction is gone. (Pinned nodes are skipped
-    /// inside demote.)
+    /// Keep endpoint demotions in step with the edge's conflict state: a live
+    /// `conflicts-with` starts decay on the older claim, and withdrawn evidence
+    /// takes its demotion with it.
     pub(super) fn reconcile_conflict_demotion(&self, edge: &Edge) -> Result<()> {
         let live = edge.edge_type.as_str() == self.store.config().contradiction_verb()
             && !matches!(

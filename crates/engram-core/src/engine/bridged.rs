@@ -24,12 +24,10 @@ impl Engine {
         Ok(())
     }
 
-    /// Bridged pairs to judge for `node`, closest first, capped.
-    /// Forward: `node` is a bridge — pair the facts about the subjects it
-    /// names. Backward: `node` is a fact — older bridges that name its
-    /// subject pair it with the facts about their other subjects. Store
-    /// reads only (a title scan over the live notes); judged off the lock by
-    /// [`judge_bridges`]. Empty without the logic layer or with the path off.
+    /// Bridged pairs to judge for `node`, closest first, capped. Forward: `node`
+    /// is a bridge, pair the facts about the subjects it names. Backward: `node` is
+    /// a fact, pair it through older bridges naming its subject. Store reads only;
+    /// [`judge_bridges`] judges off the lock. Empty without NLI or with the path off.
     pub(super) fn bridge_candidates(&self, node: &Node) -> Result<Vec<BridgeCandidate>> {
         let cfg = self.store.config();
         if cfg.policy.conflict_bridge_gate.is_none()
@@ -104,12 +102,9 @@ impl Engine {
         Ok(out)
     }
 
-    /// Found bridges for one note, closest first, at most `limit`:
-    /// notes a bridge note ties to this one while no edge joins them. For a
-    /// bridge, the notes it names; for a fact, the facts about the other
-    /// subjects of every bridge that names its own. Title reading only — no
-    /// judge, nothing written. Empty for an archived, anchor or tombstone
-    /// note.
+    /// Up to `limit` notes a bridge ties to this one while no edge joins them,
+    /// closest first. Title reading only: no judge, nothing written. Empty for an
+    /// archived, anchor or tombstone note.
     pub fn found_bridges(&self, id: &str, limit: usize) -> Result<Vec<FoundBridge>> {
         Ok(self
             .found_bridges_many(&[id.to_string()], limit)?
@@ -347,16 +342,9 @@ fn bridge_facts<'a>(notes: &'a [Node], bridge: &Node) -> Vec<(&'a Node, Anchor)>
     out
 }
 
-/// [`bridge_facts`] for display (found bridges): only when the bridge names
-/// exactly two subjects. Facts whose anchors overlap are one subject; a
-/// title that reaches three or more is prose that says "same" or "shared"
-/// in passing, not a tie between two things — the judge filters those on
-/// the write path, but nothing judges what is only shown.
-///
-/// And the two must sit in the tie's frame ([`crate::bridges::frame`]): one
-/// subject before the cue, the other after the word that closes it — so
-/// "one shared component" or "scores the same" pair nothing. A subject
-/// reached through a chain hop stands on whichever side is left.
+/// [`bridge_facts`] for display only: the bridge must name exactly two
+/// subjects, one on each side of the tie's frame ([`crate::bridges::frame`]),
+/// since nothing judges what is only shown ("scores the same" pairs nothing).
 fn pair_bridge_facts<'a>(notes: &'a [Node], bridge: &Node) -> Vec<(&'a Node, Anchor)> {
     let Some(sides) = crate::bridges::frame(&bridge.title) else {
         return Vec::new();

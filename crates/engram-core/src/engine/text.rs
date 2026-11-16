@@ -24,34 +24,18 @@ fn subject_tokens(title: &str) -> std::collections::HashSet<String> {
         .collect()
 }
 
-/// Do two titles speak about the same thing? The co-reference guard for
-/// NLI: MNLI-trained models presuppose the premise and hypothesis co-refer,
-/// so "Kelnor broker uses 7" against "Vanor broker uses 19" reads as a
-/// contradiction when it is two facts about two things (RefNLI).
+/// Do two titles speak about the same thing? NLI's co-reference guard: MNLI
+/// models presuppose co-reference, so two facts about two things read as a
+/// contradiction (RefNLI). Passes, returning the subject tokens, when:
+/// - **named**: both titles carry capitalised names and share one;
+/// - **unnamed**: at most one side has a name and the titles share a run of
+///   two or more content words that no differing word qualifies ("hazel bayou
+///   assay station" vs "wheat dale assay station" is refused).
 ///
-/// Two ways to pass, and the tokens of the subject phrase come back so the
-/// overlap count can leave them out:
-///
-/// - **named**: both titles carry capitalised name tokens and share one
-///   (the 0.9.4 strict guard — the lenient "no name on either side, let the
-///   model decide" form raised 56 false alarms on the dogfood graph);
-/// - **unnamed**: neither side has a usable name, or only one does,
-///   and the titles share a contiguous run of at least two content words
-///   that no differing content word qualifies on either side — "hazel bayou
-///   assay station …" against "wheat dale assay station …" share the
-///   component, but `bayou` and `dale` in front of it name two things, and
-///   the pair is refused. Lowercase subjects ("amber harbor lease broker")
-///   are the register the 0.9.4 guard was blind to: KnowledgeDrift v2
-///   dropped tier-1 contradiction recall from 0.94 to 0.04 on them.
-///
-/// `None` = not the same subject as far as the titles can tell: no NLI
-/// nomination.
+/// `None` means no NLI nomination.
 pub fn shared_subject(a: &str, b: &str) -> Option<std::collections::HashSet<String>> {
-    // Names are read from the first clause only: the subject leads the
-    // claim, and a name in a title's tail ("… — both signed JetBrains zips
-    // published") is a detail, not what the title is about. Two release
-    // notes that both mention the plugin in passing are not two claims
-    // about the plugin (dogfood replay, 2026-09-16).
+    // Names come from the first clause only: a name in the tail is a detail, not
+    // what the title is about.
     let (sa, sb) = (
         subject_tokens(title_clause(a)),
         subject_tokens(title_clause(b)),
@@ -97,13 +81,9 @@ pub fn shared_subject(a: &str, b: &str) -> Option<std::collections::HashSet<Stri
     None
 }
 
-/// Do two titles demonstrably name DIFFERENT things? The refusing half of
-/// [`shared_subject`], for the duplicate match: named on both sides with no
-/// name in common, or a shared component run that a differing content word
-/// qualifies on either side ("hazel quarry edge cache …" against "wheat
-/// geyser edge cache …"). `false` when the titles are undecidable — no
-/// names, no shared run — because a rewritten title with the same body is
-/// still the duplicate it looks like.
+/// Do two titles demonstrably name different things? The refusing half of
+/// [`shared_subject`], for the duplicate match. `false` when undecidable, since
+/// a retitled note with the same body is still a duplicate.
 pub(crate) fn subjects_differ(a: &str, b: &str) -> bool {
     let (sa, sb) = (
         subject_tokens(title_clause(a)),
@@ -254,14 +234,9 @@ const CONTENT_STOP: [&str; 60] = [
     "never",
 ];
 
-/// Content words two titles share beyond their subject: the titles' common
-/// leading words — at most three, the subject phrase — are stripped first
-/// (a multi-word subject such as "Kelnor lease broker" is not a shared
-/// claim), then lowercase alphanumeric runs
-/// of three or more characters — function words and subject tokens out —
-/// are compared on their first five characters so `attempt` and `attempts`
-/// agree. A restated claim shares its parameter or predicate; two
-/// unrelated facts about one subject share the subject and nothing else.
+/// Content words two titles share beyond their subject: up to three common
+/// leading words are stripped, then words of 3+ characters (minus function and
+/// subject words) compare on their first five characters.
 pub(crate) fn content_overlap(
     a: &str,
     b: &str,

@@ -130,13 +130,9 @@ impl Engine {
         Ok(())
     }
 
-    /// Apply a shipped ontology preset: the preset's ONTOLOGY
-    /// replaces this graph's; everything else — policy (auto-tuned lines
-    /// included), brief, versioning, history and custom field definitions —
-    /// is kept. Every shipped preset carries the default policy, so replacing
-    /// the whole document only ever erased per-graph calibration (Caution
-    /// 00e3547lopga). The same in-use guards as [`Engine::set_graph_config`]
-    /// apply, and the audit row is that method's `config_updated`.
+    /// Apply a shipped preset's ontology only; policy (with auto-tuned lines),
+    /// brief, versioning, history and field definitions are kept (Caution
+    /// 00e3547lopga). Same guards and audit row as [`Engine::set_graph_config`].
     pub fn apply_preset(&self, id: &str) -> Result<crate::config::GraphConfig> {
         let preset = crate::config::presets()
             .into_iter()
@@ -155,14 +151,9 @@ impl Engine {
         Ok(cfg)
     }
 
-    /// Keep the search index in line with the graph's INDEXED custom fields
-    ///, returning how many nodes were reprocessed. The store meta
-    /// carries a fingerprint of the indexed-field set; when it drifts, every
-    /// node is rewritten (re-hoisting the tepin keyword fields) and
-    /// re-embedded (the composition gains/loses the `name: value` lines).
-    /// Skipped under a fake embedder over a non-empty graph, like the other
-    /// re-embed guards — the fingerprint stays unstamped, so the next real
-    /// open finishes the job.
+    /// Rewrite and re-embed every node when the indexed custom-field set changes
+    /// (tracked by a fingerprint in store meta); returns the count. Skipped under a
+    /// fake embedder, leaving the fingerprint for the next real open.
     pub fn ensure_field_index(&self) -> Result<usize> {
         const FP_KEY: &str = "indexed_fields_fp";
         let fp = self.store.config().indexed_field_names().join(",");

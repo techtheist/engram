@@ -3,27 +3,15 @@
 use super::*;
 
 impl Engine {
-    /// Merge duplicate nodes into one survivor — the "merge via
-    /// `update_node`" guidance made first-class. Tags and code_refs union
-    /// onto the survivor, the victims' live edges rehome onto it, and each
-    /// victim is superseded behind a `replaces` edge so its generation stays
-    /// traversable. A merge is convergence of records that say the same
-    /// thing — nothing is judged wrong and nothing is deleted.
+    /// Merge duplicates into one survivor: tags and code_refs union, live edges
+    /// rehome, and each victim is superseded by a `replaces` edge. Nothing is
+    /// judged wrong and nothing is deleted.
     ///
-    /// Rehoming rules: dead edges and edges internal to the merged set stay
-    /// on their victim (they are its story); an edge whose (verb, far
-    /// endpoint, direction) already lives on the survivor is skipped rather
-    /// than duplicated; incoming supersession edges never move (something
-    /// replaced the *victim's* generation, not the survivor's). A rehomed
-    /// edge keeps its id and timestamps — the connection moved, it didn't
-    /// recur. A rehomed contradiction re-runs demotion reconciliation: the
-    /// survivor genuinely inherits a live conflict.
-    ///
-    /// Pinned victims are refused for the assistant (surface to the user)
-    /// and archived explicitly for a user-sourced merge — the same contract
-    /// as [`Engine::resolve_suspect`]. Not atomic: every step journals
-    /// individually, and a failure part-way leaves a smaller, still-valid
-    /// merge.
+    /// Dead and internal edges stay on their victim; an edge the survivor already
+    /// has is skipped; incoming supersessions never move. Rehomed edges keep their
+    /// id, and a rehomed contradiction re-runs demotion. Pinned victims are refused
+    /// for the assistant and archived for a user merge. Not atomic: each step
+    /// journals, so a failure leaves a smaller valid merge.
     pub fn merge_nodes(
         &self,
         survivor_id: &str,

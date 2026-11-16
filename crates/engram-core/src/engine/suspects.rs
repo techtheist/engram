@@ -3,11 +3,9 @@
 use super::*;
 
 impl Engine {
-    /// Verify a claim against the canon: retrieve the nearest nodes, judge
-    /// each (node claim as premise, input as hypothesis), and bucket into
-    /// supports / contradicts / silent. NLI beats a similarity list here
-    /// because "the canon disagrees" and "the canon doesn't know" are
-    /// different answers — one is a conflict, the other a gap worth capturing.
+    /// Verify a claim against canon: judge the nearest nodes (node as premise,
+    /// claim as hypothesis) into supports / contradicts / silent. "The canon
+    /// disagrees" and "the canon doesn't know" are different answers.
     pub fn check_claim(&self, text: &str, limit: usize) -> Result<ClaimReport> {
         let Some(nli) = &self.nli else {
             return Err(crate::Error::Embedding(
@@ -39,12 +37,9 @@ impl Engine {
             let Some(n) = self.store.get_node(&h.id)? else {
                 continue;
             };
-            // A tombstone-role hit is sorted out by ROLE, before the model
-            // sees it: the claim lands on knowledge a person
-            // deliberately removed, and that is a verdict of its own —
-            // "retracted" — not an entailment question. The retrieval score
-            // rides in `entailment` so the bucket still sorts strongest
-            // first; the NLI columns are zero because none ran.
+            // A tombstone-role hit is sorted by role before any model runs: the claim
+            // lands on deliberately removed knowledge ("retracted"). The retrieval score
+            // rides in `entailment` so the bucket still sorts strongest first.
             if is_tombstone(&cfg, &n) {
                 report.retracted.push(ClaimVerdict {
                     id: n.id,
@@ -77,16 +72,10 @@ impl Engine {
                 contradiction: j.contradiction,
                 project: None,
             };
-            // A contradiction the model is not confident about is reported as
-            // silence, not as a conflict. Every assertion here costs a human
-            // judgment, and the benchmark in `eval/CONTRADICTIONS.md` measured
-            // what the ungated layer was spending: the model calls most
-            // UNRELATED claims contradictions, and the gate is what separates
-            // the populations. The raw probabilities ride along on the verdict
-            // either way, so nothing is hidden — only unasserted.
-            //
-            // Deliberately contradiction-only: false `supports` has never been
-            // measured, and gating it on the same number would be guessing.
+            // An unconfident contradiction is reported as silence: every assertion costs
+            // a human judgment, and ungated the model calls most unrelated claims
+            // contradictions (`eval/CONTRADICTIONS.md`). Contradiction-only: false
+            // `supports` was never measured.
             let floor = self.config().policy.claim_contradiction_min_confidence;
             match j.label() {
                 "entailment" => report.supports.push(verdict),
@@ -99,12 +88,8 @@ impl Engine {
         report
             .contradicts
             .sort_by(|a, b| b.contradiction.total_cmp(&a.contradiction));
-        // Strongest near-miss first. Roughly a fifth of claims that restate a
-        // stored note verbatim are judged neutral rather than entailment
-        // (`eval/CONTRADICTIONS.md`), and a gated contradiction lands here too
-        // — so this bucket is where the layer's declined-to-assert cases
-        // collect, and reading it top-down is reading them in order of how
-        // close the model came.
+        // Strongest near-miss first: this bucket collects what the layer declined to
+        // assert, including verbatim restatements judged neutral.
         report.silent.sort_by(|a, b| {
             b.entailment
                 .max(b.contradiction)
@@ -136,22 +121,15 @@ impl Engine {
         near: &[(Node, f64)],
     ) -> Result<Vec<SuspectCandidate>> {
         let cfg = self.store.config();
-        // Tombstones sit out BOTH sides here, as they do in the sweep's
-        // scannable set: a tombstone resembles its victim by design, and a
-        // suspect between them invites a `replaces` verdict that would
-        // archive the marker. The write path speaks about tombstones through
-        // the `tombstoned` warning instead.
+        // Tombstones sit out both sides, as in the sweep: one resembles its victim by
+        // design, and a `replaces` verdict would archive the marker.
         if is_anchor(&cfg, node) || is_tombstone(&cfg, node) || node.valid_until.is_some() {
             return Ok(Vec::new());
         }
-        // Two ways in. Above the similarity floor a pair is a
-        // look-alike and queues on similarity alone, hinted by the claim
-        // text. Below it — down to the NLI floor — the logic layer reads the
-        // two bare TITLES, and a confident contradiction between titles that
-        // plausibly name the same subject queues too. Similarity alone
-        // cannot tell a contradiction from an agreeing restatement (MemStrata
-        // AUROC 0.59; the KnowledgeDrift gate probe reproduced it), and a
-        // note's first body sentence only dilutes what the titles say.
+        // Two ways in: above the similarity floor a look-alike queues on similarity
+        // alone; below it (down to the NLI floor) NLI reads the bare titles, and a
+        // confident contradiction between same-subject titles queues too. Similarity
+        // can't tell contradiction from restatement (AUROC 0.59).
         let nli_gate = cfg.policy.conflict_nli_gate.filter(|_| self.nli.is_some());
         let floor = match nli_gate {
             Some(_) => crate::policy::CONFLICT_NLI_FLOOR,
@@ -243,48 +221,26 @@ impl Engine {
         Ok(added)
     }
 
-    /// The logic layer's triage hint for a candidate pair — a nomination for
-    /// the judge, never a verdict. `None`
-    /// when the NLI model isn't loaded or judgment fails (hints are
-    /// best-effort). For contradiction hints the third element says which
-    /// SIDE the model reads as carrying the negation, already mapped to
-    /// `"newer"`/`"older"` by the nodes' own timestamps — the side that,
-    /// judged as the hypothesis, contradicts hardest. Absent under a 0.15
-    /// asymmetry margin — near-symmetric contradictions carry no direction
-    /// worth showing.
-    ///
-    /// Public so the eval harness can score the suspect queue's judgment on a
-    /// real graph's judged pairs. Calibrating that gate against a
-    /// reimplementation of this composition would measure the
-    /// reimplementation.
+    /// The NLI triage hint for a pair: a nomination, never a verdict. `None` when
+    /// no model is loaded or judging fails. For contradictions the third element
+    /// names the side (`"newer"`/`"older"`) carrying the negation. Public so the
+    /// eval harness scores the real composition, not a reimplementation.
     pub fn nli_hint(&self, a: &Node, b: &Node) -> Option<Hint> {
         claim_hint(self.nli.as_deref()?, a, b)
     }
 
-    /// The same hint read off the two bare TITLES — the text of the
-    /// claim itself, without the first body sentence [`claim`] appends. On
-    /// the KnowledgeDrift gate probe the titles separated contradiction from
-    /// restatement far more sharply than the claim text (negation 0.99 vs
-    /// 0.61); this is what the below-floor nomination path reads.
+    /// [`Engine::nli_hint`] on the bare titles, without the body sentence
+    /// [`claim`] appends: titles separate contradiction from restatement far
+    /// more sharply (negation 0.99 vs 0.61).
     pub fn nli_title_hint(&self, a: &Node, b: &Node) -> Option<Hint> {
         title_hint(self.nli.as_deref()?, a, b)
     }
 
-    /// [`nli_title_hint`] read twice when the titles carry a trailing clause
-    ///: once whole, once cut to their first clauses
-    /// ([`title_clause`]), the stronger contradiction winning. A title's
-    /// tail ("— surfaced on the third occurrence", "; the earlier note was
-    /// mistaken") is commentary the model weighs against the claim: on the
-    /// KnowledgeDrift v2 gate probe the clause read lifted the `clause`
-    /// shape from 0.04–0.24 to 0.58–0.98 and dropped two negatives (synonym
-    /// 0.68→0.18, paraphrase 0.56→0.02).
-    ///
-    /// Only the UNNAMED admission path reads this way. On named pairs the
-    /// same cut pushed seven same-subject-different-fact pairs over the gate
-    /// across the two dogfood graphs (release notes, adapter write-ups —
-    /// 2026-09-16 replays) where the whole-title read had let none through:
-    /// a long real title's first clause is still a long sentence, and the
-    /// tail it loses was what told the model the two facts differ.
+    /// [`Engine::nli_title_hint`] read whole and cut to the first clauses
+    /// ([`title_clause`]); the stronger contradiction wins. A trailing clause is
+    /// commentary the model weighs against the claim (clause shape 0.04 → 0.58+).
+    /// Unnamed admission path only: on named pairs the cut pushed seven
+    /// same-subject-different-fact pairs over the gate on the dogfood graphs.
     pub fn nli_title_hint_clause(&self, a: &Node, b: &Node) -> Option<Hint> {
         title_hint_clause(self.nli.as_deref()?, a, b)
     }
@@ -412,15 +368,9 @@ impl Engine {
     }
 }
 
-/// A node's canonical claim for NLI judgment: the declarative,
-/// skill-enforced title, plus the body's first sentence when it adds context.
-/// Claim-level on purpose — whole multi-claim bodies dilute a sentence-pair
-/// model past usefulness, however large its context window.
-/// Label, confidence and — for contradictions — which SIDE carries the
-/// negation, mapped to `"newer"`/`"older"` by the nodes' own timestamps: the
-/// side that, judged as the hypothesis, contradicts hardest. Absent under a
-/// 0.15 asymmetry margin — near-symmetric contradictions carry no direction
-/// worth showing.
+/// Label, confidence and, for contradictions, the side (`"newer"`/`"older"`)
+/// that contradicts hardest as the hypothesis. No direction under a 0.15
+/// asymmetry margin.
 pub(super) fn hint_with_direction(
     sym: &crate::nli::SymmetricJudgment,
     a: &Node,
@@ -453,6 +403,9 @@ pub(super) fn hint_with_direction(
     (label, f64::from(score), direction)
 }
 
+/// A node's canonical claim for NLI: the title, plus the body's first sentence
+/// when it adds context. Claim-level because whole bodies dilute a
+/// sentence-pair model.
 pub(super) fn claim(node: &Node) -> String {
     let mut text = node.title.trim().to_string();
     if let Some(body) = node.body.as_deref() {

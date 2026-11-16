@@ -3,15 +3,10 @@
 use super::*;
 
 impl Engine {
-    /// Claude-side note write with the PLAN §6A safety net: if a same-type,
-    /// still-current node sits at/above the duplicate-similarity threshold,
-    /// return it instead of creating — the caller merges via `update_node`.
-    /// Created notes carry warnings when they land near contradicted or
-    /// superseded knowledge (see `write_warnings`).
-    ///
-    /// Front-ends sharing the engine behind a mutex call
-    /// [`Engine::add_node_checked_shared`] instead — same verdict, judged
-    /// with the lock released.
+    /// Duplicate-guarded note write: a same-type current node at/above the
+    /// duplicate threshold is returned instead (the caller merges). Created notes
+    /// carry `write_warnings`. Engines behind a mutex use
+    /// [`Engine::add_node_checked_shared`].
     pub fn add_node_checked(&self, n: NewNode) -> Result<WriteOutcome> {
         let nli = self.nli.clone();
         match self.plan_add(n, None)? {
@@ -23,15 +18,10 @@ impl Engine {
         }
     }
 
-    /// [`Engine::add_node_checked`] over a shared engine (the MCP tools): the
-    /// write and the pairs it must judge are gathered under one lock, the
-    /// logic layer judges them with the lock RELEASED, and a second short
-    /// lock queues what it nominated. A write judges up to ~14 pairs
-    /// (duplicate, suspects, canon); with a heavy judge — Laya, or any NLI
-    /// on a low-tier machine — that is seconds, and holding the lock for it
-    /// parked every other request on the graph (0.9.10; the sweep got the
-    /// same fix in 0.9.9). `origin` is re-stamped under each lock: another
-    /// front-end may stamp its own in between.
+    /// [`Engine::add_node_checked`] over a shared engine: gather under one lock,
+    /// judge with the lock released (a write judges up to ~14 pairs; with a heavy
+    /// judge that is seconds), queue under a second short lock. `origin` is
+    /// re-stamped under each lock since another front-end may stamp in between.
     pub fn add_node_checked_shared(
         engine: &std::sync::Mutex<Engine>,
         origin: AuditOrigin,
@@ -87,14 +77,9 @@ impl Engine {
             if let Some(node) = self.store.get_node(&id)?
                 && node.node_type == n.node_type
                 && node.valid_until.is_none()
-                // Two titles that demonstrably name different things are
-                // not a duplicate whatever the vectors say: on a
-                // corpus whose bodies are mostly shared boilerplate, a
-                // Caution about one component matched a Caution about
-                // another at 0.90 and swallowed a resurrection the
-                // tombstone channel was there to catch (KnowledgeDrift v2,
-                // 6 of 42 released victims re-added as "duplicates" of
-                // unrelated notes). Undecidable titles keep matching.
+                // Titles that name different things are no duplicate whatever the vectors
+                // say: shared boilerplate bodies made unrelated Cautions match at 0.90 and
+                // hid resurrections. Undecidable titles keep matching.
                 && !subjects_differ(&scrubbed_title, &node.title)
             {
                 let text = match &scrubbed_body {
@@ -164,13 +149,8 @@ impl Engine {
         self.suspects_involving(&node.id)
     }
 
-    /// The nearest current neighbourhood of a fresh text, read once for
-    /// every check that walks it: the warnings, the suspect
-    /// candidates and the canon candidates each used to run the same
-    /// `WRITE_CHECK_K` search and re-read the same nodes under the lock.
-    /// Distance-ordered, `exclude_id` (the written note itself) left out, a
-    /// neighbour whose node is gone skipped — what each check did on its
-    /// own.
+    /// The nearest current neighbourhood of a fresh text, read once for the
+    /// warnings, suspect and canon checks. Distance-ordered, `exclude_id` left out.
     pub(super) fn nearby(&self, vec: &[f32], exclude_id: &str) -> Result<Vec<(Node, f64)>> {
         let mut out = Vec::new();
         for (id, distance) in self.store.search_vec(vec, WRITE_CHECK_K)? {
@@ -321,29 +301,12 @@ impl Engine {
             .collect())
     }
 
-    /// Nearby nodes that are contradicted (active `conflicts-with`),
-    /// superseded, or tombstoned — returned with writes so the writing
-    /// assistant notices it may be re-treading contested, stale, or
-    /// deliberately killed ground.
-    ///
-    /// `tombstoned` is the write-path half of the tombstone role:
-    /// before it, a tombstone was findable but guarded nothing — it is
-    /// active (so never `superseded`), sits out the conflict scan (so never
-    /// `in-active-conflict`), and the near-duplicate match is same-type, so
-    /// a Decision re-deriving a tombstoned Decision sailed through. The
-    /// check is role-based and cross-type on purpose: the shape of the
-    /// resurrection doesn't matter, the content does. Superseded says "a
-    /// successor exists — follow it"; tombstoned says "killed without one —
-    /// re-adding is the error".
-    ///
-    /// Two channels for the tombstone role: the vector neighbourhood
-    /// and an exact match between the new title and a marker's victim title
-    /// — re-adding a note word for word is the resurrection the role exists
-    /// to catch, and it must not depend on where the marker's vector landed
-    /// (KnowledgeDrift v2 at 500: `resurrection_warned` 0.81 on the vector
-    /// channel alone, 1.00 with the title channel). The vector scan stays
-    /// eight deep on purpose: read 24 deep it warned 38% of rewrites of
-    /// PURGED notes about other subjects' markers (knob probe, 2026-09-16).
+    /// Nearby nodes that are contradicted, superseded or tombstoned, so the writer
+    /// notices contested or deliberately removed ground. Superseded means "follow
+    /// the successor"; tombstoned means "removed without one, re-adding is the
+    /// error". The tombstone check is cross-type and has two channels: the vector
+    /// neighbourhood (kept 8 deep; 24 deep misfired on 38% of rewrites) and an
+    /// exact victim-title match (resurrection warned 0.81 → 1.00).
     fn write_warnings(
         &self,
         near: &[(Node, f64)],
@@ -533,12 +496,8 @@ pub(super) fn judge_suspects(
         .collect()
 }
 
-/// The write-time canon check: judge the fresh text against its
-/// nearest existing knowledge. Entailment is directional and cheap to trust
-/// — `supports` says the canon already backs this claim (link it, or wonder
-/// why it needed rewriting). `contradicts` is only issued inside the suspect
-/// similarity band, where the co-reference presupposition holds — below it
-/// an MNLI verdict is noise.
+/// Write-time canon check against the nearest knowledge. `supports` is cheap to
+/// trust; `contradicts` only inside the suspect band, where co-reference holds.
 fn judge_canon(
     nli: Option<&dyn Nli>,
     suspect_similarity: f64,

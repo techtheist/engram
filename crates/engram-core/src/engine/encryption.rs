@@ -3,11 +3,9 @@
 use super::*;
 
 impl Engine {
-    /// Install the daemon's desired at-rest encryption (0.9.0, from machine
-    /// settings): `Some(true)` = keep that store sealed, `Some(false)` =
-    /// keep it plaintext, `None` = leave its recorded state alone. Replaces
-    /// 0.8.4's `enable_history_sealing` opt-in — the truth now lives in
-    /// each store's own meta, and this is only the daemon's INTENT.
+    /// The daemon's desired at-rest encryption per store: `Some(true)` sealed,
+    /// `Some(false)` plaintext, `None` leave as recorded. Intent only; each store's
+    /// meta holds the truth.
     pub fn set_desired_encryption(&mut self, graph: Option<bool>, history: Option<bool>) {
         self.desired_graph_enc = graph;
         self.desired_history_enc = history;
@@ -48,11 +46,9 @@ impl Engine {
         )
     }
 
-    /// Encrypt or decrypt a whole store NOW — the pane's two switches land
-    /// here (`target`: "graph" | "history"). Runs the full rewrite with
-    /// `progress(done, total)` callbacks, journals the change, and returns
-    /// rows reprocessed. The store's recorded state is the source of truth
-    /// throughout: killed anywhere, the next reconcile finishes the job.
+    /// Encrypt or decrypt a whole store now (`target`: "graph" | "history"), with
+    /// progress callbacks; returns rows reprocessed. Killed midway, the next
+    /// reconcile finishes.
     pub fn set_store_encryption(
         &self,
         target: &str,

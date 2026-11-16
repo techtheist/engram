@@ -3,12 +3,10 @@
 use super::*;
 
 impl Engine {
-    /// Auto-tune dial one: fit the conflict-suspect floor from judged
-    /// history by maximizing balanced accuracy over midpoint candidates,
-    /// preferring the higher threshold on ties (a quieter queue). The move
-    /// is damped ([`policy::AUTO_TUNE_DAMPING`]) and the damped target is
-    /// clamped into [[`policy::AUTO_TUNE_FLOOR_MIN`], `duplicate_similarity`).
-    /// Mutates `cfg` and returns the journal fragment; the caller persists.
+    /// Dial one: fit the conflict-suspect floor from judged history (max balanced
+    /// accuracy over midpoints, higher on ties for a quieter queue). Damped and
+    /// clamped into [`policy::AUTO_TUNE_FLOOR_MIN`, `duplicate_similarity`). Mutates
+    /// `cfg`, returns the journal fragment.
     pub(super) fn fit_conflict_floor(
         &self,
         cfg: &mut crate::config::GraphConfig,
@@ -81,15 +79,10 @@ impl Engine {
         )))
     }
 
-    /// Auto-tune dial two: fit the weak-evidence line as
-    /// `policy.weak_line_quantile` of the top scores that
-    /// `policy.weak_line_probes` phantom probes reach on this graph — the
-    /// split-conformal question "how high can a score climb here when the
-    /// answer does not exist". Probes never stamp `last_seen` (calibration
-    /// is not retrieval). The move is damped ([`policy::AUTO_TUNE_DAMPING`])
-    /// and the damped target clamps into the floor-relative band up to
-    /// [`policy::WEAK_LINE_MAX`]. Mutates `cfg` and returns the journal
-    /// fragment; the caller persists.
+    /// Dial two: fit the weak line as `weak_line_quantile` of the top scores
+    /// phantom probes reach here ("how high can a score climb when the answer
+    /// doesn't exist"). Probes never stamp `last_seen`. Damped and clamped up to
+    /// [`policy::WEAK_LINE_MAX`]. Mutates `cfg`, returns the journal fragment.
     pub(super) fn fit_weak_line(
         &self,
         cfg: &mut crate::config::GraphConfig,
@@ -98,27 +91,16 @@ impl Engine {
         let Some(reranker) = &self.reranker else {
             return Ok(None);
         };
-        // Probes borrow vocabulary from the graph's own titles: a probe that
-        // asks in generic wording under-reads how high THIS graph's scores
-        // can climb for a subject that does not exist (first live fit,
-        // 2026-08-04: in-register questions reached 0.32 against a 0.25 line
-        // fitted from generic probes). The coined subject keeps the question
-        // unanswerable; the borrowed words keep it in register.
+        // Probes borrow the graph's own title vocabulary: generic wording under-reads
+        // how high this graph's scores climb. The coined subject keeps them unanswerable.
         let mut notes = self.store.all_nodes()?;
         notes.retain(|n| n.valid_until.is_none());
-        // Content order, not id order: ids are minted from the
-        // clock, so the same corpus written twice sampled different
-        // transplants and fitted a different line every run (eval Finding
-        // 00dvpn0t6gx6). A content hash is fixed for a given graph and still
-        // spreads the sample across it.
+        // Content order, not id order: ids come from the clock, so the same corpus
+        // would sample differently every run (eval Finding 00dvpn0t6gx6).
         notes.sort_by_cached_key(|n| (content_hash(&n.title, n.body.as_deref()), n.id.clone()));
         let vocab: Vec<String> = notes.iter().filter_map(|n| probe_terms(&n.title)).collect();
-        // Two probe families, each answering "how high can a score climb
-        // here when the answer does not exist" from a different angle:
-        // question-shaped templates over borrowed vocabulary, and ICT
-        // transplants — real sentences with their subjects coined out. The
-        // fit is the max of the per-family quantiles: the line must clear
-        // whichever register this graph's noise speaks loudest in.
+        // Two probe families (templates over borrowed words, and ICT transplants of
+        // real sentences); the fit takes the louder family's quantile.
         let total = cfg.policy.weak_line_probes;
         let top_of = |probe: &str, source: Option<&str>| -> Result<f64> {
             let qv = self.embedder.embed_one(probe)?;
@@ -132,15 +114,8 @@ impl Engine {
                 Default::default(),
                 &Default::default(),
             )?;
-            // A transplant is asked of the graph WITHOUT the note it was cut
-            // from (0.9.11, engram Problem 00e353wiopga). Swapping two words
-            // makes a short generated fact unanswerable, but a long real
-            // sentence keeps ~30 words pointing straight at its source: on
-            // this repo's graph two probes reached 1.04 and 1.01 against
-            // their own notes, pinned the line at its 0.95 ceiling and made
-            // every search read "weak". Held out, the source can no longer
-            // answer, and what the probe still reaches is the noise the line
-            // exists to clear.
+            // A transplant is asked without its source note (Problem 00e353wiopga): a long
+            // real sentence still points at its source and pinned the line at 0.95.
             if let Some(source) = source {
                 hits.retain(|h| h.id != source);
             }
@@ -186,12 +161,8 @@ impl Engine {
             );
         }
         let old = cfg.policy.weak_evidence_top;
-        // Damped, then hard-clamped. The lower clamp is floor-relative,
-        // never absolute: a line at or under the delivery floor could never
-        // fire, but the score scale itself is per-graph evidence (see
-        // policy::WEAK_LINE_ABOVE_FLOOR). The clamp reads the DAMPED value
-        // (policy::AUTO_TUNE_DAMPING), so one noisy probe register cannot
-        // teleport the line and a glitched fit stays inside the band.
+        // Damped, then clamped. The lower clamp is floor-relative because the score
+        // scale is per-graph (policy::WEAK_LINE_ABOVE_FLOOR).
         let lo = (cfg.policy.delivery_floor + WEAK_LINE_ABOVE_FLOOR).clamp(0.0, WEAK_LINE_MAX);
         let anchor = if old.is_finite() {
             old.clamp(lo, WEAK_LINE_MAX)
@@ -215,11 +186,9 @@ impl Engine {
     }
 }
 
-/// The knee of a DESC-sorted score curve: the largest relative drop, when it
-/// is at least `min_cliff` of the running score (Tail-Aware Adaptive-k,
-/// arXiv:2606.11907, simplified to the knee without the EVT validation
-/// pass — see [`crate::policy::KNEE_MIN_CLIFF`]). Returns the minimum score
-/// to KEEP, or `None` when the curve has no cliff worth acting on.
+/// The knee of a descending score curve: the largest relative drop, if at
+/// least `min_cliff` of the running score ([`crate::policy::KNEE_MIN_CLIFF`]).
+/// Returns the minimum score to keep, or `None` without a cliff.
 pub(super) fn knee_floor(sorted_desc: &[f64], min_cliff: f64) -> Option<f64> {
     if sorted_desc.len() <= 1 {
         return None;
@@ -297,15 +266,10 @@ fn phantom_probe(i: usize, terms: Option<&str>) -> String {
     TEMPLATES[i % TEMPLATES.len()].replace("{}", &topic)
 }
 
-/// Mint the i-th transplant probe: a REAL sentence from a real note with
-/// its two most distinctive words swapped for coinages (ICT inverted — ACL
-/// 2019 P19-1612, repurposed for calibration). Template probes are
-/// lexically in register but not syntactically; a transplant is both — it
-/// reads exactly like the oblique prose queries that score highest on
-/// never-written subjects, which is the ceiling the line has to reach
-/// (measured gap at 1500 notes: template q90 0.476 vs real-control q90
-/// 0.768). The swap keeps it unanswerable; everything else is the graph's
-/// own voice.
+/// The i-th transplant probe: a real sentence with its two most distinctive
+/// words swapped for coinages (inverted ICT, ACL P19-1612). It reads like the
+/// oblique prose queries that score highest on absent subjects, the ceiling
+/// the line must clear (template q90 0.48 vs real 0.77 at 1500 notes).
 fn transplant_probe(i: usize, title: &str, body: Option<&str>) -> String {
     // The longest sentence in the body carries the most register; a short
     // or empty body falls back to the title.

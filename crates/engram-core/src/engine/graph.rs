@@ -123,11 +123,8 @@ impl Engine {
         Ok(ImportSummary { nodes, edges })
     }
 
-    /// Timeline: the chronological story of one piece of
-    /// knowledge — every generation connected to `id` through `replaces`
-    /// edges, oldest first. A node that was never part of a supersession
-    /// yields a single-entry timeline. Each superseded generation carries the
-    /// note of the `replaces` edge that retired it (the why of the change).
+    /// Every generation linked to `id` through `replaces`, oldest first; each
+    /// superseded one carries the note of the edge that retired it.
     pub fn timeline(&self, id: &str) -> Result<Vec<TimelineEntry>> {
         let cfg = self.store.config();
         let supersession = cfg.supersession_verb();

@@ -1,391 +1,190 @@
-//! Trust tuning. These are the concrete numbers the plan left
-//! open; kept in one place so they're easy to revisit as we dogfood.
+//! Trust and retrieval tuning: the shipped defaults, in one place. The live
+//! numbers come from each graph's `PolicyConfig`; every value here cites the
+//! measurement that set it (receipts under `eval/results/`).
 //!
-//! Trust is **computed at read time** — nothing depends on a background
-//! process having run. Two principles fix which signals may move it
-//! (both learned from external feedback on v0.4.1):
+//! Trust is computed at read time from timestamps, never by a sweep:
+//! - **Time doesn't validate.** `stable` notes hold flat until a live
+//!   `conflicts-with` stamps `demoted_at`, then ramp down; withdrawing the
+//!   edge withdraws the demotion. Drift never demotes (it depends on the
+//!   checkout). Episodic/volatile notes ramp with age; open Problems and
+//!   Intents never decay.
+//! - **Exposure doesn't validate.** Retrieval stamps `last_seen` only. Trust
+//!   anchors on `confirmed_at` (an update or "Confirm still true") or
+//!   `approved_at`, so a popular wrong note can't keep itself alive.
 //!
-//! - **Time doesn't validate.** `stable` knowledge holds its trust flat until
-//!   a live `conflicts-with` edge (the judged-evidence event) stamps
-//!   `demoted_at`; only then does it ramp down, and withdrawing the evidence
-//!   (edge resolved/dismissed/deleted) withdraws the demotion. Drift is
-//!   surfaced for review but deliberately never demotes — it is environment-
-//!   dependent (wrong cwd, feature branches) and a sticky stamp from a bad
-//!   scan would mass-bury the graph. Episodic/volatile knowledge genuinely
-//!   rots, so it keeps a pure time ramp. Open Problems/Intents are live
-//!   worklist and never decay while open.
-//! - **Exposure doesn't validate.** Retrieval (search hits, brief inclusion)
-//!   stamps `last_seen` for observability only — it proves a note was
-//!   *findable*, not that it is true. Trust anchors on `confirmed_at`, which
-//!   only deliberate acts refresh: an update (edits are re-validation) or an
-//!   approval. Otherwise a broad recurring query would keep an attractive but
-//!   wrong note alive forever — retrieval certifying its own outputs.
-//!
-//! The anchor picks the starting value:
-//! - only `created_at`: starts at [`TRUST_UNSEEN_START`]
-//! - `confirmed_at` set (deliberate update / "Confirm still true"): starts at
-//!   [`TRUST_CONFIRMED_START`], clock restarts at `confirmed_at`
-//! - `approved_at` set (user approval, or assistant approval on explicit user
-//!   demand): starts at [`TRUST_APPROVED_START`], ramps to
-//!   [`TRUST_APPROVED_FLOOR`] over [`APPROVED_TRUST_WINDOW_SECS`]
-//!
-//! `trust_override` (the pane's pin) short-circuits everything: pin = 1.0,
-//! arbitrary constant values are allowed. Pinned nodes never decay, never
-//! auto-archive, and evidence events skip them — a human said "forever", so
-//! only a human unsays it (contradictions still surface in review).
-//!
-//! A node whose computed trust falls below [`STALE_TRUST`] is **stale**: still
-//! searchable (buried by the trust multiplier), flagged to the assistant, and
-//! surfaced in the pane's review queue for a human decision.
+//! Starting values: created only → [`TRUST_UNSEEN_START`]; confirmed →
+//! [`TRUST_CONFIRMED_START`]; approved → [`TRUST_APPROVED_START`], ramping to
+//! [`TRUST_APPROVED_FLOOR`]. A pin (`trust_override`) wins outright and is never
+//! decayed or archived. Below [`STALE_TRUST`] a node is stale: still searchable,
+//! flagged, and queued for human review.
 
 use crate::config::PolicyConfig;
 use crate::types::{Durability, NodeStatus};
 
 /// Starting trust for a node that was never confirmed or approved.
 pub const TRUST_UNSEEN_START: f64 = 0.5;
-/// Starting trust once a deliberate act confirmed the node (an update or an
-/// explicit "Confirm still true" — NOT retrieval, which proves nothing).
+/// Starting trust after a deliberate confirm (never after retrieval).
 pub const TRUST_CONFIRMED_START: f64 = 0.6;
 /// Where unapproved trust bottoms out.
 pub const TRUST_FLOOR: f64 = 0.01;
-/// Unapproved episodic trust runs its start→floor course over half a year.
+/// Unapproved episodic trust runs start → floor over half a year.
 pub const PROVISIONAL_TRUST_WINDOW_SECS: i64 = 183 * 24 * 60 * 60;
 /// Volatile notes rot fast: one month from start to floor.
 pub const VOLATILE_TRUST_WINDOW_SECS: i64 = 30 * 24 * 60 * 60;
 /// Trust the moment a node is approved.
 pub const TRUST_APPROVED_START: f64 = 1.0;
-/// Where approved trust bottoms out — approval never fully expires.
+/// Approved trust never fully expires.
 pub const TRUST_APPROVED_FLOOR: f64 = 0.2;
-/// Approved (non-stable) trust runs its course over a full year.
+/// Approved (non-stable) trust runs its course over a year.
 pub const APPROVED_TRUST_WINDOW_SECS: i64 = 365 * 24 * 60 * 60;
-/// Below this computed trust a node is stale (needs review or re-approval).
+/// Below this computed trust a node is stale.
 pub const STALE_TRUST: f64 = 0.3;
 
-/// Same-type cosine similarity at/above which `add_note` treats the new note
-/// as a duplicate and returns the existing match instead of creating.
+/// Same-type cosine at/above which `add_note` returns the existing match.
 pub const DUPLICATE_SIMILARITY: f64 = 0.90;
-/// Cosine similarity at/above which two *unlinked* nodes become a suspected
-/// conflict: close enough to be about the same thing,
-/// below the duplicate bar. Judgment stays with Claude or the user. Retuned on
-/// the dogfood graph twice: 0.75 flagged every topical cluster (136 pairs / ~50
-/// nodes), so it moved to 0.85; but same-genre notes share so much domain
-/// vocabulary that bge-small parks topically-distinct pairs at 0.85–0.87, and
-/// the judged-suspects history bore it out — 27 verdicts, 26 dismissed (all
-/// ≤ 0.883) and the single confirmed conflict at 0.916, a 96% false-positive
-/// rate with a clean gap above the noise. Raised to 0.88 (2026-07-13): drops
-/// every observed false positive, keeps the real one. Positive class is thin
-/// (n=1), so widen only after the judged-suspects corpus grows.
+/// Cosine at/above which two unlinked notes become a suspected conflict. Fitted
+/// on the dogfood graph's judged suspects: 26 of 27 dismissals sat ≤ 0.883, the
+/// one real conflict at 0.916. Widen only once the positive class grows.
 pub const CONFLICT_SUSPECT_SIMILARITY: f64 = 0.88;
-/// The second way into the suspect queue: a pair BELOW the
-/// similarity floor is still nominated when the logic layer reads the two
-/// TITLES as contradicting each other at or above this confidence and the
-/// titles plausibly name the same subject. Measured on the KnowledgeDrift
-/// gate probe (2026-09-13, 100-note world, real models): no similarity
-/// channel separates a planted contradiction from an agreeing restatement
-/// (positives 0.69–0.80 cosine, negatives 0.71–0.73 — MemStrata's AUROC
-/// 0.59, reproduced), while NLI on the bare titles scores negations 0.99,
-/// quantifier flips 0.91, value flips 0.80 and paraphrases 0.13; the first
-/// body sentence the claim text appends only dilutes it (0.61 / 0.61 /
-/// 0.71). The first live sweep on the dogfood graph then raised 56 false
-/// alarms at a 0.70 gate with a lenient subject guard — release notes and
-/// "two facts about one subject" pairs, which an MNLI model reads as
-/// contradictions because every detail differs. Re-measured against those
-/// 56 beside the planted cases (gate probe, 2026-09-13): the strict subject
-/// guard + [`CONFLICT_NLI_OVERLAP`] shared content words + this gate keeps
-/// every raisable planted positive (8/15), 8/10 drifted siblings, and lets
-/// 1 of the 56 real false alarms through. `None` in config turns the path
-/// off.
+/// Second way into the suspect queue: below the similarity floor, a pair is
+/// still nominated when NLI reads the two titles as contradicting at this
+/// confidence and they name the same subject. No similarity channel separates
+/// contradiction from restatement (AUROC 0.59); title NLI does. With the strict
+/// subject guard and [`CONFLICT_NLI_OVERLAP`], it kept 8/15 planted positives
+/// and let 1 of the dogfood graph's 56 false alarms through. `None` disables.
 pub const CONFLICT_NLI_GATE: f64 = 0.80;
-/// Bridged contradictions: two facts about two different subjects
-/// queue when a bridge note ties the subjects together and the logic layer
-/// reads "bridge. y ⟹ x" as a contradiction at or above this confidence.
-/// KnowledgeDrift v3 + the dogfood graph (eval Finding 00ge9s5nwc1z): at
-/// 0.80, 11/66 bridged cases with tasksource and 20/66 with Laya int4, 12/13
-/// unlinked transitive cases, 0 false alarms on the real graph. `None` in
-/// config turns the path off.
+/// Bridged contradictions: a pair about two subjects that a bridge note ties
+/// queues when NLI reads "bridge. y ⟹ x" as a contradiction at this confidence.
+/// 0 false alarms on the dogfood graph (eval Finding 00ge9s5nwc1z). `None`
+/// disables.
 pub const CONFLICT_BRIDGE_GATE: f64 = 0.80;
 /// Bridged pairs one write may judge, closest first.
 pub const BRIDGE_CHECK_CAP: usize = 24;
-/// Content words the two titles must share beyond their subject before the
-/// NLI path may nominate them: a contradiction restates a claim (the same
-/// parameter, the same predicate) with a different value or polarity; two
-/// unrelated facts about one subject share the subject and nothing else,
-/// and that is the shape that flooded the queue. Counted after the titles'
-/// common leading words (the subject phrase) are stripped, on the first
-/// five characters of each word so `attempt` and `attempts` agree; one
-/// shared word is enough because a value flip may keep only its unit.
+/// Content words the two titles must share beyond their common subject before
+/// title NLI may nominate them: a contradiction restates a claim, while two
+/// facts about one subject share only the subject (the shape that flooded the
+/// queue). Words compare on their first five characters.
 pub const CONFLICT_NLI_OVERLAP: usize = 1;
-/// Candidates for the NLI path must still be this similar: below it the two
-/// notes are not even about the same neighbourhood, and every NLI call
-/// costs ~16 ms (two cross-encoder passes). The planted positives sat at
-/// 0.64+ full-note cosine; the transitive tier-3 cases at 0.48 are the ones
-/// this floor gives up, by design.
+/// Title-NLI candidates must still be this similar: every NLI call costs about
+/// 16 ms, and planted positives sat at 0.64+.
 pub const CONFLICT_NLI_FLOOR: f64 = 0.50;
-/// Auto-tune — per-graph calibration of the conflict floor from judged
-/// history — engages only past this many current notes; smaller graphs keep
-/// the benchmark-calibrated defaults (user decision 2026-08-03). The 0.88
-/// default above was itself fitted by hand from 27 judgments on a ~300-note
-/// graph; auto-tune is that same operation, automated and per-graph.
+/// Auto-tune (per-graph conflict-floor calibration) engages only past this many
+/// notes; smaller graphs keep the benchmark defaults.
 pub const AUTO_TUNE_MIN_NOTES: i64 = 200;
-/// ...and only with at least this many judged suspect pairs,
+/// ...and with at least this many judged suspect pairs,
 pub const AUTO_TUNE_MIN_JUDGED: usize = 20;
-/// ...with at least this many on each side — a one-sided history can push a
-/// floor, but it cannot place one.
+/// ...with this many on each side: one-sided history can't place a floor.
 pub const AUTO_TUNE_MIN_EACH: usize = 3;
-/// The fitted floor never drops below this: under it the sweep floods the
-/// queue with topical-cluster noise on every graph ever measured.
+/// The fitted conflict floor never drops below this (topical-cluster noise).
 pub const AUTO_TUNE_FLOOR_MIN: f64 = 0.85;
-/// Fitted moves smaller than this are ignored — config churn is not
-/// calibration.
+/// Fitted moves smaller than this are ignored.
 pub const AUTO_TUNE_MIN_DELTA: f64 = 0.005;
-/// Every auto-tune move travels only this fraction of the distance from the
-/// dial's current value to the fresh fit. One noisy fit can no longer teleport
-/// a dial (dogfood, 2026-08: the weak line lurched 0.85 → 0.35-class jumps as
-/// the probe register improved); repeated consistent fits still converge
-/// geometrically in a few session boundaries, and the damped target is
-/// hard-clamped into the dial's band, so even a glitched fit stays bounded.
+/// Each auto-tune move goes this fraction of the way to the fresh fit, so one
+/// noisy fit can't teleport a dial; consistent fits still converge in a few runs.
 pub const AUTO_TUNE_DAMPING: f64 = 0.5;
-/// Calibrated-delivery trim: post-rerank hits scoring under this are not
-/// delivered. 0.22 is the top of the measured free zone (delivery-floor
-/// sweep, 2026-08-03, question-everything corpus at 100/500/1500 notes):
-/// below it the trim removes only tail hits — recall@5 and oblique recall
-/// unchanged at every size — while the delivered set shrinks ~20% and focus
-/// (the answer's share of delivered tokens) rises ~40%. Applies only when a
-/// reranker produced calibrated scores; the fused hybrid score is a
-/// different scale and keeps its own `SEARCH_MIN_SCORE` cut.
-///
-/// Deliberately NOT an abstention mechanism: the same sweep showed hard
-/// abstention by absolute score is unaffordable — at 500 notes, declining
-/// 62% of never-written questions costs 38% of real answers, because oblique
-/// answers and unanswerable questions genuinely overlap in score space. The
-/// abstention face is a LABEL instead (see [`WEAK_EVIDENCE_TOP`]).
+/// Reranked hits under this score are not delivered. Top of the measured free
+/// zone: recall@5 and oblique recall unchanged at 100/500/1500 notes, ~20%
+/// fewer hits delivered. Not abstention (that would cost 38% of real answers at
+/// 500 notes); abstention is a label, see [`WEAK_EVIDENCE_TOP`].
 pub const DELIVERY_FLOOR: f64 = 0.22;
-/// Top-score under which a delivery is labeled weak evidence. Chosen from
-/// the control arm's separation analysis (best threshold 0.84–0.87 across
-/// 500–1500 notes, balanced accuracy 0.76): a result whose best hit scores
-/// under this line is as likely to be topical adjacency as an answer, so the
-/// search verdict tells the assistant to verify before relying — a label
-/// costs no recall where a hard floor would spend the oblique column to buy
-/// abstention.
+/// A delivery whose best hit scores under this is labeled weak evidence
+/// (best separation threshold 0.84–0.87 across 500–1500 notes).
 pub const WEAK_EVIDENCE_TOP: f64 = 0.85;
-/// Calibrated delivery, knee face: after the fixed floor, cut the delivered
-/// list at the largest relative drop in its score curve — the knee between
-/// the relevance head and the noise tail (Tail-Aware Adaptive-k,
-/// arXiv:2606.11907, simplified to the knee without the EVT pass). Only a
-/// drop of at least this fraction of the running score counts as a cliff: a
-/// flat curve has no knee, and cutting at its noise-level maximum drop would
-/// amputate the head one query in three. Measured on the question-everything
-/// corpus at 100–2000 notes (tricks bench, 2026-08-03): recall@5 and oblique
-/// recall within 0.01 of shipped delivery at every size, focus 0.20→0.66 /
-/// 0.10→0.44 / 0.10→0.40 at 100/1500/2000 notes, delivered tokens −35–50% —
-/// and unlike the fixed floor, the cliff sharpens with crowd size, so the
-/// gain holds where the floor went quiet.
+/// Knee cut: after the floor, cut the delivered list at its largest relative
+/// score drop if that drop is at least this fraction (arXiv:2606.11907,
+/// simplified). Recall within 0.01 of the floor alone; focus 0.20 → 0.66 and
+/// 35–50% fewer tokens, and the cliff sharpens as the graph grows.
 pub const KNEE_MIN_CLIFF: f64 = 0.25;
-/// Session-diverse delivery: when the floor-surviving candidate pool
-/// is deeper than the delivery limit, each additional hit from a session
-/// already represented in the delivered set is demoted this many RANK
-/// positions before the final cut, so complementary evidence from other
-/// sessions fills the slots a single session's restatements would otherwise
-/// crowd. Rank-based on purpose — the register lesson is that
-/// absolute score thresholds don't transfer between graphs while relative
-/// mechanisms do, and a rank demotion is scale-free. `0` disables. Selection
-/// and order only: reported scores stay the cross-encoder's, exactly like the
-/// reciprocal-rank vote.
-///
-/// 2 is the top of the measured free zone (`engram-eval --sessions`,
-/// 2026-08-22, 420 and 1875 notes): session coverage of multi-session
-/// subjects rises 0.625→0.792 / 0.707→0.827 in the top 5 and every cluster
-/// reaches full coverage, while the single-gold recall columns are identical
-/// to three decimals at both sizes. The cost only appears from 5 up (oblique
-/// −0.02..−0.04 at 420 notes). Graphs whose notes share one session — or
-/// carry none — are byte-identical to the pre-0.8.10 cut by construction.
+/// Session-diverse delivery: each extra hit from an already-represented
+/// session drops this many ranks before the cut, so other sessions' evidence
+/// gets the slots. Rank-based because score thresholds don't transfer between
+/// graphs. At 2, top-5 session coverage rose 0.63 → 0.79 with recall unchanged
+/// (`eval --sessions`). `0` disables.
 pub const SESSION_DIVERSITY_DEMOTE: f64 = 2.0;
-/// Auto-tune, weak-line dial: the calibrated "likely not in memory" line is
-/// fitted per graph as this quantile of the top scores that phantom probes —
-/// questions about invented subjects guaranteed absent from any graph —
-/// still manage to reach. Split-conformal shape (the FinAbstain family): the
-/// threshold answers "how high can a score climb on THIS graph when the
-/// answer does not exist". q90 flags 84–95% of held-out never-written
-/// questions at every measured size while the warned share of answerable
-/// questions barely moves between q70 and q95.
+/// The weak line is fitted per graph as this quantile of the top scores that
+/// phantom probes (questions about invented subjects) reach. q90 flags 84–95%
+/// of never-written questions at every measured size.
 pub const WEAK_LINE_QUANTILE: f64 = 0.90;
-/// How many phantom probes the weak-line fit mints per calibration pass.
+/// Phantom probes minted per weak-line fit.
 pub const WEAK_LINE_PROBES: usize = 24;
-/// The weak-line dial engages past this many current notes — under it the
-/// phantom-probe score distribution is too thin to place a quantile on.
-/// Deliberately lower than [`AUTO_TUNE_MIN_NOTES`]: the measured calibrated
-/// line runs 0.56 → 0.81 from 100 to 2000 notes, so it is precisely the
-/// small graphs that the fixed 0.85 default over-flags.
+/// The weak-line fit engages past this many notes. Lower than
+/// [`AUTO_TUNE_MIN_NOTES`] because small graphs are the ones the fixed 0.85
+/// over-flags.
 pub const WEAK_LINE_MIN_NOTES: i64 = 50;
-/// The fitted weak line clamps to at least `delivery_floor` plus this
-/// margin: every delivered hit already clears the floor, so a line at or
-/// below it could never fire and the label would be dead. The margin is not
-/// a quality bar — first live fit (dogfood graph, 2026-08-04) showed the
-/// score SCALE is register-dependent (phantom noise peaked at ~0.20 here vs
-/// 0.77 on the eval corpus: dense prose notes vs short subject-facts), so
-/// an absolute lower bound would overrule exactly the per-graph evidence
-/// this dial exists to read. When the noise ceiling sits under the floor,
-/// never-written questions come back empty and the `none` verdict carries
-/// the abstention instead.
+/// The fitted weak line stays at least this far above `delivery_floor` (or it
+/// could never fire). A margin, not a quality bar: the score scale depends on
+/// how the graph's notes are written.
 pub const WEAK_LINE_ABOVE_FLOOR: f64 = 0.03;
-/// Fitted weak lines never exceed this — above it the label fires on
-/// everything.
+/// Fitted weak lines never exceed this; above it the label fires on everything.
 pub const WEAK_LINE_MAX: f64 = 0.95;
-/// How long a node must sit below [`STALE_TRUST`] before the decay pass
-/// archives it.
+/// Days a node must stay below [`STALE_TRUST`] before decay archives it.
 pub const DECAY_TTL_DAYS: i64 = 14;
 /// Similarity at/above which a write warns about nearby conflicted or
-/// superseded nodes (the pull-based form of PLAN §7 conflict surfacing).
+/// superseded nodes.
 pub const WARN_SIMILARITY: f64 = 0.70;
 /// Character budget for the session-start brief (~4k tokens).
 pub const DEFAULT_BRIEF_CHARS: usize = 16000;
-/// How much of a hit's relevance comes from the keyword channel; the rest
-/// comes from vector similarity.
-///
-/// 0.15 rather than the even split it started at, measured 2026-07-27 on the
-/// eval bench. A query that never names its subject scores zero on keywords by
-/// construction, so a high weight caps its relevance while a distractor
-/// sharing one common word scores on both channels. Dropping the weight to
-/// 0.15 and letting the reranker vote (see `RERANK_VOTE_K`) is worth +0.17
-/// recall on those queries and costs nothing on the ones that do name their
-/// subject, which stay at 1.00.
-///
-/// Not zero, deliberately: the keyword channel is also what produces the
-/// 12-token FTS snippet and the match highlighting, so silencing it would
-/// raise the tokens delivered per query by roughly a third to buy another
-/// 0.07.
+/// The keyword channel's share of a hybrid score; the rest is vector
+/// similarity. Name-free queries score zero on keywords, so a high weight
+/// sinks them: 0.15 with the reranker vote is +0.17 oblique recall at no cost
+/// to named queries. Not zero, because keywords also make the FTS snippet.
 pub const SEARCH_KEYWORD_WEIGHT: f64 = 0.15;
 
-/// Cosine similarity below which a vector hit carries no semantic signal.
-/// bge-small compresses unrelated pairs into roughly [0.5, 0.7]; the semantic
-/// component rescales from this floor to 1.0 and is zero underneath it.
+/// Cosine below which a vector hit carries no signal (bge-small packs unrelated
+/// pairs into about [0.5, 0.7]); the semantic part rescales from here to 1.0.
 pub const SEARCH_SEMANTIC_FLOOR: f64 = 0.6;
-/// Hybrid hits scoring below this are dropped — an unrelated query should
-/// return nothing, not the least-unrelated node.
+/// Hybrid hits under this are dropped, so an unrelated query returns nothing.
 pub const SEARCH_MIN_SCORE: f64 = 0.1;
-/// Hits scoring below this fraction of the best hit are dropped — the weak
-/// FTS OR-recall tail that rides in behind one genuinely relevant match.
+/// Hits under this fraction of the best hit are dropped (the FTS OR-tail).
 pub const SEARCH_RELATIVE_CUT: f64 = 0.25;
-/// Newness bonus ceiling in hybrid search: a just-created node scores up to
-/// this fraction higher than an otherwise-identical old one. Multiplicative
-/// and small — relevance still dominates; this only breaks near-ties in
-/// favor of current knowledge.
+/// Newness bonus ceiling: breaks near-ties toward current knowledge.
 pub const SEARCH_RECENCY_BOOST: f64 = 0.15;
 /// Age at which the newness bonus has halved.
-pub const SEARCH_RECENCY_HALF_LIFE_SECS: i64 = 30 * 24 * 60 * 60; // 30 days
-/// Candidate-pool multiplier when a search carries a time window.
-/// Neither retrieval channel is date-ordered, so an in-window match can sit
-/// arbitrarily deep in a date-blind ranking; the only lever is to look at more
-/// candidates before filtering.
-///
-/// TWO, measured (`engram-eval --window`, three seeds, receipts in
-/// `eval/results/*-window-100x20*.json`).
-///
-/// The firm result is that DEPTH PAST 2 IS DEAD WEIGHT: on a 2100-note graph
-/// the mean recall@5 at 2, 4, 8 and 16 is identical to three decimals at both
-/// window widths, while wall-clock grows with
-/// the pool. Rank-1 recall drifts slightly DOWN as the pool deepens (0.805 →
-/// 0.799), which is the cross-encoder mis-promoting out of a larger candidate
-/// set — the same effect recorded in the oblique-recall work.
-///
-/// The gain from 1 to 2 is real but modest, and honestly stated: +0.021
-/// recall@5 and +0.064 oblique at a 30-day window (all three seeds agree in
-/// direction), but only +0.004 at 180 days, where one seed of three moved the
-/// other way. Two is chosen as the cheapest depth that is never worse.
-///
-/// The bench also settled the question the multiplier was invented for: a time
-/// window does not COST recall, it BUYS it — mean recall@5 goes 0.74 unscoped
-/// to 0.94 inside a 30-day window, and oblique recall 0.26 → 0.83, because the
-/// window deletes distractors the query could not discriminate. That result is
-/// large and unanimous across seeds, and it is why the pool never needed to be
-/// deep in the first place.
+pub const SEARCH_RECENCY_HALF_LIFE_SECS: i64 = 30 * 24 * 60 * 60;
+/// Candidate-pool multiplier for time-windowed searches (neither channel is
+/// date-ordered). 2 is the cheapest depth that is never worse; depth beyond it
+/// is dead weight (`eval --window`, three seeds).
 pub const SEARCH_WINDOW_OVERFETCH: usize = 2;
-/// How much trust modulates a reranked hit's score (mirrors the trust weight
-/// inside the hybrid blend): relevance dominates, trust breaks near-ties.
+/// How much trust modulates a reranked score: relevance dominates, trust breaks
+/// near-ties.
 pub const RERANK_TRUST_WEIGHT: f64 = 0.15;
-/// Cosine at or above which two delivered hits count as twins for the
-/// endorsement order: between near-identical notes the pinned or
-/// more-trusted one goes first. Measured 2026-09-27: on `eval --authority`
-/// at 500 the endorsed twin ranked first 0.575 → 1.00 (a fresher capture
-/// stamp beat confirm/approve/pin 94–100% of the time before; pin vs approve
-/// was a coin flip), the no-endorsement control unchanged at 0.44; the
-/// post-tune ladder at 100/500/1500 is identical in every recall and FP
-/// column. 0.95 misses twins. Receipts:
-/// eval/results/2026-09-27-authority-500.json and
-/// 2026-09-27-0.9.10-posttune-{shipped,twins090}-100-1500.json.
+/// Cosine at/above which two hits are twins and the pinned or more trusted one
+/// goes first: the endorsed twin ranked first 0.575 → 1.00 with no recall cost
+/// (`eval --authority`, 2026-09-27). 0.95 misses twins.
 pub const TWIN_TRUST_ORDER: Option<f64> = Some(0.90);
-/// Damping constant for the reciprocal-rank vote that combines the retrieval
-/// ordering with the cross-encoder's. `None` gives the cross-encoder the final
-/// word instead.
-///
-/// A voting reranker contributes `1/(k + rank)` from each ordering rather than
-/// overwriting the fused score, so one confident cross-encoder mistake can no
-/// longer send a hit from rank 2 to rank 20 against two agreeing channels — it
-/// has to out-vote them. This is the ranking form of the rule the rest of the
-/// project already follows: a model's judgment nominates, it does not decide.
-///
-/// Small `k` lets rank 1 dominate; large `k` flattens the contributions toward
-/// equality. 10 was measured against the alternative on the eval bench and is
-/// worth +0.065 recall on queries that never name their subject — but only at
-/// a low [`SEARCH_KEYWORD_WEIGHT`]. The two interact, and the vote is actually
-/// *harmful* at the even keyword split this used to ship: the gold is dropped
-/// from the candidate set before the reranker is ever called, so no amount of
-/// re-ordering can recover it. Change them together or not at all.
+/// Damping `k` of the reciprocal-rank vote between retrieval order and the
+/// cross-encoder, so one confident reranker mistake must out-vote two channels.
+/// Worth +0.065 on name-free queries, but only at a low
+/// [`SEARCH_KEYWORD_WEIGHT`]; change the two together. `None` lets the
+/// cross-encoder decide alone.
 pub const RERANK_VOTE_K: Option<f64> = Some(10.0);
-/// Minimum contradiction confidence before `check_claim` reports a claim as
-/// contradicted. Below it the verdict lands in `silent` instead — the raw
-/// probabilities ride along either way, so nothing is hidden, only unasserted.
-///
-/// This is a DIFFERENT gate from [`NLI_SWEEP_MIN_CONFIDENCE`], which guards the
-/// suspect queue and pairs with a similarity floor. `check_claim` had neither,
-/// and judged whatever the top-8 retrieval returned.
-///
-/// 0.80 chosen on five seeds of the contradiction benchmark
-/// (`eval/CONTRADICTIONS.md`), for stability rather than for the best headline.
-/// Mean catch / false alarms per gate, MobileBERT, shipping ONNX file:
+/// Contradiction confidence before `check_claim` reports a claim as
+/// contradicted; below it the verdict is `silent` (probabilities still ride
+/// along). Picked over five seeds (`eval/CONTRADICTIONS.md`) as the last gate
+/// before catch comes apart:
 ///
 /// ```text
 ///   gate   catch (min)  spread   false alarms   agreeing claims
 ///                                                called conflicts
-///   0.00      96 (95)        2     61            7-13%
 ///   0.70      95 (94)        1     44            2-6%
 ///   0.80      92 (90)        4     38            1-2%   <- shipped
 ///   0.90      85 (79)       11     27            0-2%
-///   0.95      77 (71)       13     18            0-1%
 /// ```
-///
-/// Tighter gates keep scoring a better catch-minus-false-alarm gap right up to
-/// 0.95, where catch falls to seven in ten and swings thirteen points between
-/// seeds — so the gap is not the criterion. 0.80 is the last gate before catch
-/// comes apart, and it is already where the layer's worst output (asserting
-/// conflict against a note the claim AGREES with) drops from one agreeing claim
-/// in ten to one or two in a hundred.
-///
-/// Corroborated on this repo's own graph (`--real-graph`), where the same gate
-/// is the tightest one that still flags the single genuine contradiction in the
-/// project's recorded history, and takes queue false alarms to 19%.
 pub const CLAIM_CONTRADICTION_MIN_CONFIDENCE: f64 = 0.80;
 
-/// Minimum NLI confidence before an audit sweep queues a pair. One of two
-/// guards learned on the dogfood graph (2026-07-13): MNLI-class models
-/// presuppose co-reference, so below the ~0.85 similarity band unrelated
-/// same-shaped titles read as CONFIDENT contradictions (140 junk pairs even
-/// at this gate, most at 0.99–1.00) — which is why the conflict sweep also
-/// keeps [`CONFLICT_SUSPECT_SIMILARITY`] as its floor. A sweep that floods
-/// the judge is worse than one that misses; calibrate on the judged-suspects
-/// corpus (scripts/nli-eval.py) before loosening either guard.
+/// NLI confidence before an audit sweep queues a pair. MNLI models presuppose
+/// co-reference, so unrelated same-shaped titles read as confident
+/// contradictions; the sweep therefore also keeps
+/// [`CONFLICT_SUSPECT_SIMILARITY`] as its floor. Calibrate on judged suspects
+/// before loosening either.
 pub const NLI_SWEEP_MIN_CONFIDENCE: f32 = 0.8;
-/// Locality prior on cross-project reads: hits from other
-/// projects' graphs are multiplied by this so the local canon wins ties —
-/// provenance-aware ranking, not exclusion.
+/// Score multiplier on hits from other projects, so local canon wins ties.
 pub const CROSS_PROJECT_PRIOR: f64 = 0.85;
-/// Same-type cosine similarity at/above which a Principle/Caution recurring
-/// in another project's graph becomes a promotion nomination for the home
-/// graph. Borrowed from the suspect band — recalibrate with it.
+/// Same-type cosine at/above which a Principle/Caution recurring in another
+/// project becomes a promotion nomination for the home graph.
 pub const PROMOTION_SIMILARITY: f64 = 0.85;
-/// Character budget carved out of the brief for the home-graph section
-///: user-level canon rides along with every project brief but
-/// must never starve the project's own sections.
+/// Brief characters reserved for the home-graph section, so user-level canon
+/// never starves the project's own sections.
 pub const HOME_BRIEF_RESERVE: usize = 1500;
 
 /// Everything the trust computation reads off a node. `last_seen` is
@@ -420,9 +219,8 @@ fn provisional_window(durability: Durability, p: &PolicyConfig) -> i64 {
     }
 }
 
-/// The computed trust of a node at `now` under the graph's policy (see module
-/// docs for the model; the constants above are only the shipped defaults —
-/// the live numbers come from the graph's config, PLAN §7D).
+/// The computed trust of a node at `now` under the graph's policy (model in
+/// the module docs).
 pub fn trust(n: &TrustInputs, now: i64, p: &PolicyConfig) -> f64 {
     if let Some(o) = n.trust_override {
         return o.clamp(0.0, 1.0);
@@ -464,11 +262,9 @@ pub fn is_stale(trust: f64, p: &PolicyConfig) -> bool {
     trust < p.stale_trust
 }
 
-/// When a node's computed trust crosses the policy's stale threshold — the
-/// clock the decay pass measures its TTL against. `None` for nodes that never
-/// cross on their own: approved or pinned (PLAN §6B — confirmed/trusted
-/// persist), stable (decays only on evidence, and never auto-archives), and
-/// open worklist.
+/// When computed trust crosses the stale threshold (the decay TTL's clock).
+/// `None` for nodes that never cross on their own: approved, pinned, stable,
+/// and open worklist.
 pub fn stale_since(n: &TrustInputs, p: &PolicyConfig) -> Option<i64> {
     if n.approved_at.is_some()
         || n.trust_override.is_some()

@@ -46,21 +46,11 @@ impl Engine {
     // sweeps queue suspects for judgment, claim checks annotate — no trust
     // field moves here.
 
-    /// Conflict sweep (the Checkup panel's "Find hidden conflicts"): rescan
-    /// at the standing similarity threshold, queueing only pairs the NLI
-    /// layer marks as contradictions. Above the floor the claim text is
-    /// judged; MNLI-class models presuppose co-reference, and below that band
-    /// unrelated same-shaped claims read as confident contradictions (the
-    /// dogfood finding of 2026-07-13 — 140 junk pairs at a 0.8 gate). Below
-    /// it the sweep admits exactly what the write path admits since
-    /// 0.9.4: titles that name one subject and share a claim word, read as a
-    /// contradiction at `policy.conflict_nli_gate` — so the button reaches
-    /// what the background scan reaches, and further down the neighbour list.
-    ///
-    /// Then the bridge pass: every live bridge note pairs the facts
-    /// about the subjects it ties, as a write would — so bridges written
-    /// before the path existed, or pairs a write's cap left out, are read
-    /// too. It spends what the similarity pass left of the budget.
+    /// Checkup's "Find hidden conflicts": queue unlinked pairs NLI reads as
+    /// contradictions. Above the similarity floor the claim text is judged; below
+    /// it, only what the write path admits (same-subject titles sharing a claim
+    /// word, at `conflict_nli_gate`). Then the bridge pass spends what is left of
+    /// the budget on every live bridge note.
     pub fn audit_conflicts(&self) -> Result<AuditSweep> {
         let mut sweep = self.audit_sweep(
             "contradiction",
@@ -78,13 +68,9 @@ impl Engine {
         self.audit_sweep("entailment", 0.80, AUDIT_NLI_PAIR_BUDGET)
     }
 
-    /// Shared sweep: nominate unlinked, unraised look-alike pairs whose NLI
-    /// hint matches `target`. NLI pair budget capped — an audit that takes a
-    /// minute under the engine lock is worse than one that says "truncated,
-    /// run me again". Since 0.9.11 "again" makes progress: each unordered
-    /// pair is judged once per run, and a pair judged without queueing is
-    /// remembered ([`SweepMemory`]) so the next run spends its budget on
-    /// pairs no run has read yet.
+    /// Nominate unlinked, unraised look-alike pairs whose NLI hint matches
+    /// `target`, within an NLI pair budget. Pairs judged without queueing are
+    /// remembered ([`SweepMemory`]), so "run again" reaches pairs no run has read.
     pub(crate) fn audit_sweep(
         &self,
         target: &'static str,
@@ -117,13 +103,8 @@ impl Engine {
         // The scan meets every close pair from both sides; whatever happened
         // to it the first time (judged, queued, skipped) holds for the second.
         let mut seen = std::collections::HashSet::new();
-        // Crowding order: the subjects first, largest first and
-        // each from its most central member, then every other note newest
-        // first. Conflicts and restatements pile up where notes crowd, so a
-        // run the budget cuts has spent itself there. Order only: reading
-        // subject-mates beyond the twelve nearest was tried and dropped —
-        // on this repo's graph it judged 13 more pairs and raised one more
-        // false alarm with Laya, nothing found (2026-11-15 replay).
+        // Crowded subjects first (largest, from the most central member), then other
+        // notes newest first: conflicts pile up where notes crowd. Order only.
         let index = self.crowding()?;
         let rank: std::collections::HashMap<String, usize> = index
             .subjects(|_| true)
@@ -239,13 +220,9 @@ impl Engine {
         Ok(sweep)
     }
 
-    /// "Check open problems": does any current node entail an answer to an
-    /// open Problem/Intent? Returns nominations — the human (or assistant)
-    /// still links `answers` and resolves. Pairs already linked with the
-    /// answer-role verb are dropped (nothing to suggest); pairs linked some
-    /// OTHER way keep their nomination but rank under a penalty, carrying
-    /// the existing verb — "these are connected, but maybe the answer link
-    /// is the one that's missing".
+    /// "Check open problems": nominate current nodes that entail an answer to an
+    /// open Problem/Intent. Pairs already linked by the answer verb are dropped;
+    /// pairs linked another way rank lower and carry that verb.
     pub fn audit_answered(&self) -> Result<Vec<AnsweredHint>> {
         const NLI_PAIR_BUDGET: usize = 150;
         let nli = self.require_nli()?;
@@ -324,13 +301,9 @@ impl Engine {
         Ok(hints)
     }
 
-    /// "Triage stale notes": judge each stale node against its nearest live
-    /// canon and say what the evidence suggests — `reconfirm` (a current node
-    /// still entails it: confirm-still-true restores its trust),
-    /// `contradicted` (a current node disputes it — judge as a conflict;
-    /// gated on the suspect similarity band because MNLI presupposes
-    /// co-reference), or `isolated` (nothing current speaks to it — an
-    /// archive candidate). Nominations only; nothing self-applies.
+    /// "Triage stale notes": per stale node, `reconfirm` (live canon entails it),
+    /// `contradicted` (live canon disputes it, inside the suspect band) or
+    /// `isolated` (archive candidate). Nominations only.
     pub fn audit_stale_triage(&self) -> Result<Vec<StaleTriage>> {
         const NLI_PAIR_BUDGET: usize = 150;
         const TRIAGE_ENTAILMENT: f32 = 0.60;
@@ -447,14 +420,10 @@ const AUDIT_NLI_PAIR_BUDGET: usize = 300;
 /// read again costs one NLI call, never a wrong answer).
 const SWEEP_MEMORY_MAX: usize = 20_000;
 
-/// The pairs a Checkup sweep judged without queueing (0.9.11, Problem
-/// 00dxmtfmipga): before it, every run re-read the same first 300 pairs and
-/// "run again to continue" never continued. Kept in the store's kv meta per
-/// sweep kind, so it travels with `migrate` like the rest of meta. A pair is
-/// remembered by [`pair_memo`] — both notes' ids and content plus the read
-/// that judged it — so editing either note re-opens it, and the whole
-/// memory is dropped when its stamp (judge model, gates) changes: a verdict
-/// is only as reusable as the judge and the bar that produced it.
+/// Pairs a Checkup sweep judged without queueing, kept per sweep kind in kv
+/// meta (Problem 00dxmtfmipga: runs used to re-read the same first 300 pairs).
+/// Keyed by [`pair_memo`] (ids, content, read), so an edit re-opens a pair; a
+/// changed stamp (judge model, gates) drops the whole memory.
 pub(super) struct SweepMemory {
     pub(super) key: String,
     pub(super) stamp: String,

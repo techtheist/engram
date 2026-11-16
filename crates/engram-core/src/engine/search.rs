@@ -3,26 +3,16 @@
 use super::*;
 
 impl Engine {
-    /// Hybrid retrieval: embed the query, fuse keyword + vector hits, run the
-    /// precision layer when present (over-fetch candidates, cross-encode them
-    /// against the query, re-order), then attach each hit's 1-hop neighbors
-    /// (conflicts/supersessions first) so contradictions surface passively
-    /// with the match.
+    /// Hybrid retrieval: fuse keyword and vector hits, rerank when a cross-encoder
+    /// is loaded, then attach each hit's 1-hop neighbours (conflicts and
+    /// supersessions first) so contradictions surface with the match.
     pub fn search(&self, query: &str, types: &[NodeType], limit: usize) -> Result<Vec<SearchHit>> {
         self.search_filtered(query, types, limit, &SearchFilter::default())
     }
 
-    /// [`Engine::search`] with a time window and an explicit ordering.
-    ///
-    /// The window prunes candidates BEFORE the reranker and before both
-    /// calibrated cuts, so the delivery floor, the knee trim and the verdict
-    /// all describe the scoped set — a "strong" verdict means the best answer
-    /// *inside the window* cleared the line, not that something outside it
-    /// did.
-    ///
-    /// The ordering is applied LAST, after every cut. Re-sorting a delivered
-    /// set cannot change what cleared the line, so a chronological read still
-    /// carries the same verdict its relevance-ordered twin would.
+    /// [`Engine::search`] with a time window and an explicit ordering. The window
+    /// prunes before the reranker and both cuts, so the verdict describes the
+    /// scoped set; the ordering is applied last, so it never changes what cleared.
     pub fn search_filtered(
         &self,
         query: &str,
@@ -62,23 +52,16 @@ impl Engine {
             let floor = self.store.config().policy.delivery_floor;
             hits.retain(|h| h.score >= floor);
         }
-        // Session-diverse delivery: when the floor-surviving pool is deeper
-        // than the limit, a session already holding a delivered slot pays a
-        // rank demotion for each further one, so restatements from one
-        // session stop crowding out complementary evidence from others. With
-        // the knob at 0 this IS `truncate(limit)`.
+        // Session-diverse delivery: further hits from an already-delivered session
+        // pay a rank demotion. At 0 this is `truncate(limit)`.
         session_diverse_select(
             &mut hits,
             limit,
             self.store.config().policy.session_diversity_demote,
             |h| h.session_id.as_deref(),
         );
-        // Calibrated delivery, knee face: cut at the largest relative drop
-        // in the delivered score curve — the cliff between the relevance
-        // head and the noise tail (policy::KNEE_MIN_CLIFF). Measured free of
-        // recall cost at every size, and unlike the fixed floor the cliff
-        // sharpens as the graph grows. Reranker-gated like the floor: the
-        // fused hybrid score is a different scale.
+        // Knee cut at the largest relative score drop (policy::KNEE_MIN_CLIFF).
+        // Reranker-gated like the floor: the fused score is a different scale.
         if self.reranker.is_some()
             && let Some(cliff) = self.store.config().policy.knee_cliff
         {
@@ -113,19 +96,10 @@ impl Engine {
         Ok(hits)
     }
 
-    /// The half-open window a named working version was current for, read from
-    /// the audit journal's `version_switched` rows (`set_current_version`
-    /// journals every switch under entity_id "version").
-    ///
-    /// The window OPENS when the version was switched to and CLOSES when it
-    /// was switched away from — the still-current version has no end. A
-    /// version that was set more than once (a cycle reopened, a bump reverted)
-    /// spans from its first switch-in to the last switch-away, which is the
-    /// reading that keeps "during 0.8.4" meaning the same thing as the
-    /// release's story.
-    ///
-    /// `None` when the journal never mentions the version: the caller must
-    /// say so rather than silently searching all of time.
+    /// The window a working version was current for, from the journal's
+    /// `version_switched` rows: first switch-in to last switch-away, open-ended
+    /// while current. `None` when the journal never mentions it, so the caller
+    /// can say so instead of searching all of time.
     pub fn version_window(&self, version: &str) -> Result<Option<crate::timespec::TimeWindow>> {
         let version = version.trim();
         if version.is_empty() {
@@ -226,17 +200,9 @@ impl Engine {
         })
     }
 
-    /// Calibrated delivery, verdict face: how the assistant should hold a
-    /// search result. `"none"` — the graph is silent, say so instead of
-    /// inventing. `"weak"` — delivered, but nothing cleared the calibrated
-    /// confidence line (`policy::WEAK_EVIDENCE_TOP`): as likely topical
-    /// adjacency as an answer, verify before relying. `"strong"` — the top
-    /// hit cleared the line. Returns `None` for a non-empty result when no
-    /// reranker is loaded: the fused hybrid score is a different scale, and
-    /// a verdict from an uncalibrated ruler would be noise wearing a badge.
-    /// A label rather than a harder floor by measurement: hard abstention
-    /// costs oblique recall (see `policy::DELIVERY_FLOOR`), a label costs
-    /// nothing and keeps the assistant aligned.
+    /// How to hold a result: `"none"` (the graph is silent), `"weak"` (nothing
+    /// cleared `policy::WEAK_EVIDENCE_TOP`, verify first) or `"strong"`. `None`
+    /// for a non-empty result without a reranker: the fused score is uncalibrated.
     pub fn search_confidence(&self, hits: &[SearchHit]) -> Option<&'static str> {
         if hits.is_empty() {
             return Some("none");
@@ -250,29 +216,13 @@ impl Engine {
         })
     }
 
-    /// Re-score candidates with the cross-encoder: relevance comes from the
-    /// reranker logit (sigmoid-squashed), trust modulates it the same way it
-    /// modulates the hybrid blend — relevance dominates, trust breaks ties
-    ///. A reranker failure keeps hybrid order: precision is an
-    /// upgrade, never a dependency.
-    ///
-    /// With `rerank_vote_k` set (the default), the cross-encoder does not get
-    /// the final word: its ordering is combined with the retrieval ordering by
-    /// a reciprocal-rank vote, so a hit two independent channels ranked highly
-    /// cannot be buried by one confident cross-encoder mistake.
-    ///
-    /// The *reported* score stays the cross-encoder's calibrated relevance
-    /// either way. The vote decides order only — reciprocal-rank sums encode
-    /// rank, not confidence, and `score` is surfaced to assistants over MCP and
-    /// to the pane, where a number that no longer means "how good is this
-    /// match" would quietly mislead both.
+    /// Re-score candidates with the cross-encoder (sigmoid logit, trust-modulated);
+    /// on failure the hybrid order stands. With `rerank_vote_k` the order is a
+    /// reciprocal-rank vote with the retrieval order, but the reported score stays
+    /// the cross-encoder's, since callers read it as match quality.
     pub(super) fn rerank(&self, reranker: &dyn Reranker, query: &str, hits: &mut [SearchHit]) {
-        // `rerank_full_note` scores `title + whole body` instead of `title +
-        // keyword-window snippet`: notes fit the cross-encoder's window whole,
-        // and on an oblique query the evidence sentence often shares no
-        // keyword with the query — it never enters the window at all. The
-        // snippet stays the delivered text either way; this changes only what
-        // the judge reads.
+        // `rerank_full_note` lets the judge read the whole body, not the keyword
+        // snippet: an oblique answer often shares no keyword with the query.
         let full_note = self.config().policy.rerank_full_note;
         let docs: Vec<String> = hits
             .iter()
@@ -381,15 +331,10 @@ pub(super) fn cosine(a: &[f32], b: &[f32]) -> f64 {
     dot / (na.sqrt() * nb.sqrt())
 }
 
-/// Session-diverse delivery cut: pick `limit` hits from a ranked
-/// candidate list, demoting each additional hit from an already-picked
-/// session by `demote` RANK positions — a greedy MMR keyed on rank rather
-/// than score, because rank is the one scale that transfers between graphs
-/// (the 0.8.1 register lesson). With `demote` 0 the pick is byte-identical
-/// to `truncate(limit)`; hits without a session are never demoted and never
-/// count against one. Selection and order only — scores are untouched, so
-/// the floor, the knee and the verdict all still read the cross-encoder's
-/// calibrated scale.
+/// Pick `limit` hits, demoting each further hit from an already-picked session
+/// by `demote` ranks (greedy MMR on rank, the scale that transfers between
+/// graphs). `demote` 0 equals `truncate(limit)`; sessionless hits are never
+/// demoted. Order only: scores are untouched.
 pub(crate) fn session_diverse_select<T>(
     hits: &mut Vec<T>,
     limit: usize,

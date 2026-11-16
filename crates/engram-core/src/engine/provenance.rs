@@ -23,11 +23,8 @@ impl Engine {
         });
     }
 
-    /// Rebuild the parking lot after a restart: recent assistant-written
-    /// notes that never got their born-in edge re-park from the store, so a
-    /// daemon restart (deploys are routine here) costs no provenance. The
-    /// in-memory lot stays the fast path; this is its recovery. Bounded by
-    /// recency so pre-history notes never enter.
+    /// Re-park recent assistant notes still missing their born-in edge, so a core
+    /// restart costs no provenance. Bounded by `window_secs`.
     pub fn repark_recent_provenance(&self, window_secs: i64) -> Result<usize> {
         if !self.history_open() {
             return Ok(0);
@@ -55,12 +52,9 @@ impl Engine {
         Ok(reparked)
     }
 
-    /// Resolve parked notes to their birth exchange: the closest preceding
-    /// assistant Message, preferring sessions still alive after the note's
-    /// moment (concurrent sessions on one project can't steal provenance
-    /// from a dead one). An entry resolves once ingestion has caught up past
-    /// its timestamp, or best-effort after a grace period; either way it
-    /// leaves the lot. Returns how many `born-in` edges were written.
+    /// Link parked notes to their birth exchange: the closest preceding assistant
+    /// message, preferring sessions alive after the note's moment. An entry leaves
+    /// the lot once ingestion passes it or its grace expires. Returns edges written.
     pub fn resolve_provenance(&self) -> Result<usize> {
         const GRACE_SECS: i64 = 900;
         {
@@ -158,11 +152,8 @@ impl Engine {
         .flatten()
     }
 
-    /// Every curated note born inside one recorded session, in turn order —
-    /// the reverse of [`Self::born_in_of`]: what a conversation left in
-    /// memory. The `born-in` edges live in the history store (half-resident,
-    /// curated `from`), so the scan walks the session's messages there and
-    /// resolves the notes against the curated store.
+    /// Curated notes born in one recorded session, in turn order (the reverse of
+    /// [`Self::born_in_of`]); `born-in` edges live in the history store.
     pub fn session_notes(&self, session: &str) -> Result<Vec<crate::history::SessionNote>> {
         // (note id, turn, message id, message ts) per born-in edge.
         type Born = Vec<(String, Option<u64>, String, i64)>;
