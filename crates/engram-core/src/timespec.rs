@@ -334,9 +334,15 @@ fn days_in_month(y: i64, m: i64) -> i64 {
     }
 }
 
-/// Days-from-civil (Howard Hinnant's algorithm) — the same one `parse_day`
-/// inlines, kept here as a named function because the inverse below needs a
-/// partner to round-trip against.
+/// Days since 1970-01-01 for a real calendar date, or `None` for one that
+/// doesn't exist (month 13, February 30th). The one parser every date reader
+/// shares.
+pub(crate) fn civil_day(y: i64, m: i64, d: i64) -> Option<i64> {
+    ((1..=12).contains(&m) && (1..=days_in_month(y, m)).contains(&d))
+        .then(|| days_from_civil(y, m, d))
+}
+
+/// Days-from-civil (Howard Hinnant's algorithm).
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y2 = if m <= 2 { y - 1 } else { y };
     let era = if y2 >= 0 { y2 } else { y2 - 399 } / 400;

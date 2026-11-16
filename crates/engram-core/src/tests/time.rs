@@ -580,3 +580,28 @@ fn buried_claims_are_reachable_on_both_backends() {
         );
     }
 }
+
+#[test]
+fn impossible_calendar_dates_are_refused_everywhere() {
+    assert!(crate::parse_day("2026-02-28").is_some());
+    assert!(crate::parse_day("2024-02-29").is_some(), "leap day");
+    for bad in [
+        "2026-02-29",
+        "2026-02-31",
+        "2026-04-31",
+        "2026-13-01",
+        "2026-00-10",
+    ] {
+        assert_eq!(crate::parse_day(bad), None, "{bad}");
+    }
+    let iso = crate::harvest::parse_iso8601;
+    assert!(iso("2026-08-11T09:15:32Z").is_some());
+    for bad in [
+        "2026-02-30T09:15:32Z",
+        "2026-08-11T24:00:00Z",
+        "2026-08-11T-1:15:32Z",
+        "2026-08-11T09:61:00Z",
+    ] {
+        assert_eq!(iso(bad), None, "{bad}");
+    }
+}

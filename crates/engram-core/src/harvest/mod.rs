@@ -712,17 +712,10 @@ pub(crate) fn parse_iso8601(s: &str) -> Option<i64> {
     let num = |r: std::ops::Range<usize>| s.get(r)?.parse::<i64>().ok();
     let (y, mo, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
     let (h, mi, sec) = (num(11..13)?, num(14..16)?, num(17..19)?);
-    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
+    if !(0..=23).contains(&h) || !(0..=59).contains(&mi) || !(0..=60).contains(&sec) {
         return None;
     }
-    // Days from civil (Howard Hinnant's algorithm), 1970-01-01 = 0.
-    let y_adj = y - i64::from(mo <= 2);
-    let era = y_adj.div_euclid(400);
-    let yoe = y_adj - era * 400;
-    let mp = (mo + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
+    let days = crate::timespec::civil_day(y, mo, d)?;
     let mut ts = days * 86_400 + h * 3_600 + mi * 60 + sec;
     // Offset suffix: Z, or ±HH:MM after optional fractional seconds.
     let rest = &s[19..];

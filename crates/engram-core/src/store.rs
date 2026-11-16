@@ -40,17 +40,10 @@ pub fn parse_day(s: &str) -> Option<i64> {
     let y: i64 = parts.next()?.parse().ok()?;
     let m: i64 = parts.next()?.parse().ok()?;
     let d: i64 = parts.next()?.parse().ok()?;
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || !(1900..=9999).contains(&y) {
+    if !(1900..=9999).contains(&y) {
         return None;
     }
-    // Days-from-civil (Howard Hinnant's algorithm), then to unix seconds.
-    let y2 = if m <= 2 { y - 1 } else { y };
-    let era = if y2 >= 0 { y2 } else { y2 - 399 } / 400;
-    let yoe = y2 - era * 400;
-    let mp = (m + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    Some((era * 146097 + doe - 719468) * 86400)
+    Some(crate::timespec::civil_day(y, m, d)? * 86400)
 }
 
 /// FTS snippet match markers: private-use sentinels no real body text carries
