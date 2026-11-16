@@ -3,6 +3,80 @@
 Release notes for Engram Alpha. Each release's section below becomes the
 body of its GitHub Release (draft-release.yml lifts it automatically).
 
+## v0.11.2
+
+### Contradictions that only hold through a third note
+
+"The export worker keeps its records in PostgreSQL" and "the import worker
+is backed by MongoDB" don't disagree on their own. They do once a third note
+says "the export worker uses the same datastore as the import worker". A
+judge that compares two notes at a time never sees that.
+
+- **Bridged contradictions.** Engram now recognises a bridge note by the
+  words in its title's main clause that tie one subject to another ("same …
+  as", "shares", "mirrors", "inherits … from", "is the old name of",
+  "formerly", "reuses"…). Universal rules such as "every service runs on one
+  database" are not bridges. When a bridge is written, the judge checks the
+  older facts about the two subjects it names against each other, through
+  the bridge. When a fact is written, the judge checks it against older
+  bridges that name its subject. A hit lands in the suspect queue with the
+  hint `bridged`, and the bridge note is shown as its `via` in the brief,
+  the Review panel and `list_suspects`. `conflict_bridge_gate` in the policy
+  sets the bar (0.80; `null` turns it off). The on-demand Checkup sweep also
+  reads bridges that were written before this release.
+- **Measured before it shipped.** KnowledgeDrift's harder v3 worlds add
+  bridged cases: pairs, aliases, inheritance, chains, and traps that look
+  like bridges but aren't. On the contradiction family the change scores
+  +1.1 to +3.2 points on every world with both judges, and catches 17 of 19
+  unlinked transitive cases where it caught none before, with no cost on
+  writes. Replayed over Engram's own graph, it raised no bridged false
+  alarms.
+- **Found bridges.** When a bridge note ties one note to another and no
+  edge joins them, the tie is now shown. It is never judged and never
+  stored. `get_node` carries up to three, and each of the top three search
+  hits carries one (snippet and full detail). The pane's detail view lists
+  them as a dashed, virtual "about" link with the bridge note under it, and
+  the graph itself is left alone (`GET /nodes/{id}/bridges`). Because
+  nothing checks what is only shown, a found bridge appears only when its
+  title clearly names both sides ("X … same … as Y", "X mirrors Y", "X and Y
+  share …"). On Engram's own graph that leaves none of the 37 loose matches.
+- **Sleep uses them.** Review subjects and islands carry their found
+  bridges, and the `engram-sleep` skill says what to do with them: read
+  both notes, link the tie if it holds, and raise a conflict if they
+  disagree. Installed skills pick this up through the usual upkeep.
+- **The Checkup sweep reads crowded subjects first**, so a run that hits its
+  budget has spent it where notes pile up. Only the order changed.
+- **In the demo:** Lantern gains a bridged trio and a bridged suspect, so
+  you can see both features in the live demo and on the docs site.
+
+### Documentation site
+
+- The docs are now a site at
+  [techtheist.github.io/engram](https://techtheist.github.io/engram/), with
+  local search and a landing tour that drives the live demo (#16). The
+  README links to it.
+
+### Fixes
+
+- `engram-alpha stop` can no longer signal the wrong processes because of a
+  corrupt `daemon.json`. A pid of 0 used to hit its own process group, and
+  an out-of-range pid could reach every process you own. Ports parse
+  strictly too.
+- Impossible dates such as `2026-02-31` are refused instead of rolling over
+  into March. Timestamps read from assistant transcripts for the history
+  layer get the same check.
+- One panic while a lock was held used to break that lock for the rest of
+  the process, and it could quietly switch off history, provenance or audit
+  grouping. Locks now recover. `stop` no longer waits out its full 10 s
+  deadline when a graph's engine is in that state.
+
+### Under the hood
+
+- The large modules in every crate are split by concern. The MCP tools,
+  their schemas and the HTTP routes are byte-identical.
+- A curated set of clippy lints and a pre-commit lint gate, and CI now
+  checks rustdoc links.
+
 ## v0.11.1
 
 ### Every project keeps its skills current (#19, #18)
